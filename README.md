@@ -21,7 +21,22 @@ The application is built with a FastAPI backend and a React/TypeScript frontend.
 - Analyzer controls for center frequency, start/stop, span, RBW, VBW, reference level, gain, detector mode, and averaging
 - Spectrum pan controls to move the tuned window left or right without typing a new frequency
 - Marker creation on the trace with frequency and interpolated signal level
+- Marker delta readout between the first two markers
+- Marker-band demodulation using M1 and M2 as RF limits
+- AM/FM/WFM demodulation with WAV audio playback and export from the dashboard
+- ASK/FSK/PSK/OOK marker-band IQ capture with metadata export for digital analysis
+- Automatic local peak markers
+- Marker dragging directly on the spectrum canvas
 - Peak marker detection
+- Trace statistics: mean, maximum, minimum, and standard deviation
+- CSV export for trace points
+- PNG export for the current spectrum canvas
+- Mouse-wheel zoom on spectrum span
+- Crosshair cursor readout with frequency and level
+- Trace modes: Clear/Write, Average, Max Hold, Min Hold, and Video Average
+- Detector modes: Sample, RMS, Average, Peak, Max Hold, Min Hold, and Video
+- Display controls for reference level, dB/div, offset, and color scheme
+- Basic SCPI-style REST command endpoint for external control
 - Device status panel showing connection state, driver, sample rate, gain, center, span, start, and stop
 - Recording/session screens for capture management
 - FastAPI REST API with OpenAPI docs
@@ -69,6 +84,21 @@ Then open:
 6. Tune center/span or start/stop from the controls.
 7. Use `Spectrum Left` and `Spectrum Right` to move across the band.
 8. Click the spectrum to add markers with frequency and signal level.
+9. Open `Demodulation` to demodulate or capture the RF band between M1 and M2.
+
+## Marker-Band Demodulation
+
+The `Demodulation` tab uses the first two spectrum markers as the selected RF band:
+
+1. Create M1 and M2 on the spectrum trace.
+2. Open `Demodulation`.
+3. Select `AM`, `FM`, `WFM`, `ASK`, `FSK`, `PSK`, or `OOK`.
+4. Set the capture duration.
+5. Click `Apply Demodulation`.
+
+For `AM`, `FM`, and `WFM`, the backend captures real IQ from the USRP-B200, demodulates it, generates a WAV file, and exposes it for playback/download in the dashboard.
+
+For `ASK`, `FSK`, `PSK`, and `OOK`, the backend captures the marker-limited IQ plus metadata for later digital analysis/export. These modes do not currently generate dashboard audio.
 
 ## Important Environment Variables
 
@@ -82,6 +112,23 @@ Then open:
 | `RADIOCONDA_PYTHON` | Python executable with GNU Radio/UHD installed |
 
 The frontend can change the active analyzer settings at runtime. These variables only define startup defaults.
+
+## SCPI-Style Control
+
+Basic SCPI-style commands can be sent through:
+
+```text
+POST /api/spectrum/scpi
+```
+
+Supported examples:
+
+```text
+SENS:FREQ:CENT 89.4MHz
+SENS:FREQ:SPAN 2MHz
+DISP:TRAC:Y:RLEV 0dBm
+DISP:TRAC:Y:SCAL:PDIV 10dB
+```
 
 ## RF Safety Guardrails
 
@@ -124,5 +171,3 @@ spectrum-lab/
     run_dev.sh
     init_project.sh
 ```
-
-

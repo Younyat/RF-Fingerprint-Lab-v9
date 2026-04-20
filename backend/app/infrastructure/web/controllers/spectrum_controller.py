@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.infrastructure.sdr.real_spectrum_stream import real_spectrum_stream
 from app.infrastructure.sdr.rf_safety import (
     safety_status,
@@ -97,7 +99,7 @@ class SpectrumController:
         return {"status": "ok", "reference_level_db": reference_level_db}
 
     def set_detector_mode(self, detector_mode: str) -> dict:
-        allowed_modes = {"sample", "average", "peak", "min", "min_hold"}
+        allowed_modes = {"sample", "rms", "average", "peak", "min", "min_hold", "max_hold", "video"}
         if detector_mode not in allowed_modes:
             raise ValueError(f"detector_mode must be one of {sorted(allowed_modes)}")
         self._settings.set_detector_mode(detector_mode)
@@ -116,3 +118,36 @@ class SpectrumController:
 
     def validate_sample_rate(self, sample_rate_hz: float) -> None:
         validate_span(sample_rate_hz)
+
+    def execute_scpi(self, command: str) -> dict:
+        normalized = command.strip().upper()
+        match = re.fullmatch(r"SENS:FREQ:CENT\s+([0-9.]+)\s*(HZ|KHZ|MHZ|GHZ)?", normalized)
+        if match:
+            return self.set_center_frequency(self._scpi_number_to_hz(match.group(1), match.group(2)))
+
+        match = re.fullmatch(r"SENS:FREQ:SPAN\s+([0-9.]+)\s*(HZ|KHZ|MHZ|GHZ)?", normalized)
+        if match:
+            return self.set_span(self._scpi_number_to_hz(match.group(1), match.group(2)))
+
+        match = re.fullmatch(r"DISP:TRAC:Y:RLEV\s+([-0-9.]+)\s*(DB|DBM)?", normalized)
+        if match:
+            return self.set_reference_level(float(match.group(1)))
+
+        match = re.fullmatch(r"DISP:TRAC:Y:SCAL:PDIV\s+([0-9.]+)\s*(DB)?", normalized)
+        if match:
+            value = float(match.group(1))
+            if value <= 0:
+                raise ValueError("dB per division must be > 0")
+            return {"status": "ok", "db_per_div": value}
+
+        raise ValueError(f"Unsupported SCPI command: {command}")
+
+    def _scpi_number_to_hz(self, value: str, unit: str | None) -> float:
+        multiplier = {
+            None: 1.0,
+            "HZ": 1.0,
+            "KHZ": 1e3,
+            "MHZ": 1e6,
+            "GHZ": 1e9,
+        }[unit]
+        return float(value) * multiplier

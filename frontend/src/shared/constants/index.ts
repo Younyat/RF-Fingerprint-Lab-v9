@@ -38,9 +38,27 @@ export const FREQUENCY_UNITS = {
 // Detector Modes
 export const DETECTOR_MODES = [
   { value: 'sample', label: 'Sample' },
+  { value: 'rms', label: 'RMS' },
   { value: 'average', label: 'Average' },
   { value: 'peak', label: 'Peak' },
+  { value: 'max_hold', label: 'Max Hold' },
   { value: 'min_hold', label: 'Min Hold' },
+  { value: 'video', label: 'Video' },
+] as const;
+
+export const TRACE_MODES = [
+  { value: 'clear_write', label: 'Clear/Write' },
+  { value: 'average', label: 'Average' },
+  { value: 'max_hold', label: 'Max Hold' },
+  { value: 'min_hold', label: 'Min Hold' },
+  { value: 'video_average', label: 'Video Avg' },
+] as const;
+
+export const SPECTRUM_COLOR_SCHEMES = [
+  { value: 'blue', label: 'Blue' },
+  { value: 'green', label: 'Green' },
+  { value: 'amber', label: 'Amber' },
+  { value: 'magenta', label: 'Magenta' },
 ] as const;
 
 // Window Functions
@@ -57,8 +75,10 @@ export const DEMODULATION_MODES = [
   { value: 'am', label: 'AM' },
   { value: 'fm', label: 'FM' },
   { value: 'wfm', label: 'WFM' },
-  { value: 'ssb', label: 'SSB' },
-  { value: 'iq', label: 'IQ Passthrough' },
+  { value: 'ask', label: 'ASK' },
+  { value: 'fsk', label: 'FSK' },
+  { value: 'psk', label: 'PSK' },
+  { value: 'ook', label: 'OOK' },
 ] as const;
 
 // Recording Formats
@@ -85,6 +105,9 @@ export const DEFAULT_SETTINGS = {
   referenceLevel: 0, // 0 dBm
   noiseFloorOffset: 0,
   detectorMode: 'sample' as const,
+  traceMode: 'clear_write' as const,
+  dbPerDiv: 10,
+  colorScheme: 'blue' as const,
   averaging: 1,
   smoothing: 0,
 } as const;
@@ -132,6 +155,9 @@ export const API_ENDPOINTS = {
   DEMODULATION_START: '/api/demodulation/start',
   DEMODULATION_STOP: '/api/demodulation/stop',
   DEMODULATION_AUDIO_STATUS: '/api/demodulation/audio/status',
+  DEMODULATION_MARKER_BAND: '/api/demodulation/marker-band',
+  DEMODULATION_RESULTS: '/api/demodulation/results',
+  DEMODULATION_AUDIO: (id: string) => `/api/demodulation/audio/${id}`,
 
   // Presets
   PRESETS_LIST: '/api/presets/',

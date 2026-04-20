@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 
-DetectorMode = Literal["sample", "average", "peak", "min", "min_hold"]
+DetectorMode = Literal["sample", "rms", "average", "peak", "min", "min_hold", "max_hold", "video"]
 DemodulationMode = Literal["off", "am", "fm", "wfm", "usb", "lsb", "cw"]
 WindowType = Literal["rectangular", "hann", "hamming", "blackman"]
 TraceMode = Literal["clear_write", "average", "max_hold", "min_hold"]

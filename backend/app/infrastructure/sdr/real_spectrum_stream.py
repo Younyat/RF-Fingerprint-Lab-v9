@@ -18,6 +18,7 @@ class RealSpectrumStream:
         self._latest_frame: dict[str, Any] | None = None
         self._last_error: str | None = None
         self._config_key: tuple | None = None
+        self._exclusive_reason: str | None = None
         self._lock = threading.Lock()
 
     def get_latest(self, analyzer_settings) -> dict:
@@ -36,6 +37,11 @@ class RealSpectrumStream:
             }
 
     def ensure_started(self, analyzer_settings) -> None:
+        with self._lock:
+            if self._exclusive_reason is not None:
+                self._last_error = self._exclusive_reason
+                return
+
         config_key = self._make_config_key(analyzer_settings)
         if self._process is not None and self._process.poll() is None and self._config_key == config_key:
             return
@@ -112,6 +118,20 @@ class RealSpectrumStream:
             except subprocess.TimeoutExpired:
                 self._process.kill()
         self._process = None
+
+    def is_running(self) -> bool:
+        return self._process is not None and self._process.poll() is None
+
+    def begin_exclusive_operation(self, reason: str) -> None:
+        self.stop()
+        with self._lock:
+            self._exclusive_reason = reason
+            self._latest_frame = None
+            self._last_error = reason
+
+    def end_exclusive_operation(self) -> None:
+        with self._lock:
+            self._exclusive_reason = None
 
     def _read_stdout(self) -> None:
         process = self._process

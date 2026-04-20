@@ -129,6 +129,9 @@ export class AnalyzerSettingsModel {
     referenceLevel: 0,
     noiseFloorOffset: 0,
     detectorMode: 'sample',
+    traceMode: 'clear_write',
+    dbPerDiv: 10,
+    colorScheme: 'blue',
     averaging: 1,
     smoothing: 0,
   };

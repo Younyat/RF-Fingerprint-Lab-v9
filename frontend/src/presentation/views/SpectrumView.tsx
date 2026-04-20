@@ -1,12 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, Play, Square, RotateCcw, Target, Usb, Unplug, Radio, Trash2, SlidersHorizontal } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronLeft, ChevronRight, Download, Image, Play, Square, RotateCcw, Target, Usb, Unplug, Radio, Trash2, SlidersHorizontal } from 'lucide-react';
 import { useSpectrum } from '../hooks/useSpectrum';
 import { useSpectrumController } from '../controllers/SpectrumController';
 import { getLevelAtFrequency, useMarkerController } from '../controllers/MarkerController';
 import { useAnalyzerSettings, useDeviceStatus, useMarkers, useSpectrumData } from '../../app/store/AppStore';
 import { formatFrequency, formatPowerLevel } from '../../shared/utils';
 import { cn } from '../../shared/utils';
-import { DETECTOR_MODES } from '../../shared/constants';
+import { DETECTOR_MODES, SPECTRUM_COLOR_SCHEMES, TRACE_MODES } from '../../shared/constants';
 import type { AnalyzerSettings } from '../../shared/types';
 
 const hzToMhz = (hz: number) => Number.isFinite(hz) ? hz / 1e6 : 0;
@@ -16,6 +16,29 @@ const khzToHz = (khz: string) => Number(khz) * 1e3;
 const formatInput = (value: number, digits = 6) => {
   if (!Number.isFinite(value)) return '';
   return Number(value.toFixed(digits)).toString();
+};
+
+const computeStats = (levels: number[]) => {
+  const finite = levels.filter(Number.isFinite);
+  if (finite.length === 0) {
+    return { min: Number.NaN, max: Number.NaN, mean: Number.NaN, std: Number.NaN };
+  }
+  const min = Math.min(...finite);
+  const max = Math.max(...finite);
+  const mean = finite.reduce((sum, value) => sum + value, 0) / finite.length;
+  const variance = finite.reduce((sum, value) => sum + (value - mean) ** 2, 0) / finite.length;
+  return { min, max, mean, std: Math.sqrt(variance) };
+};
+
+const findLocalPeaks = (frequencies: number[], levels: number[], count = 3) => {
+  const peaks: Array<{ frequency: number; level: number }> = [];
+  for (let index = 1; index < levels.length - 1; index += 1) {
+    const level = levels[index];
+    if (Number.isFinite(level) && level >= levels[index - 1] && level >= levels[index + 1]) {
+      peaks.push({ frequency: frequencies[index], level });
+    }
+  }
+  return peaks.sort((a, b) => b.level - a.level).slice(0, count);
 };
 
 const getErrorMessage = (error: unknown) => {
@@ -46,9 +69,15 @@ export const SpectrumView: React.FC = () => {
   const [refLevel, setRefLevel] = useState(formatInput(settings.referenceLevel, 1));
   const [noiseOffset, setNoiseOffset] = useState(formatInput(settings.noiseFloorOffset, 1));
   const [detectorMode, setDetectorMode] = useState<AnalyzerSettings['detectorMode']>(settings.detectorMode);
+  const [traceMode, setTraceMode] = useState<AnalyzerSettings['traceMode']>(settings.traceMode);
+  const [dbPerDiv, setDbPerDiv] = useState(formatInput(settings.dbPerDiv, 1));
+  const [colorScheme, setColorScheme] = useState<AnalyzerSettings['colorScheme']>(settings.colorScheme);
   const [averaging, setAveraging] = useState(formatInput(settings.averaging, 0));
   const [gainDb, setGainDb] = useState(formatInput(deviceStatus.gain, 1));
   const [controlError, setControlError] = useState<string | null>(null);
+  const [cursor, setCursor] = useState<{ frequency: number; level: number } | null>(null);
+  const [draggingMarkerId, setDraggingMarkerId] = useState<string | null>(null);
+  const suppressNextClickRef = useRef(false);
 
   useEffect(() => {
     setCenterMHz(formatInput(hzToMhz(settings.centerFrequency)));
@@ -60,6 +89,9 @@ export const SpectrumView: React.FC = () => {
     setRefLevel(formatInput(settings.referenceLevel, 1));
     setNoiseOffset(formatInput(settings.noiseFloorOffset, 1));
     setDetectorMode(settings.detectorMode);
+    setTraceMode(settings.traceMode);
+    setDbPerDiv(formatInput(settings.dbPerDiv, 1));
+    setColorScheme(settings.colorScheme);
     setAveraging(formatInput(settings.averaging, 0));
   }, [
     settings.centerFrequency,
@@ -69,6 +101,9 @@ export const SpectrumView: React.FC = () => {
     settings.referenceLevel,
     settings.noiseFloorOffset,
     settings.detectorMode,
+    settings.traceMode,
+    settings.dbPerDiv,
+    settings.colorScheme,
     settings.averaging,
   ]);
 
@@ -91,6 +126,18 @@ export const SpectrumView: React.FC = () => {
       };
     });
   }, [markers, spectrumData]);
+
+  const traceStats = useMemo(() => computeStats(spectrumData?.powerLevels ?? []), [spectrumData]);
+
+  const deltaMarker = useMemo(() => {
+    if (markerRows.length < 2) return null;
+    const first = markerRows[0];
+    const second = markerRows[1];
+    return {
+      frequencyDelta: second.frequency - first.frequency,
+      levelDelta: second.level - first.level,
+    };
+  }, [markerRows]);
 
   const applyCenterSpan = async () => {
     const center = mhzToHz(centerMHz);
@@ -151,14 +198,16 @@ export const SpectrumView: React.FC = () => {
     const ref = Number(refLevel);
     const offset = Number(noiseOffset);
     const avg = Number(averaging);
+    const div = Number(dbPerDiv);
     if (
       !Number.isFinite(rbw) || rbw <= 0 ||
       !Number.isFinite(vbw) || vbw <= 0 ||
       !Number.isFinite(ref) ||
       !Number.isFinite(offset) ||
-      !Number.isFinite(avg) || avg < 1
+      !Number.isFinite(avg) || avg < 1 ||
+      !Number.isFinite(div) || div <= 0
     ) {
-      setControlError('RBW, VBW and averaging must be positive. Ref and offset must be numeric.');
+      setControlError('RBW, VBW, dB/div and averaging must be positive. Ref and offset must be numeric.');
       return;
     }
     setControlError(null);
@@ -169,6 +218,7 @@ export const SpectrumView: React.FC = () => {
       await spectrumController.setNoiseFloorOffset(offset);
       await spectrumController.setDetectorMode(detectorMode);
       await spectrumController.setAveraging(avg);
+      spectrumController.setTraceDisplay({ traceMode, dbPerDiv: div, colorScheme });
     } catch (error) {
       setControlError(getErrorMessage(error));
     }
@@ -224,6 +274,10 @@ export const SpectrumView: React.FC = () => {
   };
 
   const addMarkerAtCanvas = async (event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (suppressNextClickRef.current) {
+      suppressNextClickRef.current = false;
+      return;
+    }
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
@@ -234,6 +288,81 @@ export const SpectrumView: React.FC = () => {
       ? getLevelAtFrequency(frequency, spectrumData.frequencyArray, spectrumData.powerLevels)
       : Number.NaN;
     await markerController.createMarker(frequency, undefined, level);
+  };
+
+  const frequencyFromPointer = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const relativeX = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+    const start = settings.centerFrequency - settings.span / 2;
+    return start + relativeX * settings.span;
+  };
+
+  const updateCursor = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    const frequency = frequencyFromPointer(event);
+    if (frequency === null) return;
+    const level = spectrumData
+      ? getLevelAtFrequency(frequency, spectrumData.frequencyArray, spectrumData.powerLevels)
+      : Number.NaN;
+    setCursor({ frequency, level });
+    if (draggingMarkerId) {
+      markerController.updateMarker(draggingMarkerId, { frequency, level: Number.isFinite(level) ? level : 0 });
+    }
+  };
+
+  const startMarkerDrag = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    const frequency = frequencyFromPointer(event);
+    if (frequency === null) return;
+    const toleranceHz = settings.span * 0.01;
+    const marker = markerRows.find((item) => Math.abs(item.frequency - frequency) <= toleranceHz);
+    if (marker) {
+      suppressNextClickRef.current = true;
+      setDraggingMarkerId(marker.id);
+    }
+  };
+
+  const zoomFromWheel = async (event: React.WheelEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
+    const zoomFactor = event.deltaY < 0 ? 0.8 : 1.25;
+    const nextSpan = Math.max(settings.span * zoomFactor, 1_000);
+    try {
+      await spectrumController.setSpan(nextSpan);
+    } catch (error) {
+      setControlError(getErrorMessage(error));
+    }
+  };
+
+  const createAutoPeaks = async () => {
+    if (!spectrumData) return;
+    const peaks = findLocalPeaks(spectrumData.frequencyArray, spectrumData.powerLevels, 3);
+    for (const [index, peak] of peaks.entries()) {
+      await markerController.createMarker(peak.frequency, `P${index + 1}`, peak.level);
+    }
+  };
+
+  const exportCsv = () => {
+    if (!spectrumData) return;
+    const rows = ['frequency_hz,level_db'];
+    spectrumData.frequencyArray.forEach((frequency, index) => {
+      rows.push(`${frequency},${spectrumData.powerLevels[index] ?? ''}`);
+    });
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `spectraease_${Math.round(settings.centerFrequency)}Hz.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportPng = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const link = document.createElement('a');
+    link.href = canvas.toDataURL('image/png');
+    link.download = `spectraease_${Math.round(settings.centerFrequency)}Hz.png`;
+    link.click();
   };
 
   return (
@@ -323,6 +452,31 @@ export const SpectrumView: React.FC = () => {
               ))}
             </select>
           </label>
+          <label className="flex flex-col gap-1 text-[11px] text-slate-400">
+            Trace
+            <select
+              value={traceMode}
+              onChange={(event) => setTraceMode(event.target.value as AnalyzerSettings['traceMode'])}
+              className="h-9 w-28 rounded-md border border-slate-700 bg-slate-950 px-2 text-sm text-slate-100 outline-none focus:border-blue-400"
+            >
+              {TRACE_MODES.map((mode) => (
+                <option key={mode.value} value={mode.value}>{mode.label}</option>
+              ))}
+            </select>
+          </label>
+          <LabeledInput label="dB/div" value={dbPerDiv} onChange={setDbPerDiv} onEnter={applyResolution} compact />
+          <label className="flex flex-col gap-1 text-[11px] text-slate-400">
+            Color
+            <select
+              value={colorScheme}
+              onChange={(event) => setColorScheme(event.target.value as AnalyzerSettings['colorScheme'])}
+              className="h-9 w-24 rounded-md border border-slate-700 bg-slate-950 px-2 text-sm text-slate-100 outline-none focus:border-blue-400"
+            >
+              {SPECTRUM_COLOR_SCHEMES.map((scheme) => (
+                <option key={scheme.value} value={scheme.value}>{scheme.label}</option>
+              ))}
+            </select>
+          </label>
           <LabeledInput label="Avg" value={averaging} onChange={setAveraging} onEnter={applyResolution} compact />
           <button onClick={applyResolution} className="h-9 px-3 rounded-md bg-slate-700 hover:bg-slate-600 text-sm">
             <SlidersHorizontal className="w-4 h-4 mr-2 inline-block" />
@@ -340,11 +494,25 @@ export const SpectrumView: React.FC = () => {
             Peak
           </button>
           <button
+            onClick={createAutoPeaks}
+            className="h-9 flex items-center px-3 rounded-md bg-purple-700 hover:bg-purple-600 text-sm font-medium"
+          >
+            Auto Peaks
+          </button>
+          <button
             onClick={() => markerController.clearAllMarkers()}
             className="h-9 flex items-center px-3 rounded-md bg-slate-700 hover:bg-slate-600 text-sm"
           >
             <Trash2 className="w-4 h-4 mr-2" />
             Clear
+          </button>
+          <button onClick={exportCsv} className="h-9 flex items-center px-3 rounded-md bg-slate-700 hover:bg-slate-600 text-sm">
+            <Download className="w-4 h-4 mr-2" />
+            CSV
+          </button>
+          <button onClick={exportPng} className="h-9 flex items-center px-3 rounded-md bg-slate-700 hover:bg-slate-600 text-sm">
+            <Image className="w-4 h-4 mr-2" />
+            PNG
           </button>
         </div>
         {controlError && <div className="mt-2 text-sm text-red-300">{controlError}</div>}
@@ -378,7 +546,20 @@ export const SpectrumView: React.FC = () => {
             height={720}
             className="w-full h-full cursor-crosshair bg-slate-950"
             onClick={addMarkerAtCanvas}
+            onMouseDown={startMarkerDrag}
+            onMouseMove={updateCursor}
+            onMouseUp={() => setDraggingMarkerId(null)}
+            onMouseLeave={() => {
+              setCursor(null);
+              setDraggingMarkerId(null);
+            }}
+            onWheel={zoomFromWheel}
           />
+          {cursor && (
+            <div className="absolute right-4 top-4 z-10 rounded-md border border-slate-700 bg-slate-900/95 px-3 py-2 text-xs text-slate-100 shadow-lg">
+              {formatFrequency(cursor.frequency)} | {formatPowerLevel(cursor.level)}
+            </div>
+          )}
           {markerRows.map((marker) => {
             const start = settings.centerFrequency - settings.span / 2;
             const position = ((marker.frequency - start) / settings.span) * 100;
@@ -411,8 +592,24 @@ export const SpectrumView: React.FC = () => {
           <StatusRow label="Ref" value={formatPowerLevel(settings.referenceLevel)} />
           <StatusRow label="Offset" value={formatPowerLevel(settings.noiseFloorOffset)} />
           <StatusRow label="Detector" value={settings.detectorMode} />
+          <StatusRow label="Trace" value={settings.traceMode} />
+          <StatusRow label="Scale" value={`${settings.dbPerDiv} dB/div`} />
           <StatusRow label="Averaging" value={`${settings.averaging}x`} />
           <StatusRow label="Gain" value={formatPowerLevel(deviceStatus.gain)} />
+
+          <div className="mt-5 text-xs uppercase text-slate-400 mb-2">Trace Stats</div>
+          <StatusRow label="Mean" value={formatPowerLevel(traceStats.mean)} />
+          <StatusRow label="Max" value={formatPowerLevel(traceStats.max)} />
+          <StatusRow label="Min" value={formatPowerLevel(traceStats.min)} />
+          <StatusRow label="Std Dev" value={formatPowerLevel(traceStats.std)} />
+
+          {deltaMarker && (
+            <>
+              <div className="mt-5 text-xs uppercase text-slate-400 mb-2">Delta M2-M1</div>
+              <StatusRow label="Delta F" value={formatFrequency(deltaMarker.frequencyDelta)} />
+              <StatusRow label="Delta L" value={formatPowerLevel(deltaMarker.levelDelta)} />
+            </>
+          )}
 
           <div className="mt-5 text-xs uppercase text-slate-400 mb-2">Markers</div>
           <div className="overflow-hidden rounded-md border border-slate-800">

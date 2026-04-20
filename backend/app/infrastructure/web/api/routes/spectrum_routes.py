@@ -46,6 +46,10 @@ class SetAveragingBody(BaseModel):
     count: float | None = None
 
 
+class ScpiBody(BaseModel):
+    command: str
+
+
 def build_spectrum_router(controller) -> APIRouter:
     router = APIRouter(prefix="/spectrum", tags=["spectrum"])
     
@@ -131,6 +135,13 @@ def build_spectrum_router(controller) -> APIRouter:
         enabled = body.enabled if body.enabled is not None else bool(factor and factor > 1)
         try:
             return controller.set_averaging(enabled, factor)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.post("/scpi")
+    async def execute_scpi(body: ScpiBody):
+        try:
+            return controller.execute_scpi(body.command)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     

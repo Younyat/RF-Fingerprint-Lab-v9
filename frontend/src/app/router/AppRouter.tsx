@@ -4,6 +4,7 @@ import { WaterfallView } from '../../presentation/views/WaterfallView';
 import { RecordingsView } from '../../presentation/views/RecordingsView';
 import { SettingsView } from '../../presentation/views/SettingsView';
 import { AppLayout } from '../../presentation/views/AppLayout';
+import { DemodulationView } from '../../presentation/views/DemodulationView';
 
 export const router = createBrowserRouter([
   {
@@ -25,6 +26,10 @@ export const router = createBrowserRouter([
       {
         path: 'recordings',
         element: <RecordingsView />,
+      },
+      {
+        path: 'demodulation',
+        element: <DemodulationView />,
       },
       {
         path: 'settings',

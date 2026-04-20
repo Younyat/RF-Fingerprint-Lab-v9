@@ -27,6 +27,11 @@ The active API does not generate mock spectrum data. If the device cannot be ope
   - Serves live spectrum data
   - Updates center frequency, span, start/stop, RBW, VBW, reference level, detector mode, and averaging
 
+- `app/infrastructure/web/controllers/demodulation_controller.py`
+  - Captures the RF band selected by M1 and M2
+  - Runs marker-band AM/FM/WFM audio demodulation
+  - Stores demodulation metadata and WAV output for dashboard playback/export
+
 - `app/infrastructure/sdr/real_spectrum_stream.py`
   - Manages the persistent spectrum worker process
   - Restarts the worker when tuning parameters change
@@ -79,8 +84,35 @@ cd backend
 - `POST /api/spectrum/noise-floor-offset`
 - `POST /api/spectrum/detector-mode`
 - `POST /api/spectrum/averaging`
+- `POST /api/spectrum/scpi`
+- `POST /api/demodulation/marker-band`
+- `GET /api/demodulation/results`
+- `GET /api/demodulation/results/{id}`
+- `GET /api/demodulation/audio/{id}`
 
 OpenAPI docs are available at `http://localhost:8000/docs` when the backend is running.
+
+## Marker-Band Demodulation
+
+`POST /api/demodulation/marker-band` captures real IQ from the USRP-B200 between the two frequencies supplied by the frontend, normally M1 and M2.
+
+Example body:
+
+```json
+{
+  "start_frequency_hz": 89320000,
+  "stop_frequency_hz": 89450000,
+  "mode": "fm",
+  "duration_seconds": 5
+}
+```
+
+Supported modes:
+
+- `am`, `fm`, `wfm`: capture IQ, generate WAV audio, expose `/api/demodulation/audio/{id}`
+- `ask`, `fsk`, `psk`, `ook`: capture IQ and metadata for digital analysis/export
+
+The backend applies the same RF safety checks used by spectrum tuning before opening the USRP-B200.
 
 ## Runtime Configuration
 
@@ -113,6 +145,21 @@ GET /api/spectrum/safety-limits
 ```
 
 These checks reduce accidental misconfiguration. They do not replace RF input protection; avoid injecting high-power signals directly into the USRP-B200 input.
+
+## SCPI-Style Commands
+
+Basic external-control commands are accepted through `POST /api/spectrum/scpi` with a JSON body:
+
+```json
+{ "command": "SENS:FREQ:CENT 89.4MHz" }
+```
+
+Supported commands:
+
+- `SENS:FREQ:CENT <value>[Hz|kHz|MHz|GHz]`
+- `SENS:FREQ:SPAN <value>[Hz|kHz|MHz|GHz]`
+- `DISP:TRAC:Y:RLEV <value>[dB|dBm]`
+- `DISP:TRAC:Y:SCAL:PDIV <value>dB`
 
 ## Troubleshooting
 

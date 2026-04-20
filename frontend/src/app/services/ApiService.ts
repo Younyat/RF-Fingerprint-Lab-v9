@@ -8,6 +8,7 @@ import {
   Recording,
   Session,
   Preset,
+  DemodulationResult,
 } from '../../shared/types';
 import { API_ENDPOINTS } from '../../shared/constants';
 
@@ -67,6 +68,9 @@ const toPreset = (data: any): Preset => ({
     referenceLevel: 10,
     noiseFloorOffset: 0,
     detectorMode: 'sample',
+    traceMode: 'clear_write',
+    dbPerDiv: 10,
+    colorScheme: 'blue',
     averaging: 1,
     smoothing: 0,
   },
@@ -228,6 +232,30 @@ export class ApiService {
   async getDemodulationAudioStatus(): Promise<{ is_active: boolean; mode: string }> {
     const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.DEMODULATION_AUDIO_STATUS}`);
     return response.data;
+  }
+
+  async demodulateMarkerBand(request: {
+    startFrequencyHz: number;
+    stopFrequencyHz: number;
+    mode: string;
+    durationSeconds: number;
+  }): Promise<DemodulationResult> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.DEMODULATION_MARKER_BAND}`, {
+      start_frequency_hz: request.startFrequencyHz,
+      stop_frequency_hz: request.stopFrequencyHz,
+      mode: request.mode,
+      duration_seconds: request.durationSeconds,
+    });
+    return response.data;
+  }
+
+  async getDemodulationResults(): Promise<DemodulationResult[]> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.DEMODULATION_RESULTS}`);
+    return Array.isArray(response.data) ? response.data : response.data.results ?? [];
+  }
+
+  getDemodulationAudioUrl(id: string): string {
+    return `${this.baseURL}${API_ENDPOINTS.DEMODULATION_AUDIO(id)}`;
   }
 
   // Preset endpoints

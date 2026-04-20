@@ -1,6 +1,6 @@
 import React from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
-import { Activity, BarChart3, Settings, Radio } from 'lucide-react';
+import { Activity, BarChart3, Settings, Radio, Waves } from 'lucide-react';
 import { useAppActions, useUiState } from '../../app/store/AppStore';
 import { cn } from '../../shared/utils';
 
@@ -8,6 +8,7 @@ const navigation = [
   { name: 'Spectrum', href: '/', icon: Activity },
   { name: 'Waterfall', href: '/waterfall', icon: BarChart3 },
   { name: 'Recordings', href: '/recordings', icon: Radio },
+  { name: 'Demodulation', href: '/demodulation', icon: Waves },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
 

@@ -62,6 +62,7 @@ URLs:
    - `Gain`
 6. Click the spectrum trace to add a marker.
 7. Use `Peak` to place a marker at the strongest current bin.
+8. Open `Demodulation` to process the RF band between M1 and M2.
 
 ## Backend Configuration
 
@@ -97,6 +98,23 @@ GET /api/spectrum/safety-limits
 
 These limits prevent accidental invalid settings from reaching UHD. They cannot protect the RF input from excessive external signal power; use attenuators or RF protection when needed.
 
+## Analyzer UI Additions
+
+The spectrum view includes professional analyzer controls and measurements:
+
+- Reference level and dB/div scale
+- Noise/level offset
+- Detector modes: Sample, RMS, Average, Peak, Max Hold, Min Hold, Video
+- Trace modes: Clear/Write, Average, Max Hold, Min Hold, Video Average
+- Local peak detection
+- Delta measurement between the first two markers
+- Marker dragging on the graph
+- Crosshair readout
+- Mouse-wheel span zoom
+- CSV and PNG export
+- Marker-band AM/FM/WFM demodulation with WAV playback/export
+- Marker-band ASK/FSK/PSK/OOK IQ capture for digital analysis
+
 ## API Endpoints
 
 ### Device
@@ -121,6 +139,7 @@ These limits prevent accidental invalid settings from reaching UHD. They cannot 
 - `POST /api/spectrum/noise-floor-offset`
 - `POST /api/spectrum/detector-mode`
 - `POST /api/spectrum/averaging`
+- `POST /api/spectrum/scpi`
 
 ### Markers And Captures
 
@@ -130,6 +149,15 @@ These limits prevent accidental invalid settings from reaching UHD. They cannot 
 - `GET /api/recordings/`
 - `POST /api/recordings/start`
 - `POST /api/recordings/stop`
+
+### Demodulation
+
+- `POST /api/demodulation/marker-band`
+- `GET /api/demodulation/results`
+- `GET /api/demodulation/results/{id}`
+- `GET /api/demodulation/audio/{id}`
+
+The demodulation endpoint uses M1/M2-style start and stop frequencies. `AM`, `FM`, and `WFM` produce WAV audio for playback/export. `ASK`, `FSK`, `PSK`, and `OOK` currently produce IQ and metadata for later digital analysis.
 
 ## Project Structure
 

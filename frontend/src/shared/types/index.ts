@@ -40,7 +40,10 @@ export interface AnalyzerSettings {
   vbw: number;
   referenceLevel: number;
   noiseFloorOffset: number;
-  detectorMode: 'sample' | 'average' | 'peak' | 'min_hold';
+  detectorMode: 'sample' | 'rms' | 'average' | 'peak' | 'min_hold' | 'max_hold' | 'video';
+  traceMode: 'clear_write' | 'average' | 'max_hold' | 'min_hold' | 'video_average';
+  dbPerDiv: number;
+  colorScheme: 'blue' | 'green' | 'amber' | 'magenta';
   averaging: number;
   smoothing: number;
 }
@@ -53,6 +56,25 @@ export interface Recording {
   filePath: string;
   size: number;
   type: 'iq' | 'audio';
+}
+
+export interface DemodulationResult {
+  id: string;
+  status: string;
+  mode: string;
+  start_frequency_hz: number;
+  stop_frequency_hz: number;
+  center_frequency_hz: number;
+  bandwidth_hz: number;
+  duration_seconds: number;
+  sample_rate_hz: number;
+  audio_supported: boolean;
+  audio_file?: string | null;
+  audio_url?: string | null;
+  iq_file?: string;
+  metadata_file?: string;
+  metadata_url?: string;
+  notes?: string[];
 }
 
 export interface Session {
@@ -95,20 +117,3 @@ export interface UiState {
   activeTab: 'spectrum' | 'waterfall' | 'recordings' | 'settings';
 }
 
-// Event Types
-export interface SpectrumUpdateEvent {
-  type: 'spectrum_update';
-  data: SpectrumData;
-}
-
-export interface WaterfallUpdateEvent {
-  type: 'waterfall_update';
-  data: WaterfallData;
-}
-
-export interface DeviceStatusEvent {
-  type: 'device_status';
-  data: DeviceStatus;
-}
-
-export type AppEvent = SpectrumUpdateEvent | WaterfallUpdateEvent | DeviceStatusEvent;

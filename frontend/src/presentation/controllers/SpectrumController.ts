@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { useAppActions } from '../../app/store/AppStore';
 import { ApiService } from '../../app/services/ApiService';
+import type { AnalyzerSettings } from '../../shared/types';
 
 const apiService = new ApiService();
 
@@ -84,7 +85,7 @@ export const useSpectrumController = () => {
     actions.updateAnalyzerSettings({ noiseFloorOffset: offset });
   }, [actions]);
 
-  const setDetectorMode = useCallback(async (mode: 'sample' | 'average' | 'peak' | 'min_hold') => {
+  const setDetectorMode = useCallback(async (mode: AnalyzerSettings['detectorMode']) => {
     await apiService.setSpectrumDetectorMode(mode);
     actions.updateAnalyzerSettings({ detectorMode: mode });
   }, [actions]);
@@ -97,6 +98,10 @@ export const useSpectrumController = () => {
   const refreshSpectrum = useCallback(async () => {
     const spectrumData = await apiService.getLiveSpectrum();
     actions.setSpectrumData(spectrumData);
+  }, [actions]);
+
+  const setTraceDisplay = useCallback((settings: Pick<AnalyzerSettings, 'traceMode' | 'dbPerDiv' | 'colorScheme'>) => {
+    actions.updateAnalyzerSettings(settings);
   }, [actions]);
 
   return {
@@ -116,6 +121,7 @@ export const useSpectrumController = () => {
     setNoiseFloorOffset,
     setDetectorMode,
     setAveraging,
+    setTraceDisplay,
     refreshSpectrum,
   };
 };
