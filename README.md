@@ -14,7 +14,6 @@ The application is built with a FastAPI backend and a React/TypeScript frontend.
 - Default sample rate/span: `2 MS/s`
 - Default gain: `20 dB`
 
-There is no mock signal in the active application flow. If the hardware or RadioConda path is unavailable, the backend returns an explicit real SDR error instead of generating fake spectrum data.
 
 ## Features
 
@@ -126,8 +125,4 @@ spectrum-lab/
     init_project.sh
 ```
 
-## Notes
 
-- The active backend path is `uhd_gnuradio`.
-- The old mock adapter files may still exist in the codebase as legacy scaffolding, but they are not used by the active development flow.
-- Docker is not the recommended path for local USRP-B200 USB access on Windows. Use the PowerShell runner with RadioConda.
