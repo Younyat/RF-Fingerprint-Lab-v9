@@ -10,6 +10,7 @@ from app.infrastructure.di.container import ApplicationContainer
 from app.infrastructure.web.api.routes.demodulation_routes import build_demodulation_router
 from app.infrastructure.web.api.routes.device_routes import build_device_router
 from app.infrastructure.web.api.routes.marker_routes import build_marker_router
+from app.infrastructure.web.api.routes.modulated_signal_routes import build_modulated_signal_router
 from app.infrastructure.web.api.routes.preset_routes import build_preset_router
 from app.infrastructure.web.api.routes.recording_routes import build_recording_router
 from app.infrastructure.web.api.routes.session_routes import build_session_router
@@ -42,6 +43,7 @@ app.include_router(build_spectrum_router(container.spectrum_controller), prefix=
 app.include_router(build_marker_router(container.marker_controller), prefix=settings.api.base_path)
 app.include_router(build_recording_router(container.recording_controller), prefix=settings.api.base_path)
 app.include_router(build_demodulation_router(container.demodulation_controller), prefix=settings.api.base_path)
+app.include_router(build_modulated_signal_router(container.modulated_signal_controller), prefix=settings.api.base_path)
 app.include_router(build_preset_router(container.preset_controller), prefix=settings.api.base_path)
 app.include_router(
     build_session_router(

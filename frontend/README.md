@@ -24,6 +24,8 @@ The frontend controls the FastAPI backend and displays live RF spectrum frames c
 - AM/FM/WFM audio playback from demodulated real captures
 - WAV export for analog demodulation results
 - ASK/FSK/PSK/OOK marker-band capture controls
+- Signal Analysis tab for marker-limited IQ capture
+- Persistent IQ/metadata capture list with separate downloads
 - Peak marker button
 - Auto peaks button
 - Trace statistics panel
@@ -89,6 +91,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1 -UseRealSdr 1 -Ra
 6. Use `Peak` to mark the strongest visible signal.
 7. Create M1 and M2 around the signal of interest.
 8. Open `Demodulation`, select the mode, and click `Apply Demodulation`.
+9. Open `Signal Analysis` to capture the selected band as IQ plus metadata.
 
 ## Demodulation Workflow
 
@@ -97,6 +100,17 @@ The frontend sends the first two markers as the selected RF band. The backend ca
 - `AM`, `FM`, and `WFM` results include an audio player and WAV download button.
 - `ASK`, `FSK`, `PSK`, and `OOK` results expose IQ/metadata capture output for digital analysis.
 - If fewer than two markers exist, the demodulation button stays disabled because the RF band is not defined.
+
+## Signal Analysis Workflow
+
+The `Signal Analysis` page uses M1 and M2 as RF limits and creates dataset-style captures:
+
+- raw `.cfile` complex64 IQ samples
+- `.json` metadata with frequency, bandwidth, sample rate, gain, antenna, label, modulation hint, SHA256, and replay parameters
+- persistent listing of all generated files found on disk
+- download buttons for IQ and metadata
+
+Use `Label`, `Modulation hint`, and `Notes` to make captures useful for offline replay workflows and AI model training datasets.
 
 ## Safety Feedback
 

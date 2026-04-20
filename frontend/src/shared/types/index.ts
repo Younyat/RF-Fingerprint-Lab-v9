@@ -77,6 +77,45 @@ export interface DemodulationResult {
   notes?: string[];
 }
 
+export interface ModulatedSignalCapture {
+  id: string;
+  generated_at_utc: string;
+  capture_type: string;
+  source_device: string;
+  driver: string;
+  label?: string;
+  modulation_hint?: string;
+  notes?: string;
+  start_frequency_hz: number;
+  stop_frequency_hz: number;
+  center_frequency_hz: number;
+  bandwidth_hz: number;
+  duration_seconds: number;
+  sample_rate_hz: number;
+  sample_count: number;
+  gain_db: number;
+  antenna: string;
+  device_addr: string;
+  channel_index: number;
+  iq_file: string;
+  metadata_file: string;
+  iq_format: string;
+  iq_dtype: string;
+  byte_order: string;
+  file_size_bytes: number;
+  sha256: string;
+  iq_url?: string;
+  metadata_url?: string;
+  replay_parameters?: {
+    center_frequency_hz: number;
+    sample_rate_hz: number;
+    gain_db: number;
+    antenna: string;
+    iq_format: string;
+  };
+  ai_dataset_fields?: string[];
+}
+
 export interface Session {
   id: string;
   name: string;

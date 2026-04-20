@@ -25,6 +25,8 @@ The application is built with a FastAPI backend and a React/TypeScript frontend.
 - Marker-band demodulation using M1 and M2 as RF limits
 - AM/FM/WFM demodulation with WAV audio playback and export from the dashboard
 - ASK/FSK/PSK/OOK marker-band IQ capture with metadata export for digital analysis
+- Modulated signal analysis tab for marker-limited IQ dataset capture
+- Persistent IQ/metadata capture library for replay workflows and AI model training datasets
 - Automatic local peak markers
 - Marker dragging directly on the spectrum canvas
 - Peak marker detection
@@ -85,6 +87,7 @@ Then open:
 7. Use `Spectrum Left` and `Spectrum Right` to move across the band.
 8. Click the spectrum to add markers with frequency and signal level.
 9. Open `Demodulation` to demodulate or capture the RF band between M1 and M2.
+10. Open `Signal Analysis` to capture the marker-limited signal as IQ plus metadata.
 
 ## Marker-Band Demodulation
 
@@ -99,6 +102,21 @@ The `Demodulation` tab uses the first two spectrum markers as the selected RF ba
 For `AM`, `FM`, and `WFM`, the backend captures real IQ from the USRP-B200, demodulates it, generates a WAV file, and exposes it for playback/download in the dashboard.
 
 For `ASK`, `FSK`, `PSK`, and `OOK`, the backend captures the marker-limited IQ plus metadata for later digital analysis/export. These modes do not currently generate dashboard audio.
+
+## Modulated Signal Analysis Captures
+
+The `Signal Analysis` tab is for dataset-style IQ capture, not audio demodulation. It uses M1 and M2 as the capture limits and creates:
+
+- `.cfile`: raw complex64 IQ samples
+- `.json`: metadata with center, start/stop, bandwidth, sample rate, gain, antenna, format, SHA256, label, modulation hint, and replay parameters
+
+Generated files are stored under:
+
+```text
+backend/app/infrastructure/persistence/storage/recordings/modulated_signal_captures/
+```
+
+The UI always lists the files found in that directory and provides separate downloads for IQ and metadata.
 
 ## Important Environment Variables
 

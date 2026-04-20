@@ -63,6 +63,7 @@ URLs:
 6. Click the spectrum trace to add a marker.
 7. Use `Peak` to place a marker at the strongest current bin.
 8. Open `Demodulation` to process the RF band between M1 and M2.
+9. Open `Signal Analysis` to capture the RF band between M1 and M2 as IQ plus metadata.
 
 ## Backend Configuration
 
@@ -114,6 +115,7 @@ The spectrum view includes professional analyzer controls and measurements:
 - CSV and PNG export
 - Marker-band AM/FM/WFM demodulation with WAV playback/export
 - Marker-band ASK/FSK/PSK/OOK IQ capture for digital analysis
+- Marker-band IQ capture library for modulated-signal analysis, replay workflows, and AI datasets
 
 ## API Endpoints
 
@@ -158,6 +160,20 @@ The spectrum view includes professional analyzer controls and measurements:
 - `GET /api/demodulation/audio/{id}`
 
 The demodulation endpoint uses M1/M2-style start and stop frequencies. `AM`, `FM`, and `WFM` produce WAV audio for playback/export. `ASK`, `FSK`, `PSK`, and `OOK` currently produce IQ and metadata for later digital analysis.
+
+### Modulated Signal Analysis Captures
+
+- `POST /api/modulated-signals/captures`
+- `GET /api/modulated-signals/captures`
+- `GET /api/modulated-signals/captures/{id}`
+- `GET /api/modulated-signals/captures/{id}/iq`
+- `GET /api/modulated-signals/captures/{id}/metadata`
+
+These endpoints capture and list `.cfile` IQ files plus `.json` metadata from:
+
+```text
+backend/app/infrastructure/persistence/storage/recordings/modulated_signal_captures/
+```
 
 ## Project Structure
 

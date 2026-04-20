@@ -81,6 +81,19 @@ export const DEMODULATION_MODES = [
   { value: 'ook', label: 'OOK' },
 ] as const;
 
+export const MODULATION_HINTS = [
+  { value: 'unknown', label: 'Unknown' },
+  { value: 'am', label: 'AM' },
+  { value: 'fm', label: 'FM' },
+  { value: 'wfm', label: 'WFM' },
+  { value: 'ask', label: 'ASK' },
+  { value: 'fsk', label: 'FSK' },
+  { value: 'psk', label: 'PSK' },
+  { value: 'ook', label: 'OOK' },
+  { value: 'ofdm', label: 'OFDM' },
+  { value: 'lora', label: 'LoRa' },
+] as const;
+
 // Recording Formats
 export const RECORDING_FORMATS = [
   { value: 'iq', label: 'IQ Data' },
@@ -158,6 +171,12 @@ export const API_ENDPOINTS = {
   DEMODULATION_MARKER_BAND: '/api/demodulation/marker-band',
   DEMODULATION_RESULTS: '/api/demodulation/results',
   DEMODULATION_AUDIO: (id: string) => `/api/demodulation/audio/${id}`,
+
+  // Modulated signal analysis captures
+  MODULATED_SIGNAL_CAPTURES: '/api/modulated-signals/captures',
+  MODULATED_SIGNAL_CAPTURE: (id: string) => `/api/modulated-signals/captures/${id}`,
+  MODULATED_SIGNAL_IQ: (id: string) => `/api/modulated-signals/captures/${id}/iq`,
+  MODULATED_SIGNAL_METADATA: (id: string) => `/api/modulated-signals/captures/${id}/metadata`,
 
   // Presets
   PRESETS_LIST: '/api/presets/',

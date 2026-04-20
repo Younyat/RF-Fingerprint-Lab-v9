@@ -32,6 +32,11 @@ The active API does not generate mock spectrum data. If the device cannot be ope
   - Runs marker-band AM/FM/WFM audio demodulation
   - Stores demodulation metadata and WAV output for dashboard playback/export
 
+- `app/infrastructure/web/controllers/modulated_signal_controller.py`
+  - Captures marker-limited IQ files for modulated-signal analysis
+  - Persists metadata for replay workflows and AI datasets
+  - Lists and serves generated IQ/metadata files from disk
+
 - `app/infrastructure/sdr/real_spectrum_stream.py`
   - Manages the persistent spectrum worker process
   - Restarts the worker when tuning parameters change
@@ -89,6 +94,11 @@ cd backend
 - `GET /api/demodulation/results`
 - `GET /api/demodulation/results/{id}`
 - `GET /api/demodulation/audio/{id}`
+- `POST /api/modulated-signals/captures`
+- `GET /api/modulated-signals/captures`
+- `GET /api/modulated-signals/captures/{id}`
+- `GET /api/modulated-signals/captures/{id}/iq`
+- `GET /api/modulated-signals/captures/{id}/metadata`
 
 OpenAPI docs are available at `http://localhost:8000/docs` when the backend is running.
 
@@ -113,6 +123,31 @@ Supported modes:
 - `ask`, `fsk`, `psk`, `ook`: capture IQ and metadata for digital analysis/export
 
 The backend applies the same RF safety checks used by spectrum tuning before opening the USRP-B200.
+
+## Modulated Signal IQ Captures
+
+`POST /api/modulated-signals/captures` captures the RF band between M1 and M2 as raw complex64 IQ plus JSON metadata.
+
+Example body:
+
+```json
+{
+  "start_frequency_hz": 89320000,
+  "stop_frequency_hz": 89500000,
+  "duration_seconds": 5,
+  "label": "device_01_signal_a",
+  "modulation_hint": "fsk",
+  "notes": "Capture for offline analysis and AI dataset generation"
+}
+```
+
+Files are stored in:
+
+```text
+backend/app/infrastructure/persistence/storage/recordings/modulated_signal_captures/
+```
+
+Each metadata file includes capture identity, frequency limits, center frequency, bandwidth, sample rate, gain, antenna, IQ format, sample count, file size, SHA256, label, modulation hint, notes, and replay parameters.
 
 ## Runtime Configuration
 

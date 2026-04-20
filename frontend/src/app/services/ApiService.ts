@@ -9,6 +9,7 @@ import {
   Session,
   Preset,
   DemodulationResult,
+  ModulatedSignalCapture,
 } from '../../shared/types';
 import { API_ENDPOINTS } from '../../shared/constants';
 
@@ -256,6 +257,39 @@ export class ApiService {
 
   getDemodulationAudioUrl(id: string): string {
     return `${this.baseURL}${API_ENDPOINTS.DEMODULATION_AUDIO(id)}`;
+  }
+
+  // Modulated signal analysis capture endpoints
+  async captureModulatedSignal(request: {
+    startFrequencyHz: number;
+    stopFrequencyHz: number;
+    durationSeconds: number;
+    label: string;
+    modulationHint: string;
+    notes: string;
+  }): Promise<ModulatedSignalCapture> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.MODULATED_SIGNAL_CAPTURES}`, {
+      start_frequency_hz: request.startFrequencyHz,
+      stop_frequency_hz: request.stopFrequencyHz,
+      duration_seconds: request.durationSeconds,
+      label: request.label,
+      modulation_hint: request.modulationHint,
+      notes: request.notes,
+    });
+    return response.data;
+  }
+
+  async getModulatedSignalCaptures(): Promise<ModulatedSignalCapture[]> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.MODULATED_SIGNAL_CAPTURES}`);
+    return Array.isArray(response.data) ? response.data : response.data.captures ?? [];
+  }
+
+  getModulatedSignalIqUrl(id: string): string {
+    return `${this.baseURL}${API_ENDPOINTS.MODULATED_SIGNAL_IQ(id)}`;
+  }
+
+  getModulatedSignalMetadataUrl(id: string): string {
+    return `${this.baseURL}${API_ENDPOINTS.MODULATED_SIGNAL_METADATA(id)}`;
   }
 
   // Preset endpoints

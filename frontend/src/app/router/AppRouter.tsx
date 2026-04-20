@@ -5,6 +5,7 @@ import { RecordingsView } from '../../presentation/views/RecordingsView';
 import { SettingsView } from '../../presentation/views/SettingsView';
 import { AppLayout } from '../../presentation/views/AppLayout';
 import { DemodulationView } from '../../presentation/views/DemodulationView';
+import { ModulatedSignalAnalysisView } from '../../presentation/views/ModulatedSignalAnalysisView';
 
 export const router = createBrowserRouter([
   {
@@ -30,6 +31,10 @@ export const router = createBrowserRouter([
       {
         path: 'demodulation',
         element: <DemodulationView />,
+      },
+      {
+        path: 'modulated-analysis',
+        element: <ModulatedSignalAnalysisView />,
       },
       {
         path: 'settings',

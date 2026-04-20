@@ -44,6 +44,7 @@ from app.infrastructure.persistence.repositories.json_session_repository import 
 from app.infrastructure.web.controllers.demodulation_controller import DemodulationController
 from app.infrastructure.web.controllers.device_controller import DeviceController
 from app.infrastructure.web.controllers.marker_controller import MarkerController
+from app.infrastructure.web.controllers.modulated_signal_controller import ModulatedSignalController
 from app.infrastructure.web.controllers.preset_controller import PresetController
 from app.infrastructure.web.controllers.recording_controller import RecordingController
 from app.infrastructure.web.controllers.spectrum_controller import SpectrumController
@@ -144,6 +145,7 @@ class ApplicationContainer:
     marker_controller: MarkerController
     recording_controller: RecordingController
     demodulation_controller: DemodulationController
+    modulated_signal_controller: ModulatedSignalController
     preset_controller: PresetController
 
     create_session_use_case: CreateSessionUseCase
@@ -276,6 +278,7 @@ class ApplicationContainer:
             get_audio_status_use_case=get_audio_status_use_case,
             settings=analyzer_settings,
         )
+        modulated_signal_controller = ModulatedSignalController(settings=analyzer_settings)
 
         preset_controller = PresetController(
             save_preset_use_case=save_preset_use_case,
@@ -291,6 +294,7 @@ class ApplicationContainer:
             marker_controller=marker_controller,
             recording_controller=recording_controller,
             demodulation_controller=demodulation_controller,
+            modulated_signal_controller=modulated_signal_controller,
             preset_controller=preset_controller,
             create_session_use_case=create_session_use_case,
         )
