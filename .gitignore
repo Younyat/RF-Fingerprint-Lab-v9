@@ -18,3 +18,9 @@ backend/venv/
 */myenv/
 */virtualenv/
 */.virtualenv/
+
+
+# RF capture storage
+spectrum-lab/backend/app/infrastructure/persistence/storage/recordings/modulated_signal_captures/*
+spectrum-lab/backend/app/infrastructure/persistence/storage/recordings/modulated_signal_iq_captures/*
+!.gitkeep
