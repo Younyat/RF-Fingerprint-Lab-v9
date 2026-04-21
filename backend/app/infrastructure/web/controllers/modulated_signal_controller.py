@@ -19,8 +19,10 @@ from app.infrastructure.sdr.rf_safety import (
 class ModulatedSignalController:
     def __init__(self, settings) -> None:
         self._settings = settings
-        self._output_dir = app_settings.storage.recordings_dir / "modulated_signal_captures"
-        self._output_dir.mkdir(parents=True, exist_ok=True)
+        self._cfile_output_dir = app_settings.storage.recordings_dir / "modulated_signal_captures"
+        self._iq_output_dir = app_settings.storage.recordings_dir / "modulated_signal_iq_captures"
+        self._cfile_output_dir.mkdir(parents=True, exist_ok=True)
+        self._iq_output_dir.mkdir(parents=True, exist_ok=True)
 
     def capture_marker_band(
         self,
@@ -30,7 +32,11 @@ class ModulatedSignalController:
         label: str = "",
         modulation_hint: str = "unknown",
         notes: str = "",
+        file_format: str = "cfile",
     ) -> dict:
+        file_format = file_format.lower()
+        if file_format not in {"cfile", "iq"}:
+            raise ValueError("file_format must be cfile or iq")
         if duration_seconds <= 0 or duration_seconds > 120:
             raise ValueError("duration_seconds must be between 0 and 120")
 
@@ -50,7 +56,8 @@ class ModulatedSignalController:
         backend_root = app_settings.storage.app_root.parent
         script_path = backend_root / "tools" / "capture_marker_band_iq.py"
         python_exe = os.environ.get("RADIOCONDA_PYTHON", r"C:\Users\Usuario\radioconda\python.exe")
-        base_name = f"iq_{capture_id}_{center_frequency_hz / 1e6:.6f}MHz_{bandwidth_hz / 1e3:.1f}kHz"
+        output_dir = self._iq_output_dir if file_format == "iq" else self._cfile_output_dir
+        base_name = f"{file_format}_{capture_id}_{center_frequency_hz / 1e6:.6f}MHz_{bandwidth_hz / 1e3:.1f}kHz"
 
         command = [
             python_exe,
@@ -72,9 +79,11 @@ class ModulatedSignalController:
             "--device-addr",
             app_settings.default_device.device_args,
             "--output-dir",
-            str(self._output_dir),
+            str(output_dir),
             "--base-name",
             base_name,
+            "--file-format",
+            file_format,
             "--label",
             label,
             "--modulation-hint",
@@ -119,7 +128,8 @@ class ModulatedSignalController:
 
     def list_captures(self) -> list[dict]:
         captures = []
-        for path in sorted(self._output_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+        metadata_paths = list(self._cfile_output_dir.glob("*.json")) + list(self._iq_output_dir.glob("*.json"))
+        for path in sorted(metadata_paths, key=lambda item: item.stat().st_mtime, reverse=True):
             try:
                 with path.open("r", encoding="utf-8") as file:
                     captures.append(self._with_urls(json.load(file)))

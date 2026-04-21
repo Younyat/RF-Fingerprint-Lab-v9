@@ -267,6 +267,7 @@ export class ApiService {
     label: string;
     modulationHint: string;
     notes: string;
+    fileFormat: 'cfile' | 'iq';
   }): Promise<ModulatedSignalCapture> {
     const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.MODULATED_SIGNAL_CAPTURES}`, {
       start_frequency_hz: request.startFrequencyHz,
@@ -275,6 +276,7 @@ export class ApiService {
       label: request.label,
       modulation_hint: request.modulationHint,
       notes: request.notes,
+      file_format: request.fileFormat,
     });
     return response.data;
   }

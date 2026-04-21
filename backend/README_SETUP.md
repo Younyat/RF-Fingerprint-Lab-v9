@@ -115,7 +115,7 @@ The spectrum view includes professional analyzer controls and measurements:
 - CSV and PNG export
 - Marker-band AM/FM/WFM demodulation with WAV playback/export
 - Marker-band ASK/FSK/PSK/OOK IQ capture for digital analysis
-- Marker-band IQ capture library for modulated-signal analysis, replay workflows, and AI datasets
+- Marker-band `.cfile` and `.iq` capture libraries for modulated-signal analysis, replay workflows, and AI datasets
 
 ## API Endpoints
 
@@ -169,10 +169,11 @@ The demodulation endpoint uses M1/M2-style start and stop frequencies. `AM`, `FM
 - `GET /api/modulated-signals/captures/{id}/iq`
 - `GET /api/modulated-signals/captures/{id}/metadata`
 
-These endpoints capture and list `.cfile` IQ files plus `.json` metadata from:
+These endpoints capture and list `.cfile` or `.iq` IQ files plus `.json` metadata from:
 
 ```text
 backend/app/infrastructure/persistence/storage/recordings/modulated_signal_captures/
+backend/app/infrastructure/persistence/storage/recordings/modulated_signal_iq_captures/
 ```
 
 ## Project Structure

@@ -78,6 +78,7 @@ def main() -> None:
     parser.add_argument("--device-addr", type=str, default="")
     parser.add_argument("--output-dir", type=str, required=True)
     parser.add_argument("--base-name", type=str, default=None)
+    parser.add_argument("--file-format", type=str, default="cfile", choices=["cfile", "iq"])
     parser.add_argument("--label", type=str, default="")
     parser.add_argument("--modulation-hint", type=str, default="unknown")
     parser.add_argument("--notes", type=str, default="")
@@ -96,7 +97,8 @@ def main() -> None:
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     base_name = safe_filename(args.base_name or f"iq_{args.capture_id}_{center_freq_hz / 1e6:.6f}MHz")
-    iq_path = output_dir / f"{base_name}.cfile"
+    extension = ".iq" if args.file_format == "iq" else ".cfile"
+    iq_path = output_dir / f"{base_name}{extension}"
     meta_path = output_dir / f"{base_name}.json"
 
     tb = FiniteMarkerBandCapture(
@@ -119,6 +121,7 @@ def main() -> None:
         "id": args.capture_id,
         "generated_at_utc": utc_now_iso(),
         "capture_type": "marker_band_iq",
+        "file_format": args.file_format,
         "source_device": "USRP-B200 from Ettus Research",
         "driver": "uhd_gnuradio",
         "label": args.label,
@@ -138,6 +141,7 @@ def main() -> None:
         "iq_file": str(iq_path),
         "metadata_file": str(meta_path),
         "iq_format": "complex64_fc32_interleaved",
+        "file_extension": extension,
         "iq_dtype": "complex64",
         "byte_order": "native",
         "file_size_bytes": iq_path.stat().st_size,

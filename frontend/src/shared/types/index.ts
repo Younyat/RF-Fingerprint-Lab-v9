@@ -81,6 +81,7 @@ export interface ModulatedSignalCapture {
   id: string;
   generated_at_utc: string;
   capture_type: string;
+  file_format?: 'cfile' | 'iq';
   source_device: string;
   driver: string;
   label?: string;
@@ -100,6 +101,7 @@ export interface ModulatedSignalCapture {
   iq_file: string;
   metadata_file: string;
   iq_format: string;
+  file_extension?: string;
   iq_dtype: string;
   byte_order: string;
   file_size_bytes: number;

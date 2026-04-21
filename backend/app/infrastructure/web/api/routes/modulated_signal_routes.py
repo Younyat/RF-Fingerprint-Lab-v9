@@ -12,6 +12,7 @@ class MarkerBandIqCaptureBody(BaseModel):
     label: str = ""
     modulation_hint: str = "unknown"
     notes: str = ""
+    file_format: str = "cfile"
 
 
 def build_modulated_signal_router(controller) -> APIRouter:
@@ -27,6 +28,7 @@ def build_modulated_signal_router(controller) -> APIRouter:
                 label=body.label,
                 modulation_hint=body.modulation_hint,
                 notes=body.notes,
+                file_format=body.file_format,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

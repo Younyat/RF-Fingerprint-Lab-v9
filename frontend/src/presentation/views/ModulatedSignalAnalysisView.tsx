@@ -27,6 +27,7 @@ const formatBytes = (value: number) => {
 export const ModulatedSignalAnalysisView: React.FC = () => {
   const markers = useMarkers();
   const [durationSeconds, setDurationSeconds] = useState('5');
+  const [fileFormat, setFileFormat] = useState<'cfile' | 'iq'>('cfile');
   const [label, setLabel] = useState('');
   const [modulationHint, setModulationHint] = useState('unknown');
   const [notes, setNotes] = useState('');
@@ -80,6 +81,7 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
         label,
         modulationHint,
         notes,
+        fileFormat,
       });
       setCaptures((current) => [capture, ...current.filter((item) => item.id !== capture.id)]);
     } catch (err) {
@@ -119,7 +121,7 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
               <Info label="Bandwidth" value={selectedBand ? formatFrequency(selectedBand.bandwidth) : 'Not set'} />
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
               <label className="flex flex-col gap-1 text-xs text-slate-400">
                 Label
                 <input
@@ -152,6 +154,18 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
                 />
               </label>
 
+              <label className="flex flex-col gap-1 text-xs text-slate-400">
+                File format
+                <select
+                  value={fileFormat}
+                  onChange={(event) => setFileFormat(event.target.value as 'cfile' | 'iq')}
+                  className="h-9 rounded-md border border-slate-700 bg-slate-950 px-2 text-sm text-slate-100 outline-none focus:border-blue-400"
+                >
+                  <option value="cfile">CFILE</option>
+                  <option value="iq">IQ</option>
+                </select>
+              </label>
+
               <button
                 onClick={captureSignal}
                 disabled={isCapturing || !selectedBand}
@@ -163,7 +177,7 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
                 )}
               >
                 <Play className="w-4 h-4 mr-2" />
-                {isCapturing ? 'Capturing...' : 'Capture IQ'}
+                {isCapturing ? 'Capturing...' : `Capture ${fileFormat.toUpperCase()}`}
               </button>
             </div>
 
@@ -185,6 +199,7 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
             <h3 className="text-sm font-semibold mb-3">Capture Contents</h3>
             <div className="space-y-2 text-sm text-slate-300">
               <p>Each capture creates a raw complex IQ file and a JSON metadata file.</p>
+              <p>Choose `CFILE` for GNU Radio-style complex64 captures or `IQ` when you need a `.iq` extension for external tools and datasets.</p>
               <p>The metadata stores frequency limits, center, bandwidth, sample rate, gain, antenna, format, file hash, replay parameters, label, and modulation hint.</p>
               <p>Use these files later for offline analysis, controlled replay workflows, or AI model training datasets.</p>
             </div>
@@ -194,11 +209,11 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
         <section className="border border-slate-800 bg-slate-900 rounded-md overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-800 flex items-center gap-2">
             <Database className="w-4 h-4" />
-            <h3 className="text-sm font-semibold">Generated IQ Captures</h3>
+            <h3 className="text-sm font-semibold">Generated RF Captures</h3>
           </div>
           <div className="divide-y divide-slate-800">
             {captures.length === 0 ? (
-              <div className="p-4 text-sm text-slate-500">No IQ captures found.</div>
+              <div className="p-4 text-sm text-slate-500">No RF captures found.</div>
             ) : captures.map((capture) => (
               <CaptureRow key={capture.id} capture={capture} />
             ))}
@@ -221,12 +236,13 @@ function Info({ label, value }: { label: string; value: string }) {
 function CaptureRow({ capture }: { capture: ModulatedSignalCapture }) {
   const iqUrl = apiService.getModulatedSignalIqUrl(capture.id);
   const metadataUrl = apiService.getModulatedSignalMetadataUrl(capture.id);
+  const fileFormat = (capture.file_format || (capture.iq_file?.toLowerCase().endsWith('.iq') ? 'iq' : 'cfile')).toUpperCase();
   return (
     <div className="p-4 space-y-3">
       <div className="flex flex-wrap justify-between gap-3">
         <div>
           <div className="text-sm font-semibold">
-            {capture.label || capture.id} | {formatFrequency(capture.center_frequency_hz)} | BW {formatFrequency(capture.bandwidth_hz)}
+            {capture.label || capture.id} | {fileFormat} | {formatFrequency(capture.center_frequency_hz)} | BW {formatFrequency(capture.bandwidth_hz)}
           </div>
           <div className="text-xs text-slate-400">
             {capture.modulation_hint || 'unknown'} | {capture.duration_seconds}s | {formatFrequency(capture.sample_rate_hz)}/s | {formatBytes(capture.file_size_bytes)}
@@ -238,7 +254,7 @@ function CaptureRow({ capture }: { capture: ModulatedSignalCapture }) {
             className="h-9 inline-flex items-center px-3 rounded-md bg-blue-600 hover:bg-blue-500 text-sm font-medium"
           >
             <Download className="w-4 h-4 mr-2" />
-            IQ
+            {fileFormat}
           </a>
           <a
             href={metadataUrl}
@@ -255,7 +271,7 @@ function CaptureRow({ capture }: { capture: ModulatedSignalCapture }) {
         <div>Stop: {formatFrequency(capture.stop_frequency_hz)}</div>
         <div>Gain: {capture.gain_db.toFixed(1)} dB</div>
         <div>Antenna: {capture.antenna}</div>
-        <div>Format: {capture.iq_format}</div>
+        <div>Format: {capture.iq_format}{capture.file_extension ? ` ${capture.file_extension}` : ''}</div>
         <div>SHA256: {capture.sha256.slice(0, 16)}...</div>
       </div>
 

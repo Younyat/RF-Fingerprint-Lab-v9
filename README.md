@@ -26,7 +26,7 @@ The application is built with a FastAPI backend and a React/TypeScript frontend.
 - AM/FM/WFM demodulation with WAV audio playback and export from the dashboard
 - ASK/FSK/PSK/OOK marker-band IQ capture with metadata export for digital analysis
 - Modulated signal analysis tab for marker-limited IQ dataset capture
-- Persistent IQ/metadata capture library for replay workflows and AI model training datasets
+- Persistent `.cfile` and `.iq` capture libraries for replay workflows and AI model training datasets
 - Automatic local peak markers
 - Marker dragging directly on the spectrum canvas
 - Peak marker detection
@@ -107,16 +107,17 @@ For `ASK`, `FSK`, `PSK`, and `OOK`, the backend captures the marker-limited IQ p
 
 The `Signal Analysis` tab is for dataset-style IQ capture, not audio demodulation. It uses M1 and M2 as the capture limits and creates:
 
-- `.cfile`: raw complex64 IQ samples
+- `.cfile` or `.iq`: raw complex64 IQ samples, selected by the user
 - `.json`: metadata with center, start/stop, bandwidth, sample rate, gain, antenna, format, SHA256, label, modulation hint, and replay parameters
 
 Generated files are stored under:
 
 ```text
 backend/app/infrastructure/persistence/storage/recordings/modulated_signal_captures/
+backend/app/infrastructure/persistence/storage/recordings/modulated_signal_iq_captures/
 ```
 
-The UI always lists the files found in that directory and provides separate downloads for IQ and metadata.
+The UI always lists the files found in both directories and provides separate downloads for the RF data file and metadata.
 
 ## Important Environment Variables
 

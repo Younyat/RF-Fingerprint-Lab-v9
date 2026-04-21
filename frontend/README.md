@@ -25,7 +25,7 @@ The frontend controls the FastAPI backend and displays live RF spectrum frames c
 - WAV export for analog demodulation results
 - ASK/FSK/PSK/OOK marker-band capture controls
 - Signal Analysis tab for marker-limited IQ capture
-- Persistent IQ/metadata capture list with separate downloads
+- Persistent `.cfile` and `.iq` metadata capture list with separate downloads
 - Peak marker button
 - Auto peaks button
 - Trace statistics panel
@@ -105,10 +105,10 @@ The frontend sends the first two markers as the selected RF band. The backend ca
 
 The `Signal Analysis` page uses M1 and M2 as RF limits and creates dataset-style captures:
 
-- raw `.cfile` complex64 IQ samples
+- raw `.cfile` or `.iq` complex64 IQ samples, selected by the user
 - `.json` metadata with frequency, bandwidth, sample rate, gain, antenna, label, modulation hint, SHA256, and replay parameters
 - persistent listing of all generated files found on disk
-- download buttons for IQ and metadata
+- download buttons for the selected RF data file and metadata
 
 Use `Label`, `Modulation hint`, and `Notes` to make captures useful for offline replay workflows and AI model training datasets.
 

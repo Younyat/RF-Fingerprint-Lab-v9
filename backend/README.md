@@ -33,7 +33,7 @@ The active API does not generate mock spectrum data. If the device cannot be ope
   - Stores demodulation metadata and WAV output for dashboard playback/export
 
 - `app/infrastructure/web/controllers/modulated_signal_controller.py`
-  - Captures marker-limited IQ files for modulated-signal analysis
+  - Captures marker-limited `.cfile` or `.iq` files for modulated-signal analysis
   - Persists metadata for replay workflows and AI datasets
   - Lists and serves generated IQ/metadata files from disk
 
@@ -126,7 +126,7 @@ The backend applies the same RF safety checks used by spectrum tuning before ope
 
 ## Modulated Signal IQ Captures
 
-`POST /api/modulated-signals/captures` captures the RF band between M1 and M2 as raw complex64 IQ plus JSON metadata.
+`POST /api/modulated-signals/captures` captures the RF band between M1 and M2 as raw complex64 IQ plus JSON metadata. The request can choose `file_format` as `cfile` or `iq`.
 
 Example body:
 
@@ -135,6 +135,7 @@ Example body:
   "start_frequency_hz": 89320000,
   "stop_frequency_hz": 89500000,
   "duration_seconds": 5,
+  "file_format": "iq",
   "label": "device_01_signal_a",
   "modulation_hint": "fsk",
   "notes": "Capture for offline analysis and AI dataset generation"
@@ -145,9 +146,10 @@ Files are stored in:
 
 ```text
 backend/app/infrastructure/persistence/storage/recordings/modulated_signal_captures/
+backend/app/infrastructure/persistence/storage/recordings/modulated_signal_iq_captures/
 ```
 
-Each metadata file includes capture identity, frequency limits, center frequency, bandwidth, sample rate, gain, antenna, IQ format, sample count, file size, SHA256, label, modulation hint, notes, and replay parameters.
+Each metadata file includes capture identity, selected file format, frequency limits, center frequency, bandwidth, sample rate, gain, antenna, IQ format, sample count, file size, SHA256, label, modulation hint, notes, and replay parameters.
 
 ## Runtime Configuration
 
