@@ -11,6 +11,10 @@ from gnuradio import gr
 from gnuradio import uhd
 
 
+def normalize_device_addr(device_addr: str) -> str:
+    return str(device_addr).strip()
+
+
 class SpectrumSnapshot(gr.top_block):
     def __init__(
         self,
@@ -25,7 +29,7 @@ class SpectrumSnapshot(gr.top_block):
         gr.top_block.__init__(self, "Spectrum Snapshot", catch_exceptions=True)
 
         self.source = uhd.usrp_source(
-            ",".join((device_addr, "")),
+            normalize_device_addr(device_addr),
             uhd.stream_args(cpu_format="fc32", args="", channels=[0]),
         )
         self.source.set_samp_rate(float(sample_rate_hz))

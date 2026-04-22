@@ -7,6 +7,10 @@ import json
 from gnuradio import uhd
 
 
+def normalize_device_addr(device_addr: str) -> str:
+    return str(device_addr).strip()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Probe a UHD/USRP device.")
     parser.add_argument("--device-addr", type=str, default="")
@@ -16,7 +20,7 @@ def main() -> None:
     parser.add_argument("--gain", type=float, default=20.0)
     args = parser.parse_args()
 
-    device_args = ",".join((args.device_addr, ""))
+    device_args = normalize_device_addr(args.device_addr)
     source = uhd.usrp_source(
         device_args,
         uhd.stream_args(cpu_format="fc32", args="", channels=[0]),

@@ -32,16 +32,16 @@ def _env_float(name: str, default: float) -> float:
     return float(value)
 
 
-# Conservative software guardrails for the USRP-B200 workflow in this app.
-# These limits are intentionally narrower than the hardware's full capability
-# where that reduces accidental overload, USB instability, or invalid tuning.
+# Software guardrails for the USRP-B200/B210 workflow in this app.
+# B2xx devices can stream up to 61.44 MS/s over USB 3.0 in single-channel
+# operation. Rates near the top end depend on the host USB controller and load.
 DEFAULT_USRP_B200_LIMITS = RFSafetyLimits(
     device_name=os.environ.get("RF_SAFETY_DEVICE_NAME", "USRP-B200 from Ettus Research"),
     min_center_frequency_hz=_env_float("RF_MIN_CENTER_FREQUENCY_HZ", 70_000_000.0),
     max_center_frequency_hz=_env_float("RF_MAX_CENTER_FREQUENCY_HZ", 6_000_000_000.0),
     min_sample_rate_hz=_env_float("RF_MIN_SAMPLE_RATE_HZ", 200_000.0),
-    max_sample_rate_hz=_env_float("RF_MAX_SAMPLE_RATE_HZ", 10_000_000.0),
-    max_span_hz=_env_float("RF_MAX_SPAN_HZ", 10_000_000.0),
+    max_sample_rate_hz=_env_float("RF_MAX_SAMPLE_RATE_HZ", 61_440_000.0),
+    max_span_hz=_env_float("RF_MAX_SPAN_HZ", 61_440_000.0),
     min_gain_db=_env_float("RF_MIN_GAIN_DB", 0.0),
     max_gain_db=_env_float("RF_MAX_GAIN_DB", 60.0),
     min_rbw_hz=_env_float("RF_MIN_RBW_HZ", 1.0),

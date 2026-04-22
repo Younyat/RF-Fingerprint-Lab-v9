@@ -191,7 +191,7 @@ export const useSpectrum = () => {
     };
 
     refresh();
-    const interval = setInterval(refresh, 200);
+    const interval = setInterval(refresh, 100);
 
     return () => {
       cancelled = true;

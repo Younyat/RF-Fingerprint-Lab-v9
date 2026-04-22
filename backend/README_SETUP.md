@@ -77,16 +77,19 @@ Startup defaults are read from environment variables:
 | `DEFAULT_ANTENNA` | `RX2` | UHD antenna |
 | `UHD_DEVICE_ARGS` | empty | Optional UHD args |
 | `RADIOCONDA_PYTHON` | `C:\Users\Usuario\radioconda\python.exe` | GNU Radio/UHD Python |
-| `REAL_SDR_FPS` | `5` | Spectrum worker frame rate |
+| `REAL_SDR_FPS` | `10` | Spectrum worker frame rate |
+| `REAL_SDR_MAX_FFT_SIZE` | `65536` | Maximum FFT size used to approach requested RBW |
 
 The frontend can change most analyzer parameters at runtime. Environment variables are only startup defaults.
+
+RBW controls the live FFT size. Very low RBW values need large FFTs and can increase latency, so the worker caps the FFT at `REAL_SDR_MAX_FFT_SIZE`. VBW is a video smoothing filter between displayed frames; it only has visible effect when set near or below the live frame rate.
 
 ## RF Safety
 
 The backend validates frequency, start/stop, span/sample-rate, gain, RBW, and VBW before applying them to the USRP-B200. Default software guardrails:
 
 - Center frequency: `70 MHz` to `6 GHz`
-- Sample rate/span: `200 kS/s` to `10 MS/s`
+- Sample rate/span: `200 kS/s` to `61.44 MS/s`
 - Gain: `0 dB` to `60 dB`
 - RBW: `1 Hz` to `1 MHz`
 - VBW: `1 Hz` to `1 MHz`

@@ -18,6 +18,10 @@ from gnuradio import uhd
 from gnuradio.fft import window
 
 
+def normalize_device_addr(device_addr: str) -> str:
+    return str(device_addr).strip()
+
+
 class WfmReceiver(gr.top_block, Qt.QWidget):
     def __init__(self, start_freq: float = 87e6, wav_path: str = "fm_audio.wav"):
         gr.top_block.__init__(self, "WFM Receiver", catch_exceptions=True)
@@ -67,7 +71,7 @@ class WfmReceiver(gr.top_block, Qt.QWidget):
         self.top_layout.addWidget(self._freq_win)
 
         self.uhd_usrp_source_0 = uhd.usrp_source(
-            ",".join(("", "")),
+            normalize_device_addr(""),
             uhd.stream_args(cpu_format="fc32", args="", channels=[0]),
         )
         self.uhd_usrp_source_0.set_samp_rate(self.samp_rate)

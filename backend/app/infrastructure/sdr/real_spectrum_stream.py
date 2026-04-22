@@ -88,8 +88,14 @@ class RealSpectrumStream:
             app_settings.default_device.device_args,
             "--fft-size",
             str(int(analyzer_settings.resolution.fft_size)),
+            "--max-fft-size",
+            os.environ.get("REAL_SDR_MAX_FFT_SIZE", "65536"),
+            "--rbw",
+            str(float(analyzer_settings.resolution.rbw_hz)),
+            "--vbw",
+            str(float(analyzer_settings.resolution.vbw_hz)),
             "--fps",
-            os.environ.get("REAL_SDR_FPS", "5"),
+            os.environ.get("REAL_SDR_FPS", "10"),
         ]
 
         try:
@@ -168,6 +174,8 @@ class RealSpectrumStream:
             float(analyzer_settings.frequency.sample_rate_hz),
             float(analyzer_settings.gain.gain_db),
             int(analyzer_settings.resolution.fft_size),
+            float(analyzer_settings.resolution.rbw_hz),
+            float(analyzer_settings.resolution.vbw_hz),
             app_settings.default_device.antenna,
             app_settings.default_device.device_args,
         )

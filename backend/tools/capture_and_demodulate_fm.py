@@ -26,6 +26,10 @@ def safe_filename(name: str) -> str:
     return name.strip("._")
 
 
+def normalize_device_addr(device_addr: str) -> str:
+    return str(device_addr).strip()
+
+
 class CaptureAndDemodulateFM(gr.top_block):
     def __init__(
         self,
@@ -58,7 +62,7 @@ class CaptureAndDemodulateFM(gr.top_block):
         self.num_audio_samples = int(self.duration_s * self.audio_rate)
 
         self.uhd_usrp_source_0 = uhd.usrp_source(
-            ",".join((self.device_addr, "")),
+            normalize_device_addr(self.device_addr),
             uhd.stream_args(cpu_format="fc32", args="", channels=[0]),
         )
         self.uhd_usrp_source_0.set_samp_rate(self.samp_rate)

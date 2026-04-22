@@ -32,6 +32,10 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def normalize_device_addr(device_addr: str) -> str:
+    return str(device_addr).strip()
+
+
 class FiniteIqCapture(gr.top_block):
     def __init__(
         self,
@@ -46,7 +50,7 @@ class FiniteIqCapture(gr.top_block):
         gr.top_block.__init__(self, "Finite Marker Band IQ Capture", catch_exceptions=True)
         sample_count = int(duration_s * sample_rate_hz)
         self.source = uhd.usrp_source(
-            ",".join((device_addr, "")),
+            normalize_device_addr(device_addr),
             uhd.stream_args(cpu_format="fc32", args="", channels=[0]),
         )
         self.source.set_samp_rate(float(sample_rate_hz))

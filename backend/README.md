@@ -162,6 +162,9 @@ Each metadata file includes capture identity, selected file format, frequency li
 | `DEFAULT_ANTENNA` | UHD antenna name |
 | `UHD_DEVICE_ARGS` | Optional UHD device selector |
 | `REAL_SDR_FPS` | Spectrum worker frame rate |
+| `REAL_SDR_MAX_FFT_SIZE` | Maximum FFT size used to approach requested RBW |
+
+RBW changes the FFT size used by the live spectrum worker. VBW applies frame-to-frame video smoothing after FFT detection; values much higher than the frame rate behave like no smoothing.
 
 ## RF Safety Guardrails
 
@@ -170,7 +173,7 @@ The backend rejects unsafe or invalid hardware-facing settings before they reach
 | Parameter | Default software range |
 |-----------|------------------------|
 | Center frequency | `70 MHz` to `6 GHz` |
-| Sample rate / span | `200 kS/s` to `10 MS/s` |
+| Sample rate / span | `200 kS/s` to `61.44 MS/s` |
 | Gain | `0 dB` to `60 dB` |
 | RBW | `1 Hz` to `1 MHz` |
 | VBW | `1 Hz` to `1 MHz` |

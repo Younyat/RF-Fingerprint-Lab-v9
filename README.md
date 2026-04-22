@@ -129,8 +129,12 @@ The UI always lists the files found in both directories and provides separate do
 | `DEFAULT_ANTENNA` | UHD antenna name, currently `RX2` |
 | `UHD_DEVICE_ARGS` | Optional UHD device arguments |
 | `RADIOCONDA_PYTHON` | Python executable with GNU Radio/UHD installed |
+| `REAL_SDR_FPS` | Spectrum worker frame rate, default `10` |
+| `REAL_SDR_MAX_FFT_SIZE` | Maximum FFT size used to approach requested RBW, default `65536` |
 
 The frontend can change the active analyzer settings at runtime. These variables only define startup defaults.
+
+RBW is implemented by selecting an FFT size from the active sample rate and requested RBW. If the requested RBW would require more than `REAL_SDR_MAX_FFT_SIZE`, the backend uses the closest practical FFT size and reports the effective RBW in each spectrum frame. VBW is implemented as frame-to-frame video smoothing, so it is only meaningful at values near or below the live frame rate.
 
 ## SCPI-Style Control
 
@@ -156,12 +160,12 @@ The backend validates hardware-facing parameters before opening or retuning the 
 | Limit | Default |
 |-------|---------|
 | Center frequency | `70 MHz` to `6 GHz` |
-| Sample rate / span | `200 kS/s` to `10 MS/s` |
+| Sample rate / span | `200 kS/s` to `61.44 MS/s` |
 | Gain | `0 dB` to `60 dB` |
 | RBW | `1 Hz` to `1 MHz` |
 | VBW | `1 Hz` to `1 MHz` |
 
-These are conservative software limits for this project, not the full theoretical device capability. They can be overridden with `RF_MIN_CENTER_FREQUENCY_HZ`, `RF_MAX_CENTER_FREQUENCY_HZ`, `RF_MIN_SAMPLE_RATE_HZ`, `RF_MAX_SAMPLE_RATE_HZ`, `RF_MAX_SPAN_HZ`, `RF_MIN_GAIN_DB`, and `RF_MAX_GAIN_DB`.
+The default sample-rate ceiling follows the USRP-B200/B210 USB 3.0 host sample-rate specification for single-channel use. Practical sustained rates near `61.44 MS/s` depend on USB 3.0 controller quality, host load, channel count, and DSP load; B210 2x2 operation is lower. These limits can be overridden with `RF_MIN_CENTER_FREQUENCY_HZ`, `RF_MAX_CENTER_FREQUENCY_HZ`, `RF_MIN_SAMPLE_RATE_HZ`, `RF_MAX_SAMPLE_RATE_HZ`, `RF_MAX_SPAN_HZ`, `RF_MIN_GAIN_DB`, and `RF_MAX_GAIN_DB`.
 
 Software limits do not protect the RF input from excessive external power. Use appropriate antennas, attenuators, and RF front-end protection when connecting unknown signals.
 
