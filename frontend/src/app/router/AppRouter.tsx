@@ -6,6 +6,7 @@ import { SettingsView } from '../../presentation/views/SettingsView';
 import { AppLayout } from '../../presentation/views/AppLayout';
 import { DemodulationView } from '../../presentation/views/DemodulationView';
 import { ModulatedSignalAnalysisView } from '../../presentation/views/ModulatedSignalAnalysisView';
+import { ReceiversMapView } from '../../presentation/views/kiwisdr/ReceiversMapView';
 
 export const router = createBrowserRouter([
   {
@@ -35,6 +36,10 @@ export const router = createBrowserRouter([
       {
         path: 'modulated-analysis',
         element: <ModulatedSignalAnalysisView />,
+      },
+      {
+        path: 'kiwisdr',
+        element: <ReceiversMapView />,
       },
       {
         path: 'settings',

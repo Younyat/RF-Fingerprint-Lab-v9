@@ -1,6 +1,6 @@
 import React from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
-import { Activity, BarChart3, Database, Settings, Radio, Waves } from 'lucide-react';
+import { Activity, BarChart3, Database, Settings, Radio, Waves, Globe2 } from 'lucide-react';
 import { useAppActions, useUiState } from '../../app/store/AppStore';
 import { cn } from '../../shared/utils';
 
@@ -10,6 +10,7 @@ const navigation = [
   { name: 'Recordings', href: '/recordings', icon: Radio },
   { name: 'Demodulation', href: '/demodulation', icon: Waves },
   { name: 'Signal Analysis', href: '/modulated-analysis', icon: Database },
+  { name: 'KiwiSDR Map', href: '/kiwisdr', icon: Globe2 },
   { name: 'Settings', href: '/settings', icon: Settings },
 ];
 
