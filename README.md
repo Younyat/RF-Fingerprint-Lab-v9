@@ -97,6 +97,12 @@ The main spectrum view shows the live RF trace from the USRP-B200 with analyzer 
 
 ![Live RF spectrum view with analyzer controls and markers](readme_img/spectrum_pic.png)
 
+### Spectrum And Waterfall View
+
+The combined view splits the analyzer horizontally so the live spectrum trace and the waterfall history share the same center frequency and span.
+
+![Combined spectrum and waterfall display using the same RF frequency window](readme_img/spectrum_waterfall.png)
+
 ## Marker-Band Demodulation
 
 The `Demodulation` tab uses the first two spectrum markers as the selected RF band:
