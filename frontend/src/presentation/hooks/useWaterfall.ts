@@ -1,12 +1,21 @@
-import { useEffect, useRef } from 'react';
-import { useWaterfallData, useAnalyzerSettings } from '../../app/store/AppStore';
+import { useEffect, useRef, useState } from 'react';
+import { useAppStore, useWaterfallData, useAnalyzerSettings, useDeviceStatus } from '../../app/store/AppStore';
+import { ApiService } from '../../app/services/ApiService';
 import { turboColormap } from '../../shared/utils';
 
-export const useWaterfall = () => {
+const apiService = new ApiService();
+
+export const useWaterfall = (enabled = true) => {
   const waterfallData = useWaterfallData();
   const settings = useAnalyzerSettings();
+  const deviceStatus = useDeviceStatus();
+  const addWaterfallData = useAppStore((state) => state.addWaterfallData);
+  const clearWaterfallData = useAppStore((state) => state.clearWaterfallData);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageDataRef = useRef<ImageData | null>(null);
+  const waterfallKeyRef = useRef('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Draw waterfall on canvas
   useEffect(() => {
@@ -17,6 +26,14 @@ export const useWaterfall = () => {
     if (!ctx) return;
 
     const { width, height } = canvas;
+    const waterfallKey = `${settings.centerFrequency}:${settings.span}:${width}:${height}`;
+
+    if (waterfallKeyRef.current !== waterfallKey) {
+      imageDataRef.current = null;
+      waterfallKeyRef.current = waterfallKey;
+      ctx.clearRect(0, 0, width, height);
+    }
+
     const maxHistory = Math.min(waterfallData.length, height);
 
     // Create or reuse ImageData
@@ -44,13 +61,16 @@ export const useWaterfall = () => {
     if (waterfallData.length > 0) {
       const latestData = waterfallData[waterfallData.length - 1];
       const powerLevels = latestData.data[0] || []; // Assuming single row for simplicity
+      const powerRange = Math.max(settings.dbPerDiv, 1) * 10;
+      const powerTop = settings.referenceLevel;
+      const powerBottom = powerTop - powerRange;
 
       for (let x = 0; x < width; x++) {
         const powerIndex = Math.floor((x / width) * powerLevels.length);
         const powerLevel = powerLevels[powerIndex] || -100;
 
         // Normalize power level to 0-1 range
-        const normalizedPower = Math.max(0, Math.min(1, (powerLevel + 100) / 100));
+        const normalizedPower = Math.max(0, Math.min(1, (powerLevel + settings.noiseFloorOffset - powerBottom) / powerRange));
 
         // Get color from turbo colormap
         const [r, g, b] = turboColormap(normalizedPower);
@@ -101,9 +121,51 @@ export const useWaterfall = () => {
 
   }, [waterfallData, settings]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!enabled) {
+      return;
+    }
+
+    if (!deviceStatus.isConnected) {
+      clearWaterfallData();
+      return;
+    }
+
+    const refresh = async () => {
+      try {
+        setIsLoading(true);
+        const data = await apiService.getLiveWaterfall();
+        if (!cancelled && data.data.length > 0) {
+          addWaterfallData(data);
+          setError(null);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to refresh waterfall');
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    refresh();
+    const interval = setInterval(refresh, 100);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [addWaterfallData, clearWaterfallData, deviceStatus.isConnected, enabled]);
+
   return {
     waterfallData,
     settings,
+    isLoading,
+    error,
     canvasRef,
   };
 };

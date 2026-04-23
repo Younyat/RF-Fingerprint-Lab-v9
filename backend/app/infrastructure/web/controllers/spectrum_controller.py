@@ -44,6 +44,29 @@ class SpectrumController:
         active_settings = settings or self._settings
         return real_spectrum_stream.get_latest(active_settings)
 
+    def get_live_waterfall(self) -> dict:
+        frame = real_spectrum_stream.get_latest(self._settings)
+        levels_db = frame.get("levels_db") or []
+        center_frequency_hz = frame.get("center_frequency_hz", self._settings.frequency.center_frequency_hz)
+        span_hz = frame.get("span_hz", self._settings.frequency.sample_rate_hz)
+        start_frequency_hz = center_frequency_hz - span_hz / 2
+        stop_frequency_hz = center_frequency_hz + span_hz / 2
+
+        return {
+            "timestamp_utc": frame.get("timestamp_utc"),
+            "center_frequency_hz": center_frequency_hz,
+            "span_hz": span_hz,
+            "start_frequency_hz": frame.get("start_frequency_hz", start_frequency_hz),
+            "stop_frequency_hz": frame.get("stop_frequency_hz", stop_frequency_hz),
+            "sample_rate_hz": frame.get("sample_rate_hz", self._settings.frequency.sample_rate_hz),
+            "frequencies_hz": frame.get("frequencies_hz") or [],
+            "levels_db": levels_db,
+            "data": [levels_db] if levels_db else [],
+            "points": len(levels_db),
+            "source": frame.get("source", "real_sdr"),
+            "error": frame.get("error"),
+        }
+
     def get_safety_limits(self) -> dict:
         return safety_status()
 

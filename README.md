@@ -89,6 +89,14 @@ Then open:
 9. Open `Demodulation` to demodulate or capture the RF band between M1 and M2.
 10. Open `Signal Analysis` to capture the marker-limited signal as IQ plus metadata.
 
+## Application Screenshots
+
+### Live Spectrum View
+
+The main spectrum view shows the live RF trace from the USRP-B200 with analyzer controls, marker placement, cursor readout, and export options.
+
+![Live RF spectrum view with analyzer controls and markers](readme_img/spectrum_pic.png)
+
 ## Marker-Band Demodulation
 
 The `Demodulation` tab uses the first two spectrum markers as the selected RF band:
@@ -102,6 +110,10 @@ The `Demodulation` tab uses the first two spectrum markers as the selected RF ba
 For `AM`, `FM`, and `WFM`, the backend captures real IQ from the USRP-B200, demodulates it, generates a WAV file, and exposes it for playback/download in the dashboard.
 
 For `ASK`, `FSK`, `PSK`, and `OOK`, the backend captures the marker-limited IQ plus metadata for later digital analysis/export. These modes do not currently generate dashboard audio.
+
+Example FM workflow using a broadcast channel around `98.4 MHz` in Spain:
+
+![FM demodulation workflow with generated audio output](readme_img/demodulation.png)
 
 ## Modulated Signal Analysis Captures
 
@@ -118,6 +130,10 @@ backend/app/infrastructure/persistence/storage/recordings/modulated_signal_iq_ca
 ```
 
 The UI always lists the files found in both directories and provides separate downloads for the RF data file and metadata.
+
+Example marker-band capture configured to generate `.cfile` or `.iq` datasets for replay, offline analysis, or AI model training:
+
+![Marker-band cfile and IQ dataset generation workflow](readme_img/cfile_iqfile_generator_from_marker_BW.png)
 
 ## Important Environment Variables
 

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Download, Image, Play, Square, RotateCcw, Target, Usb, Unplug, Radio, Trash2, SlidersHorizontal } from 'lucide-react';
+import { BarChart3, ChevronLeft, ChevronRight, Download, Image, Play, Square, RotateCcw, Target, Usb, Unplug, Radio, Trash2, SlidersHorizontal } from 'lucide-react';
 import { useSpectrum } from '../hooks/useSpectrum';
+import { useWaterfall } from '../hooks/useWaterfall';
 import { useSpectrumController } from '../controllers/SpectrumController';
 import { getLevelAtFrequency, useMarkerController } from '../controllers/MarkerController';
 import { useAnalyzerSettings, useDeviceStatus, useMarkers, useSpectrumData } from '../../app/store/AppStore';
@@ -51,6 +52,8 @@ const getErrorMessage = (error: unknown) => {
 
 export const SpectrumView: React.FC = () => {
   const { canvasRef } = useSpectrum();
+  const [showWaterfallSplit, setShowWaterfallSplit] = useState(false);
+  const { canvasRef: waterfallCanvasRef, error: waterfallError } = useWaterfall(showWaterfallSplit);
   const spectrumData = useSpectrumData();
   const deviceStatus = useDeviceStatus();
   const settings = useAnalyzerSettings();
@@ -409,6 +412,19 @@ export const SpectrumView: React.FC = () => {
             Refresh
           </button>
 
+          <button
+            onClick={() => setShowWaterfallSplit((current) => !current)}
+            aria-pressed={showWaterfallSplit}
+            title={showWaterfallSplit ? 'Volver a solo espectro' : 'Dividir vista con waterfall'}
+            className={cn(
+              'h-9 flex items-center px-3 rounded-md text-sm font-medium',
+              showWaterfallSplit ? 'bg-cyan-500 text-slate-950 hover:bg-cyan-400' : 'bg-slate-700 hover:bg-slate-600'
+            )}
+          >
+            <BarChart3 className="w-4 h-4 mr-2" />
+            {showWaterfallSplit ? 'Spectrum Only' : 'Spectrum + Waterfall'}
+          </button>
+
           <div className="h-9 w-px bg-slate-700 mx-1" />
 
           <LabeledInput label="Center MHz" value={centerMHz} onChange={setCenterMHz} onEnter={applyCenterSpan} />
@@ -517,65 +533,88 @@ export const SpectrumView: React.FC = () => {
         </div>
         {controlError && <div className="mt-2 text-sm text-red-300">{controlError}</div>}
         {deviceStatus.lastError && <div className="mt-2 text-sm text-red-300">{deviceStatus.lastError}</div>}
+        {showWaterfallSplit && waterfallError && <div className="mt-2 text-sm text-red-300">{waterfallError}</div>}
       </div>
 
       <div className="flex-1 grid grid-cols-[minmax(0,1fr)_320px] min-h-0">
-        <div className="relative min-h-0">
-          <div className="absolute left-4 top-4 z-10 flex items-center gap-2 rounded-md border border-slate-700 bg-slate-900/95 px-2 py-2 shadow-lg">
-            <button
-              onClick={() => panFrequencyWindow(-1)}
-              title="Desplazar espectro hacia la izquierda"
-              className="h-9 inline-flex items-center gap-1.5 rounded-md bg-cyan-700 px-3 text-sm font-semibold text-white hover:bg-cyan-600"
-            >
-              <ChevronLeft className="w-5 h-5" />
-              Spectrum Left
-            </button>
-            <LabeledInput label="Step MHz" value={panStepMHz} onChange={setPanStepMHz} onEnter={() => undefined} compact />
-            <button
-              onClick={() => panFrequencyWindow(1)}
-              title="Desplazar espectro hacia la derecha"
-              className="h-9 inline-flex items-center gap-1.5 rounded-md bg-cyan-700 px-3 text-sm font-semibold text-white hover:bg-cyan-600"
-            >
-              Spectrum Right
-              <ChevronRight className="w-5 h-5" />
-            </button>
+        <div className="flex min-h-0 flex-col">
+          <div className={cn('relative min-h-0', showWaterfallSplit ? 'flex-[3_1_0%]' : 'flex-1')}>
+            <div className="absolute left-4 top-4 z-10 flex items-center gap-2 rounded-md border border-slate-700 bg-slate-900/95 px-2 py-2 shadow-lg">
+              <button
+                onClick={() => panFrequencyWindow(-1)}
+                title="Desplazar espectro hacia la izquierda"
+                className="h-9 inline-flex items-center gap-1.5 rounded-md bg-cyan-700 px-3 text-sm font-semibold text-white hover:bg-cyan-600"
+              >
+                <ChevronLeft className="w-5 h-5" />
+                Spectrum Left
+              </button>
+              <LabeledInput label="Step MHz" value={panStepMHz} onChange={setPanStepMHz} onEnter={() => undefined} compact />
+              <button
+                onClick={() => panFrequencyWindow(1)}
+                title="Desplazar espectro hacia la derecha"
+                className="h-9 inline-flex items-center gap-1.5 rounded-md bg-cyan-700 px-3 text-sm font-semibold text-white hover:bg-cyan-600"
+              >
+                Spectrum Right
+                <ChevronRight className="w-5 h-5" />
+              </button>
+            </div>
+            <canvas
+              ref={canvasRef}
+              width={1400}
+              height={720}
+              className="w-full h-full cursor-crosshair bg-slate-950"
+              onClick={addMarkerAtCanvas}
+              onMouseDown={startMarkerDrag}
+              onMouseMove={updateCursor}
+              onMouseUp={() => setDraggingMarkerId(null)}
+              onMouseLeave={() => {
+                setCursor(null);
+                setDraggingMarkerId(null);
+              }}
+              onWheel={zoomFromWheel}
+            />
+            {cursor && (
+              <div className="absolute right-4 top-4 z-10 rounded-md border border-slate-700 bg-slate-900/95 px-3 py-2 text-xs text-slate-100 shadow-lg">
+                {formatFrequency(cursor.frequency)} | {formatPowerLevel(cursor.level)}
+              </div>
+            )}
+            {markerRows.map((marker) => {
+              const start = settings.centerFrequency - settings.span / 2;
+              const position = ((marker.frequency - start) / settings.span) * 100;
+              if (position < 0 || position > 100) return null;
+              return (
+                <div
+                  key={marker.id}
+                  className="absolute top-0 bottom-0 border-l border-amber-300 pointer-events-none"
+                  style={{ left: `${position}%` }}
+                >
+                  <div className="ml-1 mt-2 bg-amber-300 text-slate-950 px-1.5 py-0.5 text-xs rounded-sm whitespace-nowrap">
+                    {marker.label} {formatFrequency(marker.frequency)} {formatPowerLevel(marker.level)}
+                  </div>
+                </div>
+              );
+            })}
           </div>
-          <canvas
-            ref={canvasRef}
-            width={1400}
-            height={720}
-            className="w-full h-full cursor-crosshair bg-slate-950"
-            onClick={addMarkerAtCanvas}
-            onMouseDown={startMarkerDrag}
-            onMouseMove={updateCursor}
-            onMouseUp={() => setDraggingMarkerId(null)}
-            onMouseLeave={() => {
-              setCursor(null);
-              setDraggingMarkerId(null);
-            }}
-            onWheel={zoomFromWheel}
-          />
-          {cursor && (
-            <div className="absolute right-4 top-4 z-10 rounded-md border border-slate-700 bg-slate-900/95 px-3 py-2 text-xs text-slate-100 shadow-lg">
-              {formatFrequency(cursor.frequency)} | {formatPowerLevel(cursor.level)}
+
+          {showWaterfallSplit && (
+            <div className="relative min-h-[180px] flex-[2_1_0%] border-t border-slate-700 bg-black">
+              <div className="absolute left-4 top-3 z-10 rounded-md border border-slate-700 bg-slate-900/95 px-3 py-2 text-xs text-slate-100 shadow-lg">
+                Waterfall | {formatFrequency(settings.centerFrequency - settings.span / 2)} - {formatFrequency(settings.centerFrequency + settings.span / 2)}
+              </div>
+              <canvas
+                ref={waterfallCanvasRef}
+                width={1400}
+                height={420}
+                className="h-full w-full bg-black"
+              />
+              <div className="absolute bottom-2 left-10 right-10 flex justify-between text-xs text-slate-300">
+                <span>{formatFrequency(settings.centerFrequency - settings.span / 2)}</span>
+                <span>{formatFrequency(settings.centerFrequency)}</span>
+                <span>{formatFrequency(settings.centerFrequency + settings.span / 2)}</span>
+              </div>
+              <div className="absolute right-4 top-3 bottom-8 w-4 rounded-sm bg-gradient-to-b from-red-600 via-yellow-400 via-green-500 to-blue-900" />
             </div>
           )}
-          {markerRows.map((marker) => {
-            const start = settings.centerFrequency - settings.span / 2;
-            const position = ((marker.frequency - start) / settings.span) * 100;
-            if (position < 0 || position > 100) return null;
-            return (
-              <div
-                key={marker.id}
-                className="absolute top-0 bottom-0 border-l border-amber-300 pointer-events-none"
-                style={{ left: `${position}%` }}
-              >
-                <div className="ml-1 mt-2 bg-amber-300 text-slate-950 px-1.5 py-0.5 text-xs rounded-sm whitespace-nowrap">
-                  {marker.label} {formatFrequency(marker.frequency)} {formatPowerLevel(marker.level)}
-                </div>
-              </div>
-            );
-          })}
         </div>
 
         <aside className="border-l border-slate-800 bg-slate-900 p-3 overflow-auto">

@@ -15,6 +15,7 @@ from app.infrastructure.web.api.routes.preset_routes import build_preset_router
 from app.infrastructure.web.api.routes.recording_routes import build_recording_router
 from app.infrastructure.web.api.routes.session_routes import build_session_router
 from app.infrastructure.web.api.routes.spectrum_routes import build_spectrum_router
+from app.infrastructure.web.api.routes.waterfall_routes import build_waterfall_router
 
 
 logging.basicConfig(
@@ -40,6 +41,7 @@ app.add_middleware(
 
 app.include_router(build_device_router(container.device_controller), prefix=settings.api.base_path)
 app.include_router(build_spectrum_router(container.spectrum_controller), prefix=settings.api.base_path)
+app.include_router(build_waterfall_router(container.spectrum_controller), prefix=settings.api.base_path)
 app.include_router(build_marker_router(container.marker_controller), prefix=settings.api.base_path)
 app.include_router(build_recording_router(container.recording_controller), prefix=settings.api.base_path)
 app.include_router(build_demodulation_router(container.demodulation_controller), prefix=settings.api.base_path)

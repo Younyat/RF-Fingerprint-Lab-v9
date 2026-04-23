@@ -31,6 +31,18 @@ const toSpectrumData = (data: any): SpectrumData => ({
   powerLevels: data.source === 'real_sdr_error' ? [] : (data.powerLevels ?? data.levels_db ?? []),
 });
 
+const toWaterfallData = (data: any): WaterfallData => {
+  const levels = data.source === 'real_sdr_error' ? [] : (data.levels_db ?? data.powerLevels ?? []);
+  const rows = data.data && data.data.length > 0 ? data.data : (levels.length > 0 ? [levels] : []);
+
+  return {
+    timestamp: data.timestamp ?? (data.timestamp_utc ? Date.parse(data.timestamp_utc) : Date.now()),
+    centerFrequency: data.centerFrequency ?? data.center_frequency_hz ?? 0,
+    span: data.span ?? data.span_hz ?? 0,
+    data: rows,
+  };
+};
+
 const toMarker = (data: any): Marker => ({
   id: data.id ?? data.marker_id ?? '',
   label: data.label ?? 'Marker',
@@ -181,7 +193,7 @@ export class ApiService {
   // Waterfall endpoints
   async getLiveWaterfall(): Promise<WaterfallData> {
     const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.WATERFALL_LIVE}`);
-    return response.data;
+    return toWaterfallData(response.data);
   }
 
   // Marker endpoints
