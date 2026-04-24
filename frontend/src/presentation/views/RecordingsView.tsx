@@ -9,14 +9,15 @@ export const RecordingsView: React.FC = () => {
   const sessions = useSessions();
   const currentSession = useCurrentSession();
   const recordingController = useRecordingController();
+  const loadRecordings = recordingController.loadRecordings;
 
   const [isRecording, setIsRecording] = useState(false);
   const [recordingType, setRecordingType] = useState<'iq' | 'audio'>('iq');
   const [newSessionName, setNewSessionName] = useState('');
 
   useEffect(() => {
-    recordingController.loadRecordings();
-  }, [recordingController]);
+    loadRecordings();
+  }, [loadRecordings]);
 
   const handleStartRecording = async () => {
     try {

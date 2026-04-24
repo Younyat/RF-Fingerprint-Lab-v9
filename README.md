@@ -70,6 +70,29 @@ $env:UHD_DEVICE_ARGS=""
 powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1 -UseRealSdr 1 -RadioCondaPythonPath "C:\Users\Usuario\radioconda\python.exe"
 ```
 
+Polling frontend-backend por defecto:
+
+- `App sync` (`/api/device/status`, `/api/recordings/`, `/api/sessions/`, `/api/presets/`): `5000 ms`
+- `Spectrum`: `100 ms`
+- `Waterfall`: `100 ms`
+
+Puedes sobrescribirlos al arrancar sin tocar código:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1 `
+  -UseRealSdr 1 `
+  -RadioCondaPythonPath "C:\Users\Usuario\radioconda\python.exe" `
+  -AppSyncIntervalMs 10000 `
+  -SpectrumPollIntervalMs 250 `
+  -WaterfallPollIntervalMs 400
+```
+
+En Linux/macOS con `run_dev.sh`:
+
+```bash
+APP_SYNC_INTERVAL_MS=10000 SPECTRUM_POLL_INTERVAL_MS=250 WATERFALL_POLL_INTERVAL_MS=400 bash scripts/run_dev.sh
+```
+
 Then open:
 
 - Frontend: `http://localhost:5173`

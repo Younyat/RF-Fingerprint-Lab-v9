@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAppStore, useDeviceStatus, useSpectrumData, useAnalyzerSettings } from '../../app/store/AppStore';
 import { ApiService } from '../../app/services/ApiService';
+import { RUNTIME_CONFIG } from '../../shared/config/runtime';
 
 const apiService = new ApiService();
 
@@ -191,7 +192,7 @@ export const useSpectrum = () => {
     };
 
     refresh();
-    const interval = setInterval(refresh, 100);
+    const interval = setInterval(refresh, RUNTIME_CONFIG.spectrumPollIntervalMs);
 
     return () => {
       cancelled = true;

@@ -1,6 +1,9 @@
 param(
     [int]$BackendPort = 8000,
     [string]$FrontendHost = "127.0.0.1",
+    [int]$AppSyncIntervalMs = 5000,
+    [int]$SpectrumPollIntervalMs = 100,
+    [int]$WaterfallPollIntervalMs = 100,
     [bool]$InstallDeps = $true,
     [bool]$InstallTools = $true,
     [bool]$FullBackendDeps = $false,
@@ -308,6 +311,9 @@ $BackendProcess = Start-Process `
     -PassThru
 
 Write-Step "Starting frontend on http://localhost:5173"
+$env:VITE_APP_SYNC_INTERVAL_MS = "$AppSyncIntervalMs"
+$env:VITE_SPECTRUM_POLL_INTERVAL_MS = "$SpectrumPollIntervalMs"
+$env:VITE_WATERFALL_POLL_INTERVAL_MS = "$WaterfallPollIntervalMs"
 $NpmCommand = Get-CommandPath -Names @("npm.cmd", "npm.exe")
 if (-not $NpmCommand) {
     throw "No se encontro npm.cmd. Cierra y abre PowerShell despues de instalar Node.js, y vuelve a ejecutar el script."
@@ -324,6 +330,9 @@ Write-Host ""
 Write-Host "Backend API: http://localhost:$BackendPort"
 Write-Host "API docs:    http://localhost:$BackendPort/docs"
 Write-Host "Frontend:    http://localhost:5173"
+Write-Host "App sync interval:       $AppSyncIntervalMs ms"
+Write-Host "Spectrum poll interval:  $SpectrumPollIntervalMs ms"
+Write-Host "Waterfall poll interval: $WaterfallPollIntervalMs ms"
 Write-Host ""
 Write-Host "Pulsa Ctrl+C para parar ambos servicios."
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAppStore, useWaterfallData, useAnalyzerSettings, useDeviceStatus } from '../../app/store/AppStore';
 import { ApiService } from '../../app/services/ApiService';
+import { RUNTIME_CONFIG } from '../../shared/config/runtime';
 import { turboColormap } from '../../shared/utils';
 
 const apiService = new ApiService();
@@ -114,7 +115,7 @@ export const useWaterfall = (enabled = true) => {
     ctx.textAlign = 'right';
     for (let i = 0; i < maxHistory; i += Math.max(1, Math.floor(maxHistory / 5))) {
       const y = height - i - 1;
-      const timeOffset = (maxHistory - i) * 0.1; // Assuming 100ms per frame
+      const timeOffset = ((maxHistory - i) * RUNTIME_CONFIG.waterfallPollIntervalMs) / 1000;
 
       ctx.fillText(`${timeOffset.toFixed(1)}s`, width - 5, y + 4);
     }
@@ -153,7 +154,7 @@ export const useWaterfall = (enabled = true) => {
     };
 
     refresh();
-    const interval = setInterval(refresh, 100);
+    const interval = setInterval(refresh, RUNTIME_CONFIG.waterfallPollIntervalMs);
 
     return () => {
       cancelled = true;

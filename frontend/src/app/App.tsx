@@ -1,15 +1,21 @@
 import { useEffect } from 'react';
 import { AppRouter } from './router/AppRouter';
 import { ApiService } from './services/ApiService';
-import { useAppActions } from './store/AppStore';
+import { useAppStore } from './store/AppStore';
+import { RUNTIME_CONFIG } from '../shared/config/runtime';
 
 const apiService = new ApiService();
 
 function App() {
-  const actions = useAppActions();
+  const setDeviceStatus = useAppStore((state) => state.setDeviceStatus);
+  const setRecordings = useAppStore((state) => state.setRecordings);
+  const setSessions = useAppStore((state) => state.setSessions);
+  const setPresets = useAppStore((state) => state.setPresets);
 
   useEffect(() => {
-    const loadInitialData = async () => {
+    let cancelled = false;
+
+    const syncAppData = async () => {
       try {
         const [deviceStatus, recordings, sessions, presets] = await Promise.all([
           apiService.getDeviceStatus(),
@@ -18,17 +24,29 @@ function App() {
           apiService.getPresets(),
         ]);
 
-        actions.setDeviceStatus(deviceStatus);
-        recordings.forEach(recording => actions.addRecording(recording));
-        sessions.forEach(session => actions.addSession(session));
-        presets.forEach(preset => actions.addPreset(preset));
+        if (cancelled) {
+          return;
+        }
+
+        setDeviceStatus(deviceStatus);
+        setRecordings(recordings);
+        setSessions(sessions);
+        setPresets(presets);
       } catch (error) {
-        console.error('Failed to load initial data:', error);
+        if (!cancelled) {
+          console.error('Failed to sync app data:', error);
+        }
       }
     };
 
-    loadInitialData();
-  }, [actions]);
+    syncAppData();
+    const interval = setInterval(syncAppData, RUNTIME_CONFIG.appSyncIntervalMs);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [setDeviceStatus, setPresets, setRecordings, setSessions]);
 
   return <AppRouter />;
 }

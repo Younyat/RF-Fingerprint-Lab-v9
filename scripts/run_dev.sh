@@ -9,6 +9,9 @@ FRONTEND_DIR="$ROOT_DIR/frontend"
 
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
+APP_SYNC_INTERVAL_MS="${APP_SYNC_INTERVAL_MS:-5000}"
+SPECTRUM_POLL_INTERVAL_MS="${SPECTRUM_POLL_INTERVAL_MS:-100}"
+WATERFALL_POLL_INTERVAL_MS="${WATERFALL_POLL_INTERVAL_MS:-100}"
 INSTALL_DEPS="${INSTALL_DEPS:-1}"
 INSTALL_TOOLS="${INSTALL_TOOLS:-1}"
 
@@ -120,12 +123,15 @@ log "Starting backend on http://localhost:$BACKEND_PORT"
 BACKEND_PID=$!
 
 log "Starting frontend on http://localhost:5173"
-(cd "$FRONTEND_DIR" && npm run dev -- --host "$FRONTEND_HOST") &
+(cd "$FRONTEND_DIR" && VITE_APP_SYNC_INTERVAL_MS="$APP_SYNC_INTERVAL_MS" VITE_SPECTRUM_POLL_INTERVAL_MS="$SPECTRUM_POLL_INTERVAL_MS" VITE_WATERFALL_POLL_INTERVAL_MS="$WATERFALL_POLL_INTERVAL_MS" npm run dev -- --host "$FRONTEND_HOST") &
 FRONTEND_PID=$!
 
 printf "\nBackend API: http://localhost:%s\n" "$BACKEND_PORT"
 printf "API docs:    http://localhost:%s/docs\n" "$BACKEND_PORT"
 printf "Frontend:    http://localhost:5173\n"
+printf "App sync interval:       %sms\n" "$APP_SYNC_INTERVAL_MS"
+printf "Spectrum poll interval:  %sms\n" "$SPECTRUM_POLL_INTERVAL_MS"
+printf "Waterfall poll interval: %sms\n" "$WATERFALL_POLL_INTERVAL_MS"
 printf "\nPress Ctrl+C to stop both services.\n"
 
 wait "$BACKEND_PID" "$FRONTEND_PID"

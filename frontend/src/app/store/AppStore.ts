@@ -46,12 +46,15 @@ interface AppState {
   updateAnalyzerSettings: (settings: Partial<AnalyzerSettings>) => void;
 
   addRecording: (recording: Recording) => void;
+  setRecordings: (recordings: Recording[]) => void;
   setCurrentRecording: (recording: Recording | null) => void;
 
   addSession: (session: Session) => void;
+  setSessions: (sessions: Session[]) => void;
   setCurrentSession: (session: Session | null) => void;
 
   addPreset: (preset: Preset) => void;
+  setPresets: (presets: Preset[]) => void;
   removePreset: (id: string) => void;
 
   // Reset
@@ -141,6 +144,9 @@ export const useAppStore = create<AppState>()(
         recordings: [...state.recordings, recording],
       })),
 
+    setRecordings: (recordings) =>
+      set({ recordings }),
+
     setCurrentRecording: (recording) =>
       set({ currentRecording: recording }),
 
@@ -149,6 +155,9 @@ export const useAppStore = create<AppState>()(
         sessions: [...state.sessions, session],
       })),
 
+    setSessions: (sessions) =>
+      set({ sessions }),
+
     setCurrentSession: (session) =>
       set({ currentSession: session }),
 
@@ -156,6 +165,9 @@ export const useAppStore = create<AppState>()(
       set((state) => ({
         presets: [...state.presets, preset],
       })),
+
+    setPresets: (presets) =>
+      set({ presets }),
 
     removePreset: (id) =>
       set((state) => ({
@@ -194,10 +206,13 @@ export const useAppActions = () => useAppStore((state) => ({
   setDeviceStatus: state.setDeviceStatus,
   updateAnalyzerSettings: state.updateAnalyzerSettings,
   addRecording: state.addRecording,
+  setRecordings: state.setRecordings,
   setCurrentRecording: state.setCurrentRecording,
   addSession: state.addSession,
+  setSessions: state.setSessions,
   setCurrentSession: state.setCurrentSession,
   addPreset: state.addPreset,
+  setPresets: state.setPresets,
   removePreset: state.removePreset,
   reset: state.reset,
 }));
