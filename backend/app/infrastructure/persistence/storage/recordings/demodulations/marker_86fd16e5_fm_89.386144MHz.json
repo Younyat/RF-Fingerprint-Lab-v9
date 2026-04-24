@@ -1,0 +1,21 @@
+{
+  "generated_at_utc": "2026-04-24T10:44:00.836382+00:00",
+  "mode": "fm",
+  "start_frequency_hz": 89243749.93927075,
+  "stop_frequency_hz": 89528537.65462208,
+  "center_frequency_hz": 89386143.7969464,
+  "bandwidth_hz": 284787.71535132825,
+  "duration_seconds": 5.0,
+  "sample_rate_hz": 2000000.0,
+  "gain_db": 20.0,
+  "antenna": "RX2",
+  "device_addr": "",
+  "iq_file": "C:\\Users\\Usuario\\Desktop\\NICS\\Spectum_lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\demodulations\\marker_86fd16e5_fm_89.386144MHz.cfile",
+  "audio_file": "C:\\Users\\Usuario\\Desktop\\NICS\\Spectum_lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\demodulations\\marker_86fd16e5_fm_89.386144MHz.wav",
+  "audio_supported": true,
+  "audio_rate_hz": 48000,
+  "notes": [
+    "AM/FM/WFM generate WAV audio.",
+    "ASK/FSK/PSK/OOK currently capture IQ and metadata for digital analysis/export."
+  ]
+}
