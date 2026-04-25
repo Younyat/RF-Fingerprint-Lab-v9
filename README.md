@@ -26,6 +26,10 @@ The application is built with a FastAPI backend and a React/TypeScript frontend.
 - AM/FM/WFM demodulation with WAV audio playback and export from the dashboard
 - ASK/FSK/PSK/OOK marker-band IQ capture with metadata export for digital analysis
 - Modulated signal analysis tab for marker-limited IQ dataset capture
+- Guided `Capture Lab` safety checks for bandwidth, duration, and invalid frequency windows before launching IQ acquisition
+- Global non-blocking activity overlay for SDR connection and IQ capture so the user can understand long operations without losing navigation
+- Live marker-band QC preview with peak, noise floor, SNR, and peak frequency before recording
+- Automatic RadioConda Python propagation to `Validation` and `Inference` so `python_exe` appears prefilled by default
 - Persistent `.cfile` and `.iq` capture libraries for replay workflows and AI model training datasets
 - Automatic local peak markers
 - Marker dragging directly on the spectrum canvas
@@ -70,6 +74,36 @@ $env:UHD_DEVICE_ARGS=""
 powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1 -UseRealSdr 1 -RadioCondaPythonPath "C:\Users\Usuario\radioconda\python.exe"
 ```
 
+Arranque unificado recomendado para la plataforma fusionada:
+
+```powershell
+cd C:\Users\Usuario\Desktop\NICS\RF-Fingerprint-Lab\spectrum-lab
+powershell -ExecutionPolicy Bypass -File .\start_unified.ps1
+```
+
+Si quieres pasar explícitamente el usuario y la IP del entrenamiento remoto, usa:
+
+```powershell
+cd C:\Users\Usuario\Desktop\NICS\RF-Fingerprint-Lab\spectrum-lab
+powershell -ExecutionPolicy Bypass -File .\start_unified.ps1 -RemoteUser "assouyat" -RemoteHost "192.168.193.49"
+```
+
+Esos valores quedan además precargados en la pestaña `Training`.
+El mismo arranque propaga también `RadioCondaPythonPath` al frontend para que `Validation` e `Inference` muestren `python_exe` ya detectado por defecto.
+
+Ese comando levanta en una sola orden:
+
+- backend FastAPI unificado,
+- frontend Vite,
+- monitor SDR en vivo,
+- Capture Lab,
+- Dataset Builder,
+- Training,
+- Retraining,
+- Validation,
+- Inference,
+- Models.
+
 Polling frontend-backend por defecto:
 
 - `App sync` (`/api/device/status`, `/api/recordings/`, `/api/sessions/`, `/api/presets/`): `5000 ms`
@@ -110,7 +144,9 @@ Then open:
 7. Use `Spectrum Left` and `Spectrum Right` to move across the band.
 8. Click the spectrum to add markers with frequency and signal level.
 9. Open `Demodulation` to demodulate or capture the RF band between M1 and M2.
-10. Open `Signal Analysis` to capture the marker-limited signal as IQ plus metadata.
+10. Open `Capture Lab` to capture IQ for `train`, `val`, or `predict`.
+11. Use `Dataset Builder` to accept, reject, or mark the imported capture as doubtful before using it in ML workflows.
+12. Continue in `Training`, `Validation`, or `Inference` according to the split assigned during capture.
 
 ## Application Screenshots
 
@@ -144,12 +180,30 @@ Example FM workflow using a broadcast channel around `98.4 MHz` in Spain:
 
 ![FM demodulation workflow with generated audio output](readme_img/demodulation.png)
 
-## Modulated Signal Analysis Captures
+## Capture Lab IQ Acquisition
 
-The `Signal Analysis` tab is for dataset-style IQ capture, not audio demodulation. It uses M1 and M2 as the capture limits and creates:
+`Capture Lab` is the dataset-style IQ acquisition screen. It is not an audio demodulation screen. It supports two frequency-definition workflows:
+
+- `Markers M1-M2`: capture exactly the band delimited by the first two spectrum markers
+- `Custom Frequencies`: define `center + bandwidth` or `start + stop`, with the other pair recalculated automatically
+
+Before recording, the operator also gets a live band-quality preview for the active window:
+
+- peak level
+- noise floor
+- live SNR
+- peak frequency
+
+For each acquisition it creates:
 
 - `.cfile` or `.iq`: raw complex64 IQ samples, selected by the user
 - `.json`: metadata with center, start/stop, bandwidth, sample rate, gain, antenna, format, SHA256, label, modulation hint, and replay parameters
+
+The same screen also lets the user declare the purpose of the capture from the beginning:
+
+- `train`
+- `val`
+- `predict`
 
 Generated files are stored under:
 
@@ -160,9 +214,96 @@ backend/app/infrastructure/persistence/storage/recordings/modulated_signal_iq_ca
 
 The UI always lists the files found in both directories and provides separate downloads for the RF data file and metadata.
 
+If `Auto-import to fingerprinting` is enabled, the capture is also imported into the fingerprinting registry, where the backend computes quality-control metrics from the generated IQ file:
+
+- estimated SNR
+- occupied bandwidth
+- peak frequency and offset
+- burst start and end
+- silence percentage
+- clipping percentage
+
+Those QC metrics are computed from the saved IQ file itself, not only from the live preview. This is why a capture that looked plausible live can still be rejected later if the stored burst is mostly silence, strongly off-center, or too weak once analyzed offline.
+
 Example marker-band capture configured to generate `.cfile` or `.iq` datasets for replay, offline analysis, or AI model training:
 
 ![Marker-band cfile and IQ dataset generation workflow](readme_img/cfile_iqfile_generator_from_marker_BW.png)
+
+## Capture Lab Guardrails And User Guidance
+
+`Capture Lab` is intentionally conservative. It is designed for reproducible scientific acquisition, not for unlimited wideband dumping.
+
+Current protective behaviors:
+
+- It validates that the requested frequency window is coherent before starting capture.
+- It blocks invalid `start/stop` combinations.
+- It blocks invalid `center/bandwidth` combinations.
+- It validates capture duration before starting the worker process.
+- It warns in the UI when the requested bandwidth is too large for the controlled dataset workflow.
+- It disables the capture button while the request is outside the safe operating window.
+- It shows a global transparent activity overlay while connecting the SDR or recording IQ, without blocking navigation across tabs.
+
+Current practical capture limit in `Capture Lab`:
+
+- Maximum guided bandwidth for this workflow: about `10 MHz`
+
+This limit exists so the tool does not silently push the USRP-B200 workflow into unstable or excessively heavy captures that often end in timeout, oversized IQ files, or unreliable scientific conditions.
+
+## Understanding Common Messages
+
+These messages are expected when the tool is protecting the workflow:
+
+- `Create at least two markers first. M1 and M2 define the capture band.`
+  Meaning: `Markers M1-M2` mode is selected but the spectrum does not yet contain two markers.
+
+- `Enter a valid frequency window. Start must be lower than stop and both must be positive.`
+  Meaning: the custom frequency definition is mathematically invalid.
+
+- `Capture Lab supports up to 10.0 MHz of bandwidth in this workflow. Reduce the requested window.`
+  Meaning: the requested capture is too wide for the safe guided acquisition path. Narrow the band or use a different workflow.
+
+- `Duration must be between 0 and 120 seconds.`
+  Meaning: the capture duration is outside the allowed range.
+
+- `Connecting to SDR`
+  Meaning: the SDR initialization is still in progress. UHD/GNU Radio can take a few seconds. The overlay is informative and does not lock the rest of the UI.
+
+- `Capturing TRAIN/VAL/PREDICT dataset segment`
+  Meaning: IQ acquisition is running and the hardware is being used exclusively for that operation.
+
+- `Prediction Job: running`
+  Meaning: `Inference` launched an asynchronous backend job and the UI is following its `job_id` until completion.
+
+- `No report generated yet. If the job is still running, wait for completion. If it failed, inspect stderr above.`
+  Meaning: the prediction report JSON does not exist yet or the job has not finished.
+
+- `Python por defecto detectado: C:\Users\Usuario\radioconda\python.exe`
+  Meaning: the frontend received the RadioConda runtime path from the launcher. In normal use you can keep this value as-is or leave the field empty and let the backend default apply.
+
+- `UHD did not find the USRP-B200. Check the USB connection and make sure no other GNU Radio/UHD process is using the device.`
+  Meaning: the radio is not reachable or another process already owns it.
+
+- `timed out after 45.0 seconds`
+  Meaning: the requested acquisition was too heavy or the worker did not finish in the expected time. Typical causes are excessive bandwidth, excessive sample rate, heavy host load, or UHD device contention.
+
+Recommended operator reaction when an error appears:
+
+1. Read whether the message is about frequency definition, bandwidth, duration, USB/UHD access, or timeout.
+2. If it is a validation message, correct the parameters in `Capture Lab` before retrying.
+3. If it is a hardware message, verify the USRP-B200 connection and ensure no other SDR process is running.
+4. If it is a timeout, reduce bandwidth first, then reduce duration, and retry with a narrower and more controlled capture.
+
+## Frontend Flow And Why Each Tab Exists
+
+- `Mission Control`: explains the recommended end-to-end workflow and separates monitoring, acquisition, curation, and ML tasks.
+- `Live Monitor`: used to tune, inspect the band, place markers, and verify the signal visually before capture.
+- `Capture Lab`: controlled dataset acquisition. This is where the operator records `.cfile`/`.iq` and sets the purpose as `train`, `val`, or `predict`.
+- `Dataset Builder`: dataset curation, not acquisition. It is used to inspect QC, accept/reject captures, and keep the registry scientifically consistent.
+- `Training`: launches remote training jobs using the training split.
+- `Retraining`: repeats training over updated train data or a later model state.
+- `Validation`: runs evaluation only on `val` captures and now appears with the RadioConda Python prefilled by default.
+- `Inference`: runs asynchronous prediction jobs on `predict` captures, polls the job automatically, and shows `stdout`, `stderr`, and the final report.
+- `Models`: summarizes current model artifacts and readiness state.
 
 ## Important Environment Variables
 
@@ -174,6 +315,7 @@ Example marker-band capture configured to generate `.cfile` or `.iq` datasets fo
 | `DEFAULT_ANTENNA` | UHD antenna name, currently `RX2` |
 | `UHD_DEVICE_ARGS` | Optional UHD device arguments |
 | `RADIOCONDA_PYTHON` | Python executable with GNU Radio/UHD installed |
+| `VITE_RADIOCONDA_PYTHON` | Frontend runtime copy of the RadioConda Python path, injected by `run_dev.ps1` |
 | `REAL_SDR_FPS` | Spectrum worker frame rate, default `10` |
 | `REAL_SDR_MAX_FFT_SIZE` | Maximum FFT size used to approach requested RBW, default `65536` |
 
