@@ -28,4 +28,10 @@ export const RUNTIME_CONFIG = {
     import.meta.env.VITE_WATERFALL_POLL_INTERVAL_MS,
     DEFAULT_WATERFALL_POLL_INTERVAL_MS,
   ),
+  remoteUser: import.meta.env.VITE_REMOTE_USER ?? '',
+  remoteHost: import.meta.env.VITE_REMOTE_HOST ?? '',
+  remoteVenvActivate:
+    import.meta.env.VITE_REMOTE_VENV_ACTIVATE ??
+    (import.meta.env.VITE_REMOTE_USER ? `/home/${import.meta.env.VITE_REMOTE_USER}/rfenv/bin/activate` : ''),
+  radioCondaPython: import.meta.env.VITE_RADIOCONDA_PYTHON ?? '',
 } as const;

@@ -74,14 +74,16 @@ class SpectrumController:
         validate_frequency_window(self._settings.frequency.center_frequency_hz, span_hz)
         self._settings.set_span(span_hz)
         self._settings.set_sample_rate(span_hz)
-        real_spectrum_stream.stop()
+        if real_spectrum_stream.is_running():
+            real_spectrum_stream.apply_settings(self._settings)
         return {"status": "ok", "span_hz": span_hz}
 
     def set_center_frequency(self, frequency_hz: float) -> dict:
         validate_center_frequency(frequency_hz)
         validate_frequency_window(frequency_hz, self._settings.frequency.span_hz)
         self._settings.set_center_frequency(frequency_hz)
-        real_spectrum_stream.stop()
+        if real_spectrum_stream.is_running():
+            real_spectrum_stream.apply_settings(self._settings)
         return {
             "status": "ok",
             "center_frequency_hz": self._settings.frequency.center_frequency_hz,
@@ -94,7 +96,8 @@ class SpectrumController:
         self._settings.set_center_frequency(center_frequency_hz)
         self._settings.set_span(span_hz)
         self._settings.set_sample_rate(span_hz)
-        real_spectrum_stream.stop()
+        if real_spectrum_stream.is_running():
+            real_spectrum_stream.apply_settings(self._settings)
         return {
             "status": "ok",
             "center_frequency_hz": center_frequency_hz,
@@ -106,11 +109,15 @@ class SpectrumController:
     def set_rbw(self, rbw_hz: float) -> dict:
         validate_rbw(rbw_hz)
         self._settings.set_rbw(rbw_hz)
+        if real_spectrum_stream.is_running():
+            real_spectrum_stream.apply_settings(self._settings)
         return {"status": "ok", "rbw_hz": rbw_hz}
 
     def set_vbw(self, vbw_hz: float) -> dict:
         validate_vbw(vbw_hz)
         self._settings.set_vbw(vbw_hz)
+        if real_spectrum_stream.is_running():
+            real_spectrum_stream.apply_settings(self._settings)
         return {"status": "ok", "vbw_hz": vbw_hz}
 
     def set_noise_floor_offset(self, noise_floor_offset_db: float) -> dict:

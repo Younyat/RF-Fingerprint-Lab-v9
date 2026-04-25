@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { BarChart3, ChevronLeft, ChevronRight, Download, Image, Play, Square, RotateCcw, Target, Usb, Unplug, Radio, Trash2, SlidersHorizontal } from 'lucide-react';
+import { BarChart3, ChevronLeft, ChevronRight, Download, Eye, EyeOff, Image, Move, Play, Square, RotateCcw, Target, Usb, Unplug, Radio, Trash2, SlidersHorizontal, X } from 'lucide-react';
 import { useSpectrum } from '../hooks/useSpectrum';
 import { useWaterfall } from '../hooks/useWaterfall';
 import { useSpectrumController } from '../controllers/SpectrumController';
 import { getLevelAtFrequency, useMarkerController } from '../controllers/MarkerController';
-import { useAnalyzerSettings, useDeviceStatus, useMarkers, useSpectrumData } from '../../app/store/AppStore';
-import { formatFrequency, formatPowerLevel } from '../../shared/utils';
+import { useAnalyzerSettings, useAppActions, useDeviceStatus, useMarkers, useSpectrumData } from '../../app/store/AppStore';
+import { estimateBandQuality, formatFrequency, formatPowerLevel } from '../../shared/utils';
 import { cn } from '../../shared/utils';
 import { DETECTOR_MODES, SPECTRUM_COLOR_SCHEMES, TRACE_MODES } from '../../shared/constants';
 import type { AnalyzerSettings } from '../../shared/types';
@@ -13,6 +13,7 @@ import type { AnalyzerSettings } from '../../shared/types';
 const hzToMhz = (hz: number) => Number.isFinite(hz) ? hz / 1e6 : 0;
 const mhzToHz = (mhz: string) => Number(mhz) * 1e6;
 const khzToHz = (khz: string) => Number(khz) * 1e3;
+const spectrumOverlayStorageKey = 'spectrum-view-overlay-preferences';
 
 const formatInput = (value: number, digits = 6) => {
   if (!Number.isFinite(value)) return '';
@@ -50,6 +51,29 @@ const getErrorMessage = (error: unknown) => {
   return error instanceof Error ? error.message : 'Operation failed';
 };
 
+const findStrongestPeak = (frequencies: number[], levels: number[]) => {
+  if (frequencies.length === 0 || levels.length === 0 || frequencies.length !== levels.length) {
+    return null;
+  }
+  let peakIndex = 0;
+  let peakLevel = -Infinity;
+  for (let index = 0; index < levels.length; index += 1) {
+    const level = levels[index];
+    if (Number.isFinite(level) && level > peakLevel) {
+      peakLevel = level;
+      peakIndex = index;
+    }
+  }
+  const peakFrequency = frequencies[peakIndex];
+  if (!Number.isFinite(peakFrequency) || !Number.isFinite(peakLevel)) {
+    return null;
+  }
+  return {
+    frequency: peakFrequency,
+    level: peakLevel,
+  };
+};
+
 export const SpectrumView: React.FC = () => {
   const { canvasRef } = useSpectrum();
   const [showWaterfallSplit, setShowWaterfallSplit] = useState(false);
@@ -58,6 +82,7 @@ export const SpectrumView: React.FC = () => {
   const deviceStatus = useDeviceStatus();
   const settings = useAnalyzerSettings();
   const markers = useMarkers();
+  const { setGlobalActivity, clearGlobalActivity } = useAppActions();
   const spectrumController = useSpectrumController();
   const markerController = useMarkerController();
 
@@ -80,7 +105,56 @@ export const SpectrumView: React.FC = () => {
   const [controlError, setControlError] = useState<string | null>(null);
   const [cursor, setCursor] = useState<{ frequency: number; level: number } | null>(null);
   const [draggingMarkerId, setDraggingMarkerId] = useState<string | null>(null);
+  const [showPanOverlay, setShowPanOverlay] = useState(true);
+  const [showMarkerBadges, setShowMarkerBadges] = useState(true);
+  const [showCursorBadge, setShowCursorBadge] = useState(true);
+  const [panOverlayPosition, setPanOverlayPosition] = useState({ x: 16, y: 16 });
+  const dragStateRef = useRef<{ type: 'pan' | null; offsetX: number; offsetY: number }>({ type: null, offsetX: 0, offsetY: 0 });
   const suppressNextClickRef = useRef(false);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(spectrumOverlayStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as {
+        showPanOverlay?: boolean;
+        showMarkerBadges?: boolean;
+        showCursorBadge?: boolean;
+        panOverlayPosition?: { x?: number; y?: number };
+      };
+      if (typeof parsed.showPanOverlay === 'boolean') setShowPanOverlay(parsed.showPanOverlay);
+      if (typeof parsed.showMarkerBadges === 'boolean') setShowMarkerBadges(parsed.showMarkerBadges);
+      if (typeof parsed.showCursorBadge === 'boolean') setShowCursorBadge(parsed.showCursorBadge);
+      if (
+        parsed.panOverlayPosition &&
+        Number.isFinite(parsed.panOverlayPosition.x) &&
+        Number.isFinite(parsed.panOverlayPosition.y)
+      ) {
+        setPanOverlayPosition({
+          x: Number(parsed.panOverlayPosition.x),
+          y: Number(parsed.panOverlayPosition.y),
+        });
+      }
+    } catch {
+      // Ignore invalid persisted UI state.
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        spectrumOverlayStorageKey,
+        JSON.stringify({
+          showPanOverlay,
+          showMarkerBadges,
+          showCursorBadge,
+          panOverlayPosition,
+        }),
+      );
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [showPanOverlay, showMarkerBadges, showCursorBadge, panOverlayPosition]);
 
   useEffect(() => {
     setCenterMHz(formatInput(hzToMhz(settings.centerFrequency)));
@@ -141,6 +215,15 @@ export const SpectrumView: React.FC = () => {
       levelDelta: second.level - first.level,
     };
   }, [markerRows]);
+
+  const liveMarkerBandQuality = useMemo(() => {
+    if (!spectrumData || markerRows.length < 2) return null;
+    const first = markerRows[0];
+    const second = markerRows[1];
+    const start = Math.min(first.frequency, second.frequency);
+    const stop = Math.max(first.frequency, second.frequency);
+    return estimateBandQuality(spectrumData.frequencyArray, spectrumData.powerLevels, start, stop);
+  }, [markerRows, spectrumData]);
 
   const applyCenterSpan = async () => {
     const center = mhzToHz(centerMHz);
@@ -262,17 +345,33 @@ export const SpectrumView: React.FC = () => {
   const handleConnectDisconnect = async () => {
     if (deviceStatus.isConnected) {
       try {
+        setGlobalActivity({
+          visible: true,
+          kind: 'processing',
+          title: 'Disconnecting SDR',
+          detail: 'Closing the active SDR session.',
+        });
         await spectrumController.disconnectDevice();
         setIsStreaming(false);
       } catch (error) {
         setControlError(getErrorMessage(error));
+      } finally {
+        clearGlobalActivity();
       }
       return;
     }
     try {
+      setGlobalActivity({
+        visible: true,
+        kind: 'connecting',
+        title: 'Connecting to SDR',
+        detail: 'The radio frontend may take a few seconds to initialize. You can keep navigating.',
+      });
       await spectrumController.connectDevice();
     } catch (error) {
       setControlError(getErrorMessage(error));
+    } finally {
+      clearGlobalActivity();
     }
   };
 
@@ -314,6 +413,31 @@ export const SpectrumView: React.FC = () => {
     }
   };
 
+  const startOverlayDrag = (event: React.MouseEvent<HTMLDivElement>) => {
+    const container = event.currentTarget.parentElement;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    dragStateRef.current = {
+      type: 'pan',
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+    };
+  };
+
+  const stopOverlayDrag = () => {
+    dragStateRef.current = { type: null, offsetX: 0, offsetY: 0 };
+  };
+
+  const dragOverlay = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (dragStateRef.current.type !== 'pan') return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const nextX = Math.max(8, Math.min(rect.width - 260, event.clientX - rect.left - dragStateRef.current.offsetX));
+    const nextY = Math.max(8, Math.min(rect.height - 80, event.clientY - rect.top - dragStateRef.current.offsetY));
+    setPanOverlayPosition({ x: nextX, y: nextY });
+  };
+
   const startMarkerDrag = (event: React.MouseEvent<HTMLCanvasElement>) => {
     const frequency = frequencyFromPointer(event);
     if (frequency === null) return;
@@ -342,6 +466,56 @@ export const SpectrumView: React.FC = () => {
     for (const [index, peak] of peaks.entries()) {
       await markerController.createMarker(peak.frequency, `P${index + 1}`, peak.level);
     }
+  };
+
+  const centerOnLivePeak = async () => {
+    if (!spectrumData) {
+      setControlError('No live spectrum data available to recenter.');
+      return;
+    }
+    const strongestPeak = findStrongestPeak(spectrumData.frequencyArray, spectrumData.powerLevels);
+    if (!strongestPeak) {
+      setControlError('No valid spectral peak available to recenter.');
+      return;
+    }
+
+    setControlError(null);
+    try {
+      if (markerRows.length >= 2) {
+        const first = markerRows[0];
+        const second = markerRows[1];
+        const markerBandwidth = Math.abs(second.frequency - first.frequency);
+        const nextStart = strongestPeak.frequency - markerBandwidth / 2;
+        const nextStop = strongestPeak.frequency + markerBandwidth / 2;
+        if (!Number.isFinite(nextStart) || !Number.isFinite(nextStop) || nextStart <= 0 || nextStop <= nextStart) {
+          setControlError('Unable to derive a valid marker-centered frequency window.');
+          return;
+        }
+
+        await spectrumController.setStartStop(nextStart, nextStop);
+        markerController.updateMarker(first.id, {
+          frequency: nextStart,
+          level: getLevelAtFrequency(nextStart, spectrumData.frequencyArray, spectrumData.powerLevels),
+        });
+        markerController.updateMarker(second.id, {
+          frequency: nextStop,
+          level: getLevelAtFrequency(nextStop, spectrumData.frequencyArray, spectrumData.powerLevels),
+        });
+        await spectrumController.refreshSpectrum();
+        return;
+      }
+
+      await spectrumController.setCenterFrequency(strongestPeak.frequency);
+      await spectrumController.refreshSpectrum();
+    } catch (error) {
+      setControlError(getErrorMessage(error));
+    }
+  };
+
+  const removeLastMarker = async () => {
+    if (markerRows.length === 0) return;
+    const lastMarker = markerRows[markerRows.length - 1];
+    await markerController.deleteMarker(lastMarker.id);
   };
 
   const exportCsv = () => {
@@ -423,6 +597,30 @@ export const SpectrumView: React.FC = () => {
           >
             <BarChart3 className="w-4 h-4 mr-2" />
             {showWaterfallSplit ? 'Spectrum Only' : 'Spectrum + Waterfall'}
+          </button>
+
+          <button
+            onClick={() => setShowPanOverlay((current) => !current)}
+            className="h-9 flex items-center px-3 rounded-md bg-slate-700 hover:bg-slate-600 text-sm"
+          >
+            {showPanOverlay ? <EyeOff className="w-4 h-4 mr-2" /> : <Eye className="w-4 h-4 mr-2" />}
+            Pan Overlay
+          </button>
+
+          <button
+            onClick={() => setShowMarkerBadges((current) => !current)}
+            className="h-9 flex items-center px-3 rounded-md bg-slate-700 hover:bg-slate-600 text-sm"
+          >
+            {showMarkerBadges ? <EyeOff className="w-4 h-4 mr-2" /> : <Eye className="w-4 h-4 mr-2" />}
+            Marker Badges
+          </button>
+
+          <button
+            onClick={() => setShowCursorBadge((current) => !current)}
+            className="h-9 flex items-center px-3 rounded-md bg-slate-700 hover:bg-slate-600 text-sm"
+          >
+            {showCursorBadge ? <EyeOff className="w-4 h-4 mr-2" /> : <Eye className="w-4 h-4 mr-2" />}
+            Cursor Badge
           </button>
 
           <div className="h-9 w-px bg-slate-700 mx-1" />
@@ -510,10 +708,36 @@ export const SpectrumView: React.FC = () => {
             Peak
           </button>
           <button
+            onClick={centerOnLivePeak}
+            disabled={!spectrumData || spectrumData.frequencyArray.length === 0}
+            className={cn(
+              'h-9 flex items-center px-3 rounded-md text-sm font-medium',
+              !spectrumData || spectrumData.frequencyArray.length === 0
+                ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
+                : 'bg-emerald-700 hover:bg-emerald-600 text-white'
+            )}
+          >
+            <Target className="w-4 h-4 mr-2" />
+            Center On Peak
+          </button>
+          <button
             onClick={createAutoPeaks}
             className="h-9 flex items-center px-3 rounded-md bg-purple-700 hover:bg-purple-600 text-sm font-medium"
           >
             Auto Peaks
+          </button>
+          <button
+            onClick={() => removeLastMarker()}
+            disabled={markerRows.length === 0}
+            className={cn(
+              'h-9 flex items-center px-3 rounded-md text-sm',
+              markerRows.length === 0
+                ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
+                : 'bg-slate-700 hover:bg-slate-600'
+            )}
+          >
+            <Trash2 className="w-4 h-4 mr-2" />
+            Remove One
           </button>
           <button
             onClick={() => markerController.clearAllMarkers()}
@@ -539,25 +763,48 @@ export const SpectrumView: React.FC = () => {
       <div className="flex-1 grid grid-cols-[minmax(0,1fr)_320px] min-h-0">
         <div className="flex min-h-0 flex-col">
           <div className={cn('relative min-h-0', showWaterfallSplit ? 'flex-[3_1_0%]' : 'flex-1')}>
-            <div className="absolute left-4 top-4 z-10 flex items-center gap-2 rounded-md border border-slate-700 bg-slate-900/95 px-2 py-2 shadow-lg">
-              <button
-                onClick={() => panFrequencyWindow(-1)}
-                title="Desplazar espectro hacia la izquierda"
-                className="h-9 inline-flex items-center gap-1.5 rounded-md bg-cyan-700 px-3 text-sm font-semibold text-white hover:bg-cyan-600"
+            {showPanOverlay && (
+              <div
+                className="absolute z-10 rounded-xl border border-slate-700/80 bg-slate-950/60 px-2 py-2 shadow-lg backdrop-blur-md"
+                style={{ left: `${panOverlayPosition.x}px`, top: `${panOverlayPosition.y}px` }}
               >
-                <ChevronLeft className="w-5 h-5" />
-                Spectrum Left
-              </button>
-              <LabeledInput label="Step MHz" value={panStepMHz} onChange={setPanStepMHz} onEnter={() => undefined} compact />
-              <button
-                onClick={() => panFrequencyWindow(1)}
-                title="Desplazar espectro hacia la derecha"
-                className="h-9 inline-flex items-center gap-1.5 rounded-md bg-cyan-700 px-3 text-sm font-semibold text-white hover:bg-cyan-600"
-              >
-                Spectrum Right
-                <ChevronRight className="w-5 h-5" />
-              </button>
-            </div>
+                <div
+                  className="mb-2 flex cursor-move items-center justify-between gap-2 rounded-lg bg-slate-900/70 px-2 py-1 text-[11px] uppercase tracking-[0.16em] text-slate-300"
+                  onMouseDown={startOverlayDrag}
+                >
+                  <div className="flex items-center gap-1">
+                    <Move className="w-3 h-3" />
+                    Pan
+                  </div>
+                  <button
+                    onClick={() => setShowPanOverlay(false)}
+                    className="rounded-md p-1 text-slate-300 hover:bg-slate-800"
+                    title="Ocultar panel"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => panFrequencyWindow(-1)}
+                    title="Desplazar espectro hacia la izquierda"
+                    className="h-8 inline-flex items-center gap-1 rounded-md bg-cyan-700/85 px-2 text-xs font-semibold text-white hover:bg-cyan-600"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    Left
+                  </button>
+                  <LabeledInput label="Step MHz" value={panStepMHz} onChange={setPanStepMHz} onEnter={() => undefined} compact />
+                  <button
+                    onClick={() => panFrequencyWindow(1)}
+                    title="Desplazar espectro hacia la derecha"
+                    className="h-8 inline-flex items-center gap-1 rounded-md bg-cyan-700/85 px-2 text-xs font-semibold text-white hover:bg-cyan-600"
+                  >
+                    Right
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
             <canvas
               ref={canvasRef}
               width={1400}
@@ -565,31 +812,38 @@ export const SpectrumView: React.FC = () => {
               className="w-full h-full cursor-crosshair bg-slate-950"
               onClick={addMarkerAtCanvas}
               onMouseDown={startMarkerDrag}
-              onMouseMove={updateCursor}
-              onMouseUp={() => setDraggingMarkerId(null)}
+              onMouseMove={(event) => {
+                dragOverlay(event);
+                updateCursor(event);
+              }}
+              onMouseUp={() => {
+                setDraggingMarkerId(null);
+                stopOverlayDrag();
+              }}
               onMouseLeave={() => {
                 setCursor(null);
                 setDraggingMarkerId(null);
+                stopOverlayDrag();
               }}
               onWheel={zoomFromWheel}
             />
-            {cursor && (
-              <div className="absolute right-4 top-4 z-10 rounded-md border border-slate-700 bg-slate-900/95 px-3 py-2 text-xs text-slate-100 shadow-lg">
+            {cursor && showCursorBadge && (
+              <div className="absolute right-4 top-4 z-10 rounded-lg border border-slate-700/80 bg-slate-950/55 px-2 py-1 text-[11px] text-slate-100 shadow-lg backdrop-blur-md">
                 {formatFrequency(cursor.frequency)} | {formatPowerLevel(cursor.level)}
               </div>
             )}
-            {markerRows.map((marker) => {
+            {showMarkerBadges && markerRows.map((marker) => {
               const start = settings.centerFrequency - settings.span / 2;
               const position = ((marker.frequency - start) / settings.span) * 100;
               if (position < 0 || position > 100) return null;
               return (
                 <div
                   key={marker.id}
-                  className="absolute top-0 bottom-0 border-l border-amber-300 pointer-events-none"
+                  className="absolute top-0 bottom-0 border-l border-amber-300/70 pointer-events-none"
                   style={{ left: `${position}%` }}
                 >
-                  <div className="ml-1 mt-2 bg-amber-300 text-slate-950 px-1.5 py-0.5 text-xs rounded-sm whitespace-nowrap">
-                    {marker.label} {formatFrequency(marker.frequency)} {formatPowerLevel(marker.level)}
+                  <div className="ml-1 mt-1 rounded-md border border-amber-300/40 bg-amber-300/18 px-1.5 py-0.5 text-[10px] whitespace-nowrap text-amber-100 backdrop-blur-sm">
+                    {marker.label} {formatFrequency(marker.frequency)}
                   </div>
                 </div>
               );
@@ -647,6 +901,16 @@ export const SpectrumView: React.FC = () => {
               <div className="mt-5 text-xs uppercase text-slate-400 mb-2">Delta M2-M1</div>
               <StatusRow label="Delta F" value={formatFrequency(deltaMarker.frequencyDelta)} />
               <StatusRow label="Delta L" value={formatPowerLevel(deltaMarker.levelDelta)} />
+            </>
+          )}
+
+          {liveMarkerBandQuality && (
+            <>
+              <div className="mt-5 text-xs uppercase text-slate-400 mb-2">Marker-Band QC</div>
+              <StatusRow label="Peak" value={formatPowerLevel(liveMarkerBandQuality.peakLevelDb)} />
+              <StatusRow label="Noise" value={formatPowerLevel(liveMarkerBandQuality.noiseFloorDb)} />
+              <StatusRow label="SNR" value={`${liveMarkerBandQuality.snrDb.toFixed(1)} dB`} />
+              <StatusRow label="Peak Freq" value={formatFrequency(liveMarkerBandQuality.peakFrequencyHz)} />
             </>
           )}
 

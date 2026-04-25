@@ -178,6 +178,34 @@ export const API_ENDPOINTS = {
   MODULATED_SIGNAL_IQ: (id: string) => `/api/modulated-signals/captures/${id}/iq`,
   MODULATED_SIGNAL_METADATA: (id: string) => `/api/modulated-signals/captures/${id}/metadata`,
 
+  // Fingerprinting
+  FINGERPRINTING_DASHBOARD: '/api/fingerprinting/dashboard',
+  FINGERPRINTING_CAPTURES: '/api/fingerprinting/captures',
+  FINGERPRINTING_CAPTURE: (id: string) => `/api/fingerprinting/captures/${id}`,
+  FINGERPRINTING_CAPTURE_DELETE: (id: string) => `/api/fingerprinting/captures/${id}`,
+  FINGERPRINTING_CAPTURE_REVIEW: (id: string) => `/api/fingerprinting/captures/${id}/review`,
+  FINGERPRINTING_CAPTURE_RECOMPUTE_QC: (id: string) => `/api/fingerprinting/captures/${id}/recompute-qc`,
+  FINGERPRINTING_IMPORT_MODULATED: (id: string) => `/api/fingerprinting/imports/modulated-signals/${id}`,
+
+  // MLOps
+  TRAINING_DASHBOARD: '/api/training/dashboard',
+  TRAINING_MODELS: '/api/training/models',
+  TRAINING_START: '/api/training/start',
+  TRAINING_RETRAIN: '/api/training/retrain',
+  TRAINING_STATUS: '/api/training/status',
+  VALIDATION_RUN: '/api/validation/run',
+  VALIDATION_START: '/api/validation/start',
+  VALIDATION_STATUS: '/api/validation/status',
+  VALIDATION_REPORTS: '/api/validation/reports',
+  INFERENCE_CLASSIFY: '/api/inference/classify',
+  INFERENCE_VERIFY: '/api/inference/verify',
+  INFERENCE_PREDICT_CAPTURES: '/api/inference/predict/captures',
+  INFERENCE_PREDICT_START: '/api/inference/predict/start',
+  INFERENCE_PREDICT_STATUS: '/api/inference/predict/status',
+  MODELS_OVERVIEW: '/api/models/overview',
+  MODELS_CURRENT: '/api/models/current',
+  MODELS_BY_VERSION: (version: string) => `/api/models/${version}`,
+
   // Presets
   PRESETS_LIST: '/api/presets/',
   PRESETS_CREATE: '/api/presets/',

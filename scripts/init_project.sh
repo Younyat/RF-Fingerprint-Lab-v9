@@ -51,7 +51,7 @@ source venv/bin/activate 2>/dev/null || . venv/Scripts/activate 2>/dev/null
 
 # Install dependencies
 echo "Installing backend dependencies..."
-pip install -q --upgrade pip setuptools wheel
+pip install -q --upgrade pip wheel "setuptools<82"
 pip install -q -r requirements.txt
 
 echo -e "${GREEN}✓ Backend setup complete${NC}"

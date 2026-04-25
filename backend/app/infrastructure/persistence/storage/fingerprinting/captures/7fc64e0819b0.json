@@ -1,0 +1,103 @@
+{
+  "capture_id": "7fc64e0819b0",
+  "capture_mode": "guided_capture",
+  "session_id": "session_001",
+  "dataset_split": "train",
+  "created_at_utc": "2026-04-24T23:10:29.448169+00:00",
+  "capture_config": {
+    "device_source": "uhd",
+    "sdr_model": "USRP-B200",
+    "sdr_serial": "unknown",
+    "gain_stage": "manual",
+    "antenna_port": "RX2",
+    "capture_type": "iq_file",
+    "center_frequency_hz": 433920000.0,
+    "sample_rate_hz": 2000000.0,
+    "effective_bandwidth_hz": 2000000.0,
+    "frontend_bandwidth_hz": 2000000.0,
+    "gain_mode": "manual",
+    "gain_settings": {
+      "lna_db": 20,
+      "vga_db": 0,
+      "if_db": 0,
+      "composite_gain_db": 20
+    },
+    "ppm_correction": 0.0,
+    "lo_offset_hz": 0.0,
+    "capture_duration_s": 2.0,
+    "sample_count": 0,
+    "file_format": "cfile",
+    "sample_dtype": "complex64",
+    "byte_order": "native",
+    "channel_count": 1,
+    "output_path": "",
+    "dataset_destination": "fingerprinting/train"
+  },
+  "transmitter": {
+    "transmitter_label": "remote_001",
+    "transmitter_class": "garage_remote",
+    "transmitter_id": "tx_remote_001",
+    "family": "subghz_remote",
+    "ground_truth_confidence": "confirmed"
+  },
+  "scenario": {
+    "operator": "operator_a",
+    "environment": "indoor_lab_los",
+    "distance_m": 2.0,
+    "line_of_sight": true,
+    "indoor": true,
+    "notes": "",
+    "session_number": 1,
+    "timestamp_utc": "2026-04-24T23:10:29.448169+00:00"
+  },
+  "quality_metrics": {
+    "estimated_snr_db": 18.0,
+    "noise_floor_db": -96.0,
+    "peak_power_db": -24.0,
+    "average_power_db": -35.0,
+    "occupied_bandwidth_hz": 180000.0,
+    "peak_frequency_hz": 433920120.0,
+    "frequency_offset_hz": 120.0,
+    "clipping_pct": 0.0,
+    "sample_drop_count": 0,
+    "buffer_overflow_count": 0,
+    "silence_pct": 4.0,
+    "peak_to_average_ratio_db": 11.0,
+    "kurtosis": 2.8,
+    "burst_duration_ms": 42.0
+  },
+  "burst_detection": {
+    "method": "energy_threshold",
+    "energy_threshold_db": -42.0,
+    "pre_trigger_samples": 4096,
+    "post_trigger_samples": 8192,
+    "min_burst_duration_ms": 1.0,
+    "max_burst_duration_ms": 120.0,
+    "burst_count": 1,
+    "regions_of_interest": [
+      "transient_start",
+      "whole_burst"
+    ],
+    "burst_start_sample": 4096,
+    "burst_end_sample": 98304
+  },
+  "quality_review": {
+    "status": "valid",
+    "reasons": [],
+    "quality_flags": [],
+    "operator_decision": "valid",
+    "review_notes": "",
+    "export_windows": [
+      "transient_start",
+      "whole_burst"
+    ],
+    "updated_at_utc": "2026-04-24T23:10:29.448169+00:00"
+  },
+  "artifacts": {
+    "iq_file": "",
+    "metadata_file": "",
+    "sha256": "",
+    "source_capture_id": null
+  },
+  "updated_at_utc": "2026-04-24T23:10:29.448169+00:00"
+}

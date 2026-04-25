@@ -7,15 +7,19 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 // Frequency formatting utilities
-export function formatFrequency(hz: number): string {
-  if (hz >= 1e9) {
-    return `${(hz / 1e9).toFixed(2)} GHz`;
-  } else if (hz >= 1e6) {
-    return `${(hz / 1e6).toFixed(2)} MHz`;
-  } else if (hz >= 1e3) {
-    return `${(hz / 1e3).toFixed(2)} kHz`;
+export function formatFrequency(hz: number | null | undefined): string {
+  if (!Number.isFinite(hz)) {
+    return 'n/a';
+  }
+  const safeHz = Number(hz);
+  if (safeHz >= 1e9) {
+    return `${(safeHz / 1e9).toFixed(2)} GHz`;
+  } else if (safeHz >= 1e6) {
+    return `${(safeHz / 1e6).toFixed(2)} MHz`;
+  } else if (safeHz >= 1e3) {
+    return `${(safeHz / 1e3).toFixed(2)} kHz`;
   } else {
-    return `${hz.toFixed(0)} Hz`;
+    return `${safeHz.toFixed(0)} Hz`;
   }
 }
 
@@ -30,15 +34,88 @@ export function parseFrequency(value: number, unit: 'Hz' | 'kHz' | 'MHz' | 'GHz'
 }
 
 // Power level formatting
-export function formatPowerLevel(db: number): string {
-  return `${db >= 0 ? '+' : ''}${db.toFixed(1)} dB`;
+export function formatPowerLevel(db: number | null | undefined): string {
+  if (!Number.isFinite(db)) {
+    return 'n/a';
+  }
+  const safeDb = Number(db);
+  return `${safeDb >= 0 ? '+' : ''}${safeDb.toFixed(1)} dB`;
+}
+
+export interface BandQualityEstimate {
+  peakLevelDb: number;
+  peakFrequencyHz: number;
+  noiseFloorDb: number;
+  snrDb: number;
+}
+
+export function estimateBandQuality(
+  frequencies: number[],
+  levelsDb: number[],
+  startFrequencyHz: number,
+  stopFrequencyHz: number,
+): BandQualityEstimate | null {
+  if (
+    frequencies.length === 0 ||
+    levelsDb.length === 0 ||
+    frequencies.length !== levelsDb.length ||
+    !Number.isFinite(startFrequencyHz) ||
+    !Number.isFinite(stopFrequencyHz) ||
+    stopFrequencyHz <= startFrequencyHz
+  ) {
+    return null;
+  }
+
+  const inBandLevels: number[] = [];
+  const inBandFrequencies: number[] = [];
+  const outOfBandLevels: number[] = [];
+
+  for (let index = 0; index < frequencies.length; index += 1) {
+    const frequency = frequencies[index];
+    const level = levelsDb[index];
+    if (!Number.isFinite(frequency) || !Number.isFinite(level)) continue;
+    if (frequency >= startFrequencyHz && frequency <= stopFrequencyHz) {
+      inBandLevels.push(level);
+      inBandFrequencies.push(frequency);
+    } else {
+      outOfBandLevels.push(level);
+    }
+  }
+
+  if (inBandLevels.length === 0) return null;
+
+  let peakIndex = 0;
+  let peakLevelDb = -Infinity;
+  inBandLevels.forEach((level, index) => {
+    if (level > peakLevelDb) {
+      peakLevelDb = level;
+      peakIndex = index;
+    }
+  });
+
+  const noiseCandidates = outOfBandLevels.length >= 8 ? outOfBandLevels : levelsDb.filter(Number.isFinite);
+  if (noiseCandidates.length === 0) return null;
+  const sortedNoise = [...noiseCandidates].sort((a, b) => a - b);
+  const noiseIndex = Math.min(sortedNoise.length - 1, Math.max(0, Math.floor(sortedNoise.length * 0.2)));
+  const noiseFloorDb = sortedNoise[noiseIndex];
+
+  return {
+    peakLevelDb,
+    peakFrequencyHz: inBandFrequencies[peakIndex],
+    noiseFloorDb,
+    snrDb: peakLevelDb - noiseFloorDb,
+  };
 }
 
 // Time formatting
-export function formatDuration(seconds: number): string {
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const secs = Math.floor(seconds % 60);
+export function formatDuration(seconds: number | null | undefined): string {
+  if (!Number.isFinite(seconds)) {
+    return 'n/a';
+  }
+  const safeSeconds = Number(seconds);
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const secs = Math.floor(safeSeconds % 60);
 
   if (hours > 0) {
     return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
@@ -48,9 +125,13 @@ export function formatDuration(seconds: number): string {
 }
 
 // File size formatting
-export function formatFileSize(bytes: number): string {
+export function formatFileSize(bytes: number | null | undefined): string {
+  if (!Number.isFinite(bytes) || (bytes ?? 0) < 0) {
+    return 'n/a';
+  }
+  const safeBytes = Number(bytes);
   const units = ['B', 'KB', 'MB', 'GB'];
-  let size = bytes;
+  let size = safeBytes;
   let unitIndex = 0;
 
   while (size >= 1024 && unitIndex < units.length - 1) {

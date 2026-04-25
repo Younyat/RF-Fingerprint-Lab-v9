@@ -24,8 +24,12 @@ The frontend controls the FastAPI backend and displays live RF spectrum frames c
 - AM/FM/WFM audio playback from demodulated real captures
 - WAV export for analog demodulation results
 - ASK/FSK/PSK/OOK marker-band capture controls
-- Signal Analysis tab for marker-limited IQ capture
+- `Capture Lab` for controlled `train` / `val` / `predict` IQ acquisition
+- `Dataset Builder` for capture review and QC-driven acceptance/rejection
+- `Training`, `Retraining`, `Validation`, `Inference`, and `Models` tabs for the unified RF fingerprinting flow
 - Persistent `.cfile` and `.iq` metadata capture list with separate downloads
+- Live marker-band QC preview with peak, noise floor, SNR, and peak frequency
+- Non-blocking global operation overlay for SDR connect and capture operations
 - Peak marker button
 - Auto peaks button
 - Trace statistics panel
@@ -91,7 +95,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1 -UseRealSdr 1 -Ra
 6. Use `Peak` to mark the strongest visible signal.
 7. Create M1 and M2 around the signal of interest.
 8. Open `Demodulation`, select the mode, and click `Apply Demodulation`.
-9. Open `Signal Analysis` to capture the selected band as IQ plus metadata.
+9. Open `Capture Lab` to record the selected band as `.cfile` or `.iq` and assign it to `train`, `val`, or `predict`.
+10. Use `Dataset Builder` to review QC and mark the imported record as `valid`, `doubtful`, or `rejected`.
+11. Continue in `Training`, `Validation`, or `Inference` depending on the assigned split.
 
 ## Demodulation Workflow
 
@@ -101,16 +107,42 @@ The frontend sends the first two markers as the selected RF band. The backend ca
 - `ASK`, `FSK`, `PSK`, and `OOK` results expose IQ/metadata capture output for digital analysis.
 - If fewer than two markers exist, the demodulation button stays disabled because the RF band is not defined.
 
-## Signal Analysis Workflow
+## Capture Lab Workflow
 
-The `Signal Analysis` page uses M1 and M2 as RF limits and creates dataset-style captures:
+`Capture Lab` is the acquisition screen for dataset generation. It can use:
+
+- `Markers M1-M2`
+- `Custom Frequencies` with synchronized `center + bandwidth` and `start + stop`
+
+It creates dataset-style captures with:
 
 - raw `.cfile` or `.iq` complex64 IQ samples, selected by the user
 - `.json` metadata with frequency, bandwidth, sample rate, gain, antenna, label, modulation hint, SHA256, and replay parameters
 - persistent listing of all generated files found on disk
 - download buttons for the selected RF data file and metadata
 
-Use `Label`, `Modulation hint`, and `Notes` to make captures useful for offline replay workflows and AI model training datasets.
+It also shows a live QC preview for the selected capture band:
+
+- peak level
+- noise floor
+- live SNR
+- peak frequency
+
+If auto-import is enabled, the capture is sent to the fingerprinting registry so later tabs can detect it by split.
+
+## Validation And Inference Python Default
+
+When the frontend is started through `run_dev.ps1`, `python_exe` in `Validation` and `Inference` is prefilled from the same RadioConda path used by the backend launcher. In normal use the operator does not need to type that path manually.
+
+## Inference Behavior
+
+`Inference` launches prediction as an asynchronous job. The frontend now:
+
+- follows the returned `job_id`
+- polls job status automatically
+- shows `stdout`
+- shows `stderr`
+- shows the final prediction report when the JSON is generated
 
 ## Safety Feedback
 

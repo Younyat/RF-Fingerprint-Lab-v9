@@ -4,6 +4,10 @@ interface ImportMetaEnv {
   readonly VITE_APP_SYNC_INTERVAL_MS?: string;
   readonly VITE_SPECTRUM_POLL_INTERVAL_MS?: string;
   readonly VITE_WATERFALL_POLL_INTERVAL_MS?: string;
+  readonly VITE_REMOTE_USER?: string;
+  readonly VITE_REMOTE_HOST?: string;
+  readonly VITE_REMOTE_VENV_ACTIVATE?: string;
+  readonly VITE_RADIOCONDA_PYTHON?: string;
 }
 
 interface ImportMeta {

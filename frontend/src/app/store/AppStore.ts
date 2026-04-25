@@ -16,6 +16,12 @@ import { DEFAULT_SETTINGS } from '../../shared/constants';
 interface AppState {
   // UI State
   ui: UiState;
+  globalActivity: {
+    visible: boolean;
+    kind: 'connecting' | 'capturing' | 'streaming' | 'processing';
+    title: string;
+    detail?: string;
+  } | null;
 
   // Domain State
   spectrumData: SpectrumData | null;
@@ -31,6 +37,8 @@ interface AppState {
 
   // Actions
   setUiState: (updates: Partial<UiState>) => void;
+  setGlobalActivity: (activity: AppState['globalActivity']) => void;
+  clearGlobalActivity: () => void;
 
   setSpectrumData: (data: SpectrumData) => void;
   setWaterfallData: (data: WaterfallData) => void;
@@ -61,12 +69,22 @@ interface AppState {
   reset: () => void;
 }
 
+const getStoredTheme = (): UiState['theme'] => {
+  if (typeof window === 'undefined') return 'light';
+  const value = window.localStorage.getItem('rf-lab-theme');
+  if (value === 'dark' || value === 'light' || value === 'laboratory') {
+    return value;
+  }
+  return 'light';
+};
+
 const initialState = {
   ui: {
-    theme: 'light' as const,
+    theme: getStoredTheme(),
     sidebarCollapsed: false,
     activeTab: 'spectrum' as const,
   },
+  globalActivity: null,
 
   spectrumData: null,
   waterfallData: [],
@@ -91,9 +109,19 @@ export const useAppStore = create<AppState>()(
     ...initialState,
 
     setUiState: (updates) =>
-      set((state) => ({
-        ui: { ...state.ui, ...updates },
-      })),
+      set((state) => {
+        const nextUi = { ...state.ui, ...updates };
+        if (typeof window !== 'undefined' && updates.theme) {
+          window.localStorage.setItem('rf-lab-theme', updates.theme);
+        }
+        return { ui: nextUi };
+      }),
+
+    setGlobalActivity: (activity) =>
+      set({ globalActivity: activity }),
+
+    clearGlobalActivity: () =>
+      set({ globalActivity: null }),
 
     setSpectrumData: (data) =>
       set({ spectrumData: data }),
@@ -191,10 +219,13 @@ export const usePresets = () => useAppStore((state) => state.presets);
 export const useCurrentSession = () => useAppStore((state) => state.currentSession);
 export const useCurrentRecording = () => useAppStore((state) => state.currentRecording);
 export const useUiState = () => useAppStore((state) => state.ui);
+export const useGlobalActivity = () => useAppStore((state) => state.globalActivity);
 
 // Actions
 export const useAppActions = () => useAppStore((state) => ({
   setUiState: state.setUiState,
+  setGlobalActivity: state.setGlobalActivity,
+  clearGlobalActivity: state.clearGlobalActivity,
   setSpectrumData: state.setSpectrumData,
   setWaterfallData: state.setWaterfallData,
   addWaterfallData: state.addWaterfallData,

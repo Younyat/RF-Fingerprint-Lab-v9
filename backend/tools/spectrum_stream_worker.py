@@ -5,6 +5,7 @@ import argparse
 import json
 import math
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -43,6 +44,18 @@ class SpectrumStream(gr.top_block):
 
         self.sink = blocks.vector_sink_c()
         self.connect((self.source, 0), (self.sink, 0))
+
+    def set_center_frequency(self, center_freq_hz: float) -> None:
+        self.source.set_center_freq(float(center_freq_hz), 0)
+
+    def set_sample_rate(self, sample_rate_hz: float) -> None:
+        self.source.set_samp_rate(float(sample_rate_hz))
+
+    def set_gain(self, gain_db: float) -> None:
+        try:
+            self.source.set_gain(float(gain_db), 0)
+        except TypeError:
+            self.source.set_gain(float(gain_db))
 
 
 def next_power_of_two(value: int) -> int:
@@ -121,6 +134,89 @@ def build_frame(
     }, video_power
 
 
+class RuntimeConfig:
+    def __init__(
+        self,
+        center_freq_hz: float,
+        sample_rate_hz: float,
+        gain_db: float,
+        fft_size: int,
+        requested_rbw_hz: float,
+        requested_vbw_hz: float,
+    ) -> None:
+        self._lock = threading.Lock()
+        self.center_freq_hz = center_freq_hz
+        self.sample_rate_hz = sample_rate_hz
+        self.gain_db = gain_db
+        self.fft_size = fft_size
+        self.requested_rbw_hz = requested_rbw_hz
+        self.requested_vbw_hz = requested_vbw_hz
+
+    def snapshot(self) -> tuple[float, float, float, int, float, float]:
+        with self._lock:
+            return (
+                self.center_freq_hz,
+                self.sample_rate_hz,
+                self.gain_db,
+                self.fft_size,
+                self.requested_rbw_hz,
+                self.requested_vbw_hz,
+            )
+
+    def apply(self, update: dict) -> tuple[bool, str | None]:
+        changed = False
+        with self._lock:
+            if "center_freq_hz" in update:
+                value = float(update["center_freq_hz"])
+                if value != self.center_freq_hz:
+                    self.center_freq_hz = value
+                    changed = True
+            if "sample_rate_hz" in update:
+                value = float(update["sample_rate_hz"])
+                if value != self.sample_rate_hz:
+                    self.sample_rate_hz = value
+                    changed = True
+            if "gain_db" in update:
+                value = float(update["gain_db"])
+                if value != self.gain_db:
+                    self.gain_db = value
+                    changed = True
+            if "fft_size" in update:
+                value = int(update["fft_size"])
+                if value != self.fft_size:
+                    self.fft_size = value
+                    changed = True
+            if "rbw_hz" in update:
+                value = float(update["rbw_hz"])
+                if value != self.requested_rbw_hz:
+                    self.requested_rbw_hz = value
+                    changed = True
+            if "vbw_hz" in update:
+                value = float(update["vbw_hz"])
+                if value != self.requested_vbw_hz:
+                    self.requested_vbw_hz = value
+                    changed = True
+        return changed, None
+
+
+def stdin_control_loop(config: RuntimeConfig) -> None:
+    for raw_line in sys.stdin:
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        if message.get("command") != "update":
+            continue
+
+        _, error = config.apply(message)
+        if error:
+            print(json.dumps({"source": "real_sdr_error", "error": error}), flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Persistent UHD spectrum stream worker.")
     parser.add_argument("--freq", type=float, required=True, help="Center frequency in MHz")
@@ -148,6 +244,14 @@ def main() -> None:
     )
     effective_rbw_hz = sample_rate_hz * 1.5 / float(fft_size)
     previous_video_power: np.ndarray | None = None
+    runtime = RuntimeConfig(
+        center_freq_hz=center_freq_hz,
+        sample_rate_hz=sample_rate_hz,
+        gain_db=float(args.gain),
+        fft_size=fft_size,
+        requested_rbw_hz=float(args.rbw),
+        requested_vbw_hz=float(args.vbw),
+    )
 
     tb = SpectrumStream(
         center_freq_hz=center_freq_hz,
@@ -158,9 +262,31 @@ def main() -> None:
     )
 
     tb.start()
+    threading.Thread(target=stdin_control_loop, args=(runtime,), daemon=True).start()
     try:
         while True:
             time.sleep(interval)
+            (
+                center_freq_hz,
+                sample_rate_hz,
+                gain_db,
+                fft_size,
+                requested_rbw_hz,
+                requested_vbw_hz,
+            ) = runtime.snapshot()
+
+            tb.set_center_frequency(center_freq_hz)
+            tb.set_sample_rate(sample_rate_hz)
+            tb.set_gain(gain_db)
+
+            fft_size = effective_fft_size(
+                sample_rate_hz=sample_rate_hz,
+                requested_rbw_hz=requested_rbw_hz,
+                fallback_fft_size=fft_size,
+                min_fft_size=int(args.min_fft_size),
+                max_fft_size=int(args.max_fft_size),
+            )
+            effective_rbw_hz = sample_rate_hz * 1.5 / float(fft_size)
             samples = np.asarray(tb.sink.data(), dtype=np.complex64)
             if samples.size < fft_size:
                 continue
@@ -170,9 +296,9 @@ def main() -> None:
                 center_freq_hz,
                 sample_rate_hz,
                 fft_size,
-                float(args.rbw),
+                requested_rbw_hz,
                 effective_rbw_hz,
-                float(args.vbw),
+                requested_vbw_hz,
                 interval,
                 previous_video_power,
             )

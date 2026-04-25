@@ -33,9 +33,20 @@ The active API does not generate mock spectrum data. If the device cannot be ope
   - Stores demodulation metadata and WAV output for dashboard playback/export
 
 - `app/infrastructure/web/controllers/modulated_signal_controller.py`
-  - Captures marker-limited `.cfile` or `.iq` files for modulated-signal analysis
-  - Persists metadata for replay workflows and AI datasets
+  - Captures marker-limited or custom-window `.cfile` or `.iq` files for `Capture Lab`
+  - Persists metadata for replay workflows and AI datasets, including live preview metrics
   - Lists and serves generated IQ/metadata files from disk
+
+- `app/modules/fingerprinting/service.py`
+  - Imports captures into the fingerprinting registry
+  - Computes offline QC from stored IQ data
+  - Estimates SNR, occupied bandwidth, peak frequency/offset, burst bounds, silence, and clipping
+  - Applies automatic review flags before dataset curation
+
+- `app/modules/mlops/service.py`
+  - Starts training, retraining, validation, and inference jobs
+  - Tracks async job status, stdout, stderr, and generated reports
+  - Bridges the unified app with the RF fingerprint platform scripts
 
 - `app/infrastructure/sdr/real_spectrum_stream.py`
   - Manages the persistent spectrum worker process
@@ -99,6 +110,21 @@ cd backend
 - `GET /api/modulated-signals/captures/{id}`
 - `GET /api/modulated-signals/captures/{id}/iq`
 - `GET /api/modulated-signals/captures/{id}/metadata`
+- `GET /api/fingerprinting/dashboard`
+- `GET /api/fingerprinting/captures`
+- `POST /api/fingerprinting/captures`
+- `POST /api/fingerprinting/captures/{capture_id}/review`
+- `POST /api/fingerprinting/import/modulated-capture/{capture_id}`
+- `GET /api/mlops/training/dashboard`
+- `POST /api/mlops/training/start`
+- `POST /api/mlops/training/retrain`
+- `GET /api/mlops/training/status`
+- `POST /api/mlops/validation/run`
+- `POST /api/mlops/validation/start`
+- `GET /api/mlops/validation/status`
+- `GET /api/mlops/validation/reports`
+- `POST /api/mlops/inference/predict/start`
+- `GET /api/mlops/inference/predict/status`
 
 OpenAPI docs are available at `http://localhost:8000/docs` when the backend is running.
 
@@ -126,7 +152,7 @@ The backend applies the same RF safety checks used by spectrum tuning before ope
 
 ## Modulated Signal IQ Captures
 
-`POST /api/modulated-signals/captures` captures the RF band between M1 and M2 as raw complex64 IQ plus JSON metadata. The request can choose `file_format` as `cfile` or `iq`.
+`POST /api/modulated-signals/captures` captures the selected RF band as raw complex64 IQ plus JSON metadata. The request can choose `file_format` as `cfile` or `iq`, and the frontend may define the band from markers or from a custom frequency window.
 
 Example body:
 
@@ -151,6 +177,24 @@ backend/app/infrastructure/persistence/storage/recordings/modulated_signal_iq_ca
 
 Each metadata file includes capture identity, selected file format, frequency limits, center frequency, bandwidth, sample rate, gain, antenna, IQ format, sample count, file size, SHA256, label, modulation hint, notes, and replay parameters.
 
+If the capture is imported into the fingerprinting registry, the backend runs offline QC on the stored IQ file and derives:
+
+- estimated SNR
+- occupied bandwidth
+- peak frequency
+- frequency offset
+- burst start/end
+- silence percentage
+- clipping percentage
+
+This is separate from the live preview shown in the frontend.
+
+## Validation And Inference Runtime
+
+The backend accepts `python_exe` overrides for validation and inference, but if the field is empty it falls back to `RADIOCONDA_PYTHON`. The frontend launcher now forwards this path to the UI so the operator normally sees the correct value prefilled.
+
+Inference prediction is asynchronous. The backend returns a `job_id`, then exposes status, `stdout`, `stderr`, and the final report through the prediction status endpoint.
+
 ## Runtime Configuration
 
 | Variable | Purpose |
@@ -161,6 +205,7 @@ Each metadata file includes capture identity, selected file format, frequency li
 | `DEFAULT_GAIN_DB` | Startup gain |
 | `DEFAULT_ANTENNA` | UHD antenna name |
 | `UHD_DEVICE_ARGS` | Optional UHD device selector |
+| `VITE_RADIOCONDA_PYTHON` | Frontend runtime copy of the RadioConda path, injected by the dev launcher |
 | `REAL_SDR_FPS` | Spectrum worker frame rate |
 | `REAL_SDR_MAX_FFT_SIZE` | Maximum FFT size used to approach requested RBW |
 

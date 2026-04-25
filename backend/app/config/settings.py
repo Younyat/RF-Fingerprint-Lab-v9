@@ -32,6 +32,7 @@ class ApiSettings:
 @dataclass(slots=True, frozen=True)
 class StorageSettings:
     project_root: Path
+    workspace_root: Path
     backend_root: Path
     app_root: Path
     infrastructure_root: Path
@@ -41,6 +42,10 @@ class StorageSettings:
     sessions_dir: Path
     presets_dir: Path
     temp_dir: Path
+    fingerprinting_dir: Path
+    mlops_dir: Path
+    mlops_scripts_dir: Path
+    backend_requirements_path: Path
 
 
 @dataclass(slots=True, frozen=True)
@@ -126,8 +131,9 @@ class Settings:
 
 def _build_storage_settings() -> StorageSettings:
     app_root = Path(__file__).resolve().parents[1]
-    backend_root = app_root.parents[1]
+    backend_root = app_root.parent
     project_root = backend_root.parent
+    workspace_root = project_root.parent
     infrastructure_root = app_root / "infrastructure"
     persistence_root = infrastructure_root / "persistence"
     storage_root = persistence_root / "storage"
@@ -136,6 +142,10 @@ def _build_storage_settings() -> StorageSettings:
     sessions_dir = storage_root / "sessions"
     presets_dir = storage_root / "presets"
     temp_dir = storage_root / "temp"
+    fingerprinting_dir = storage_root / "fingerprinting"
+    mlops_dir = storage_root / "mlops"
+    mlops_scripts_dir = app_root / "infrastructure" / "scripts"
+    backend_requirements_path = backend_root / "requirements.mlops.txt"
 
     for path in (
         storage_root,
@@ -143,11 +153,14 @@ def _build_storage_settings() -> StorageSettings:
         sessions_dir,
         presets_dir,
         temp_dir,
+        fingerprinting_dir,
+        mlops_dir,
     ):
         path.mkdir(parents=True, exist_ok=True)
 
     return StorageSettings(
         project_root=project_root,
+        workspace_root=workspace_root,
         backend_root=backend_root,
         app_root=app_root,
         infrastructure_root=infrastructure_root,
@@ -157,6 +170,10 @@ def _build_storage_settings() -> StorageSettings:
         sessions_dir=sessions_dir,
         presets_dir=presets_dir,
         temp_dir=temp_dir,
+        fingerprinting_dir=fingerprinting_dir,
+        mlops_dir=mlops_dir,
+        mlops_scripts_dir=mlops_scripts_dir,
+        backend_requirements_path=backend_requirements_path,
     )
 
 

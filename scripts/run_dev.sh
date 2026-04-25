@@ -109,7 +109,7 @@ if [ -z "$VENV_PYTHON" ]; then
 fi
 
 if [ "$INSTALL_DEPS" = "1" ]; then
-  "$VENV_PYTHON" -m pip install --upgrade pip setuptools wheel
+  "$VENV_PYTHON" -m pip install --upgrade pip wheel "setuptools<82"
   "$VENV_PYTHON" -m pip install -r "$BACKEND_DIR/requirements.txt"
 fi
 

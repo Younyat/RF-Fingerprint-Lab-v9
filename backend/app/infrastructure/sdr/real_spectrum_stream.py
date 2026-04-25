@@ -18,6 +18,7 @@ class RealSpectrumStream:
         self._latest_frame: dict[str, Any] | None = None
         self._last_error: str | None = None
         self._config_key: tuple | None = None
+        self._runtime_key: tuple | None = None
         self._exclusive_reason: str | None = None
         self._lock = threading.Lock()
 
@@ -43,11 +44,22 @@ class RealSpectrumStream:
                 return
 
         config_key = self._make_config_key(analyzer_settings)
-        if self._process is not None and self._process.poll() is None and self._config_key == config_key:
-            return
+        runtime_key = self._make_runtime_key(analyzer_settings)
+        if self._process is not None and self._process.poll() is None:
+            if self._config_key == config_key:
+                if self._runtime_key != runtime_key:
+                    if self._send_update(analyzer_settings):
+                        self._runtime_key = runtime_key
+                        self._latest_frame = None
+                        self._last_error = None
+                        return
+                    self.stop()
+                else:
+                    return
 
         self.stop()
         self._config_key = config_key
+        self._runtime_key = runtime_key
         self._latest_frame = None
         self._last_error = None
 
@@ -104,6 +116,7 @@ class RealSpectrumStream:
                 cwd=str(backend_root),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                stdin=subprocess.PIPE,
                 text=True,
                 bufsize=1,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
@@ -118,12 +131,20 @@ class RealSpectrumStream:
 
     def stop(self) -> None:
         if self._process is not None and self._process.poll() is None:
+            if self._process.stdin is not None:
+                try:
+                    self._process.stdin.close()
+                except Exception:
+                    pass
             self._process.terminate()
             try:
                 self._process.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 self._process.kill()
         self._process = None
+
+    def apply_settings(self, analyzer_settings) -> None:
+        self.ensure_started(analyzer_settings)
 
     def is_running(self) -> bool:
         return self._process is not None and self._process.poll() is None
@@ -170,15 +191,42 @@ class RealSpectrumStream:
 
     def _make_config_key(self, analyzer_settings) -> tuple:
         return (
+            app_settings.default_device.antenna,
+            app_settings.default_device.device_args,
+        )
+
+    def _make_runtime_key(self, analyzer_settings) -> tuple:
+        return (
             float(analyzer_settings.frequency.center_frequency_hz),
             float(analyzer_settings.frequency.sample_rate_hz),
             float(analyzer_settings.gain.gain_db),
             int(analyzer_settings.resolution.fft_size),
             float(analyzer_settings.resolution.rbw_hz),
             float(analyzer_settings.resolution.vbw_hz),
-            app_settings.default_device.antenna,
-            app_settings.default_device.device_args,
         )
+
+    def _send_update(self, analyzer_settings) -> bool:
+        process = self._process
+        if process is None or process.poll() is not None or process.stdin is None:
+            return False
+
+        command = {
+            "command": "update",
+            "center_freq_hz": float(analyzer_settings.frequency.center_frequency_hz),
+            "sample_rate_hz": float(analyzer_settings.frequency.sample_rate_hz),
+            "gain_db": float(analyzer_settings.gain.gain_db),
+            "fft_size": int(analyzer_settings.resolution.fft_size),
+            "rbw_hz": float(analyzer_settings.resolution.rbw_hz),
+            "vbw_hz": float(analyzer_settings.resolution.vbw_hz),
+        }
+
+        try:
+            process.stdin.write(json.dumps(command) + "\n")
+            process.stdin.flush()
+            return True
+        except Exception as exc:
+            self._last_error = str(exc)
+            return False
 
 
 real_spectrum_stream = RealSpectrumStream()

@@ -193,6 +193,8 @@ class DeviceController:
         validate_center_frequency(frequency_hz)
         validate_frequency_window(frequency_hz, self._settings.frequency.span_hz)
         self._settings.set_center_frequency(frequency_hz)
+        if self._is_streaming:
+            real_spectrum_stream.apply_settings(self._settings)
         try:
             return self._set_center_frequency_use_case.execute(frequency_hz)
         except Exception:
@@ -201,6 +203,8 @@ class DeviceController:
     def set_gain(self, gain_db: float) -> dict:
         validate_gain(gain_db)
         self._settings.set_gain(gain_db)
+        if self._is_streaming:
+            real_spectrum_stream.apply_settings(self._settings)
         try:
             return self._set_gain_use_case.execute(gain_db)
         except Exception:
@@ -210,6 +214,8 @@ class DeviceController:
         validate_span(sample_rate_hz)
         validate_frequency_window(self._settings.frequency.center_frequency_hz, sample_rate_hz)
         self._settings.set_sample_rate(sample_rate_hz)
+        if self._is_streaming:
+            real_spectrum_stream.apply_settings(self._settings)
         try:
             return self._set_sample_rate_use_case.execute(sample_rate_hz)
         except Exception:

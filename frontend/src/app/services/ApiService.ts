@@ -10,6 +10,11 @@ import {
   Preset,
   DemodulationResult,
   ModulatedSignalCapture,
+  FingerprintingDashboardSummary,
+  FingerprintingCaptureRecord,
+  TrainingDashboard,
+  AsyncJobStatus,
+  ModelArtifactSummary,
 } from '../../shared/types';
 import { API_ENDPOINTS } from '../../shared/constants';
 
@@ -279,7 +284,22 @@ export class ApiService {
     label: string;
     modulationHint: string;
     notes: string;
+    datasetSplit: 'train' | 'val' | 'predict';
+    sessionId: string;
+    transmitterId: string;
+    transmitterClass: string;
+    operator: string;
+    environment: string;
     fileFormat: 'cfile' | 'iq';
+    livePreviewSnrDb?: number;
+    livePreviewNoiseFloorDb?: number;
+    livePreviewPeakLevelDb?: number;
+    livePreviewPeakFrequencyHz?: number;
+    captureMode: 'immediate' | 'triggered_burst';
+    triggerThresholdDb?: number;
+    preTriggerMs?: number;
+    postTriggerMs?: number;
+    triggerMaxWaitSeconds?: number;
   }): Promise<ModulatedSignalCapture> {
     const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.MODULATED_SIGNAL_CAPTURES}`, {
       start_frequency_hz: request.startFrequencyHz,
@@ -288,7 +308,22 @@ export class ApiService {
       label: request.label,
       modulation_hint: request.modulationHint,
       notes: request.notes,
+      dataset_split: request.datasetSplit,
+      session_id: request.sessionId,
+      transmitter_id: request.transmitterId,
+      transmitter_class: request.transmitterClass,
+      operator: request.operator,
+      environment: request.environment,
       file_format: request.fileFormat,
+      live_preview_snr_db: request.livePreviewSnrDb,
+      live_preview_noise_floor_db: request.livePreviewNoiseFloorDb,
+      live_preview_peak_level_db: request.livePreviewPeakLevelDb,
+      live_preview_peak_frequency_hz: request.livePreviewPeakFrequencyHz,
+      capture_mode: request.captureMode,
+      trigger_threshold_db: request.triggerThresholdDb,
+      pre_trigger_ms: request.preTriggerMs,
+      post_trigger_ms: request.postTriggerMs,
+      trigger_max_wait_s: request.triggerMaxWaitSeconds,
     });
     return response.data;
   }
@@ -304,6 +339,155 @@ export class ApiService {
 
   getModulatedSignalMetadataUrl(id: string): string {
     return `${this.baseURL}${API_ENDPOINTS.MODULATED_SIGNAL_METADATA(id)}`;
+  }
+
+  async getFingerprintingDashboard(): Promise<FingerprintingDashboardSummary> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.FINGERPRINTING_DASHBOARD}`);
+    return response.data;
+  }
+
+  async getFingerprintingCaptures(datasetSplit?: 'train' | 'val' | 'predict'): Promise<FingerprintingCaptureRecord[]> {
+    const suffix = datasetSplit ? `?dataset_split=${encodeURIComponent(datasetSplit)}` : '';
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.FINGERPRINTING_CAPTURES}${suffix}`);
+    return Array.isArray(response.data) ? response.data : response.data.captures ?? [];
+  }
+
+  async createFingerprintingCapture(payload: unknown): Promise<FingerprintingCaptureRecord> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.FINGERPRINTING_CAPTURES}`, payload);
+    return response.data;
+  }
+
+  async reviewFingerprintingCapture(
+    captureId: string,
+    payload: { operator_decision?: string | null; review_notes?: string; export_windows?: string[] },
+  ): Promise<FingerprintingCaptureRecord> {
+    const response = await axios.post(
+      `${this.baseURL}${API_ENDPOINTS.FINGERPRINTING_CAPTURE_REVIEW(captureId)}`,
+      payload,
+    );
+    return response.data;
+  }
+
+  async recomputeFingerprintingCaptureQc(captureId: string): Promise<FingerprintingCaptureRecord> {
+    const response = await axios.post(
+      `${this.baseURL}${API_ENDPOINTS.FINGERPRINTING_CAPTURE_RECOMPUTE_QC(captureId)}`,
+    );
+    return response.data;
+  }
+
+  async deleteFingerprintingCapture(
+    captureId: string,
+    payload: { delete_artifacts?: boolean } = {},
+  ): Promise<{ capture_id: string; deleted: boolean; deleted_artifacts: string[] }> {
+    const response = await axios.delete(
+      `${this.baseURL}${API_ENDPOINTS.FINGERPRINTING_CAPTURE_DELETE(captureId)}`,
+      { data: payload },
+    );
+    return response.data;
+  }
+
+  async importModulatedCaptureToFingerprinting(
+    captureId: string,
+    payload: {
+      session_id: string;
+      dataset_split: string;
+      transmitter_label: string;
+      transmitter_class: string;
+      transmitter_id: string;
+      operator: string;
+      environment: string;
+      notes: string;
+      ground_truth_confidence: string;
+    },
+  ): Promise<FingerprintingCaptureRecord> {
+    const response = await axios.post(
+      `${this.baseURL}${API_ENDPOINTS.FINGERPRINTING_IMPORT_MODULATED(captureId)}`,
+      payload,
+    );
+    return response.data;
+  }
+
+  async getTrainingDashboard(): Promise<TrainingDashboard> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.TRAINING_DASHBOARD}`);
+    return response.data;
+  }
+
+  async getTrainingModels(): Promise<ModelArtifactSummary[]> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.TRAINING_MODELS}`);
+    return response.data;
+  }
+
+  async startTraining(payload: unknown): Promise<AsyncJobStatus> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.TRAINING_START}`, payload);
+    return response.data;
+  }
+
+  async retrainModel(payload: unknown): Promise<AsyncJobStatus> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.TRAINING_RETRAIN}`, payload);
+    return response.data;
+  }
+
+  async getTrainingStatus(jobId?: string): Promise<AsyncJobStatus> {
+    const suffix = jobId ? `?job_id=${encodeURIComponent(jobId)}` : '';
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.TRAINING_STATUS}${suffix}`);
+    return response.data;
+  }
+
+  async runValidation(payload: unknown): Promise<any> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.VALIDATION_RUN}`, payload);
+    return response.data;
+  }
+
+  async startValidation(payload: unknown): Promise<AsyncJobStatus> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.VALIDATION_START}`, payload);
+    return response.data;
+  }
+
+  async getValidationStatus(jobId?: string): Promise<AsyncJobStatus> {
+    const suffix = jobId ? `?job_id=${encodeURIComponent(jobId)}` : '';
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.VALIDATION_STATUS}${suffix}`);
+    return response.data;
+  }
+
+  async getValidationReports(): Promise<Record<string, unknown>[]> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.VALIDATION_REPORTS}`);
+    return response.data;
+  }
+
+  async classifyInference(payload: { cfile_path: string }): Promise<Record<string, unknown>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.INFERENCE_CLASSIFY}`, payload);
+    return response.data;
+  }
+
+  async verifyInference(payload: { cfile_path: string }): Promise<Record<string, unknown>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.INFERENCE_VERIFY}`, payload);
+    return response.data;
+  }
+
+  async getPredictionCaptures(): Promise<Record<string, unknown>[]> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.INFERENCE_PREDICT_CAPTURES}`);
+    return response.data;
+  }
+
+  async startPrediction(payload: unknown): Promise<AsyncJobStatus> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.INFERENCE_PREDICT_START}`, payload);
+    return response.data;
+  }
+
+  async getPredictionStatus(jobId?: string): Promise<AsyncJobStatus> {
+    const suffix = jobId ? `?job_id=${encodeURIComponent(jobId)}` : '';
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.INFERENCE_PREDICT_STATUS}${suffix}`);
+    return response.data;
+  }
+
+  async getModelOverview(): Promise<TrainingDashboard> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.MODELS_OVERVIEW}`);
+    return response.data;
+  }
+
+  async getCurrentModel(): Promise<ModelArtifactSummary> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.MODELS_CURRENT}`);
+    return response.data;
   }
 
   // Preset endpoints

@@ -1,0 +1,18 @@
+{
+  "train_sessions": {
+    "remote_001": [
+      "session_001"
+    ],
+    "remote_002": [
+      "session_001"
+    ]
+  },
+  "test_sessions": {
+    "remote_001": [
+      "session_001"
+    ],
+    "remote_002": [
+      "session_001"
+    ]
+  }
+}

@@ -90,6 +90,7 @@ powershell -ExecutionPolicy Bypass -File .\start_unified.ps1 -RemoteUser "assouy
 
 Esos valores quedan además precargados en la pestaña `Training`.
 El mismo arranque propaga también `RadioCondaPythonPath` al frontend para que `Validation` e `Inference` muestren `python_exe` ya detectado por defecto.
+Si quieres precargar también la activación del entorno remoto clásico, usa `-RemoteVenvActivate "/home/assouyat/rfenv/bin/activate"` al arrancar con `run_dev.ps1`.
 
 Ese comando levanta en una sola orden:
 
@@ -299,11 +300,53 @@ Recommended operator reaction when an error appears:
 - `Live Monitor`: used to tune, inspect the band, place markers, and verify the signal visually before capture.
 - `Capture Lab`: controlled dataset acquisition. This is where the operator records `.cfile`/`.iq` and sets the purpose as `train`, `val`, or `predict`.
 - `Dataset Builder`: dataset curation, not acquisition. It is used to inspect QC, accept/reject captures, and keep the registry scientifically consistent.
-- `Training`: launches remote training jobs using the training split.
-- `Retraining`: repeats training over updated train data or a later model state.
-- `Validation`: runs evaluation only on `val` captures and now appears with the RadioConda Python prefilled by default.
+- `Training`: exports the current `train` registry into the internal `backend/app/infrastructure/persistence/storage/mlops/data/rf_dataset` dataset and then launches the remote training job.
+- `Retraining`: rebuilds that internal training dataset and reruns training over the updated `train` registry.
+- `Validation`: exports the current `val` registry into the internal `backend/app/infrastructure/persistence/storage/mlops/data/rf_dataset_val` dataset and evaluates only that curated split. The RadioConda Python appears prefilled by default.
 - `Inference`: runs asynchronous prediction jobs on `predict` captures, polls the job automatically, and shows `stdout`, `stderr`, and the final report.
 - `Models`: summarizes current model artifacts and readiness state.
+
+## Training, Retraining, And Validation Prechecks
+
+Before launching the internal RF fingerprinting pipeline, the unified dashboard now performs explicit prechecks and dataset export.
+
+Training and retraining:
+
+- rebuild `rf_dataset` automatically from the fingerprinting registry
+- export only captures with `dataset_split = train` and `quality_review.status = valid`
+- require at least `2` unique transmitters
+- require exactly `1` `center_frequency_hz`
+- require exactly `1` `sample_rate_hz`
+
+Validation:
+
+- rebuild `rf_dataset_val` automatically from the fingerprinting registry
+- export only captures with `dataset_split = val` and `quality_review.status = valid`
+- require at least `1` valid exported record with a real IQ file
+- require exactly `1` `center_frequency_hz`
+- require exactly `1` `sample_rate_hz`
+- require a complete model directory with `best_model.pt`, `enrollment_profiles.json`, and `dataset_manifest.json`
+
+Recommended value for `remote_venv_activate`:
+
+- `/home/assouyat/rfenv/bin/activate`
+
+That field is optional. If left empty, the remote launcher tries to create a fallback virtual environment on the remote host.
+
+All ML lifecycle scripts now live directly inside:
+
+```text
+backend/app/infrastructure/scripts/
+```
+
+No second repository is required anymore for training, retraining, validation, or prediction.
+
+Typical messages now shown by the UI:
+
+- `Training requires at least 2 unique transmitters with dataset_split=train and quality_review.status=valid. Found 1: remote_001.`
+- `Validation requires at least 1 capture with dataset_split=val and quality_review.status=valid.`
+- `Validation center_frequency_hz does not match the trained model.`
+- `python_exe not found: ...`
 
 ## Important Environment Variables
 
@@ -366,6 +409,7 @@ spectrum-lab/
       domain/
       application/
       infrastructure/
+        scripts/
     tools/
       capture_and_demodulate_fm.py
       spectrum_stream_worker.py

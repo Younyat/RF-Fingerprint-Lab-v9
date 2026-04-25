@@ -11,6 +11,7 @@ function App() {
   const setRecordings = useAppStore((state) => state.setRecordings);
   const setSessions = useAppStore((state) => state.setSessions);
   const setPresets = useAppStore((state) => state.setPresets);
+  const theme = useAppStore((state) => state.ui.theme);
 
   useEffect(() => {
     let cancelled = false;
@@ -47,6 +48,10 @@ function App() {
       clearInterval(interval);
     };
   }, [setDeviceStatus, setPresets, setRecordings, setSessions]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
 
   return <AppRouter />;
 }

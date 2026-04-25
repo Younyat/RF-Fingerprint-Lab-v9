@@ -1,0 +1,107 @@
+{
+  "capture_id": "3d7fc7c3",
+  "capture_mode": "guided_capture",
+  "session_id": "session_001",
+  "dataset_split": "train",
+  "created_at_utc": "2026-04-25T14:03:54.697565+00:00",
+  "capture_config": {
+    "device_source": "USRP-B200 from Ettus Research",
+    "sdr_model": "uhd_gnuradio",
+    "sdr_serial": "unknown",
+    "gain_stage": "manual",
+    "antenna_port": "RX2",
+    "capture_type": "marker_band_iq",
+    "center_frequency_hz": 89400000.0,
+    "sample_rate_hz": 2500000.0,
+    "effective_bandwidth_hz": 2000000.0,
+    "frontend_bandwidth_hz": 2000000.0,
+    "gain_mode": "manual",
+    "gain_settings": {
+      "lna_db": null,
+      "vga_db": null,
+      "if_db": null,
+      "composite_gain_db": 20.0
+    },
+    "ppm_correction": 0.0,
+    "lo_offset_hz": 0.0,
+    "capture_duration_s": 5.0,
+    "sample_count": 12500000,
+    "file_format": ".cfile",
+    "sample_dtype": "complex64",
+    "byte_order": "native",
+    "channel_count": 1,
+    "output_path": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\modulated_signal_captures\\cfile_3d7fc7c3_89.400000MHz_2000.0kHz.cfile",
+    "dataset_destination": "fingerprinting/train"
+  },
+  "transmitter": {
+    "transmitter_label": "remote_001",
+    "transmitter_class": "garage_remote",
+    "transmitter_id": "tx_remote_001",
+    "family": "unknown",
+    "ground_truth_confidence": "confirmed"
+  },
+  "scenario": {
+    "operator": "operator_a",
+    "environment": "indoor_lab_los",
+    "distance_m": null,
+    "line_of_sight": null,
+    "indoor": null,
+    "notes": "",
+    "session_number": 1,
+    "timestamp_utc": "2026-04-25T14:03:49.460074+00:00"
+  },
+  "quality_metrics": {
+    "estimated_snr_db": 0.0,
+    "noise_floor_db": -52.806737958508585,
+    "peak_power_db": -44.85121286461899,
+    "average_power_db": -50.98637372187052,
+    "occupied_bandwidth_hz": 2499894.4001351683,
+    "peak_frequency_hz": 89134349.1400331,
+    "frequency_offset_hz": -265650.85996689927,
+    "clipping_pct": 0.0,
+    "sample_drop_count": 0,
+    "buffer_overflow_count": 0,
+    "silence_pct": 100.0,
+    "peak_to_average_ratio_db": null,
+    "kurtosis": null,
+    "burst_duration_ms": 5000.0
+  },
+  "burst_detection": {
+    "method": "no_burst_detected",
+    "energy_threshold_db": -46.806737958508585,
+    "pre_trigger_samples": 0,
+    "post_trigger_samples": 0,
+    "min_burst_duration_ms": 1.0,
+    "max_burst_duration_ms": 5000.0,
+    "burst_count": 0,
+    "regions_of_interest": [
+      "whole_burst"
+    ],
+    "burst_start_sample": 0,
+    "burst_end_sample": 12499999
+  },
+  "quality_review": {
+    "status": "rejected",
+    "reasons": [
+      "insufficient_snr",
+      "frequency_incorrect",
+      "absence_of_activity"
+    ],
+    "quality_flags": [
+      "snr_low",
+      "offset_extreme",
+      "silence_high"
+    ],
+    "operator_decision": null,
+    "review_notes": "",
+    "export_windows": [],
+    "updated_at_utc": "2026-04-25T14:03:54.697565+00:00"
+  },
+  "artifacts": {
+    "iq_file": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\modulated_signal_captures\\cfile_3d7fc7c3_89.400000MHz_2000.0kHz.cfile",
+    "metadata_file": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\modulated_signal_captures\\cfile_3d7fc7c3_89.400000MHz_2000.0kHz.json",
+    "sha256": "5642f1341b368173134327df5863116875d1ebbfff55b5b5134cc7e91d261080",
+    "source_capture_id": "3d7fc7c3"
+  },
+  "updated_at_utc": "2026-04-25T14:03:54.697565+00:00"
+}
