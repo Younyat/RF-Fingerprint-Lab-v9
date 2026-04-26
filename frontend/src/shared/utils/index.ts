@@ -228,3 +228,106 @@ export function turboColormap(t: number): [number, number, number] {
 
   return [r, g, b];
 }
+
+
+export interface RfCaptureDiagnosticInput {
+  source: 'live' | 'offline';
+  centerFrequencyHz: number;
+  bandwidthHz: number;
+  peakFrequencyHz?: number | null;
+  frequencyOffsetHz?: number | null;
+  occupiedBandwidthHz?: number | null;
+  snrDb?: number | null;
+  clippingPct?: number | null;
+  silencePct?: number | null;
+  canonicalizationEnabled?: boolean;
+}
+
+export interface RfCaptureDiagnostic {
+  status: 'valid' | 'doubtful' | 'rejected';
+  title: string;
+  summary: string;
+  recommendations: string[];
+  facts: string[];
+  offsetHz: number | null;
+  absOffsetHz: number | null;
+  halfBandwidthHz: number | null;
+  edgeMarginHz: number | null;
+  offsetRatio: number | null;
+}
+
+const formatDiagFrequency = (hz: number | null) => {
+  if (!Number.isFinite(hz ?? NaN) || hz === null) return 'n/a';
+  const abs = Math.abs(hz);
+  if (abs >= 1e6) return `${(hz / 1e6).toFixed(6)} MHz`;
+  if (abs >= 1e3) return `${(hz / 1e3).toFixed(2)} kHz`;
+  return `${hz.toFixed(1)} Hz`;
+};
+
+export function buildRfCaptureDiagnostic(input: RfCaptureDiagnosticInput): RfCaptureDiagnostic {
+  const halfBandwidthHz = Number.isFinite(input.bandwidthHz) && input.bandwidthHz > 0 ? input.bandwidthHz / 2 : null;
+  const offsetHz = Number.isFinite(input.frequencyOffsetHz ?? NaN)
+    ? Number(input.frequencyOffsetHz)
+    : Number.isFinite(input.peakFrequencyHz ?? NaN) && Number.isFinite(input.centerFrequencyHz)
+      ? Number(input.peakFrequencyHz) - Number(input.centerFrequencyHz)
+      : null;
+  const absOffsetHz = offsetHz === null ? null : Math.abs(offsetHz);
+  const edgeMarginHz = halfBandwidthHz !== null && absOffsetHz !== null ? halfBandwidthHz - absOffsetHz : null;
+  const offsetRatio = halfBandwidthHz && absOffsetHz !== null ? absOffsetHz / halfBandwidthHz : null;
+  const occupiedRatio = input.occupiedBandwidthHz && input.bandwidthHz > 0 ? input.occupiedBandwidthHz / input.bandwidthHz : null;
+  const snrDb = Number(input.snrDb ?? NaN);
+  const clippingPct = Number(input.clippingPct ?? 0);
+  const silencePct = Number(input.silencePct ?? 0);
+  const recommendations: string[] = [];
+  const facts: string[] = [];
+  let status: RfCaptureDiagnostic['status'] = 'valid';
+
+  if (offsetHz !== null) facts.push(`Offset relative to capture center: ${formatDiagFrequency(offsetHz)}.`);
+  if (edgeMarginHz !== null) facts.push(`Estimated margin to nearest capture edge: ${formatDiagFrequency(edgeMarginHz)}.`);
+  if (input.occupiedBandwidthHz) facts.push(`Occupied bandwidth uses ${(occupiedRatio! * 100).toFixed(1)}% of selected capture bandwidth.`);
+  if (Number.isFinite(snrDb)) facts.push(`Estimated SNR: ${snrDb.toFixed(1)} dB.`);
+
+  if (edgeMarginHz !== null && edgeMarginHz < 0) {
+    status = 'rejected';
+    recommendations.push('The strongest detected component is outside the selected capture window. Move M1/M2 or recenter before capturing.');
+  } else if (offsetRatio !== null && offsetRatio >= 0.85) {
+    status = 'doubtful';
+    recommendations.push('The signal is close to the capture edge. Recenter the marker window or increase bandwidth slightly to keep more guard margin.');
+  } else if (offsetRatio !== null && offsetRatio >= 0.60) {
+    recommendations.push('The capture is valid, but the peak is not ideally centered. For RF fingerprinting, prefer more symmetric margin when possible.');
+  } else {
+    recommendations.push('The signal is well placed inside the capture window for this workflow.');
+  }
+
+  if (occupiedRatio !== null && occupiedRatio > 0.95) {
+    if (status === 'valid') status = 'doubtful';
+    recommendations.push('The occupied bandwidth almost fills the selected window. Consider a slightly wider band if it does not add unrelated emissions.');
+  }
+  if (Number.isFinite(snrDb) && snrDb < 10) {
+    status = 'rejected';
+    recommendations.push('SNR is too low for a reliable RF fingerprinting sample. Improve signal level or reduce noise before capturing.');
+  } else if (Number.isFinite(snrDb) && snrDb < 15) {
+    if (status === 'valid') status = 'doubtful';
+    recommendations.push('SNR is usable but borderline. Prefer a stronger/cleaner capture for training.');
+  }
+  if (clippingPct > 1) {
+    status = 'rejected';
+    recommendations.push('Clipping is high. Reduce gain before using this sample.');
+  }
+  if (silencePct > 80) {
+    status = 'rejected';
+    recommendations.push('Most of the capture is silent. Use triggered capture or shorten the window around the burst.');
+  }
+  if (input.canonicalizationEnabled !== false) {
+    recommendations.push('The RF canonicalization stage will compensate coarse frequency offset before ML, so the model should not learn absolute SDR tuning center as the device identity.');
+  }
+
+  const title = status === 'valid' ? 'RF capture looks valid' : status === 'doubtful' ? 'RF capture needs attention' : 'RF capture is risky';
+  const summary = status === 'valid'
+    ? 'This sample is scientifically usable with the current RF fingerprinting pipeline.'
+    : status === 'doubtful'
+      ? 'This sample can be used, but acquisition quality can be improved before relying on it.'
+      : 'This sample is likely to harm dataset quality unless the acquisition is corrected.';
+
+  return { status, title, summary, recommendations, facts, offsetHz, absOffsetHz, halfBandwidthHz, edgeMarginHz, offsetRatio };
+}

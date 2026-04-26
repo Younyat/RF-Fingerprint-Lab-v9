@@ -74,6 +74,15 @@ def build_modulated_signal_router(controller) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @router.delete("/captures/{capture_id}")
+    async def delete_capture(capture_id: str):
+        try:
+            return controller.delete_capture(capture_id)
+        except ValueError as exc:
+            message = str(exc)
+            status_code = 404 if "not found" in message.lower() else 400
+            raise HTTPException(status_code=status_code, detail=message) from exc
+
     @router.get("/captures/{capture_id}/iq")
     async def download_iq(capture_id: str):
         try:

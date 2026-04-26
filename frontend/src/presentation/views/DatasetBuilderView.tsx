@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ApiService } from '../../app/services/ApiService';
 import { FingerprintingCaptureRecord } from '../../shared/types';
+import { buildRfCaptureDiagnostic } from '../../shared/utils';
 
 const api = new ApiService();
 
@@ -61,6 +62,21 @@ export const DatasetBuilderView: React.FC = () => {
     captures.find((item) => item.capture_id === selectedCaptureId) ??
     filteredCaptures[0] ??
     captures[0];
+
+  const selectedDiagnostic = selectedCapture
+    ? buildRfCaptureDiagnostic({
+        source: 'offline',
+        centerFrequencyHz: selectedCapture.capture_config.center_frequency_hz,
+        bandwidthHz: selectedCapture.capture_config.effective_bandwidth_hz,
+        peakFrequencyHz: selectedCapture.quality_metrics.peak_frequency_hz,
+        frequencyOffsetHz: selectedCapture.quality_metrics.frequency_offset_hz,
+        occupiedBandwidthHz: selectedCapture.quality_metrics.occupied_bandwidth_hz,
+        snrDb: selectedCapture.quality_metrics.estimated_snr_db,
+        clippingPct: selectedCapture.quality_metrics.clipping_pct,
+        silencePct: selectedCapture.quality_metrics.silence_pct,
+        canonicalizationEnabled: true,
+      })
+    : null;
 
   const reviewCapture = async (status: 'valid' | 'doubtful' | 'rejected') => {
     if (!selectedCapture) {
@@ -357,6 +373,10 @@ export const DatasetBuilderView: React.FC = () => {
                 </div>
               </div>
 
+              {selectedDiagnostic && (
+                <RfDatasetDiagnosticCard diagnostic={selectedDiagnostic} />
+              )}
+
               <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
                 <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Automatic review flags</div>
                 <div className="mt-3 flex flex-wrap gap-2">
@@ -385,3 +405,32 @@ export const DatasetBuilderView: React.FC = () => {
     </div>
   );
 };
+
+function RfDatasetDiagnosticCard({ diagnostic }: { diagnostic: ReturnType<typeof buildRfCaptureDiagnostic> }) {
+  const palette =
+    diagnostic.status === 'valid'
+      ? 'border-emerald-200 bg-emerald-50 text-emerald-950'
+      : diagnostic.status === 'doubtful'
+        ? 'border-amber-200 bg-amber-50 text-amber-950'
+        : 'border-rose-200 bg-rose-50 text-rose-950';
+  return (
+    <div className={`mt-4 rounded-2xl border p-4 ${palette}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-xs font-semibold uppercase tracking-[0.18em]">Post-capture RF intelligence</div>
+        <span className="rounded-full border border-current/30 px-2 py-1 text-xs font-semibold uppercase tracking-[0.14em]">
+          {diagnostic.status}
+        </span>
+      </div>
+      <div className="mt-2 text-sm font-semibold">{diagnostic.title}</div>
+      <div className="mt-1 text-sm opacity-90">{diagnostic.summary}</div>
+      <div className="mt-3 grid gap-1 text-xs opacity-90 md:grid-cols-2">
+        {diagnostic.facts.map((fact) => <div key={fact}>{fact}</div>)}
+      </div>
+      <div className="mt-3 space-y-1 text-xs leading-5 opacity-95">
+        {diagnostic.recommendations.slice(0, 4).map((item) => (
+          <div key={item}>- {item}</div>
+        ))}
+      </div>
+    </div>
+  );
+}

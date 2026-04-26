@@ -152,7 +152,14 @@ def discover_validation_records(val_root: Path) -> List[dict]:
             "receiver_id": meta.get("receiver_id", ""),
             "environment_id": meta.get("environment_id", ""),
             "center_frequency_hz": float(meta.get("center_frequency_hz", 0.0)),
-            "sample_rate_hz": float(meta.get("sample_rate_hz", 0.0)),
+            "original_center_frequency_hz": float(meta.get("original_center_frequency_hz", meta.get("center_frequency_hz", 0.0))),
+            "sample_rate_hz": float(meta.get("canonical_sample_rate_hz", meta.get("sample_rate_hz", 0.0))),
+            "canonicalized": bool(meta.get("canonicalized", False)),
+            "canonical_center_hz": float(meta.get("canonical_center_hz", 0.0)),
+            "canonical_sample_rate_hz": float(meta.get("canonical_sample_rate_hz", meta.get("sample_rate_hz", 0.0))),
+            "canonical_bandwidth_hz": float(meta.get("canonical_bandwidth_hz", meta.get("bandwidth_hz", 0.0))),
+            "canonical_segment_length_samples": int(meta.get("canonical_segment_length_samples", 0) or 0),
+            "preprocessing_profile_id": str(meta.get("preprocessing_profile_id", "")).strip(),
         })
     return records
 
@@ -187,6 +194,22 @@ def main():
     filtered_records = [r for r in val_records if r["emitter_device_id"] in device_to_label]
     if not filtered_records:
         raise RuntimeError("Validation set has no records matching trained device labels")
+
+    expected_profile = ckpt.get("preprocessing_profile_id")
+    expected_sample_rate = ckpt.get("canonical_sample_rate_hz")
+    expected_bandwidth = ckpt.get("canonical_bandwidth_hz")
+    expected_segment = ckpt.get("canonical_segment_length_samples", window_size)
+    for rec in filtered_records:
+        if not rec.get("canonicalized"):
+            raise RuntimeError("Validation record is not canonicalized: {}".format(rec["metadata_file"]))
+        if expected_profile and rec.get("preprocessing_profile_id") != expected_profile:
+            raise RuntimeError("Validation preprocessing_profile_id mismatch. Model={} record={} file={}".format(expected_profile, rec.get("preprocessing_profile_id"), rec["metadata_file"]))
+        if expected_sample_rate is not None and round(float(rec.get("canonical_sample_rate_hz", 0.0)), 6) != round(float(expected_sample_rate), 6):
+            raise RuntimeError("Validation canonical_sample_rate_hz mismatch. Model={} record={} file={}".format(expected_sample_rate, rec.get("canonical_sample_rate_hz"), rec["metadata_file"]))
+        if expected_bandwidth is not None and round(float(rec.get("canonical_bandwidth_hz", 0.0)), 3) != round(float(expected_bandwidth), 3):
+            raise RuntimeError("Validation canonical_bandwidth_hz mismatch. Model={} record={} file={}".format(expected_bandwidth, rec.get("canonical_bandwidth_hz"), rec["metadata_file"]))
+        if int(rec.get("canonical_segment_length_samples", 0)) != int(expected_segment):
+            raise RuntimeError("Validation canonical_segment_length_samples mismatch. Model={} record={} file={}".format(expected_segment, rec.get("canonical_segment_length_samples"), rec["metadata_file"]))
 
     ds = ValidationWindowDataset(filtered_records, device_to_label, window_size, stride)
     dl = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=0)

@@ -114,6 +114,8 @@ export interface ModulatedSignalCapture {
   sha256: string;
   iq_url?: string;
   metadata_url?: string;
+  external_iq_file?: boolean;
+  metadata_path_repaired?: boolean;
   replay_parameters?: {
     center_frequency_hz: number;
     sample_rate_hz: number;

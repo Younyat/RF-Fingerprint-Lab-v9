@@ -334,17 +334,26 @@ Training and retraining:
 
 - rebuild `rf_dataset` automatically from the fingerprinting registry
 - export only captures with `dataset_split = train` and `quality_review.status = valid`
+- keep the original `.cfile`/`.iq` intact and export a canonical I/Q copy for ML
+- estimate the useful signal offset from QC metadata or spectral peak detection, digitally shift the signal to baseband, low-pass filter the useful band, resample when needed, normalize power, and write a segment manifest before training
+- allow multiple original `center_frequency_hz` values; SDR tuning center is metadata, not a blocking compatibility rule
 - require at least `2` unique transmitters
-- require exactly `1` `center_frequency_hz`
-- require exactly `1` `sample_rate_hz`
+- require all exported records to have `canonicalized = true`
+- require exactly `1` `canonical_sample_rate_hz` after preprocessing
+- require exactly `1` `canonical_bandwidth_hz` after preprocessing
+- require exactly `1` `canonical_segment_length_samples`
+- require exactly `1` `preprocessing_profile_id`
 
 Validation:
 
 - rebuild `rf_dataset_val` automatically from the fingerprinting registry
-- export only captures with `dataset_split = val` and `quality_review.status = valid`
+- export only selected captures with `dataset_split = val` or `dataset_split = valid` and `quality_review.status = valid`
+- keep the original validation captures intact and evaluate the canonical I/Q export
+- allow multiple original `center_frequency_hz` values when the canonical preprocessing is compatible
 - require at least `1` valid exported record with a real IQ file
-- require exactly `1` `center_frequency_hz`
-- require exactly `1` `sample_rate_hz`
+- require all exported records to have `canonicalized = true`
+- require `preprocessing_profile_id`, `canonical_sample_rate_hz`, `canonical_bandwidth_hz`, and `canonical_segment_length_samples` to match the trained model
+- require no `(device, session)` overlap with the training manifest to avoid leakage
 - require a complete model directory with `best_model.pt`, `enrollment_profiles.json`, and `dataset_manifest.json`
 
 Recommended value for `remote_venv_activate`:
@@ -361,11 +370,36 @@ backend/app/infrastructure/scripts/
 
 No second repository is required anymore for training, retraining, validation, or prediction.
 
+### RF Canonicalization Policy
+
+The RF fingerprinting workflow separates acquisition metadata from ML compatibility. The absolute SDR tuning center is preserved as `original_center_frequency_hz`, but the model is trained and validated on a canonical representation. For every exported capture, the backend records the estimated signal center, estimated offset, frequency shift applied, canonical sample rate, canonical bandwidth, segment length, preprocessing profile, and whether the original CFO was kept as a feature.
+
+The canonical preprocessing profile recenters the useful signal with a digital complex rotation, applies a Hann-window FIR low-pass filter to the selected useful bandwidth, performs polyphase resampling when the canonical sample rate differs from the original capture, normalizes RMS power, trims the canonical stream to complete ML windows, and writes a JSONL segment manifest. This prevents the model from learning shortcuts such as `device = frequency` when different transmitters were captured at different absolute centers. Original center frequency, signal peak, occupied bandwidth, and offset remain available for traceability and scientific audit, but they are not treated as class-defining features.
+
+Canonicalization flow:
+
+```text
+raw .cfile/.iq
+  -> read original metadata
+  -> estimate signal peak / occupied center from QC or Welch PSD
+  -> estimate offset relative to SDR center
+  -> digital frequency shift to baseband
+  -> FIR low-pass filter / useful-band crop
+  -> polyphase resample when required
+  -> RMS power normalization
+  -> complete-window segmentation manifest
+  -> canonical dataset consumed by training/validation
+```
+
+
 Typical messages now shown by the UI:
 
 - `Training requires at least 2 unique transmitters with dataset_split=train and quality_review.status=valid. Found 1: remote_001.`
+- `Training requires all exported records to be canonicalized before ML.`
 - `Validation requires at least 1 capture with dataset_split=val and quality_review.status=valid.`
-- `Validation center_frequency_hz does not match the trained model.`
+- `Validation preprocessing_profile_id does not match the trained model.`
+- `Validation canonical_sample_rate_hz does not match the trained model.`
+- `Validation session leakage detected: validation captures reuse training device/session pairs.`
 - `python_exe not found: ...`
 
 ## Important Environment Variables

@@ -333,6 +333,19 @@ export class ApiService {
     return Array.isArray(response.data) ? response.data : response.data.captures ?? [];
   }
 
+  async deleteModulatedSignalCapture(
+    id: string,
+  ): Promise<{
+    capture_id: string;
+    deleted: boolean;
+    deleted_files: string[];
+    skipped_external_files?: string[];
+    deleted_registry_records: string[];
+  }> {
+    const response = await axios.delete(`${this.baseURL}${API_ENDPOINTS.MODULATED_SIGNAL_CAPTURE(id)}`);
+    return response.data;
+  }
+
   getModulatedSignalIqUrl(id: string): string {
     return `${this.baseURL}${API_ENDPOINTS.MODULATED_SIGNAL_IQ(id)}`;
   }

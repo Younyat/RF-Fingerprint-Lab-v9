@@ -12,10 +12,17 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from scipy import signal
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+CANONICAL_PREPROCESSING_PROFILE_ID = "rff_v1_centered_filtered_resampled_iq_powernorm"
+CANONICAL_PREPROCESSING_VERSION = "2.0"
+CANONICAL_CENTER_HZ = 0.0
+KEEP_ORIGINAL_CFO_FEATURE = False
 
 
 class _JobManager:
@@ -310,6 +317,9 @@ class MlOpsService:
             allowed_statuses={"valid"},
             target_center_frequency_hz=target_center_frequency_hz,
             center_frequency_tolerance_hz=center_frequency_tolerance_hz,
+            canonical_segment_length_samples=int(payload.get("window_size", 1024)),
+            canonical_sample_rate_hz=self._parse_optional_float(payload.get("canonical_sample_rate_hz")),
+            canonical_bandwidth_hz=self._parse_optional_float(payload.get("canonical_bandwidth_hz")),
         )
         self._validate_training_dataset(export_summary)
 
@@ -341,15 +351,6 @@ class MlOpsService:
             "-Stride",
             str(int(payload.get("stride", 1024))),
         ]
-        if target_center_frequency_hz is not None:
-            command.extend(
-                [
-                    "-TargetCenterFrequencyHz",
-                    str(target_center_frequency_hz),
-                    "-CenterFrequencyToleranceHz",
-                    str(center_frequency_tolerance_hz),
-                ]
-            )
         remote_venv = str(payload.get("remote_venv_activate", "")).strip()
         if remote_venv:
             command.extend(["-RemoteVenvActivate", remote_venv])
@@ -373,12 +374,17 @@ class MlOpsService:
         model_dir = self._resolve_path(payload.get("model_dir"), self._model_output_dir)
         self._validate_model_dir(model_dir)
         val_root = self._resolve_path(payload.get("val_root"), self._val_dataset_dir)
+        train_config_for_validation = self._load_json(model_dir / "train_config.json") or {}
+        canonical_segment_length = int(train_config_for_validation.get("canonical_segment_length_samples") or train_config_for_validation.get("window_size") or 1024)
         selected_capture_ids = {str(item).strip() for item in (payload.get("selected_capture_ids") or []) if str(item).strip()}
         export_summary = self._export_fingerprinting_split(
             dataset_split="val",
             destination_dir=val_root,
             allowed_statuses={"valid"},
             selected_capture_ids=selected_capture_ids or None,
+            canonical_segment_length_samples=canonical_segment_length,
+            canonical_sample_rate_hz=self._parse_optional_float(train_config_for_validation.get("canonical_sample_rate_hz")),
+            canonical_bandwidth_hz=self._parse_optional_float(train_config_for_validation.get("canonical_bandwidth_hz")),
         )
         self._validate_validation_dataset(export_summary, model_dir)
         selected_metadata_paths = self._resolve_validation_selection(
@@ -536,6 +542,10 @@ class MlOpsService:
         target_center_frequency_hz: float | None = None,
         center_frequency_tolerance_hz: float = 1.0,
         selected_capture_ids: set[str] | None = None,
+        canonical_segment_length_samples: int = 1024,
+        preprocessing_profile_id: str = CANONICAL_PREPROCESSING_PROFILE_ID,
+        canonical_sample_rate_hz: float | None = None,
+        canonical_bandwidth_hz: float | None = None,
     ) -> dict[str, Any]:
         records = self._load_fingerprinting_captures(dataset_split=dataset_split, allowed_statuses=allowed_statuses)
         if selected_capture_ids:
@@ -549,13 +559,23 @@ class MlOpsService:
                 if abs(center_frequency_hz - target_center_frequency_hz) <= center_frequency_tolerance_hz:
                     filtered_records.append(record)
             records = filtered_records
+        canonical_sample_rate_hz = self._resolve_canonical_sample_rate_hz(records, canonical_sample_rate_hz)
+        canonical_bandwidth_hz = self._resolve_canonical_bandwidth_hz(records, canonical_sample_rate_hz, canonical_bandwidth_hz)
+
         if destination_dir.exists():
             shutil.rmtree(destination_dir)
         destination_dir.mkdir(parents=True, exist_ok=True)
 
         exported_records: list[dict[str, Any]] = []
         for record in records:
-            exported = self._export_capture_record(record, destination_dir)
+            exported = self._export_capture_record(
+                record,
+                destination_dir,
+                canonical_segment_length_samples=canonical_segment_length_samples,
+                preprocessing_profile_id=preprocessing_profile_id,
+                canonical_sample_rate_hz=canonical_sample_rate_hz,
+                canonical_bandwidth_hz=canonical_bandwidth_hz,
+            )
             if exported is not None:
                 exported_records.append(exported)
 
@@ -566,6 +586,22 @@ class MlOpsService:
         summary["sample_rates_hz"] = sorted(
             {round(float(item.get("sample_rate_hz", 0.0) or 0.0), 6) for item in exported_records}
         )
+        summary["original_center_frequencies_hz"] = sorted(
+            {round(float(item.get("original_center_frequency_hz", item.get("center_frequency_hz", 0.0)) or 0.0), 3) for item in exported_records}
+        )
+        summary["canonical_sample_rates_hz"] = sorted(
+            {round(float(item.get("canonical_sample_rate_hz", item.get("sample_rate_hz", 0.0)) or 0.0), 6) for item in exported_records}
+        )
+        summary["canonical_bandwidths_hz"] = sorted(
+            {round(float(item.get("canonical_bandwidth_hz", 0.0) or 0.0), 3) for item in exported_records}
+        )
+        summary["canonical_segment_lengths_samples"] = sorted(
+            {int(item.get("canonical_segment_length_samples", 0) or 0) for item in exported_records}
+        )
+        summary["preprocessing_profile_ids"] = sorted(
+            {str(item.get("preprocessing_profile_id", "")).strip() for item in exported_records}
+        )
+        summary["all_canonicalized"] = bool(exported_records) and all(bool(item.get("canonicalized")) for item in exported_records)
         summary.update(
             {
                 "dataset_split": dataset_split,
@@ -577,6 +613,10 @@ class MlOpsService:
                 "target_center_frequency_hz": target_center_frequency_hz,
                 "center_frequency_tolerance_hz": center_frequency_tolerance_hz,
                 "selected_capture_ids": sorted(selected_capture_ids) if selected_capture_ids else [],
+                "canonical_segment_length_samples": canonical_segment_length_samples,
+                "preprocessing_profile_id": preprocessing_profile_id,
+                "canonical_sample_rate_hz": canonical_sample_rate_hz,
+                "canonical_bandwidth_hz": canonical_bandwidth_hz,
             }
         )
         return summary
@@ -598,10 +638,19 @@ class MlOpsService:
             captures.append(data)
         return captures
 
-    def _export_capture_record(self, record: dict[str, Any], destination_dir: Path) -> dict[str, Any] | None:
+    def _export_capture_record(
+        self,
+        record: dict[str, Any],
+        destination_dir: Path,
+        canonical_segment_length_samples: int,
+        preprocessing_profile_id: str,
+        canonical_sample_rate_hz: float,
+        canonical_bandwidth_hz: float,
+    ) -> dict[str, Any] | None:
         transmitter = record.get("transmitter") or {}
         scenario = record.get("scenario") or {}
         capture_config = record.get("capture_config") or {}
+        quality_metrics = record.get("quality_metrics") or {}
         artifacts = record.get("artifacts") or {}
 
         emitter_device_id = str(transmitter.get("transmitter_label") or transmitter.get("transmitter_id") or "").strip()
@@ -613,21 +662,44 @@ class MlOpsService:
         if not iq_source.exists() or not iq_source.is_file():
             return None
 
+        original_center_hz = float(capture_config.get("center_frequency_hz", 0.0) or 0.0)
+        original_sample_rate_hz = float(capture_config.get("sample_rate_hz", 0.0) or 0.0)
+        original_bandwidth_hz = float(capture_config.get("effective_bandwidth_hz", original_sample_rate_hz) or original_sample_rate_hz)
+        signal_estimate = self._estimate_signal_from_capture(iq_source, original_center_hz, original_sample_rate_hz, quality_metrics)
+        estimated_signal_center_hz = float(signal_estimate["estimated_signal_center_hz"])
+        estimated_signal_offset_hz = float(signal_estimate["estimated_signal_offset_hz"])
+        estimated_occupied_bandwidth_hz = float(signal_estimate["estimated_occupied_bandwidth_hz"])
+        frequency_shift_applied_hz = -estimated_signal_offset_hz
+
         session_dir = destination_dir / emitter_device_id / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
         suffix = iq_source.suffix or ".cfile"
         export_stem = f"iq_{emitter_device_id}_{record.get('capture_id', 'capture')}"
         exported_iq = session_dir / f"{export_stem}{suffix}"
-        shutil.copy2(iq_source, exported_iq)
 
-        center_frequency_hz = float(capture_config.get("center_frequency_hz", 0.0) or 0.0)
-        sample_rate_hz = float(capture_config.get("sample_rate_hz", 0.0) or 0.0)
-        bandwidth_hz = float(capture_config.get("effective_bandwidth_hz", sample_rate_hz) or sample_rate_hz)
+        canonical_report = self._write_canonical_iq(
+            source_path=iq_source,
+            destination_path=exported_iq,
+            offset_hz=estimated_signal_offset_hz,
+            original_sample_rate_hz=original_sample_rate_hz,
+            canonical_sample_rate_hz=canonical_sample_rate_hz,
+            canonical_bandwidth_hz=canonical_bandwidth_hz,
+            canonical_segment_length_samples=canonical_segment_length_samples,
+        )
+        segment_manifest_path = session_dir / f"{export_stem}.segments.jsonl"
+        self._write_segment_manifest(
+            segment_manifest_path,
+            capture_id=str(record.get("capture_id", "")),
+            iq_file=exported_iq,
+            sample_count=int(canonical_report["output_sample_count"]),
+            segment_length_samples=int(canonical_segment_length_samples),
+        )
+
         gain_settings = capture_config.get("gain_settings") or {}
         metadata = {
             "id": str(record.get("capture_id", "")),
             "generated_at_utc": str(record.get("created_at_utc", _utc_now())),
-            "capture_type": "fingerprint_iq",
+            "capture_type": "canonical_fingerprint_iq",
             "source_device": str(capture_config.get("device_source", "")),
             "receiver_id": str(capture_config.get("sdr_serial") or capture_config.get("sdr_model") or "unknown"),
             "emitter_device_id": emitter_device_id,
@@ -636,11 +708,32 @@ class MlOpsService:
             "label": str(transmitter.get("transmitter_class", "")),
             "modulation_hint": str(transmitter.get("family") or "unknown"),
             "notes": str(scenario.get("notes", "")),
-            "center_frequency_hz": center_frequency_hz,
-            "bandwidth_hz": bandwidth_hz,
+            "original_center_frequency_hz": original_center_hz,
+            "original_sample_rate_hz": original_sample_rate_hz,
+            "original_bandwidth_hz": original_bandwidth_hz,
+            "estimated_signal_center_hz": estimated_signal_center_hz,
+            "estimated_signal_offset_hz": estimated_signal_offset_hz,
+            "signal_peak_frequency_hz": estimated_signal_center_hz,
+            "signal_offset_hz": estimated_signal_offset_hz,
+            "canonicalized": True,
+            "canonical_center_hz": CANONICAL_CENTER_HZ,
+            "canonical_sample_rate_hz": canonical_sample_rate_hz,
+            "canonical_bandwidth_hz": canonical_bandwidth_hz,
+            "estimated_occupied_bandwidth_hz": estimated_occupied_bandwidth_hz,
+            "canonical_filter": canonical_report["filter"],
+            "canonical_resampling": canonical_report["resampling"],
+            "canonical_power_normalization": canonical_report["power_normalization"],
+            "canonical_segmentation": canonical_report["segmentation"],
+            "canonical_segment_length_samples": int(canonical_segment_length_samples),
+            "frequency_shift_applied_hz": frequency_shift_applied_hz,
+            "preprocessing_profile_id": preprocessing_profile_id,
+            "preprocessing_version": CANONICAL_PREPROCESSING_VERSION,
+            "keep_original_cfo_feature": KEEP_ORIGINAL_CFO_FEATURE,
+            "center_frequency_hz": CANONICAL_CENTER_HZ,
+            "bandwidth_hz": canonical_bandwidth_hz,
             "duration_seconds": float(capture_config.get("capture_duration_s", 0.0) or 0.0),
-            "sample_rate_hz": sample_rate_hz,
-            "sample_count": int(capture_config.get("sample_count", 0) or 0),
+            "sample_rate_hz": canonical_sample_rate_hz,
+            "sample_count": int(canonical_report["output_sample_count"]),
             "gain_db": float(gain_settings.get("composite_gain_db", 0.0) or 0.0),
             "agc_enabled": str(capture_config.get("gain_mode", "manual")).strip().lower() == "auto",
             "antenna": str(capture_config.get("antenna_port", "RX2")),
@@ -648,14 +741,17 @@ class MlOpsService:
             "channel_index": int(capture_config.get("channel_count", 1) or 1) - 1,
             "iq_file": str(exported_iq.resolve()),
             "metadata_file": str((session_dir / f"{export_stem}.json").resolve()),
+            "segment_manifest_file": str(segment_manifest_path.resolve()),
+            "source_iq_file": str(iq_source.resolve()),
             "iq_format": "complex64_fc32_interleaved",
             "iq_dtype": str(capture_config.get("sample_dtype", "complex64")),
             "byte_order": str(capture_config.get("byte_order", "native")),
             "file_size_bytes": exported_iq.stat().st_size,
             "sha256": str(artifacts.get("sha256", "")),
+            "quality_metrics": quality_metrics,
             "replay_parameters": {
-                "center_frequency_hz": center_frequency_hz,
-                "sample_rate_hz": sample_rate_hz,
+                "center_frequency_hz": CANONICAL_CENTER_HZ,
+                "sample_rate_hz": canonical_sample_rate_hz,
                 "gain_db": float(gain_settings.get("composite_gain_db", 0.0) or 0.0),
                 "antenna": str(capture_config.get("antenna_port", "RX2")),
                 "iq_format": "complex64_fc32_interleaved",
@@ -667,9 +763,11 @@ class MlOpsService:
                 "environment_id",
                 "label",
                 "modulation_hint",
-                "center_frequency_hz",
-                "bandwidth_hz",
-                "sample_rate_hz",
+                "canonical_center_hz",
+                "canonical_bandwidth_hz",
+                "canonical_sample_rate_hz",
+                "canonical_segment_length_samples",
+                "preprocessing_profile_id",
                 "duration_seconds",
                 "iq_file",
                 "sha256",
@@ -687,13 +785,213 @@ class MlOpsService:
             "session_id": session_id,
             "receiver_id": metadata["receiver_id"],
             "environment_id": metadata["environment_id"],
-            "sample_rate_hz": sample_rate_hz,
-            "center_frequency_hz": center_frequency_hz,
+            "original_center_frequency_hz": original_center_hz,
+            "estimated_signal_center_hz": estimated_signal_center_hz,
+            "estimated_signal_offset_hz": estimated_signal_offset_hz,
+            "frequency_shift_applied_hz": frequency_shift_applied_hz,
+            "sample_rate_hz": canonical_sample_rate_hz,
+            "center_frequency_hz": CANONICAL_CENTER_HZ,
+            "canonicalized": True,
+            "canonical_center_hz": CANONICAL_CENTER_HZ,
+            "canonical_sample_rate_hz": canonical_sample_rate_hz,
+            "canonical_bandwidth_hz": canonical_bandwidth_hz,
+            "estimated_occupied_bandwidth_hz": estimated_occupied_bandwidth_hz,
+            "canonical_filter": canonical_report["filter"],
+            "canonical_resampling": canonical_report["resampling"],
+            "canonical_power_normalization": canonical_report["power_normalization"],
+            "canonical_segmentation": canonical_report["segmentation"],
+            "canonical_segment_length_samples": int(canonical_segment_length_samples),
+            "preprocessing_profile_id": preprocessing_profile_id,
             "duration_seconds": metadata["duration_seconds"],
+            "segment_manifest_file": str(segment_manifest_path.resolve()),
+            "estimated_occupied_bandwidth_hz": estimated_occupied_bandwidth_hz,
+            "canonical_filter": canonical_report["filter"],
+            "canonical_resampling": canonical_report["resampling"],
+            "canonical_segmentation": canonical_report["segmentation"],
             "sha256": metadata["sha256"],
             "label": metadata["label"],
             "modulation_hint": metadata["modulation_hint"],
+            "quality_metrics": quality_metrics,
         }
+
+    def _resolve_canonical_sample_rate_hz(self, records: list[dict[str, Any]], requested: float | None) -> float:
+        if requested is not None and requested > 0:
+            return float(requested)
+        sample_rates = []
+        for record in records:
+            capture_config = record.get("capture_config") or {}
+            sample_rate = self._parse_optional_float(capture_config.get("sample_rate_hz"))
+            if sample_rate and sample_rate > 0:
+                sample_rates.append(sample_rate)
+        return float(min(sample_rates)) if sample_rates else 0.0
+
+    def _resolve_canonical_bandwidth_hz(self, records: list[dict[str, Any]], canonical_sample_rate_hz: float, requested: float | None) -> float:
+        nyquist_safe = float(canonical_sample_rate_hz) * 0.90 if canonical_sample_rate_hz > 0 else 0.0
+        if requested is not None and requested > 0:
+            return float(min(requested, nyquist_safe)) if nyquist_safe > 0 else float(requested)
+        bandwidths: list[float] = []
+        occupied: list[float] = []
+        for record in records:
+            capture_config = record.get("capture_config") or {}
+            quality_metrics = record.get("quality_metrics") or {}
+            sample_rate = self._parse_optional_float(capture_config.get("sample_rate_hz")) or 0.0
+            bw = self._parse_optional_float(capture_config.get("effective_bandwidth_hz")) or sample_rate
+            if bw > 0:
+                bandwidths.append(float(bw))
+            occ = self._parse_optional_float(quality_metrics.get("occupied_bandwidth_hz"))
+            if occ and occ > 0:
+                occupied.append(float(occ) * 1.25)
+        candidates = [min(bandwidths) if bandwidths else 0.0, max(occupied) if occupied else 0.0]
+        candidate = max(candidates)
+        if nyquist_safe > 0:
+            candidate = min(candidate, nyquist_safe)
+        return float(candidate if candidate > 0 else nyquist_safe)
+
+    def _estimate_signal_from_capture(
+        self,
+        source_path: Path,
+        original_center_hz: float,
+        sample_rate_hz: float,
+        quality_metrics: dict[str, Any],
+    ) -> dict[str, float]:
+        peak_from_qc = self._parse_optional_float(quality_metrics.get("peak_frequency_hz"))
+        offset_from_qc = self._parse_optional_float(quality_metrics.get("frequency_offset_hz"))
+        occupied_from_qc = self._parse_optional_float(quality_metrics.get("occupied_bandwidth_hz"))
+        if peak_from_qc is not None:
+            offset_hz = float(peak_from_qc - original_center_hz)
+            return {
+                "estimated_signal_center_hz": float(peak_from_qc),
+                "estimated_signal_offset_hz": offset_hz,
+                "estimated_occupied_bandwidth_hz": float(occupied_from_qc or 0.0),
+            }
+        if offset_from_qc is not None:
+            return {
+                "estimated_signal_center_hz": float(original_center_hz + offset_from_qc),
+                "estimated_signal_offset_hz": float(offset_from_qc),
+                "estimated_occupied_bandwidth_hz": float(occupied_from_qc or 0.0),
+            }
+
+        iq = np.fromfile(source_path, dtype=np.complex64, count=262144)
+        if iq.size == 0 or sample_rate_hz <= 0:
+            return {
+                "estimated_signal_center_hz": float(original_center_hz),
+                "estimated_signal_offset_hz": 0.0,
+                "estimated_occupied_bandwidth_hz": float(occupied_from_qc or 0.0),
+            }
+        nperseg = int(min(8192, max(256, iq.size)))
+        freqs, psd = signal.welch(iq, fs=float(sample_rate_hz), nperseg=nperseg, return_onesided=False, scaling="density")
+        freqs = np.fft.fftshift(freqs)
+        psd = np.fft.fftshift(np.real(psd))
+        psd = np.maximum(psd, 0.0)
+        total = float(np.sum(psd))
+        if not np.isfinite(total) or total <= 0:
+            return {
+                "estimated_signal_center_hz": float(original_center_hz),
+                "estimated_signal_offset_hz": 0.0,
+                "estimated_occupied_bandwidth_hz": float(occupied_from_qc or 0.0),
+            }
+        peak_offset_hz = float(freqs[int(np.argmax(psd))])
+        cumulative = np.cumsum(psd) / total
+        low_idx = int(np.searchsorted(cumulative, 0.005))
+        high_idx = int(np.searchsorted(cumulative, 0.995))
+        occupied_bw = float(abs(freqs[min(high_idx, len(freqs) - 1)] - freqs[max(low_idx, 0)]))
+        return {
+            "estimated_signal_center_hz": float(original_center_hz + peak_offset_hz),
+            "estimated_signal_offset_hz": peak_offset_hz,
+            "estimated_occupied_bandwidth_hz": float(occupied_from_qc or occupied_bw),
+        }
+
+    def _write_canonical_iq(
+        self,
+        source_path: Path,
+        destination_path: Path,
+        offset_hz: float,
+        original_sample_rate_hz: float,
+        canonical_sample_rate_hz: float,
+        canonical_bandwidth_hz: float,
+        canonical_segment_length_samples: int,
+    ) -> dict[str, Any]:
+        iq = np.fromfile(source_path, dtype=np.complex64)
+        if iq.size == 0:
+            raise ValueError(f"IQ source is empty: {source_path}")
+        if original_sample_rate_hz <= 0 or canonical_sample_rate_hz <= 0:
+            raise ValueError("RF canonicalization requires positive original and canonical sample rates.")
+
+        input_count = int(iq.size)
+        if abs(offset_hz) > 0:
+            n = np.arange(iq.size, dtype=np.float64)
+            rotator = np.exp(-1j * 2.0 * np.pi * float(offset_hz) * n / float(original_sample_rate_hz)).astype(np.complex64)
+            iq = iq * rotator
+
+        filter_report = {"applied": False, "type": "none", "cutoff_hz": 0.0, "num_taps": 0}
+        safe_cutoff_hz = min(float(canonical_bandwidth_hz) / 2.0, float(original_sample_rate_hz) * 0.45)
+        if safe_cutoff_hz > 0 and safe_cutoff_hz < float(original_sample_rate_hz) * 0.49:
+            num_taps = int(min(513, max(65, round(float(original_sample_rate_hz) / max(safe_cutoff_hz, 1.0)) * 8 + 1)))
+            if num_taps % 2 == 0:
+                num_taps += 1
+            taps = signal.firwin(num_taps, safe_cutoff_hz, fs=float(original_sample_rate_hz), window="hann")
+            iq = signal.lfilter(taps.astype(np.float32), [1.0], iq).astype(np.complex64)
+            delay = (num_taps - 1) // 2
+            if iq.size > delay:
+                iq = iq[delay:]
+            filter_report = {"applied": True, "type": "fir_lowpass_hann", "cutoff_hz": safe_cutoff_hz, "num_taps": num_taps}
+
+        resampling_report = {"applied": False, "method": "none", "input_sample_rate_hz": float(original_sample_rate_hz), "output_sample_rate_hz": float(canonical_sample_rate_hz), "up": 1, "down": 1}
+        if not np.isclose(float(original_sample_rate_hz), float(canonical_sample_rate_hz), rtol=0.0, atol=1e-6):
+            from fractions import Fraction
+
+            ratio = Fraction(float(canonical_sample_rate_hz) / float(original_sample_rate_hz)).limit_denominator(1000)
+            iq = signal.resample_poly(iq, ratio.numerator, ratio.denominator).astype(np.complex64)
+            resampling_report = {
+                "applied": True,
+                "method": "polyphase_resample",
+                "input_sample_rate_hz": float(original_sample_rate_hz),
+                "output_sample_rate_hz": float(canonical_sample_rate_hz),
+                "up": int(ratio.numerator),
+                "down": int(ratio.denominator),
+            }
+
+        power_before = float(np.mean(np.abs(iq) ** 2)) if iq.size else 0.0
+        if np.isfinite(power_before) and power_before > 0:
+            iq = iq / np.sqrt(power_before)
+        power_after = float(np.mean(np.abs(iq) ** 2)) if iq.size else 0.0
+
+        segment_length = max(1, int(canonical_segment_length_samples))
+        pre_segment_sample_count = int(iq.size)
+        segment_count = int(pre_segment_sample_count // segment_length)
+        usable_count = segment_count * segment_length
+        discarded_tail_samples = int(pre_segment_sample_count - usable_count) if usable_count > 0 else 0
+        if usable_count > 0:
+            iq = iq[:usable_count]
+        iq.astype(np.complex64).tofile(destination_path)
+        return {
+            "input_sample_count": input_count,
+            "output_sample_count": int(iq.size),
+            "filter": filter_report,
+            "resampling": resampling_report,
+            "power_normalization": {"applied": bool(power_before > 0), "power_before": power_before, "power_after": power_after},
+            "segmentation": {
+                "applied": True,
+                "segment_length_samples": segment_length,
+                "segment_count": segment_count,
+                "discarded_tail_samples": discarded_tail_samples,
+            },
+        }
+
+    def _write_segment_manifest(self, path: Path, capture_id: str, iq_file: Path, sample_count: int, segment_length_samples: int) -> None:
+        segment_length = max(1, int(segment_length_samples))
+        segment_count = int(sample_count // segment_length)
+        with path.open("w", encoding="utf-8") as handle:
+            for index in range(segment_count):
+                start = index * segment_length
+                item = {
+                    "capture_id": capture_id,
+                    "segment_index": index,
+                    "iq_file": str(iq_file.resolve()),
+                    "start_sample": start,
+                    "length_samples": segment_length,
+                }
+                handle.write(json.dumps(item, ensure_ascii=False) + "\n")
 
     def _resolve_validation_selection(self, payload: dict[str, Any], export_summary: dict[str, Any]) -> list[str]:
         exported_records = export_summary.get("exported_records") or []
@@ -736,6 +1034,68 @@ class MlOpsService:
 
         return resolved
 
+
+    def _validate_canonical_dataset(self, dataset_summary: dict[str, Any], context: str) -> None:
+        if not bool(dataset_summary.get("all_canonicalized")):
+            raise ValueError(f"{context} requires canonicalized=true for every exported capture.")
+        profile_ids = [item for item in dataset_summary.get("preprocessing_profile_ids", []) if item]
+        if len(profile_ids) != 1:
+            raise ValueError(f"{context} requires exactly 1 preprocessing_profile_id. Found {len(profile_ids)}: {profile_ids or ['<none>']}.")
+        sample_rates = list(dataset_summary.get("canonical_sample_rates_hz", []))
+        if len(sample_rates) != 1:
+            raise ValueError(f"{context} requires exactly 1 canonical_sample_rate_hz after preprocessing. Found {len(sample_rates)}: {sample_rates or ['<none>']}.")
+        bandwidths = list(dataset_summary.get("canonical_bandwidths_hz", []))
+        if len(bandwidths) != 1:
+            raise ValueError(f"{context} requires exactly 1 canonical_bandwidth_hz after preprocessing. Found {len(bandwidths)}: {bandwidths or ['<none>']}.")
+        segment_lengths = list(dataset_summary.get("canonical_segment_lengths_samples", []))
+        if len(segment_lengths) != 1 or int(segment_lengths[0]) <= 0:
+            raise ValueError(f"{context} requires exactly 1 canonical_segment_length_samples. Found {len(segment_lengths)}: {segment_lengths or ['<none>']}.")
+
+    def _validate_against_training_canonical_config(self, dataset_summary: dict[str, Any], train_config: dict[str, Any]) -> None:
+        expected = {
+            "preprocessing_profile_id": train_config.get("preprocessing_profile_id"),
+            "canonical_sample_rate_hz": train_config.get("canonical_sample_rate_hz"),
+            "canonical_bandwidth_hz": train_config.get("canonical_bandwidth_hz"),
+            "canonical_segment_length_samples": train_config.get("canonical_segment_length_samples") or train_config.get("window_size"),
+        }
+        actual = {
+            "preprocessing_profile_id": (dataset_summary.get("preprocessing_profile_ids") or [None])[0],
+            "canonical_sample_rate_hz": (dataset_summary.get("canonical_sample_rates_hz") or [None])[0],
+            "canonical_bandwidth_hz": (dataset_summary.get("canonical_bandwidths_hz") or [None])[0],
+            "canonical_segment_length_samples": (dataset_summary.get("canonical_segment_lengths_samples") or [None])[0],
+        }
+        for key, expected_value in expected.items():
+            if expected_value is None:
+                continue
+            actual_value = actual.get(key)
+            if isinstance(expected_value, (int, float)):
+                if round(float(expected_value), 6) != round(float(actual_value or 0), 6):
+                    raise ValueError(f"Validation {key} does not match trained model. Model={expected_value}, validation={actual_value}.")
+            elif str(expected_value) != str(actual_value):
+                raise ValueError(f"Validation {key} does not match trained model. Model={expected_value}, validation={actual_value}.")
+
+    def _validate_no_train_validation_session_overlap(self, dataset_summary: dict[str, Any], model_dir: Path) -> None:
+        manifest = self._load_json(model_dir / "dataset_manifest.json") or {}
+        train_records = manifest.get("records", []) if isinstance(manifest, dict) else []
+        validation_records = dataset_summary.get("exported_records", []) if isinstance(dataset_summary, dict) else []
+        train_pairs = {
+            (str(item.get("emitter_device_id", "")).strip(), str(item.get("session_id", "")).strip())
+            for item in train_records
+            if isinstance(item, dict)
+        }
+        validation_pairs = {
+            (str(item.get("emitter_device_id", "")).strip(), str(item.get("session_id", "")).strip())
+            for item in validation_records
+            if isinstance(item, dict)
+        }
+        overlap = sorted(pair for pair in train_pairs.intersection(validation_pairs) if all(pair))
+        if overlap:
+            details = ", ".join(f"{device}:{session}" for device, session in overlap[:10])
+            raise ValueError(
+                "Validation session leakage detected. Validation captures must not reuse sessions present in the trained model manifest. "
+                f"Overlapping device/session pairs: {details}."
+            )
+
     def _validate_training_dataset(self, dataset_summary: dict[str, Any]) -> None:
         if int(dataset_summary.get("records", 0)) == 0:
             raise ValueError(
@@ -747,18 +1107,7 @@ class MlOpsService:
                 "Training requires at least 2 unique transmitters with dataset_split=train and quality_review.status=valid. "
                 f"Found {len(device_ids)}: {', '.join(device_ids) if device_ids else '<none>'}."
             )
-        center_frequencies = list(dataset_summary.get("center_frequencies_hz", []))
-        if len(center_frequencies) != 1:
-            raise ValueError(
-                "Training requires exactly 1 center_frequency_hz across exported train captures. "
-                f"Found {len(center_frequencies)}: {center_frequencies or ['<none>']}."
-            )
-        sample_rates = list(dataset_summary.get("sample_rates_hz", []))
-        if len(sample_rates) != 1:
-            raise ValueError(
-                "Training requires exactly 1 sample_rate_hz across exported train captures. "
-                f"Found {len(sample_rates)}: {sample_rates or ['<none>']}."
-            )
+        self._validate_canonical_dataset(dataset_summary, context="Training")
 
     def _validate_model_dir(self, model_dir: Path) -> None:
         required = [
@@ -777,33 +1126,12 @@ class MlOpsService:
             raise ValueError(
                 "Validation requires at least 1 capture with dataset_split=val and quality_review.status=valid."
             )
-        center_frequencies = list(dataset_summary.get("center_frequencies_hz", []))
-        if len(center_frequencies) != 1:
-            raise ValueError(
-                "Validation requires exactly 1 center_frequency_hz across exported val captures. "
-                f"Found {len(center_frequencies)}: {center_frequencies or ['<none>']}."
-            )
-        sample_rates = list(dataset_summary.get("sample_rates_hz", []))
-        if len(sample_rates) != 1:
-            raise ValueError(
-                "Validation requires exactly 1 sample_rate_hz across exported val captures. "
-                f"Found {len(sample_rates)}: {sample_rates or ['<none>']}."
-            )
+        self._validate_canonical_dataset(dataset_summary, context="Validation")
 
         train_config = self._load_json(model_dir / "train_config.json")
         if isinstance(train_config, dict):
-            model_center = train_config.get("center_frequency_hz")
-            model_sample_rate = train_config.get("sample_rate_hz")
-            if model_center is not None and round(float(model_center), 3) != center_frequencies[0]:
-                raise ValueError(
-                    "Validation center_frequency_hz does not match the trained model. "
-                    f"Model={round(float(model_center), 3)} Hz, validation={center_frequencies[0]} Hz."
-                )
-            if model_sample_rate is not None and round(float(model_sample_rate), 6) != sample_rates[0]:
-                raise ValueError(
-                    "Validation sample_rate_hz does not match the trained model. "
-                    f"Model={round(float(model_sample_rate), 6)} sps, validation={sample_rates[0]} sps."
-                )
+            self._validate_against_training_canonical_config(dataset_summary, train_config)
+        self._validate_no_train_validation_session_overlap(dataset_summary, model_dir)
 
     def _resolve_python_executable(self, requested: str | None) -> str:
         candidate = str(requested or "").strip()

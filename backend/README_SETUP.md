@@ -9,6 +9,7 @@ There is no mock signal in the active development flow. The UI and API are expec
 - Windows with PowerShell
 - Node.js 18 or higher
 - Python virtual environment for the FastAPI backend
+- Backend Python dependencies from `backend/requirements.txt`, including `numpy` and `scipy` for RF canonicalization
 - RadioConda Python with GNU Radio and UHD installed
 - Ettus Research USRP-B200 connected over USB
 
@@ -64,6 +65,22 @@ URLs:
 7. Use `Peak` to place a marker at the strongest current bin.
 8. Open `Demodulation` to process the RF band between M1 and M2.
 9. Open `Signal Analysis` to capture the RF band between M1 and M2 as IQ plus metadata.
+
+## RF Fingerprinting Dataset Rules
+
+For ML experiments, captures should be acquired in `Capture Lab`, imported into the fingerprinting registry, reviewed in `Dataset Builder`, and assigned to `train`, `val`, or `predict`. Training and validation do not require every capture to use the same absolute SDR center frequency. The backend canonicalizes I/Q before ML and then checks compatibility of the canonical representation.
+
+Required scientific compatibility after export:
+
+- all records have `canonicalized = true`
+- one `preprocessing_profile_id`
+- one `canonical_sample_rate_hz`
+- one `canonical_bandwidth_hz`
+- one `canonical_segment_length_samples`
+- validation canonical parameters match the trained model
+- validation sessions do not overlap training sessions for the same device
+
+Recommended capture design: record each transmitter across several sessions and, when possible, across controlled frequency placements. The model should learn transmitter impairments, not the operator's SDR tuning center.
 
 ## Backend Configuration
 

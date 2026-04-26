@@ -24,9 +24,11 @@ The frontend controls the FastAPI backend and displays live RF spectrum frames c
 - AM/FM/WFM audio playback from demodulated real captures
 - WAV export for analog demodulation results
 - ASK/FSK/PSK/OOK marker-band capture controls
-- `Capture Lab` for controlled `train` / `val` / `predict` IQ acquisition
+- `Capture Lab` for controlled `train` / `val` / `predict` IQ acquisition, intelligent RF pre/post-capture guidance, download, and safe deletion
 - `Dataset Builder` for capture review and QC-driven acceptance/rejection
 - `Training`, `Retraining`, `Validation`, `Inference`, and `Models` tabs for the unified RF fingerprinting flow
+- RF canonicalization-aware validation that allows different original SDR center frequencies when canonical preprocessing is compatible
+- Persistent transparent global operation overlay for capture, training, retraining, validation, and prediction jobs
 - Persistent `.cfile` and `.iq` metadata capture list with separate downloads
 - Live marker-band QC preview with peak, noise floor, SNR, and peak frequency
 - Non-blocking global operation overlay for SDR connect and capture operations
@@ -129,6 +131,21 @@ It also shows a live QC preview for the selected capture band:
 - peak frequency
 
 If auto-import is enabled, the capture is sent to the fingerprinting registry so later tabs can detect it by split.
+
+## RF Fingerprinting Workflow In The UI
+
+The ML tabs operate on curated registry captures rather than directly on arbitrary files. The expected flow is:
+
+1. Capture raw `.cfile` or `.iq` in `Capture Lab`.
+2. Import the capture into the fingerprinting registry.
+3. Review QC in `Dataset Builder` and mark records as `valid`, `doubtful`, or `rejected`.
+4. Assign each valid capture to `train`, `val`, or `predict`.
+5. Launch `Training` or `Retraining`; the backend exports canonical I/Q automatically.
+6. Launch `Validation`; selected validation captures are canonicalized with the trained model profile and checked for session leakage.
+7. Use `Inference` for asynchronous prediction on `predict` captures.
+8. Inspect `Models` for current model card, provenance, validation evidence, retraining history, and artifact readiness.
+
+The UI no longer treats different original SDR `center_frequency_hz` values as an automatic validation blocker. It surfaces them as context while the backend enforces the scientifically relevant constraints: canonical preprocessing profile, canonical sample rate, canonical bandwidth, segment length, and train/validation session separation.
 
 ## Validation And Inference Python Default
 

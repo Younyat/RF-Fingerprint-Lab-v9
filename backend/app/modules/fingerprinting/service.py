@@ -190,6 +190,9 @@ class FingerprintingService:
         quality_metrics["occupied_bandwidth_hz"] = _safe_float(analysis.get("occupied_bandwidth_hz"))
         quality_metrics["peak_frequency_hz"] = _safe_float(analysis.get("peak_frequency_hz"))
         quality_metrics["frequency_offset_hz"] = float(analysis.get("frequency_offset_hz", quality_metrics.get("frequency_offset_hz", 0.0) or 0.0))
+        quality_metrics["frequency_offset_ratio_of_capture_band"] = _safe_float(analysis.get("frequency_offset_ratio_of_capture_band"))
+        quality_metrics["signal_within_capture_band"] = bool(analysis.get("signal_within_capture_band", True))
+        quality_metrics["capture_band_edge_margin_hz"] = _safe_float(analysis.get("capture_band_edge_margin_hz"))
         quality_metrics["clipping_pct"] = float(analysis.get("clipping_pct", quality_metrics.get("clipping_pct", 0.0) or 0.0))
         quality_metrics["silence_pct"] = float(analysis.get("silence_pct", quality_metrics.get("silence_pct", 0.0) or 0.0))
         quality_metrics["burst_duration_ms"] = float(analysis.get("burst_duration_ms", quality_metrics.get("burst_duration_ms", 0.0) or 0.0))
@@ -282,6 +285,9 @@ class FingerprintingService:
                 "occupied_bandwidth_hz": defaults.get("occupied_bandwidth_hz", analysis.get("occupied_bandwidth_hz", bandwidth_hz)),
                 "peak_frequency_hz": defaults.get("peak_frequency_hz", analysis.get("peak_frequency_hz", center_frequency_hz)),
                 "frequency_offset_hz": defaults.get("frequency_offset_hz", analysis.get("frequency_offset_hz", 0.0)),
+                "frequency_offset_ratio_of_capture_band": defaults.get("frequency_offset_ratio_of_capture_band", analysis.get("frequency_offset_ratio_of_capture_band")),
+                "signal_within_capture_band": defaults.get("signal_within_capture_band", analysis.get("signal_within_capture_band", True)),
+                "capture_band_edge_margin_hz": defaults.get("capture_band_edge_margin_hz", analysis.get("capture_band_edge_margin_hz")),
                 "clipping_pct": defaults.get("clipping_pct", analysis.get("clipping_pct", 0.0)),
                 "sample_drop_count": defaults.get("sample_drop_count", 0),
                 "buffer_overflow_count": defaults.get("buffer_overflow_count", 0),
@@ -324,6 +330,7 @@ class FingerprintingService:
 
         sample_rate_hz = float(capture.get("sample_rate_hz", 0.0) or 0.0)
         center_frequency_hz = float(capture.get("center_frequency_hz", 0.0) or 0.0)
+        capture_bandwidth_hz = float(capture.get("bandwidth_hz", sample_rate_hz) or sample_rate_hz)
         if sample_rate_hz <= 0.0:
             return {}
 
@@ -374,8 +381,20 @@ class FingerprintingService:
 
         windowed = spectral_samples * np.hanning(spectral_samples.size)
         spectrum = np.fft.fftshift(np.fft.fft(windowed))
-        psd = np.abs(spectrum) ** 2
-        freqs = np.fft.fftshift(np.fft.fftfreq(spectral_samples.size, d=1.0 / sample_rate_hz))
+        psd_full = np.abs(spectrum) ** 2
+        freqs_full = np.fft.fftshift(np.fft.fftfreq(spectral_samples.size, d=1.0 / sample_rate_hz))
+
+        half_capture_band_hz = min(sample_rate_hz / 2.0, max(capture_bandwidth_hz, 0.0) / 2.0)
+        if half_capture_band_hz > 0.0 and half_capture_band_hz < sample_rate_hz / 2.0:
+            band_mask = np.abs(freqs_full) <= half_capture_band_hz
+        else:
+            band_mask = np.ones(freqs_full.shape, dtype=bool)
+        freqs = freqs_full[band_mask]
+        psd = psd_full[band_mask]
+        if psd.size == 0:
+            freqs = freqs_full
+            psd = psd_full
+
         peak_index = int(np.argmax(psd))
         peak_offset_hz = float(freqs[peak_index])
         peak_frequency_hz = center_frequency_hz + peak_offset_hz
@@ -394,9 +413,12 @@ class FingerprintingService:
             upper_index = int(np.searchsorted(cumulative, total * 0.995))
             lower_index = max(0, min(lower_index, freqs.size - 1))
             upper_index = max(lower_index, min(upper_index, freqs.size - 1))
-            occupied_bandwidth_hz = float(freqs[upper_index] - freqs[lower_index])
+            occupied_bandwidth_hz = min(abs(float(freqs[upper_index] - freqs[lower_index])), max(capture_bandwidth_hz, 0.0))
         else:
             occupied_bandwidth_hz = 0.0
+        capture_band_edge_margin_hz = float(half_capture_band_hz - abs(peak_offset_hz)) if half_capture_band_hz > 0 else 0.0
+        signal_within_capture_band = bool(capture_band_edge_margin_hz >= 0.0)
+        frequency_offset_ratio = float(abs(peak_offset_hz) / half_capture_band_hz) if half_capture_band_hz > 0 else 0.0
 
         analysis_method = "auto_energy_burst" if burst_detected else "no_burst_detected"
         regions_of_interest = ["transient_start", "whole_burst"] if burst_detected else ["whole_burst"]
@@ -418,7 +440,11 @@ class FingerprintingService:
             "spectral_snr_db": float(spectral_snr_db),
             "occupied_bandwidth_hz": abs(float(occupied_bandwidth_hz)),
             "peak_frequency_hz": float(peak_frequency_hz),
-            "frequency_offset_hz": float(centroid_offset_hz),
+            "frequency_offset_hz": float(peak_offset_hz),
+            "frequency_centroid_offset_hz": float(centroid_offset_hz),
+            "frequency_offset_ratio_of_capture_band": float(frequency_offset_ratio),
+            "signal_within_capture_band": signal_within_capture_band,
+            "capture_band_edge_margin_hz": float(capture_band_edge_margin_hz),
             "clipping_pct": float(clipping_pct),
             "silence_pct": float(silence_pct),
             "burst_duration_ms": float(burst_duration_ms),
@@ -679,12 +705,14 @@ class FingerprintingService:
             reasons.append("moderate_clipping")
             flags.append("clipping_present")
 
-        if frequency_offset_hz > DEFAULT_THRESHOLDS["max_doubtful_frequency_offset_hz"]:
-            reasons.append("frequency_incorrect")
-            flags.append("offset_extreme")
-        elif frequency_offset_hz > DEFAULT_THRESHOLDS["max_valid_frequency_offset_hz"]:
-            reasons.append("frequency_offset_high")
-            flags.append("offset_high")
+        signal_within_capture_band = bool(metrics.get("signal_within_capture_band", True))
+        offset_ratio = float(metrics.get("frequency_offset_ratio_of_capture_band", 0.0) or 0.0)
+        if not signal_within_capture_band:
+            reasons.append("signal_outside_capture_band")
+            flags.append("offset_outside_capture_band")
+        elif offset_ratio >= 0.90:
+            reasons.append("signal_near_capture_edge")
+            flags.append("offset_near_capture_edge")
 
         if sample_drop_count > 0:
             reasons.append("sample_drops_detected")
@@ -709,7 +737,7 @@ class FingerprintingService:
                 for item in (
                     "insufficient_snr",
                     "adc_clipping",
-                    "frequency_incorrect",
+                    "signal_outside_capture_band",
                     "sample_drops_detected",
                     "buffer_overflow",
                     "absence_of_activity",

@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Database, Download, Play, RotateCcw, ShieldCheck } from 'lucide-react';
+import { Database, Download, Play, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react';
 import { ApiService } from '../../app/services/ApiService';
 import { useAnalyzerSettings, useAppActions, useMarkers, useSpectrumData } from '../../app/store/AppStore';
 import { MODULATION_HINTS } from '../../shared/constants';
 import { ModulatedSignalCapture } from '../../shared/types';
-import { estimateBandQuality, formatFrequency, formatPowerLevel } from '../../shared/utils';
+import { buildRfCaptureDiagnostic, estimateBandQuality, formatFrequency, formatPowerLevel } from '../../shared/utils';
 import { cn } from '../../shared/utils';
 
 const apiService = new ApiService();
@@ -17,9 +17,6 @@ const splitHelp = {
 
 const CAPTURE_LAB_MAX_BANDWIDTH_HZ = 10_000_000;
 const CAPTURE_LAB_MAX_DURATION_S = 120;
-const CAPTURE_LAB_CENTER_WARNING_FRACTION = 0.25;
-const LIVE_OFFSET_VALID_HZ = 5_000;
-const LIVE_OFFSET_DOUBTFUL_HZ = 20_000;
 
 const getErrorMessage = (error: unknown) => {
   if (typeof error === 'object' && error !== null && 'response' in error) {
@@ -70,6 +67,7 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [captures, setCaptures] = useState<ModulatedSignalCapture[]>([]);
+  const [deletingCaptureId, setDeletingCaptureId] = useState<string | null>(null);
 
   const selectedBand = useMemo(() => {
     if (markers.length < 2) return null;
@@ -111,38 +109,18 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
       activeBand.stop,
     );
   }, [activeBand, spectrumData]);
-  const liveCenteringAssessment = useMemo(() => {
+  const preCaptureDiagnostic = useMemo(() => {
     if (!activeBand || !liveBandQuality) return null;
-    const offsetHz = liveBandQuality.peakFrequencyHz - activeBand.center;
-    const absOffsetHz = Math.abs(offsetHz);
-    const warningThresholdHz = activeBand.bandwidth * CAPTURE_LAB_CENTER_WARNING_FRACTION;
-    const isWarning = absOffsetHz > warningThresholdHz;
-    const validMarginHz = LIVE_OFFSET_VALID_HZ - absOffsetHz;
-    const doubtfulMarginHz = LIVE_OFFSET_DOUBTFUL_HZ - absOffsetHz;
-    let risk: 'valid' | 'doubtful' | 'rejected' = 'valid';
-    let riskLabel = 'Valid risk';
-    let riskDetail = 'El offset en vivo está dentro del rango objetivo para una captura bien centrada.';
-    if (absOffsetHz > LIVE_OFFSET_DOUBTFUL_HZ) {
-      risk = 'rejected';
-      riskLabel = 'Rejected risk';
-      riskDetail = 'Si capturas así, la muestra tiene muchas probabilidades de acabar rechazada por offset extremo.';
-    } else if (absOffsetHz > LIVE_OFFSET_VALID_HZ) {
-      risk = 'doubtful';
-      riskLabel = 'Doubtful risk';
-      riskDetail = 'La captura puede acabar en zona dudosa o degradarse offline. Conviene recentrar antes de grabar.';
-    }
-    return {
-      offsetHz,
-      absOffsetHz,
-      warningThresholdHz,
-      isWarning,
-      risk,
-      riskLabel,
-      riskDetail,
-      validMarginHz,
-      doubtfulMarginHz,
-    };
+    return buildRfCaptureDiagnostic({
+      source: 'live',
+      centerFrequencyHz: activeBand.center,
+      bandwidthHz: activeBand.bandwidth,
+      peakFrequencyHz: liveBandQuality.peakFrequencyHz,
+      snrDb: liveBandQuality.snrDb,
+      canonicalizationEnabled: true,
+    });
   }, [activeBand, liveBandQuality]);
+
   const requestedDuration = Number(durationSeconds);
   const requestedTriggerThresholdDb = Number(triggerThresholdDb);
   const requestedPreTriggerMs = Number(preTriggerMs);
@@ -281,6 +259,31 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
     setCustomStopMHz(formatMHz(stopHz));
   };
 
+  const deleteCapture = async (capture: ModulatedSignalCapture) => {
+    const confirmed = window.confirm(
+      `Delete Capture Lab dataset ${capture.label || capture.id}? This removes the raw IQ file, metadata JSON, and any linked fingerprinting registry record.`,
+    );
+    if (!confirmed) return;
+    setError(null);
+    setSuccess(null);
+    setDeletingCaptureId(capture.id);
+    try {
+      const result = await apiService.deleteModulatedSignalCapture(capture.id);
+      setCaptures((current) => current.filter((item) => item.id !== capture.id));
+      const registryInfo = result.deleted_registry_records.length
+        ? ` Removed ${result.deleted_registry_records.length} linked fingerprinting record(s).`
+        : '';
+      const skippedInfo = result.skipped_external_files?.length
+        ? ` Skipped ${result.skipped_external_files.length} external file(s) outside this project.`
+        : '';
+      setSuccess(`Capture ${result.capture_id} deleted. Removed ${result.deleted_files.length} local file(s).${registryInfo}${skippedInfo}`);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setDeletingCaptureId(null);
+    }
+  };
+
   const captureSignal = async () => {
     if (!activeBand) {
       setError(
@@ -412,54 +415,8 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
               <Info label="Peak freq" value={liveBandQuality ? formatFrequency(liveBandQuality.peakFrequencyHz) : 'Not available'} />
             </div>
 
-            {liveCenteringAssessment && (
-              <div
-                className={cn(
-                  'rounded-2xl border p-4 text-sm',
-                  liveCenteringAssessment.isWarning
-                    ? 'border-amber-400/40 bg-amber-500/10 text-amber-100'
-                    : 'border-emerald-400/30 bg-emerald-500/10 text-emerald-100',
-                )}
-              >
-                <div className="font-semibold uppercase tracking-[0.18em]">
-                  {liveCenteringAssessment.isWarning ? 'Peak Centering Warning' : 'Peak Centering Check'}
-                </div>
-                <div className="mt-2">
-                  Live peak offset relative to capture center: {formatFrequency(liveCenteringAssessment.offsetHz)}.
-                </div>
-                <div className="mt-1">
-                  Warning threshold for this window: {formatFrequency(liveCenteringAssessment.warningThresholdHz)}.
-                </div>
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <span className="text-xs uppercase tracking-[0.18em] opacity-80">Offset risk</span>
-                  <span
-                    className={cn(
-                      'rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em]',
-                      liveCenteringAssessment.risk === 'valid' && 'border-emerald-300/40 bg-emerald-400/15 text-emerald-100',
-                      liveCenteringAssessment.risk === 'doubtful' && 'border-amber-300/40 bg-amber-400/15 text-amber-100',
-                      liveCenteringAssessment.risk === 'rejected' && 'border-rose-300/40 bg-rose-400/15 text-rose-100',
-                    )}
-                  >
-                    {liveCenteringAssessment.riskLabel}
-                  </span>
-                </div>
-                <div className="mt-2 text-xs leading-6 opacity-90">
-                  {liveCenteringAssessment.isWarning
-                    ? 'El pico en vivo está demasiado desplazado dentro de la ventana. La captura puede terminar rechazada por offset extremo. Recomendación: recentra la ventana o estrecha la banda alrededor del pico real antes de capturar.'
-                    : 'El pico en vivo está razonablemente centrado dentro de la ventana activa.'}
-                </div>
-                <div className="mt-1 text-xs leading-6 opacity-90">{liveCenteringAssessment.riskDetail}</div>
-                <div className="mt-1 text-xs leading-6 opacity-90">
-                  {liveCenteringAssessment.validMarginHz >= 0
-                    ? `Margin before leaving VALID: ${formatFrequency(liveCenteringAssessment.validMarginHz)}.`
-                    : `Distance above VALID limit: ${formatFrequency(Math.abs(liveCenteringAssessment.validMarginHz))}.`}
-                </div>
-                <div className="text-xs leading-6 opacity-90">
-                  {liveCenteringAssessment.doubtfulMarginHz >= 0
-                    ? `Margin before entering REJECTED: ${formatFrequency(liveCenteringAssessment.doubtfulMarginHz)}.`
-                    : `Distance above REJECTED limit: ${formatFrequency(Math.abs(liveCenteringAssessment.doubtfulMarginHz))}.`}
-                </div>
-              </div>
+            {preCaptureDiagnostic && (
+              <RfDiagnosticCard diagnostic={preCaptureDiagnostic} titlePrefix="Pre-capture intelligence" />
             )}
 
             <div className="rounded-md border border-slate-800 bg-slate-950 p-4">
@@ -760,7 +717,12 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
             {captures.length === 0 ? (
               <div className="p-4 text-sm text-slate-500">No RF captures found.</div>
             ) : captures.map((capture) => (
-              <CaptureRow key={capture.id} capture={capture} />
+              <CaptureRow
+                key={capture.id}
+                capture={capture}
+                onDelete={deleteCapture}
+                isDeleting={deletingCaptureId === capture.id}
+              />
             ))}
           </div>
         </section>
@@ -781,7 +743,53 @@ function Info({ label, value }: { label: string; value: string }) {
   );
 }
 
-function CaptureRow({ capture }: { capture: ModulatedSignalCapture }) {
+function RfDiagnosticCard({
+  diagnostic,
+  titlePrefix,
+  compact = false,
+}: {
+  diagnostic: ReturnType<typeof buildRfCaptureDiagnostic>;
+  titlePrefix: string;
+  compact?: boolean;
+}) {
+  const palette =
+    diagnostic.status === 'valid'
+      ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-100'
+      : diagnostic.status === 'doubtful'
+        ? 'border-amber-400/40 bg-amber-500/10 text-amber-100'
+        : 'border-rose-400/40 bg-rose-500/10 text-rose-100';
+  return (
+    <div className={cn('rounded-2xl border p-4 text-sm', palette)}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="font-semibold uppercase tracking-[0.18em]">{titlePrefix}: {diagnostic.title}</div>
+        <span className="rounded-full border border-current/30 px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em]">
+          {diagnostic.status}
+        </span>
+      </div>
+      <div className="mt-2 text-xs leading-5 opacity-90">{diagnostic.summary}</div>
+      {!compact && diagnostic.facts.length > 0 && (
+        <div className="mt-3 grid gap-1 text-xs opacity-90 md:grid-cols-2">
+          {diagnostic.facts.map((fact) => <div key={fact}>{fact}</div>)}
+        </div>
+      )}
+      <div className="mt-3 space-y-1 text-xs leading-5 opacity-95">
+        {diagnostic.recommendations.slice(0, compact ? 2 : 4).map((item) => (
+          <div key={item}>- {item}</div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CaptureRow({
+  capture,
+  onDelete,
+  isDeleting,
+}: {
+  capture: ModulatedSignalCapture;
+  onDelete: (capture: ModulatedSignalCapture) => void;
+  isDeleting: boolean;
+}) {
   const iqUrl = apiService.getModulatedSignalIqUrl(capture.id);
   const metadataUrl = apiService.getModulatedSignalMetadataUrl(capture.id);
   const fileFormat = (capture.file_format || (capture.iq_file?.toLowerCase().endsWith('.iq') ? 'iq' : 'cfile')).toUpperCase();
@@ -792,6 +800,14 @@ function CaptureRow({ capture }: { capture: ModulatedSignalCapture }) {
     : Number.isFinite(capture.duration_seconds)
       ? `${capture.duration_seconds.toFixed(3)} s`
       : 'n/a';
+  const postCaptureDiagnostic = buildRfCaptureDiagnostic({
+    source: 'live',
+    centerFrequencyHz: capture.center_frequency_hz,
+    bandwidthHz: capture.bandwidth_hz,
+    peakFrequencyHz: capture.preview_metrics?.live_preview_peak_frequency_hz,
+    snrDb: capture.preview_metrics?.live_preview_snr_db,
+    canonicalizationEnabled: true,
+  });
   return (
     <div className="space-y-3 p-4">
       <div className="flex flex-wrap justify-between gap-3">
@@ -812,6 +828,15 @@ function CaptureRow({ capture }: { capture: ModulatedSignalCapture }) {
             <Download className="mr-2 h-4 w-4" />
             JSON
           </a>
+          <button
+            type="button"
+            onClick={() => onDelete(capture)}
+            disabled={isDeleting}
+            className="inline-flex h-9 items-center rounded-md border border-red-500/40 bg-red-950/60 px-3 text-sm font-medium text-red-100 hover:bg-red-900/70 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Trash2 className="mr-2 h-4 w-4" />
+            {isDeleting ? 'Deleting...' : 'Delete'}
+          </button>
         </div>
       </div>
 
@@ -820,6 +845,7 @@ function CaptureRow({ capture }: { capture: ModulatedSignalCapture }) {
         <div>Stop: {formatFrequency(capture.stop_frequency_hz)}</div>
         <div>Gain: {gainLabel}</div>
         <div>Antenna: {capture.antenna || 'unknown'}</div>
+        <div>Artifact scope: {capture.external_iq_file ? 'external/stale IQ path' : 'local project storage'}</div>
         <div>Tx ID: {capture.transmitter_id || 'unknown'}</div>
         <div>Class: {capture.transmitter_class || 'unknown'}</div>
         <div>Operator: {capture.operator || 'unknown'}</div>
@@ -833,6 +859,13 @@ function CaptureRow({ capture }: { capture: ModulatedSignalCapture }) {
         <div>Captured duration: {capturedDurationLabel}</div>
       </div>
 
+      <RfDiagnosticCard diagnostic={postCaptureDiagnostic} titlePrefix="Post-capture intelligence" compact />
+
+      {capture.external_iq_file && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-950/40 p-2 text-xs text-amber-100">
+          This metadata record points to an IQ file outside the current project storage. Delete removes the local metadata/registry entry and will not touch that external file.
+        </div>
+      )}
       {capture.notes && <div className="text-sm text-slate-300">{capture.notes}</div>}
     </div>
   );

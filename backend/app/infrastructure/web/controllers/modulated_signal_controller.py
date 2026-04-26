@@ -214,7 +214,12 @@ class ModulatedSignalController:
         for path in sorted(metadata_paths, key=lambda item: item.stat().st_mtime, reverse=True):
             try:
                 with path.open("r", encoding="utf-8") as file:
-                    captures.append(self._with_urls(json.load(file)))
+                    capture = json.load(file)
+                capture["metadata_file"] = str(path.resolve())
+                capture["metadata_path_repaired"] = True
+                iq_path = Path(str(capture.get("iq_file") or ""))
+                capture["external_iq_file"] = bool(capture.get("iq_file")) and not self._is_safe_capture_artifact(iq_path)
+                captures.append(self._with_urls(capture))
             except Exception:
                 continue
         return captures
@@ -232,6 +237,78 @@ class ModulatedSignalController:
     def get_metadata_file(self, capture_id: str) -> Path:
         capture = self.get_capture(capture_id)
         return self._existing_file(capture.get("metadata_file"), "metadata file")
+
+    def delete_capture(self, capture_id: str) -> dict:
+        capture = self.get_capture(capture_id)
+        removed_registry_records = self._delete_linked_fingerprinting_records(capture)
+        candidate_values = [capture.get("iq_file"), capture.get("metadata_file")]
+        removed_files: list[str] = []
+        skipped_external_files: list[str] = []
+        for value in candidate_values:
+            if not value:
+                continue
+            path = Path(str(value))
+            if not path.exists() or not path.is_file():
+                continue
+            if not self._is_safe_capture_artifact(path):
+                skipped_external_files.append(str(path))
+                continue
+            path.unlink()
+            removed_files.append(str(path.resolve()))
+
+        return {
+            "capture_id": capture_id,
+            "deleted": True,
+            "deleted_files": removed_files,
+            "skipped_external_files": skipped_external_files,
+            "deleted_registry_records": removed_registry_records,
+        }
+
+    def _is_safe_capture_artifact(self, path: Path) -> bool:
+        try:
+            resolved = path.resolve()
+            recordings_root = app_settings.storage.recordings_dir.resolve()
+            resolved.relative_to(recordings_root)
+            return resolved.suffix.lower() in {".json", ".iq", ".cfile"}
+        except (OSError, ValueError):
+            return False
+
+    def _delete_linked_fingerprinting_records(self, capture: dict) -> list[str]:
+        captures_dir = app_settings.storage.fingerprinting_dir / "captures"
+        if not captures_dir.exists():
+            return []
+        linked_paths = set()
+        for value in [capture.get("iq_file"), capture.get("metadata_file")]:
+            if not value:
+                continue
+            try:
+                linked_paths.add(str(Path(str(value)).resolve()))
+            except OSError:
+                continue
+        removed: list[str] = []
+        for record_path in captures_dir.glob("*.json"):
+            try:
+                with record_path.open("r", encoding="utf-8") as handle:
+                    record = json.load(handle)
+            except Exception:
+                continue
+            references = [
+                ((record.get("artifacts") or {}).get("iq_file")),
+                ((record.get("artifacts") or {}).get("metadata_file")),
+                ((record.get("capture_config") or {}).get("output_path")),
+            ]
+            normalized_refs = set()
+            for reference in references:
+                if not reference:
+                    continue
+                try:
+                    normalized_refs.add(str(Path(str(reference)).resolve()))
+                except OSError:
+                    continue
+            if linked_paths.intersection(normalized_refs):
+                record_path.unlink()
+                removed.append(record_path.stem)
+        return removed
 
     def _existing_file(self, value: str | None, label: str) -> Path:
         if not value:

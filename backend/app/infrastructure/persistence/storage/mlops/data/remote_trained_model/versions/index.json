@@ -20,6 +20,20 @@
                          "snapshot_dir":  "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\mlops\\data\\remote_trained_model\\versions\\20260426T113604Z-after_update",
                          "reason":  "after_update",
                          "model_file":  "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\mlops\\data\\remote_trained_model\\versions\\20260426T113604Z-after_update\\best_model.pt"
+                     },
+                     {
+                         "created_at_utc":  "2026-04-26T17:10:13.5910077Z",
+                         "version_id":  "20260426T171013Z-before_update",
+                         "snapshot_dir":  "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\mlops\\data\\remote_trained_model\\versions\\20260426T171013Z-before_update",
+                         "reason":  "before_update",
+                         "model_file":  "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\mlops\\data\\remote_trained_model\\versions\\20260426T171013Z-before_update\\best_model.pt"
+                     },
+                     {
+                         "created_at_utc":  "2026-04-26T17:11:56.5954131Z",
+                         "version_id":  "20260426T171156Z-after_update",
+                         "snapshot_dir":  "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\mlops\\data\\remote_trained_model\\versions\\20260426T171156Z-after_update",
+                         "reason":  "after_update",
+                         "model_file":  "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\mlops\\data\\remote_trained_model\\versions\\20260426T171156Z-after_update\\best_model.pt"
                      }
                  ]
 }

@@ -33,7 +33,7 @@ The active API does not generate mock spectrum data. If the device cannot be ope
   - Stores demodulation metadata and WAV output for dashboard playback/export
 
 - `app/infrastructure/web/controllers/modulated_signal_controller.py`
-  - Captures marker-limited or custom-window `.cfile` or `.iq` files for `Capture Lab`
+  - Captures, lists, downloads, and safely deletes marker-limited or custom-window `.cfile` or `.iq` files for `Capture Lab`
   - Persists metadata for replay workflows and AI datasets, including live preview metrics
   - Lists and serves generated IQ/metadata files from disk
 
@@ -47,6 +47,9 @@ The active API does not generate mock spectrum data. If the device cannot be ope
   - Starts training, retraining, validation, and inference jobs
   - Tracks async job status, stdout, stderr, and generated reports
   - Bridges the unified app with the RF fingerprint platform scripts
+  - Exports curated captures into canonical RF fingerprinting datasets
+  - Preserves raw I/Q files while creating ML-ready canonical I/Q copies
+  - Estimates signal offset from QC metadata or Welch PSD, shifts to baseband, filters the useful band, resamples when required, normalizes RMS power, and writes segment manifests
 
 - `app/infrastructure/sdr/real_spectrum_stream.py`
   - Manages the persistent spectrum worker process
@@ -188,6 +191,29 @@ If the capture is imported into the fingerprinting registry, the backend runs of
 - clipping percentage
 
 This is separate from the live preview shown in the frontend.
+
+## RF Fingerprinting MLOps And Canonicalization
+
+Training, retraining, and validation use curated captures from the fingerprinting registry. The backend rebuilds internal datasets before each ML lifecycle operation instead of training directly on arbitrary raw files.
+
+The exported ML dataset is canonicalized. The original `.cfile` or `.iq` remains untouched, and the exported record keeps `original_center_frequency_hz`, `original_sample_rate_hz`, `original_bandwidth_hz`, estimated signal center, estimated offset, and the applied frequency shift as auditable metadata.
+
+Canonical preprocessing performs:
+
+```text
+raw .cfile/.iq
+  -> read original metadata
+  -> estimate signal peak / occupied center from QC or Welch PSD
+  -> estimate offset relative to SDR center
+  -> digital frequency shift to baseband
+  -> FIR low-pass useful-band filtering
+  -> polyphase resampling when canonical sample rate differs
+  -> RMS power normalization
+  -> complete-window segment manifest generation
+  -> canonical dataset for training/validation
+```
+
+Compatibility rules are based on canonical representation, not absolute SDR tuning center. Multiple original `center_frequency_hz` values are allowed when exported records share one `preprocessing_profile_id`, one `canonical_sample_rate_hz`, one `canonical_bandwidth_hz`, and one `canonical_segment_length_samples`. Validation must match the trained model canonical configuration and must not reuse `(device, session)` pairs from the training manifest.
 
 ## Validation And Inference Runtime
 

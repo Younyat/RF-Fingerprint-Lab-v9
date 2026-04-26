@@ -91,10 +91,8 @@ export const ValidationLabView: React.FC = () => {
     [validationScopeCaptures],
   );
 
-  const hasMixedValidationFrequencies = validationScopeFrequencies.length > 1;
-
-  const validationFrequencyMessage = hasMixedValidationFrequencies
-    ? `Validation requires one center_frequency_hz. Select captures from one frequency only. Found: ${validationScopeFrequencies.map((value) => formatFrequency(value)).join(', ')}`
+  const validationFrequencyMessage = validationScopeFrequencies.length > 1
+    ? `Original center frequencies differ (${validationScopeFrequencies.map((value) => formatFrequency(value)).join(', ')}). This is allowed: validation uses canonicalized IQ and checks preprocessing compatibility instead of absolute SDR tuning center.`
     : '';
 
   const reportSummary = useMemo(
@@ -182,11 +180,6 @@ export const ValidationLabView: React.FC = () => {
   };
 
   const run = async (mode: 'sync' | 'async') => {
-    if (hasMixedValidationFrequencies) {
-      setErrorMessage(validationFrequencyMessage);
-      return;
-    }
-
     const activeSelectionCount = selectedCaptures.length || selectedCaptureIds.length || validCaptures.length;
     setGlobalActivity({
       visible: true,
@@ -304,12 +297,12 @@ export const ValidationLabView: React.FC = () => {
             Leave it empty to let the backend use its default interpreter.
           </div>
           <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-            The backend rebuilds `rf_dataset_val` using only `val + valid` captures, enforces one center frequency and one sample rate,
-            and then launches the validation pipeline on the selected subset.
+            The backend rebuilds `rf_dataset_val` using only `val + valid` captures, canonicalizes IQ to a shared baseband representation,
+            checks canonical preprocessing compatibility, and then launches the validation pipeline on the selected subset.
           </div>
 
-          {hasMixedValidationFrequencies && (
-            <div className="mt-4 rounded-2xl border border-orange-200 bg-orange-50 p-4 text-sm text-orange-900">
+          {validationFrequencyMessage && (
+            <div className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">
               {validationFrequencyMessage}
             </div>
           )}
@@ -322,14 +315,14 @@ export const ValidationLabView: React.FC = () => {
             <button
               className="rounded-full bg-amber-500 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
               onClick={() => run('sync')}
-              disabled={isLaunching || status?.status === 'running' || hasMixedValidationFrequencies}
+              disabled={isLaunching || status?.status === 'running'}
             >
               Run Validation
             </button>
             <button
               className="rounded-full bg-slate-900 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
               onClick={() => run('async')}
-              disabled={isLaunching || status?.status === 'running' || hasMixedValidationFrequencies}
+              disabled={isLaunching || status?.status === 'running'}
             >
               Start Async Validation
             </button>

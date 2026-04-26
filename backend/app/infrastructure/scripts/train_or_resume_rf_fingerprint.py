@@ -90,8 +90,15 @@ def discover_records(data_root: Path) -> List[dict]:
             "session_id": session_id,
             "receiver_id": meta.get("receiver_id", meta.get("source_device", "")),
             "environment_id": meta.get("environment_id", ""),
-            "sample_rate_hz": float(meta.get("sample_rate_hz", 0.0)),
+            "sample_rate_hz": float(meta.get("canonical_sample_rate_hz", meta.get("sample_rate_hz", 0.0))),
             "center_frequency_hz": float(meta.get("center_frequency_hz", 0.0)),
+            "original_center_frequency_hz": float(meta.get("original_center_frequency_hz", meta.get("center_frequency_hz", 0.0))),
+            "canonicalized": bool(meta.get("canonicalized", False)),
+            "canonical_center_hz": float(meta.get("canonical_center_hz", 0.0)),
+            "canonical_sample_rate_hz": float(meta.get("canonical_sample_rate_hz", meta.get("sample_rate_hz", 0.0))),
+            "canonical_bandwidth_hz": float(meta.get("canonical_bandwidth_hz", meta.get("bandwidth_hz", 0.0))),
+            "canonical_segment_length_samples": int(meta.get("canonical_segment_length_samples", 0) or 0),
+            "preprocessing_profile_id": str(meta.get("preprocessing_profile_id", "")).strip(),
             "duration_seconds": float(meta.get("duration_seconds", 0.0)),
             "sha256": meta.get("sha256", ""),
             "label": meta.get("label", ""),
@@ -107,13 +114,24 @@ def validate_records(records: List[dict]) -> None:
     if not records:
         raise RuntimeError("No valid JSON plus CFILE pairs were found")
 
-    sample_rates = sorted({round(r["sample_rate_hz"], 6) for r in records})
-    if len(sample_rates) != 1:
-        raise RuntimeError("Mixed sample rates detected. Keep one sample rate per training dataset. Found: {}".format(sample_rates))
+    if not all(r.get("canonicalized") for r in records):
+        raise RuntimeError("Training requires canonicalized=true for every record. Export the dataset through RF canonicalization first.")
 
-    center_freqs = sorted({round(r["center_frequency_hz"], 3) for r in records})
-    if len(center_freqs) != 1:
-        raise RuntimeError("Mixed center frequencies detected. Keep one center frequency per training dataset. Found: {}".format(center_freqs))
+    sample_rates = sorted({round(r["canonical_sample_rate_hz"], 6) for r in records})
+    if len(sample_rates) != 1:
+        raise RuntimeError("Mixed canonical_sample_rate_hz detected after preprocessing. Found: {}".format(sample_rates))
+
+    bandwidths = sorted({round(r["canonical_bandwidth_hz"], 3) for r in records})
+    if len(bandwidths) != 1:
+        raise RuntimeError("Mixed canonical_bandwidth_hz detected after preprocessing. Found: {}".format(bandwidths))
+
+    segment_lengths = sorted({int(r["canonical_segment_length_samples"]) for r in records})
+    if len(segment_lengths) != 1:
+        raise RuntimeError("Mixed canonical_segment_length_samples detected. Found: {}".format(segment_lengths))
+
+    profile_ids = sorted({r["preprocessing_profile_id"] for r in records})
+    if len(profile_ids) != 1 or not profile_ids[0]:
+        raise RuntimeError("Training requires exactly one preprocessing_profile_id. Found: {}".format(profile_ids))
 
     devices = sorted({r["emitter_device_id"] for r in records})
     if len(devices) < 2:
@@ -624,6 +642,13 @@ def main():
         "manifest_hash": current_manifest_hash,
         "sample_rate_hz": records[0]["sample_rate_hz"],
         "center_frequency_hz": records[0]["center_frequency_hz"],
+        "original_center_frequencies_hz": sorted({round(r["original_center_frequency_hz"], 3) for r in records}),
+        "canonicalized": True,
+        "canonical_center_hz": records[0]["canonical_center_hz"],
+        "canonical_sample_rate_hz": records[0]["canonical_sample_rate_hz"],
+        "canonical_bandwidth_hz": records[0]["canonical_bandwidth_hz"],
+        "canonical_segment_length_samples": records[0]["canonical_segment_length_samples"],
+        "preprocessing_profile_id": records[0]["preprocessing_profile_id"],
     }
     torch.save(checkpoint, best_model_path)
 
@@ -664,6 +689,13 @@ def main():
         "device_used": str(device),
         "sample_rate_hz": records[0]["sample_rate_hz"],
         "center_frequency_hz": records[0]["center_frequency_hz"],
+        "original_center_frequencies_hz": sorted({round(r["original_center_frequency_hz"], 3) for r in records}),
+        "canonicalized": True,
+        "canonical_center_hz": records[0]["canonical_center_hz"],
+        "canonical_sample_rate_hz": records[0]["canonical_sample_rate_hz"],
+        "canonical_bandwidth_hz": records[0]["canonical_bandwidth_hz"],
+        "canonical_segment_length_samples": records[0]["canonical_segment_length_samples"],
+        "preprocessing_profile_id": records[0]["preprocessing_profile_id"],
     })
 
     print("[OK] Training complete")
