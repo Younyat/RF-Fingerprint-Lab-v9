@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-04-24T11:18:49.637211+00:00",
+  "updated_at": "2026-04-26T12:15:01.825493+00:00",
   "sessions": [
     {
       "session_id": "kiwi_session_8c90a8f9af",
@@ -455,6 +455,40 @@
       "compression": true,
       "agc": true,
       "created_at": "2026-04-24T11:18:49.620409+00:00",
+      "notes": [
+        "Session object created for KiwiSDR source handoff.",
+        "IQ/audio streaming client is intentionally isolated for future integration."
+      ]
+    },
+    {
+      "session_id": "kiwi_session_5822894bb8",
+      "receiver_id": "kiwi_3c2881736ce1",
+      "host": "22561.proxy.kiwisdr.com",
+      "port": 8073,
+      "status": "connecting",
+      "sample_rate": 12000,
+      "mode": "iq",
+      "frequency_khz": 7100.0,
+      "compression": true,
+      "agc": true,
+      "created_at": "2026-04-26T12:14:48.201029+00:00",
+      "notes": [
+        "Session object created for KiwiSDR source handoff.",
+        "IQ/audio streaming client is intentionally isolated for future integration."
+      ]
+    },
+    {
+      "session_id": "kiwi_session_8578858ca8",
+      "receiver_id": "kiwi_16c657569ab3",
+      "host": "85.149.27.219",
+      "port": 8073,
+      "status": "connecting",
+      "sample_rate": 12000,
+      "mode": "iq",
+      "frequency_khz": 7100.0,
+      "compression": true,
+      "agc": true,
+      "created_at": "2026-04-26T12:15:01.817148+00:00",
       "notes": [
         "Session object created for KiwiSDR source handoff.",
         "IQ/audio streaming client is intentionally isolated for future integration."

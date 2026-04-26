@@ -69,7 +69,7 @@ const sortNumericEntries = (values: Record<string, number> | undefined) =>
   Object.entries(values ?? {}).sort((a, b) => b[1] - a[1]);
 
 export const InferenceLabView: React.FC = () => {
-  const { setGlobalActivity, clearGlobalActivity } = useAppActions();
+  const { setGlobalActivity } = useAppActions();
   const [captures, setCaptures] = useState<FingerprintingCaptureRecord[]>([]);
   const [status, setStatus] = useState<AsyncJobStatus | null>(null);
   const [lastRefresh, setLastRefresh] = useState('');
@@ -122,6 +122,7 @@ export const InferenceLabView: React.FC = () => {
     setLastRefresh(new Date().toISOString());
     if (predictionStatus?.job_id) {
       localStorage.setItem(JOB_STORAGE_KEY, predictionStatus.job_id);
+      window.dispatchEvent(new CustomEvent('rfp-job-started'));
     }
     return predictionStatus;
   };
@@ -178,8 +179,7 @@ export const InferenceLabView: React.FC = () => {
       });
       return;
     }
-    clearGlobalActivity();
-  }, [clearGlobalActivity, form.model_dir, selectedCapture, setGlobalActivity, status?.status]);
+  }, [form.model_dir, selectedCapture, setGlobalActivity, status?.status]);
 
   const launchPrediction = async () => {
     if (!form.cfile_path.trim()) {
@@ -196,6 +196,7 @@ export const InferenceLabView: React.FC = () => {
       setStatus(result);
       if (result.job_id) {
         localStorage.setItem(JOB_STORAGE_KEY, result.job_id);
+        window.dispatchEvent(new CustomEvent('rfp-job-started'));
         schedulePoll(result.job_id);
       }
       await refresh(result.job_id);

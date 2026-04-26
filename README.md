@@ -27,7 +27,7 @@ The application is built with a FastAPI backend and a React/TypeScript frontend.
 - ASK/FSK/PSK/OOK marker-band IQ capture with metadata export for digital analysis
 - Modulated signal analysis tab for marker-limited IQ dataset capture
 - Guided `Capture Lab` safety checks for bandwidth, duration, and invalid frequency windows before launching IQ acquisition
-- Global non-blocking activity overlay for SDR connection and IQ capture so the user can understand long operations without losing navigation
+- Persistent transparent execution overlay for SDR operations and ML jobs (training, retraining, validation, prediction) that stays visible while navigating between tabs without blocking the interface
 - Live marker-band QC preview with peak, noise floor, SNR, and peak frequency before recording
 - Automatic RadioConda Python propagation to `Validation` and `Inference` so `python_exe` appears prefilled by default
 - Persistent `.cfile` and `.iq` capture libraries for replay workflows and AI model training datasets
@@ -48,6 +48,26 @@ The application is built with a FastAPI backend and a React/TypeScript frontend.
 - FastAPI REST API with OpenAPI docs
 - React/Vite frontend with canvas-based spectrum rendering
 
+## What The Platform Offers
+
+SpectraEase combines RF acquisition, dataset curation, and RF fingerprinting workflows in one browser-based laboratory interface. It is designed for operators who need to move from live spectrum observation to reproducible machine-learning experiments without changing tools.
+
+Main capabilities:
+
+- Live RF monitoring with analyzer-style controls, markers, measurements, and spectrum/waterfall visualization.
+- Marker-driven RF capture for focused IQ acquisition around signals of interest.
+- Capture Lab workflows for generating train, validation, and prediction datasets with metadata and quality checks.
+- Dataset Builder for reviewing captures, assigning splits, and keeping the fingerprinting registry consistent.
+- Remote model training and retraining with persistent job tracking across navigation.
+- Validation workflows for evaluating trained models against curated validation captures.
+- Prediction/inference workflows that produce structured reports with confidence, profile distances, vote stability, and traceability.
+- Model registry for inspecting current and historical RF fingerprinting artifacts.
+- Non-blocking transparent execution messaging for long-running operations, so users can keep using the application while jobs continue.
+- Unified backend API for SDR control, capture management, demodulation, fingerprinting, MLOps, and model reporting.
+
+The execution overlay is intentionally global: if a training, retraining, validation, or prediction job is running, the message remains visible when moving from one page to another, survives refresh through the stored job id, and disappears automatically only when the backend reports that the job has finished. The same transparent non-blocking pattern is used for capture, SDR operations, and MLOps executions so long-running work never traps the operator on one tab.
+
+
 ## Tech Stack
 
 | Component | Technology |
@@ -63,7 +83,7 @@ The application is built with a FastAPI backend and a React/TypeScript frontend.
 Use PowerShell from the project root:
 
 ```powershell
-cd C:\Users\Usuario\Desktop\NICS\Spectum_lab\spectrum-lab
+cd C:\path\to\spectrum-lab
 
 $env:DEFAULT_CENTER_FREQUENCY_HZ="89400000"
 $env:DEFAULT_SAMPLE_RATE_HZ="2000000"
@@ -71,26 +91,26 @@ $env:DEFAULT_GAIN_DB="20"
 $env:DEFAULT_ANTENNA="RX2"
 $env:UHD_DEVICE_ARGS=""
 
-powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1 -UseRealSdr 1 -RadioCondaPythonPath "C:\Users\Usuario\radioconda\python.exe"
+powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1 -UseRealSdr 1 -RadioCondaPythonPath "<radioconda-python-path>"
 ```
 
 Arranque unificado recomendado para la plataforma fusionada:
 
 ```powershell
-cd C:\Users\Usuario\Desktop\NICS\RF-Fingerprint-Lab\spectrum-lab
+cd C:\path\to\spectrum-lab
 powershell -ExecutionPolicy Bypass -File .\start_unified.ps1
 ```
 
 Si quieres pasar explícitamente el usuario y la IP del entrenamiento remoto, usa:
 
 ```powershell
-cd C:\Users\Usuario\Desktop\NICS\RF-Fingerprint-Lab\spectrum-lab
-powershell -ExecutionPolicy Bypass -File .\start_unified.ps1 -RemoteUser "assouyat" -RemoteHost "192.168.193.49"
+cd C:\path\to\spectrum-lab
+powershell -ExecutionPolicy Bypass -File .\start_unified.ps1 -RemoteUser "<ssh-user>" -RemoteHost "<training-host>"
 ```
 
 Esos valores quedan además precargados en la pestaña `Training`.
 El mismo arranque propaga también `RadioCondaPythonPath` al frontend para que `Validation` e `Inference` muestren `python_exe` ya detectado por defecto.
-Si quieres precargar también la activación del entorno remoto clásico, usa `-RemoteVenvActivate "/home/assouyat/rfenv/bin/activate"` al arrancar con `run_dev.ps1`.
+Si quieres precargar también la activación del entorno remoto clásico, usa `-RemoteVenvActivate "<remote-venv-activate-path>"` al arrancar con `run_dev.ps1`.
 
 Ese comando levanta en una sola orden:
 
@@ -116,7 +136,7 @@ Puedes sobrescribirlos al arrancar sin tocar código:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1 `
   -UseRealSdr 1 `
-  -RadioCondaPythonPath "C:\Users\Usuario\radioconda\python.exe" `
+  -RadioCondaPythonPath "<radioconda-python-path>" `
   -AppSyncIntervalMs 10000 `
   -SpectrumPollIntervalMs 250 `
   -WaterfallPollIntervalMs 400
@@ -278,7 +298,7 @@ These messages are expected when the tool is protecting the workflow:
 - `No report generated yet. If the job is still running, wait for completion. If it failed, inspect stderr above.`
   Meaning: the prediction report JSON does not exist yet or the job has not finished.
 
-- `Python por defecto detectado: C:\Users\Usuario\radioconda\python.exe`
+- `Python por defecto detectado: <radioconda-python-path>`
   Meaning: the frontend received the RadioConda runtime path from the launcher. In normal use you can keep this value as-is or leave the field empty and let the backend default apply.
 
 - `UHD did not find the USRP-B200. Check the USB connection and make sure no other GNU Radio/UHD process is using the device.`
@@ -329,7 +349,7 @@ Validation:
 
 Recommended value for `remote_venv_activate`:
 
-- `/home/assouyat/rfenv/bin/activate`
+- `<remote-venv-activate-path>`
 
 That field is optional. If left empty, the remote launcher tries to create a fallback virtual environment on the remote host.
 

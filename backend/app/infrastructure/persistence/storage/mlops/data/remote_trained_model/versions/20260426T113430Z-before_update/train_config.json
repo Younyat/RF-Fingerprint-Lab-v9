@@ -2,7 +2,7 @@
   "window_size": 1024,
   "stride": 1024,
   "batch_size": 128,
-  "epochs": 10,
+  "epochs": 20,
   "lr": 0.001,
   "embedding_dim": 128,
   "max_windows_per_file": 3000,

@@ -3,10 +3,12 @@ import { AppRouter } from './router/AppRouter';
 import { ApiService } from './services/ApiService';
 import { useAppStore } from './store/AppStore';
 import { RUNTIME_CONFIG } from '../shared/config/runtime';
+import { usePersistentJobActivity } from '../presentation/hooks/usePersistentJobActivity';
 
 const apiService = new ApiService();
 
 function App() {
+  usePersistentJobActivity();
   const setDeviceStatus = useAppStore((state) => state.setDeviceStatus);
   const setRecordings = useAppStore((state) => state.setRecordings);
   const setSessions = useAppStore((state) => state.setSessions);

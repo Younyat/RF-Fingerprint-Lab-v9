@@ -87,18 +87,29 @@ export const AppLayout: React.FC = () => {
       {/* Main content */}
       <div className="flex flex-1 flex-col overflow-hidden app-shell">
         {globalActivity?.visible && (
-          <div className="pointer-events-none fixed inset-x-0 top-5 z-40 flex justify-center px-4">
-            <div className="max-w-2xl rounded-[1.25rem] border border-white/15 px-6 py-4 text-white shadow-[0_20px_60px_rgba(15,23,42,0.28)] backdrop-blur-xl" style={{ background: 'var(--app-overlay)' }}>
-              <div className="flex items-center gap-3">
-                {globalActivity.kind === 'capturing' ? (
-                  <RadioTower className="h-5 w-5 animate-pulse text-emerald-300" />
-                ) : (
-                  <Loader2 className="h-5 w-5 animate-spin text-amber-300" />
-                )}
-                <div>
-                  <div className="text-sm font-semibold">{globalActivity.title}</div>
-                  {globalActivity.detail && <div className="mt-1 text-xs text-slate-200/90">{globalActivity.detail}</div>}
+          <div className="pointer-events-none fixed bottom-6 right-6 z-50 max-w-[calc(100vw-2rem)]">
+            <div
+              className="w-[min(28rem,calc(100vw-2rem))] overflow-hidden rounded-[1.35rem] border border-white/20 text-white shadow-[0_22px_70px_rgba(15,23,42,0.30)] backdrop-blur-2xl"
+              style={{ background: 'linear-gradient(135deg, rgba(15,23,42,0.78), rgba(30,41,59,0.56))' }}
+            >
+              <div className="flex items-center gap-3 px-5 py-4">
+                <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/15 bg-white/10">
+                  {globalActivity.kind === 'capturing' ? (
+                    <RadioTower className="h-5 w-5 animate-pulse text-emerald-300" />
+                  ) : (
+                    <Loader2 className="h-5 w-5 animate-spin text-amber-300" />
+                  )}
                 </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 text-sm font-semibold">
+                    <span className="h-2 w-2 rounded-full bg-emerald-300 shadow-[0_0_18px_rgba(110,231,183,0.85)]" />
+                    <span className="truncate">{globalActivity.title}</span>
+                  </div>
+                  {globalActivity.detail && <div className="mt-1 truncate text-xs text-slate-200/90">{globalActivity.detail}</div>}
+                </div>
+              </div>
+              <div className="h-1 overflow-hidden bg-white/10">
+                <div className="h-full w-1/2 animate-[pulse_1.4s_ease-in-out_infinite] rounded-full bg-gradient-to-r from-amber-300 via-emerald-300 to-sky-300" />
               </div>
             </div>
           </div>

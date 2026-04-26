@@ -53,7 +53,7 @@ const buildFrequencyOptions = (captures: FingerprintingCaptureRecord[]): Frequen
 };
 
 export const RetrainingLabView: React.FC = () => {
-  const { setGlobalActivity, clearGlobalActivity } = useAppActions();
+  const { setGlobalActivity } = useAppActions();
   const [captures, setCaptures] = useState<FingerprintingCaptureRecord[]>([]);
   const [status, setStatus] = useState<AsyncJobStatus | null>(null);
   const [lastRefresh, setLastRefresh] = useState('');
@@ -96,6 +96,7 @@ export const RetrainingLabView: React.FC = () => {
     setLastRefresh(new Date().toISOString());
     if (trainingStatus?.job_id) {
       localStorage.setItem(JOB_STORAGE_KEY, trainingStatus.job_id);
+      window.dispatchEvent(new CustomEvent('rfp-job-started'));
     }
     return trainingStatus;
   };
@@ -144,8 +145,7 @@ export const RetrainingLabView: React.FC = () => {
       });
       return;
     }
-    clearGlobalActivity();
-  }, [clearGlobalActivity, selectedFrequency, setGlobalActivity, status?.job_id, status?.status]);
+  }, [selectedFrequency, setGlobalActivity, status?.job_id, status?.status]);
 
   const launchRetrain = async () => {
     setIsLaunching(true);
@@ -158,6 +158,7 @@ export const RetrainingLabView: React.FC = () => {
       setStatus(result);
       if (result.job_id) {
         localStorage.setItem(JOB_STORAGE_KEY, result.job_id);
+        window.dispatchEvent(new CustomEvent('rfp-job-started'));
         schedulePoll(result.job_id);
       }
       await refresh(result.job_id);

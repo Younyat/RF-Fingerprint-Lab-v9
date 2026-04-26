@@ -62,7 +62,7 @@ The active API does not generate mock spectrum data. If the device cannot be ope
 The recommended development entrypoint is the project script:
 
 ```powershell
-cd C:\Users\Usuario\Desktop\NICS\Spectum_lab\spectrum-lab
+cd C:\path\to\spectrum-lab
 
 $env:DEFAULT_CENTER_FREQUENCY_HZ="89400000"
 $env:DEFAULT_SAMPLE_RATE_HZ="2000000"
@@ -70,13 +70,13 @@ $env:DEFAULT_GAIN_DB="20"
 $env:DEFAULT_ANTENNA="RX2"
 $env:UHD_DEVICE_ARGS=""
 
-powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1 -UseRealSdr 1 -RadioCondaPythonPath "C:\Users\Usuario\radioconda\python.exe"
+powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1 -UseRealSdr 1 -RadioCondaPythonPath "C:\path\to\radioconda\python.exe"
 ```
 
 If running only the backend, make sure `RADIOCONDA_PYTHON` points to the Python executable that has GNU Radio and UHD:
 
 ```powershell
-$env:RADIOCONDA_PYTHON="C:\Users\Usuario\radioconda\python.exe"
+$env:RADIOCONDA_PYTHON="C:\path\to\radioconda\python.exe"
 cd backend
 .\venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
@@ -251,6 +251,6 @@ Supported commands:
 - Confirm the USRP-B200 is connected over USB.
 - Confirm RadioConda can import `gnuradio` and `uhd`.
 - Confirm the app was started with `-UseRealSdr 1`.
-- Confirm `RADIOCONDA_PYTHON` points to `C:\Users\Usuario\radioconda\python.exe`.
+- Confirm `RADIOCONDA_PYTHON` points to `C:\path\to\radioconda\python.exe`.
 - If `/api/spectrum/live` returns `real_sdr_pending`, wait for the first frame.
 - If it returns `real_sdr_error`, check the error field and the backend terminal output.

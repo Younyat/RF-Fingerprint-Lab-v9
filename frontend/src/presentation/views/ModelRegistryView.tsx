@@ -33,14 +33,34 @@ export const ModelRegistryView: React.FC = () => {
   const [lastRefresh, setLastRefresh] = useState('');
 
   useEffect(() => {
-    Promise.all([api.getModelOverview(), api.getCurrentModel().catch(() => null), api.getTrainingModels()])
-      .then(([overviewData, current, modelList]) => {
+    let cancelled = false;
+
+    const refreshRegistry = async () => {
+      try {
+        const [overviewData, current, modelList] = await Promise.all([
+          api.getModelOverview(),
+          api.getCurrentModel().catch(() => null),
+          api.getTrainingModels(),
+        ]);
+        if (cancelled) return;
         setOverview(overviewData);
         setCurrentModel(current);
         setModels(modelList);
         setLastRefresh(new Date().toISOString());
-      })
-      .catch((error) => console.error('Failed to load model registry', error));
+      } catch (error) {
+        if (!cancelled) console.error('Failed to load model registry', error);
+      }
+    };
+
+    refreshRegistry();
+    const interval = window.setInterval(refreshRegistry, 5000);
+    window.addEventListener('rfp-job-started', refreshRegistry);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener('rfp-job-started', refreshRegistry);
+    };
   }, []);
 
   const currentMetrics = useMemo(() => summarizeModelMetrics(currentModel), [currentModel]);
@@ -191,10 +211,10 @@ export const ModelRegistryView: React.FC = () => {
             <div className="text-sm font-semibold uppercase tracking-[0.18em] app-muted-text">Retraining lineage</div>
             <div className="mt-4 space-y-3">
               {latestSnapshots.map((snapshot, index) => (
-                <div key={`${snapshot.version ?? 'snapshot'}-${index}`} className="app-surface-muted rounded-2xl p-4">
+                <div key={`${snapshot.version ?? snapshot.version_id ?? 'snapshot'}-${index}`} className="app-surface-muted rounded-2xl p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
-                      <div className="font-semibold" style={{ color: 'var(--app-text)' }}>{String(snapshot.version ?? `snapshot_${index + 1}`)}</div>
+                      <div className="font-semibold" style={{ color: 'var(--app-text)' }}>{String(snapshot.version ?? snapshot.version_id ?? `snapshot_${index + 1}`)}</div>
                       <div className="mt-1 text-xs app-muted-text">{formatTimestamp(String(snapshot.created_at_utc ?? ''))}</div>
                     </div>
                     <div className="text-right text-xs app-muted-text">

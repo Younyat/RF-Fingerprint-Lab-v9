@@ -167,13 +167,14 @@ class MlOpsService:
         label_map_path = model_dir / "label_map.json"
         train_config_path = model_dir / "train_config.json"
         version_index_path = model_dir / "versions" / "index.json"
+        versions_dir = model_dir / "versions"
 
         history = self._load_json(history_path) or []
         manifest = self._load_json(manifest_path) or {}
         profiles = self._load_json(profiles_path) or {}
         label_map = self._load_json(label_map_path) or {}
         train_config = self._load_json(train_config_path) or {}
-        version_index = self._load_json(version_index_path) or {}
+        retraining_snapshots = self._load_retraining_snapshots(version_index_path, versions_dir)
         records = manifest.get("records", []) if isinstance(manifest, dict) else []
         reports = self.list_validation_reports()
 
@@ -198,8 +199,8 @@ class MlOpsService:
                 "latest_history": history[-20:] if isinstance(history, list) else [],
             },
             "retraining": {
-                "snapshot_count": len(version_index.get("versions", [])) if isinstance(version_index, dict) else 0,
-                "snapshots": version_index.get("versions", []) if isinstance(version_index, dict) else [],
+                "snapshot_count": len(retraining_snapshots),
+                "snapshots": retraining_snapshots,
             },
             "prediction_readiness": {
                 "has_model_file": best_model_path.exists(),
@@ -220,6 +221,56 @@ class MlOpsService:
                 "predict_dataset_dir": str(self._predict_dataset_dir),
                 "predict_dataset_size_bytes": self._safe_tree_size(self._predict_dataset_dir),
             },
+        }
+
+    def _load_retraining_snapshots(self, index_path: Path, versions_dir: Path) -> list[dict[str, Any]]:
+        """
+        Reads retraining lineage from versions/index.json and falls back to the
+        versions directory. The fallback matters because a completed retraining
+        may create snapshot folders even if the index is stale or unreadable.
+        """
+        snapshots: list[dict[str, Any]] = []
+        index = self._load_json(index_path)
+        raw_versions = index.get("versions", []) if isinstance(index, dict) else []
+        if isinstance(raw_versions, list):
+            for item in raw_versions:
+                if isinstance(item, dict):
+                    snapshots.append(self._normalize_retraining_snapshot(item))
+
+        known_ids = {str(item.get("version_id") or item.get("version") or "") for item in snapshots}
+        if versions_dir.exists():
+            for child in sorted(versions_dir.iterdir()):
+                if not child.is_dir() or child.name in known_ids:
+                    continue
+                snapshots.append(
+                    self._normalize_retraining_snapshot(
+                        {
+                            "version_id": child.name,
+                            "snapshot_dir": str(child),
+                            "reason": child.name.split("-", 1)[1] if "-" in child.name else "snapshot",
+                            "model_file": str(child / "best_model.pt"),
+                            "created_at_utc": self._safe_mtime(child),
+                        }
+                    )
+                )
+
+        return sorted(snapshots, key=lambda item: str(item.get("created_at_utc") or item.get("version_id") or ""))
+
+    def _normalize_retraining_snapshot(self, item: dict[str, Any]) -> dict[str, Any]:
+        version_id = str(item.get("version_id") or item.get("version") or "snapshot").strip()
+        snapshot_dir = Path(str(item.get("snapshot_dir") or "")) if item.get("snapshot_dir") else None
+        model_file = Path(str(item.get("model_file") or "")) if item.get("model_file") else None
+        return {
+            **item,
+            "version": version_id,
+            "version_id": version_id,
+            "reason": str(item.get("reason") or "snapshot"),
+            "snapshot_dir": str(snapshot_dir) if snapshot_dir else str(item.get("snapshot_dir") or ""),
+            "model_file": str(model_file) if model_file else str(item.get("model_file") or ""),
+            "model_file_exists": bool(model_file and model_file.exists()),
+            "model_file_size_bytes": self._safe_size(model_file) if model_file else 0,
+            "snapshot_size_bytes": self._safe_tree_size(snapshot_dir) if snapshot_dir else 0,
+            "created_at_utc": str(item.get("created_at_utc") or (self._safe_mtime(snapshot_dir) if snapshot_dir else "") or ""),
         }
 
     def list_models(self) -> list[dict[str, Any]]:
@@ -322,10 +373,12 @@ class MlOpsService:
         model_dir = self._resolve_path(payload.get("model_dir"), self._model_output_dir)
         self._validate_model_dir(model_dir)
         val_root = self._resolve_path(payload.get("val_root"), self._val_dataset_dir)
+        selected_capture_ids = {str(item).strip() for item in (payload.get("selected_capture_ids") or []) if str(item).strip()}
         export_summary = self._export_fingerprinting_split(
             dataset_split="val",
             destination_dir=val_root,
             allowed_statuses={"valid"},
+            selected_capture_ids=selected_capture_ids or None,
         )
         self._validate_validation_dataset(export_summary, model_dir)
         selected_metadata_paths = self._resolve_validation_selection(
@@ -370,12 +423,20 @@ class MlOpsService:
             "selected_metadata_paths": selected_metadata_paths,
         }
         if result.returncode == 0 and output_json.exists():
-            response["report"] = self._load_json(output_json)
+            report = self._load_json(output_json)
+            if report is not None:
+                response["report"] = report
+                self._store_validation_report(output_json, report)
         return response
 
     def validation_status(self, job_id: str | None = None) -> dict[str, Any]:
         status = self._job_manager.get_status("validation", job_id=job_id)
-        return self._attach_report(status)
+        status = self._attach_report(status)
+        if status.get("status") == "completed" and isinstance(status.get("report"), dict):
+            output_json = str((status.get("metadata") or {}).get("output_json", "")).strip()
+            if output_json:
+                self._store_validation_report(Path(output_json), status["report"])
+        return status
 
     def list_validation_reports(self) -> list[dict[str, Any]]:
         reports_dir = self._mlops_reports_root / "validation_reports"
@@ -385,6 +446,16 @@ class MlOpsService:
             if isinstance(data, dict):
                 items.append(data)
         return items
+
+    def _store_validation_report(self, source_path: Path, report: dict[str, Any]) -> Path:
+        reports_dir = self._mlops_reports_root / "validation_reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        source_digest = str(source_path.resolve()).replace(":", "").replace("\\", "_").replace("/", "_")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out_path = reports_dir / f"validation_{stamp}_{abs(hash(source_digest)) % 1000000:06d}.json"
+        if not any(existing.read_text(encoding="utf-8", errors="ignore") == json.dumps(report, indent=2, ensure_ascii=False) for existing in reports_dir.glob("*.json")):
+            out_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+        return out_path
 
     def classify_capture(self, payload: dict[str, Any]) -> dict[str, Any]:
         cfile_path = str(payload.get("cfile_path", ""))
@@ -464,8 +535,11 @@ class MlOpsService:
         allowed_statuses: set[str],
         target_center_frequency_hz: float | None = None,
         center_frequency_tolerance_hz: float = 1.0,
+        selected_capture_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         records = self._load_fingerprinting_captures(dataset_split=dataset_split, allowed_statuses=allowed_statuses)
+        if selected_capture_ids:
+            records = [record for record in records if str(record.get("capture_id", "")).strip() in selected_capture_ids]
         if target_center_frequency_hz is not None:
             filtered_records: list[dict[str, Any]] = []
             for record in records:
@@ -502,6 +576,7 @@ class MlOpsService:
                 "quality_statuses": sorted(allowed_statuses),
                 "target_center_frequency_hz": target_center_frequency_hz,
                 "center_frequency_tolerance_hz": center_frequency_tolerance_hz,
+                "selected_capture_ids": sorted(selected_capture_ids) if selected_capture_ids else [],
             }
         )
         return summary

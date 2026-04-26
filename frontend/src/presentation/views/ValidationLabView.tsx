@@ -24,14 +24,29 @@ const getErrorDetail = (error: unknown): string => {
 
 const formatDb = (value?: number | null) => (Number.isFinite(value) ? `${Number(value).toFixed(2)} dB` : 'n/a');
 
+const getValidationArtifactPath = (capture: FingerprintingCaptureRecord) =>
+  String(capture.artifacts?.iq_file || capture.capture_config?.output_path || '').trim();
+
+const isSelectableValidationCapture = (capture: FingerprintingCaptureRecord) =>
+  capture.quality_review.status === 'valid' && Boolean(getValidationArtifactPath(capture));
+
 const summarizeReport = (report: Record<string, unknown>) => {
   const summary = (report.summary ?? {}) as Record<string, unknown>;
   const metrics = (report.metrics ?? {}) as Record<string, unknown>;
+  const records = Array.isArray(report.records) ? report.records as Array<Record<string, unknown>> : [];
+  const totalWindows = records.reduce((total, record) => total + Number(record.num_windows ?? 0), 0);
+
   return {
-    totalWindows: Number(summary.total_windows ?? metrics.total_windows ?? 0),
-    accuracy: Number(metrics.accuracy ?? metrics.closed_set_accuracy ?? 0),
+    totalWindows: Number(summary.total_windows ?? metrics.total_windows ?? totalWindows),
+    accuracy: Number(
+      metrics.accuracy
+        ?? metrics.closed_set_accuracy
+        ?? report.record_level_closed_set_accuracy
+        ?? report.window_level_closed_set_accuracy
+        ?? 0,
+    ),
     macroF1: Number(metrics.macro_f1 ?? metrics.f1_macro ?? 0),
-    balancedAccuracy: Number(metrics.balanced_accuracy ?? 0),
+    balancedAccuracy: Number(metrics.balanced_accuracy ?? report.window_level_closed_set_accuracy ?? 0),
   };
 };
 
@@ -60,7 +75,7 @@ export const ValidationLabView: React.FC = () => {
   });
 
   const validCaptures = useMemo(
-    () => captures.filter((capture) => capture.quality_review.status === 'valid' && Boolean(capture.artifacts.iq_file)),
+    () => captures.filter(isSelectableValidationCapture),
     [captures],
   );
 
@@ -68,6 +83,19 @@ export const ValidationLabView: React.FC = () => {
     () => validCaptures.filter((capture) => selectedCaptureIds.includes(capture.capture_id)),
     [validCaptures, selectedCaptureIds],
   );
+
+  const validationScopeCaptures = selectedCaptures.length > 0 ? selectedCaptures : validCaptures;
+
+  const validationScopeFrequencies = useMemo(
+    () => Array.from(new Set(validationScopeCaptures.map((capture) => Math.round(capture.capture_config.center_frequency_hz * 1000) / 1000))).sort((a, b) => a - b),
+    [validationScopeCaptures],
+  );
+
+  const hasMixedValidationFrequencies = validationScopeFrequencies.length > 1;
+
+  const validationFrequencyMessage = hasMixedValidationFrequencies
+    ? `Validation requires one center_frequency_hz. Select captures from one frequency only. Found: ${validationScopeFrequencies.map((value) => formatFrequency(value)).join(', ')}`
+    : '';
 
   const reportSummary = useMemo(
     () => (status?.report ? summarizeReport(status.report) : null),
@@ -93,6 +121,7 @@ export const ValidationLabView: React.FC = () => {
     setLastRefresh(new Date().toISOString());
     if (validationStatus?.job_id) {
       localStorage.setItem(JOB_STORAGE_KEY, validationStatus.job_id);
+      window.dispatchEvent(new CustomEvent('rfp-job-started'));
     }
     return validationStatus;
   };
@@ -137,16 +166,41 @@ export const ValidationLabView: React.FC = () => {
       });
       return;
     }
-    clearGlobalActivity();
-  }, [clearGlobalActivity, form.model_dir, selectedCaptureIds.length, selectedCaptures.length, setGlobalActivity, status?.status]);
+  }, [form.model_dir, selectedCaptureIds.length, selectedCaptures.length, setGlobalActivity, status?.status]);
 
   const toggleCapture = (captureId: string) => {
+    if (!captureId) return;
     setSelectedCaptureIds((current) =>
       current.includes(captureId) ? current.filter((item) => item !== captureId) : [...current, captureId],
     );
   };
 
+  const getDisabledReason = (capture: FingerprintingCaptureRecord) => {
+    if (capture.quality_review.status !== 'valid') return `quality status is ${capture.quality_review.status}`;
+    if (!getValidationArtifactPath(capture)) return 'missing IQ artifact path';
+    return '';
+  };
+
   const run = async (mode: 'sync' | 'async') => {
+    if (hasMixedValidationFrequencies) {
+      setErrorMessage(validationFrequencyMessage);
+      return;
+    }
+
+    const activeSelectionCount = selectedCaptures.length || selectedCaptureIds.length || validCaptures.length;
+    setGlobalActivity({
+      visible: true,
+      kind: 'processing',
+      title: mode === 'async' ? 'Validation job launching' : 'Validation running',
+      detail: `${activeSelectionCount} validation captures - model ${form.model_dir}`,
+    });
+
+    setStatus((current) => ({
+      ...(current ?? {}),
+      status: mode === 'async' ? 'starting' : 'running',
+      stdout: current?.stdout ?? 'Validation request submitted. Waiting for backend output...',
+      stderr: current?.stderr ?? '',
+    }));
     setIsLaunching(true);
     setErrorMessage('');
     try {
@@ -160,16 +214,40 @@ export const ValidationLabView: React.FC = () => {
         setStatus(result);
         if (result.job_id) {
           localStorage.setItem(JOB_STORAGE_KEY, result.job_id);
+          window.dispatchEvent(new CustomEvent('rfp-job-started'));
           schedulePoll(result.job_id);
         }
       } else {
-        await refresh();
-      }
-      if ((result as any)?.report) {
-        setStatus(result as AsyncJobStatus);
+        const commandResult = (result as any).command_result ?? {};
+        setStatus({
+          status: commandResult.returncode === 0 ? 'completed' : 'failed',
+          returncode: commandResult.returncode ?? null,
+          stdout: commandResult.stdout || 'Validation finished without stdout.',
+          stderr: commandResult.stderr || '',
+          report: (result as any).report,
+          metadata: {
+            output_json: (result as any).output_json,
+            dataset_export: (result as any).dataset_export,
+            selected_metadata_paths: (result as any).selected_metadata_paths,
+          },
+        });
+        const [reportList, valCaptures] = await Promise.all([
+          api.getValidationReports(),
+          api.getFingerprintingCaptures('val'),
+        ]);
+        setReports(reportList);
+        setCaptures(valCaptures);
+        setLastRefresh(new Date().toISOString());
+        clearGlobalActivity();
       }
     } catch (error) {
       setErrorMessage(getErrorDetail(error));
+      setStatus((current) => ({
+        ...(current ?? {}),
+        status: 'failed',
+        stderr: getErrorDetail(error),
+      }));
+      clearGlobalActivity();
     } finally {
       setIsLaunching(false);
     }
@@ -230,6 +308,12 @@ export const ValidationLabView: React.FC = () => {
             and then launches the validation pipeline on the selected subset.
           </div>
 
+          {hasMixedValidationFrequencies && (
+            <div className="mt-4 rounded-2xl border border-orange-200 bg-orange-50 p-4 text-sm text-orange-900">
+              {validationFrequencyMessage}
+            </div>
+          )}
+
           {errorMessage && (
             <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-900">{errorMessage}</div>
           )}
@@ -238,14 +322,14 @@ export const ValidationLabView: React.FC = () => {
             <button
               className="rounded-full bg-amber-500 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
               onClick={() => run('sync')}
-              disabled={isLaunching || status?.status === 'running'}
+              disabled={isLaunching || status?.status === 'running' || hasMixedValidationFrequencies}
             >
               Run Validation
             </button>
             <button
               className="rounded-full bg-slate-900 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
               onClick={() => run('async')}
-              disabled={isLaunching || status?.status === 'running'}
+              disabled={isLaunching || status?.status === 'running' || hasMixedValidationFrequencies}
             >
               Start Async Validation
             </button>
@@ -302,6 +386,15 @@ export const ValidationLabView: React.FC = () => {
               Source: fingerprinting registry filtered by `dataset_split = val`. Select the exact captures to include in this run.
             </div>
             <div className="mb-4 flex flex-wrap gap-3">
+              {Array.from(new Set(validCaptures.map((capture) => Math.round(capture.capture_config.center_frequency_hz * 1000) / 1000))).sort((a, b) => a - b).map((frequency) => (
+                <button
+                  key={frequency}
+                  className="rounded-full border border-sky-300 px-4 py-2 text-xs font-semibold text-sky-900"
+                  onClick={() => setSelectedCaptureIds(validCaptures.filter((capture) => Math.round(capture.capture_config.center_frequency_hz * 1000) / 1000 === frequency).map((capture) => capture.capture_id))}
+                >
+                  Select {formatFrequency(frequency)}
+                </button>
+              ))}
               <button className="rounded-full border border-amber-300 px-4 py-2 text-xs font-semibold text-amber-900" onClick={() => selectAllValid()}>
                 Select All Valid
               </button>
@@ -311,32 +404,51 @@ export const ValidationLabView: React.FC = () => {
             </div>
             <div className="space-y-3">
               {captures.map((capture) => {
-                const disabled = capture.quality_review.status !== 'valid' || !capture.artifacts.iq_file;
+                const disabledReason = getDisabledReason(capture);
+                const disabled = Boolean(disabledReason);
                 const checked = selectedCaptureIds.includes(capture.capture_id);
                 return (
-                  <label
+                  <div
                     key={capture.capture_id}
-                    className={`flex gap-3 rounded-2xl border p-4 ${disabled ? 'opacity-70' : ''}`}
-                    style={{ borderColor: 'var(--app-border)', background: 'var(--app-surface-muted)', color: 'var(--app-text)' }}
+                    role="button"
+                    tabIndex={disabled ? -1 : 0}
+                    aria-disabled={disabled}
+                    aria-pressed={checked}
+                    onClick={() => {
+                      if (!disabled) toggleCapture(capture.capture_id);
+                    }}
+                    onKeyDown={(event) => {
+                      if (!disabled && (event.key === 'Enter' || event.key === ' ')) {
+                        event.preventDefault();
+                        toggleCapture(capture.capture_id);
+                      }
+                    }}
+                    className={`flex gap-3 rounded-2xl border p-4 text-left transition ${disabled ? 'cursor-not-allowed opacity-70' : 'cursor-pointer hover:border-amber-300'} ${checked ? 'ring-2 ring-amber-300' : ''}`}
+                    style={{ borderColor: checked ? 'rgb(252 211 77)' : 'var(--app-border)', background: checked ? 'rgba(245,158,11,0.10)' : 'var(--app-surface-muted)', color: 'var(--app-text)' }}
                   >
                     <input
                       type="checkbox"
-                      className="mt-1"
+                      className="mt-1 h-4 w-4 accent-amber-500"
                       checked={checked}
                       disabled={disabled}
                       onChange={() => toggleCapture(capture.capture_id)}
+                      onClick={(event) => event.stopPropagation()}
                     />
                     <div className="min-w-0 flex-1">
-                      <div className="font-semibold">{capture.transmitter.transmitter_id || capture.transmitter.transmitter_label}</div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="font-semibold">{capture.transmitter.transmitter_id || capture.transmitter.transmitter_label}</div>
+                        {checked && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-900">selected</span>}
+                        {disabledReason && <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[11px] font-semibold text-slate-700">{disabledReason}</span>}
+                      </div>
                       <div className="mt-1 text-xs app-muted-text">
-                        {capture.transmitter.transmitter_class} · {capture.session_id} · {capture.quality_review.status}
+                        {capture.transmitter.transmitter_class} - {capture.session_id} - {capture.quality_review.status}
                       </div>
                       <div className="mt-2 text-xs app-muted-text">
-                        {formatFrequency(capture.capture_config.center_frequency_hz)} · SNR {formatDb(capture.quality_metrics.estimated_snr_db)}
+                        {formatFrequency(capture.capture_config.center_frequency_hz)} - SNR {formatDb(capture.quality_metrics.estimated_snr_db)}
                       </div>
                       <div className="mt-2 text-xs app-muted-text">created {formatTimestamp(capture.created_at_utc)}</div>
                     </div>
-                  </label>
+                  </div>
                 );
               })}
               {captures.length === 0 && <div className="text-sm app-muted-text">No captures marked as val found.</div>}

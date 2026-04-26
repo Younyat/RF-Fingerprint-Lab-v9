@@ -53,7 +53,7 @@ const buildFrequencyOptions = (captures: FingerprintingCaptureRecord[]): Frequen
 };
 
 export const TrainingLabView: React.FC = () => {
-  const { setGlobalActivity, clearGlobalActivity } = useAppActions();
+  const { setGlobalActivity } = useAppActions();
   const [dashboard, setDashboard] = useState<TrainingDashboard | null>(null);
   const [models, setModels] = useState<ModelArtifactSummary[]>([]);
   const [trainCaptures, setTrainCaptures] = useState<FingerprintingCaptureRecord[]>([]);
@@ -100,7 +100,10 @@ export const TrainingLabView: React.FC = () => {
     setTrainCaptures(captures);
     setStatus(trainingStatus);
     setLastRefresh(new Date().toISOString());
-    if (trainingStatus?.job_id) localStorage.setItem(JOB_STORAGE_KEY, trainingStatus.job_id);
+    if (trainingStatus?.job_id) {
+      localStorage.setItem(JOB_STORAGE_KEY, trainingStatus.job_id);
+      window.dispatchEvent(new CustomEvent('rfp-job-started'));
+    }
     return trainingStatus;
   };
 
@@ -144,8 +147,7 @@ export const TrainingLabView: React.FC = () => {
       });
       return;
     }
-    clearGlobalActivity();
-  }, [clearGlobalActivity, selectedFrequency, setGlobalActivity, status?.job_id, status?.status]);
+  }, [selectedFrequency, setGlobalActivity, status?.job_id, status?.status]);
 
   const launch = async (mode: 'train' | 'retrain') => {
     setIsLaunching(true);
@@ -159,6 +161,7 @@ export const TrainingLabView: React.FC = () => {
       setStatus(result);
       if (result.job_id) {
         localStorage.setItem(JOB_STORAGE_KEY, result.job_id);
+        window.dispatchEvent(new CustomEvent('rfp-job-started'));
         schedulePoll(result.job_id);
       }
       await refresh(result.job_id);

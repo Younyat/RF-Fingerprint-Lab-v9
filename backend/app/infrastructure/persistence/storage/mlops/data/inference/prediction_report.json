@@ -1,39 +1,39 @@
 {
   "input": {
-    "cfile_path": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\modulated_signal_captures\\cfile_3d49ac37_89.400000MHz_3125.0kHz.cfile",
-    "metadata_path": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\modulated_signal_captures\\cfile_3d49ac37_89.400000MHz_3125.0kHz.json",
-    "num_iq_samples": 62500000,
+    "cfile_path": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\modulated_signal_captures\\cfile_7b2afbe6_89.404951MHz_376.2kHz.cfile",
+    "metadata_path": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\modulated_signal_captures\\cfile_7b2afbe6_89.404951MHz_376.2kHz.json",
+    "num_iq_samples": 2351512,
     "window_size": 1024,
     "stride": 1024,
-    "num_windows": 61035
+    "num_windows": 2296
   },
   "prediction": {
-    "predicted_device": "remote_001",
-    "nearest_profile_device": "remote_001",
+    "predicted_device": "remote_002",
+    "nearest_profile_device": "remote_002",
     "is_known": true,
     "is_verified_prediction": true,
-    "predicted_probability_mean": 0.9703949093818665,
-    "probability_entropy": 0.1923789083957672,
-    "probability_peak_to_second": 0.9407976865768433,
-    "distance_to_predicted_profile": 0.15017665922641754,
-    "predicted_threshold": 1.3302230834960938,
-    "nearest_profile_distance": 0.15017665922641754,
-    "nearest_profile_threshold": 1.3302230834960938,
-    "distance_margin_to_second_profile": 0.8622927516698837,
+    "predicted_probability_mean": 0.7357605695724487,
+    "probability_entropy": 0.8330761194229126,
+    "probability_peak_to_second": 0.47152218222618103,
+    "distance_to_predicted_profile": 0.17161749303340912,
+    "predicted_threshold": 0.4269607961177826,
+    "nearest_profile_distance": 0.17161749303340912,
+    "nearest_profile_threshold": 0.4269607961177826,
+    "distance_margin_to_second_profile": 0.5148108154535294,
     "vote_distribution": {
-      "remote_001": 61035
+      "remote_002": 2296
     },
     "class_probability_mean": {
-      "remote_001": 0.9703949093818665,
-      "remote_002": 0.029597217217087746
+      "remote_001": 0.2642383873462677,
+      "remote_002": 0.7357605695724487
     },
     "all_profile_distances": {
-      "remote_001": 0.15017665922641754,
-      "remote_002": 1.0124694108963013
+      "remote_001": 0.6864283084869385,
+      "remote_002": 0.17161749303340912
     }
   },
   "scientific_interpretation": {
-    "prediction_confidence_level": "high",
+    "prediction_confidence_level": "medium",
     "risk_flags": []
   },
   "ground_truth_comparison": {
@@ -43,8 +43,8 @@
     "nearest_profile_match": false
   },
   "metadata": {
-    "id": "3d49ac37",
-    "generated_at_utc": "2026-04-25T12:36:31.366289+00:00",
+    "id": "7b2afbe6",
+    "generated_at_utc": "2026-04-26T11:51:33.032370+00:00",
     "capture_type": "marker_band_iq",
     "file_format": "cfile",
     "source_device": "USRP-B200 from Ettus Research",
@@ -58,28 +58,29 @@
     "transmitter_class": "garage_remote",
     "operator": "operator_a",
     "environment": "indoor_lab_los",
-    "start_frequency_hz": 87837500.0,
-    "stop_frequency_hz": 90962500.0,
-    "center_frequency_hz": 89400000.0,
-    "bandwidth_hz": 3125000.0,
+    "start_frequency_hz": 89216830.0,
+    "stop_frequency_hz": 89593072.0,
+    "center_frequency_hz": 89404951.0,
+    "bandwidth_hz": 376242.0,
     "duration_seconds": 5.0,
-    "sample_rate_hz": 12500000.0,
-    "sample_count": 62500000,
+    "requested_duration_seconds": 5.0,
+    "sample_rate_hz": 470302.5,
+    "sample_count": 2351512,
     "gain_db": 20.0,
     "antenna": "RX2",
     "device_addr": "",
     "channel_index": 0,
-    "iq_file": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\modulated_signal_captures\\cfile_3d49ac37_89.400000MHz_3125.0kHz.cfile",
-    "metadata_file": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\modulated_signal_captures\\cfile_3d49ac37_89.400000MHz_3125.0kHz.json",
+    "iq_file": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\modulated_signal_captures\\cfile_7b2afbe6_89.404951MHz_376.2kHz.cfile",
+    "metadata_file": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\modulated_signal_captures\\cfile_7b2afbe6_89.404951MHz_376.2kHz.json",
     "iq_format": "complex64_fc32_interleaved",
     "file_extension": ".cfile",
     "iq_dtype": "complex64",
     "byte_order": "native",
-    "file_size_bytes": 500000000,
-    "sha256": "3ae3dc8749030e0a96366921953f6bf987ec235ce79249585293769462a6ffd5",
+    "file_size_bytes": 18812096,
+    "sha256": "4bbf8db955a1b78f5a73ee83ba8df675423f13cfbcdfb34a985fe77737124578",
     "replay_parameters": {
-      "center_frequency_hz": 89400000.0,
-      "sample_rate_hz": 12500000.0,
+      "center_frequency_hz": 89404951.0,
+      "sample_rate_hz": 470302.5,
       "gain_db": 20.0,
       "antenna": "RX2",
       "iq_format": "complex64_fc32_interleaved"
@@ -93,6 +94,20 @@
       "duration_seconds",
       "iq_file",
       "sha256"
-    ]
+    ],
+    "preview_metrics": {
+      "live_preview_snr_db": 44.22429275512695,
+      "live_preview_noise_floor_db": -107.51467895507812,
+      "live_preview_peak_level_db": -63.29038619995117,
+      "live_preview_peak_frequency_hz": 89404950.7322015
+    },
+    "trigger_capture": {
+      "mode": "immediate",
+      "threshold_db": 6.0,
+      "pre_trigger_ms": 0.0,
+      "post_trigger_ms": 50.0,
+      "trigger_max_wait_s": 5.0,
+      "trigger_detected": false
+    }
   }
 }

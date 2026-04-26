@@ -6,26 +6,16 @@
 [INFO] Devices: 2
 [INFO] Train captures: 2
 [INFO] Test captures: 2
-[EPOCH 001] train_loss=0.674108 train_acc=0.5855 test_loss=0.712380 test_acc=0.5125
-[EPOCH 002] train_loss=0.617765 train_acc=0.6875 test_loss=0.501950 test_acc=0.7805
-[EPOCH 003] train_loss=0.601103 train_acc=0.6903 test_loss=0.536868 test_acc=0.7590
-[EPOCH 004] train_loss=0.581909 train_acc=0.7005 test_loss=0.468260 test_acc=0.7995
-[EPOCH 005] train_loss=0.575685 train_acc=0.7007 test_loss=0.460215 test_acc=0.8035
-[EPOCH 006] train_loss=0.567765 train_acc=0.7107 test_loss=0.516369 test_acc=0.7550
-[EPOCH 007] train_loss=0.564848 train_acc=0.7115 test_loss=0.510465 test_acc=0.7500
-[EPOCH 008] train_loss=0.554205 train_acc=0.7177 test_loss=0.502953 test_acc=0.7720
-[EPOCH 009] train_loss=0.551822 train_acc=0.7200 test_loss=0.426015 test_acc=0.8105
-[EPOCH 010] train_loss=0.542825 train_acc=0.7257 test_loss=0.629228 test_acc=0.7205
-[EPOCH 011] train_loss=0.538446 train_acc=0.7268 test_loss=0.468369 test_acc=0.7900
-[EPOCH 012] train_loss=0.530623 train_acc=0.7317 test_loss=0.443197 test_acc=0.7905
-[EPOCH 013] train_loss=0.524591 train_acc=0.7377 test_loss=0.460813 test_acc=0.7900
-[EPOCH 014] train_loss=0.509182 train_acc=0.7462 test_loss=0.447002 test_acc=0.7840
-[EPOCH 015] train_loss=0.500142 train_acc=0.7560 test_loss=0.647576 test_acc=0.7025
-[EPOCH 016] train_loss=0.500009 train_acc=0.7483 test_loss=0.406334 test_acc=0.8140
-[EPOCH 017] train_loss=0.483650 train_acc=0.7590 test_loss=0.346766 test_acc=0.8565
-[EPOCH 018] train_loss=0.463456 train_acc=0.7717 test_loss=0.404026 test_acc=0.8175
-[EPOCH 019] train_loss=0.448722 train_acc=0.7812 test_loss=0.415414 test_acc=0.7925
-[EPOCH 020] train_loss=0.451146 train_acc=0.7767 test_loss=0.871632 test_acc=0.6905
+[EPOCH 001] train_loss=0.674139 train_acc=0.5862 test_loss=0.711035 test_acc=0.5130
+[EPOCH 002] train_loss=0.618259 train_acc=0.6860 test_loss=0.501781 test_acc=0.7860
+[EPOCH 003] train_loss=0.602552 train_acc=0.6888 test_loss=0.513785 test_acc=0.7860
+[EPOCH 004] train_loss=0.582479 train_acc=0.7013 test_loss=0.467071 test_acc=0.7945
+[EPOCH 005] train_loss=0.574625 train_acc=0.7033 test_loss=0.467537 test_acc=0.7965
+[EPOCH 006] train_loss=0.566781 train_acc=0.7077 test_loss=0.472264 test_acc=0.8015
+[EPOCH 007] train_loss=0.564027 train_acc=0.7115 test_loss=0.553616 test_acc=0.7105
+[EPOCH 008] train_loss=0.553268 train_acc=0.7158 test_loss=0.485601 test_acc=0.7775
+[EPOCH 009] train_loss=0.552977 train_acc=0.7188 test_loss=0.554917 test_acc=0.7380
+[EPOCH 010] train_loss=0.546258 train_acc=0.7205 test_loss=0.443154 test_acc=0.7875
 [OK] Training complete
 [OK] Best model: /tmp/rf_train_job/rf_model_store/best_model.pt
 [OK] Enrollment profiles: /tmp/rf_train_job/rf_model_store/enrollment_profiles.json

@@ -15,7 +15,7 @@ There is no mock signal in the active development flow. The UI and API are expec
 Current RadioConda path used during development:
 
 ```text
-C:\Users\Usuario\radioconda\python.exe
+C:\path\to\radioconda\python.exe
 ```
 
 ## Recommended Run Command
@@ -23,7 +23,7 @@ C:\Users\Usuario\radioconda\python.exe
 From the project root:
 
 ```powershell
-cd C:\Users\Usuario\Desktop\NICS\Spectum_lab\spectrum-lab
+cd C:\path\to\spectrum-lab
 
 $env:DEFAULT_CENTER_FREQUENCY_HZ="89400000"
 $env:DEFAULT_SAMPLE_RATE_HZ="2000000"
@@ -31,7 +31,7 @@ $env:DEFAULT_GAIN_DB="20"
 $env:DEFAULT_ANTENNA="RX2"
 $env:UHD_DEVICE_ARGS=""
 
-powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1 -UseRealSdr 1 -RadioCondaPythonPath "C:\Users\Usuario\radioconda\python.exe"
+powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1 -UseRealSdr 1 -RadioCondaPythonPath "C:\path\to\radioconda\python.exe"
 ```
 
 URLs:
@@ -76,7 +76,7 @@ Startup defaults are read from environment variables:
 | `DEFAULT_GAIN_DB` | `20` | Initial gain |
 | `DEFAULT_ANTENNA` | `RX2` | UHD antenna |
 | `UHD_DEVICE_ARGS` | empty | Optional UHD args |
-| `RADIOCONDA_PYTHON` | `C:\Users\Usuario\radioconda\python.exe` | GNU Radio/UHD Python |
+| `RADIOCONDA_PYTHON` | `C:\path\to\radioconda\python.exe` | GNU Radio/UHD Python |
 | `REAL_SDR_FPS` | `10` | Spectrum worker frame rate |
 | `REAL_SDR_MAX_FFT_SIZE` | `65536` | Maximum FFT size used to approach requested RBW |
 
@@ -218,7 +218,7 @@ backend/
 Use:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1 -UseRealSdr 1 -RadioCondaPythonPath "C:\Users\Usuario\radioconda\python.exe"
+powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1 -UseRealSdr 1 -RadioCondaPythonPath "C:\path\to\radioconda\python.exe"
 ```
 
 ### Frontend does not update after code changes

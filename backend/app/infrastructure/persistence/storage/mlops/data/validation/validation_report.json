@@ -1,0 +1,27 @@
+{
+  "num_validation_records": 1,
+  "window_level_closed_set_accuracy": 0.028426312771360696,
+  "record_level_closed_set_accuracy": 0.0,
+  "records": [
+    {
+      "true_device": "remote_001",
+      "session_id": "session_001",
+      "num_windows": 12207,
+      "predicted_device_majority_vote": "remote_002",
+      "closed_set_correct": false,
+      "distance_to_true_profile": 0.5687127113342285,
+      "true_accept_threshold": 1.2078263759613037,
+      "same_device_accept": true,
+      "nearest_profile_device": "remote_002",
+      "nearest_profile_distance": 0.04811958596110344,
+      "all_profile_distances": {
+        "remote_001": 0.5687127113342285,
+        "remote_002": 0.04811958596110344
+      },
+      "vote_distribution": {
+        "remote_002": 11860,
+        "remote_001": 347
+      }
+    }
+  ]
+}
