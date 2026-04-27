@@ -961,12 +961,31 @@ class FingerprintingService:
 
         signal_within_capture_band = bool(metrics.get("signal_within_capture_band", True))
         offset_ratio = float(metrics.get("frequency_offset_ratio_of_capture_band", 0.0) or 0.0)
+        capture_band_edge_margin_hz = float(metrics.get("capture_band_edge_margin_hz", 0.0) or 0.0)
+        analysis_method = str(metrics.get("method", metrics.get("analysis_method", "")) or "").strip().lower()
+
         if not signal_within_capture_band:
             reasons.append("signal_outside_capture_band")
             flags.append("offset_outside_capture_band")
-        elif offset_ratio >= 0.90:
-            reasons.append("signal_near_capture_edge")
-            flags.append("offset_near_capture_edge")
+        elif qc_profile_id == "continuous_fm_v1":
+            if offset_ratio >= 0.90:
+                reasons.append("signal_near_capture_edge")
+                flags.append("offset_near_capture_edge")
+        elif qc_profile_id == "burst_rf_v1":
+            if offset_ratio > 0.65:
+                flags.append("peak_not_ideally_centered")
+            if occupied_ratio >= 0.98:
+                flags.append("occupied_bandwidth_near_capture_limit")
+            elif occupied_ratio > 0.90:
+                flags.append("occupied_bandwidth_high")
+            if 0.0 < capture_band_edge_margin_hz < 50_000.0:
+                flags.append("low_margin_to_nearest_edge")
+                if capture_band_edge_margin_hz < 20_000.0:
+                    reasons.append("extremely_low_margin_to_nearest_edge")
+        else:
+            if offset_ratio >= 0.90:
+                reasons.append("signal_near_capture_edge")
+                flags.append("offset_near_capture_edge")
 
         if signal_family == "continuous_fm":
             channel_presence_ratio = float(metrics.get("channel_presence_ratio", 0.0) or 0.0)
@@ -1014,6 +1033,10 @@ class FingerprintingService:
             reject_reasons.update({"absence_of_activity", "duration_insufficient"})
         if reasons:
             status = "rejected" if any(item in reasons for item in reject_reasons) else "doubtful"
+
+        if qc_profile_id == "burst_rf_v1" and analysis_method == "spectral_peak_detection":
+            if snr >= 15.0 and clipping_pct <= 1.0 and not any(item in reasons for item in reject_reasons):
+                status = "valid"
 
         if operator_decision in {"valid", "doubtful", "rejected"}:
             status = operator_decision

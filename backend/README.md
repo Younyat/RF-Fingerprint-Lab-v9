@@ -42,6 +42,8 @@ The active API does not generate mock spectrum data. If the device cannot be ope
   - Computes offline QC from stored IQ data
   - Estimates SNR, occupied bandwidth, peak frequency/offset, burst bounds, silence, and clipping
   - Applies automatic review flags before dataset curation
+  - Preserves burst RF samples as valid when the sample is usable but the capture window is tight
+  - Recent update: for `burst_rf_v1`, conditions such as `occupied_bandwidth_near_capture_limit`, `peak_not_ideally_centered` and `low_margin_to_nearest_edge` are now warnings, not automatic reject/doubtful triggers, cuando el SNR es bueno y no hay clipping u otros fallos graves.
 
 - `app/modules/mlops/service.py`
   - Starts training, retraining, validation, and inference jobs
@@ -230,6 +232,28 @@ The fingerprinting registry now separates QC by signal family instead of applyin
 Each imported or recomputed capture stores `signal_family`, `qc_profile_id`, `qc_profile`, `snr`, and `iq_file_diagnostics`. The IQ diagnostics include sample count, actual duration, dtype, endianness, mean/RMS power, zero and near-zero ratios, NaN/Inf ratios, and spectral peak offset. This makes it possible to distinguish a genuinely bad/corrupt IQ file from a QC profile mismatch.
 
 For continuous FM, the selected review SNR is spectral/channel SNR. For burst RF, the selected review SNR is burst/temporal SNR. Continuous FM captures are never rejected because a burst detector reports high temporal silence; if the channel is present but the occupied bandwidth nearly fills the selected capture window, the capture is marked doubtful rather than rejected.
+
+### Behavior change for `burst_rf_v1`
+
+The backend now distinguishes dataset usability from signal quality warnings in the same spirit as the older v3 policy for intermittent RF captures.
+
+- `burst_rf_v1` sigue aceptando como `valid` una captura usable cuando:
+  - el SNR es bueno (`>= 15 dB`)
+  - no hay clipping significativo (`<= 1%`)
+  - el IQ file es correcto y la adquisición es recuperable mediante canonicalización
+  - el método de análisis es `spectral_peak_detection`
+- Las condiciones de ventana ajustada se conservan como advertencias:
+  - `occupied_bandwidth_near_capture_limit`
+  - `peak_not_ideally_centered`
+  - `low_margin_to_nearest_edge`
+- Solo se consideran motivos de rechazo automático los fallos claros:
+  - señal fuera de la banda
+  - silencio excesivo
+  - ráfaga demasiado corta
+  - muestras perdidas o buffer overflow
+  - margen al borde extremadamente bajo (< 20 kHz)
+
+Este ajuste evita que una muestra usable para entrenamiento RF fingerprinting sea descartada solo porque la banda capturada está apretada o la señal está cercana al borde de la ventana.
 
 A comparison endpoint is available for investigating inconsistent captures:
 

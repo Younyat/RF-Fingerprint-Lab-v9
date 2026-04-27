@@ -246,6 +246,23 @@ If `Auto-import to fingerprinting` is enabled, the capture is also imported into
 
 Those QC metrics are computed from the saved IQ file itself, not only from the live preview. This is why a capture that looked plausible live can still be rejected later if the stored burst is mostly silence, strongly off-center, or too weak once analyzed offline.
 
+### QC Semantics for burst RF captures
+
+The current backend implementation preserves the v3-style decision boundary for `burst_rf_v1` acquisitions: usa la captura para dataset si la señal es usable y los problemas quedan como advertencias.
+
+- `valid` cuando:
+  - `selected_snr_db >= 15.0`
+  - `clipping_pct <= 1.0`
+  - el fichero IQ es legible y no está corrupto
+  - `method` es `spectral_peak_detection`
+  - no hay razones de rechazo graves como señal fuera de banda, silencio excesivo, muestras perdidas, buffer overflow, o ráfaga demasiado corta
+- `occupied_bandwidth_near_capture_limit`, `peak_not_ideally_centered` y `low_margin_to_nearest_edge` se registran como flags de advertencia, no como rechazo automático.
+- El resultado esperado para una captura ajustada pero usable es:
+  - `Review status: valid`
+  - `RF intelligence: doubtful`
+  - flags automáticos: `occupied_bandwidth_near_capture_limit`, `peak_not_ideally_centered`
+- Solo se debe degradar automáticamente a `doubtful` si el margen al borde es extremadamente bajo (por ejemplo, < 20 kHz) o si hay una falla grave en la captura.
+
 Example marker-band capture configured to generate `.cfile` or `.iq` datasets for replay, offline analysis, or AI model training:
 
 ![Marker-band cfile and IQ dataset generation workflow](readme_img/cfile_iqfile_generator_from_marker_BW.png)
