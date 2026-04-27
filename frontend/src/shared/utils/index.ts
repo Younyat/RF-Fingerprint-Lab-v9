@@ -292,8 +292,10 @@ export function buildRfCaptureDiagnostic(input: RfCaptureDiagnosticInput): RfCap
   if (edgeMarginHz !== null && edgeMarginHz < 0) {
     status = 'rejected';
     recommendations.push('The strongest detected component is outside the selected capture window. Move M1/M2 or recenter before capturing.');
-  } else if (offsetRatio !== null && offsetRatio >= 0.85) {
+  } else if (edgeMarginHz !== null && edgeMarginHz < 20_000) {
     status = 'doubtful';
+    recommendations.push('The capture has very little guard margin. This is a strong acquisition warning and the dataset should be treated as doubtful.');
+  } else if (offsetRatio !== null && offsetRatio >= 0.85) {
     recommendations.push('The signal is close to the capture edge. Recenter the marker window or increase bandwidth slightly to keep more guard margin.');
   } else if (offsetRatio !== null && offsetRatio >= 0.60) {
     recommendations.push('The capture is valid, but the peak is not ideally centered. For RF fingerprinting, prefer more symmetric margin when possible.');
@@ -302,7 +304,6 @@ export function buildRfCaptureDiagnostic(input: RfCaptureDiagnosticInput): RfCap
   }
 
   if (occupiedRatio !== null && occupiedRatio > 0.95) {
-    if (status === 'valid') status = 'doubtful';
     recommendations.push('The occupied bandwidth almost fills the selected window. Consider a slightly wider band if it does not add unrelated emissions.');
   }
   if (Number.isFinite(snrDb) && snrDb < 10) {
@@ -321,7 +322,6 @@ export function buildRfCaptureDiagnostic(input: RfCaptureDiagnosticInput): RfCap
     recommendations.push('Most of the capture is silent. Use triggered capture or shorten the window around the burst.');
   }
   if (input.qualityFlags?.includes('pre_post_qc_mismatch')) {
-    if (status === 'valid') status = 'doubtful';
     facts.push('Pre-capture live preview and post-capture QC show significant offset disagreement.');
     recommendations.push('The live preview detected a different peak location than the offline analysis. Review the spectrum manually to understand the discrepancy.');
   }

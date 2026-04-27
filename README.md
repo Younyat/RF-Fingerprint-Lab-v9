@@ -260,8 +260,100 @@ The current backend implementation preserves the v3-style decision boundary for 
 - El resultado esperado para una captura ajustada pero usable es:
   - `Review status: valid`
   - `RF intelligence: doubtful`
-  - flags automáticos: `occupied_bandwidth_near_capture_limit`, `peak_not_ideally_centered`
+  - flags automáticos: `occupied_bandwidth_near_capture_limit`, `peak_not_ideally_centered`, `pre_post_qc_mismatch`
 - Solo se debe degradar automáticamente a `doubtful` si el margen al borde es extremadamente bajo (por ejemplo, < 20 kHz) o si hay una falla grave en la captura.
+
+### Separación de `review_status` y `rf_intelligence`
+
+En la política actual para `burst_rf_v1`, la plataforma debe separar claramente:
+
+- `review_status`: la usabilidad de la captura para el dataset de entrenamiento
+- `rf_intelligence`: la calidad de adquisición y las advertencias operativas
+
+Esto significa que una captura puede ser `valid` para el dataset mientras genera advertencias de adquisición si la ventana es ajustada o si la comparación pre/post-QC no es perfecta.
+
+### Caso práctico de las dos capturas
+
+#### Captura 1
+- Center frequency: 89.385572 MHz
+- Effective bandwidth: 374.584 kHz
+- Selected SNR: 18.60 dB
+- Offset: 175.45 kHz
+- Occupied bandwidth: 371.18 kHz
+- Clipping: 0%
+- Silence: 0%
+- IQ samples: 10,000,000
+- IQ near-zero: 0.000%
+- Margin al borde: 11.84 kHz
+- Review status actual: doubtful
+
+Interpretación:
+- Señal clara y usable
+- El problema real es el margen extremadamente bajo al borde y la banda casi completa
+- Estado recomendado: `doubtful` para el dataset y `doubtful` para la adquisición
+
+#### Captura 2
+- Center frequency: 89.403906 MHz
+- Effective bandwidth: 374.584 kHz
+- Selected SNR: 16.50 dB
+- Offset: 89.31 kHz
+- Occupied bandwidth: 370.84 kHz
+- Clipping: 0%
+- Silence: 0%
+- IQ samples: 10,000,000
+- IQ near-zero: 0.000%
+- Margin al borde: 97.97 kHz
+- Review status actual: doubtful
+
+Interpretación:
+- Señal clara y usable
+- Margen razonable al borde
+- `occupied_bandwidth_near_capture_limit` y `pre_post_qc_mismatch` son advertencias válidas, no motivos sólidos para rechazar
+- Estado recomendado: `valid` para el dataset y `doubtful` para la adquisición
+
+### Regla práctica recomendada para `burst_rf_v1`
+
+- `REJECT` cuando:
+  - el fichero IQ está vacío o corrupto
+  - IQ near-zero es alto
+  - clipping grave existe
+  - SNR muy bajo
+  - channel presence bajo
+  - señal fuera de la ventana
+  - margen al borde casi cero
+- `DOUBTFUL` cuando:
+  - SNR entre 10 y 15 dB
+  - margen al borde muy pequeño pero no cero
+  - offset extremo
+  - posible recorte
+  - duración insuficiente
+  - falta de consistencia pre/post-QC
+- `VALID` cuando:
+  - SNR >= 15 dB
+  - clipping <= 1%
+  - silence = 0% o fallback espectral válido
+  - channel presence alto
+  - IQ correcto
+  - canonicalización posible
+
+### Analítica de sangre de la plataforma
+
+| Métrica | Resultado esperado | Interpretación |
+|---|---|---|
+| `SNR` | >= 15 dB | Normal; indica señal usable para entrenamiento |
+| `Clipping` | 0% | Normal; no hay saturación ADC |
+| `Silence` | 0% | Normal; la ráfaga está presente |
+| `IQ near-zero` | 0% | Normal; el fichero IQ es íntegro |
+| `Occupied bandwidth ratio` | 90–99% | Advertencia si elevada, pero no rechazo automático |
+| `Margin al borde` | > 20 kHz | Normal; si es < 20 kHz pasa a duda fuerte |
+| `Pre/post QC mismatch` | Bajo | Advertencia informativa; no debe bloquear si el resto es sólido |
+| `Peak centering` | Mejor si está centrado | Si está descentrado, marca `peak_not_ideally_centered` sin rechazar automáticamente |
+
+> Nota: el sistema está ajustado para tratar `occupied_bandwidth_near_capture_limit` y `pre_post_qc_mismatch` como indicadores de calidad de adquisición, no como motivos automáticos para degradar el dataset cuando la captura es usable.
+
+### Nota de estado de UI conocida
+
+Si ves un mensaje tipo `QC recomputed for 0eedd147` mientras el fichero es `cfile_00837351_89.403906MHz_374.6kHz.cfile`, es probable que el frontend esté mostrando un identificador de registro anterior en la notificación. Esto es un bug de estado visual, no una evaluación equivocada del IQ.
 
 Example marker-band capture configured to generate `.cfile` or `.iq` datasets for replay, offline analysis, or AI model training:
 

@@ -1022,7 +1022,6 @@ class FingerprintingService:
             mismatch_threshold_hz = 0.15 * effective_bandwidth_hz
             if offset_delta_hz > mismatch_threshold_hz:
                 flags.append("pre_post_qc_mismatch")
-                reasons.append("pre_post_qc_mismatch")
                 metrics["pre_post_offset_delta_hz"] = offset_delta_hz
 
         status = "valid"

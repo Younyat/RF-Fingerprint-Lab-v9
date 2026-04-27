@@ -255,6 +255,62 @@ The backend now distinguishes dataset usability from signal quality warnings in 
 
 Este ajuste evita que una muestra usable para entrenamiento RF fingerprinting sea descartada solo porque la banda capturada está apretada o la señal está cercana al borde de la ventana.
 
+### Políticas prácticas para `burst_rf_v1`
+
+- `review_status` debe reflejar la usabilidad del dataset.
+- `rf_intelligence` debe reflejar la calidad de adquisición y advertencias operativas.
+
+En la política recomendada:
+
+- `VALID` cuando:
+  - `SNR >= 15 dB`
+  - `clipping_pct <= 1%`
+  - `silence_pct = 0%` o fallback espectral válido
+  - `channel_presence_ratio` alto
+  - `IQ near-zero` bajo
+  - fichero IQ correcto
+  - canonicalización posible
+- `DOUBTFUL` cuando:
+  - el margen al borde es pequeño pero no crítico
+  - `occupied_bandwidth_near_capture_limit` está presente
+  - `peak_not_ideally_centered` está presente
+  - `pre_post_qc_mismatch` está presente
+  - no hay fallos graves en el IQ o en la señal
+- `REJECT` solo cuando hay fallos claros como:
+  - IQ corrupto o vacío
+  - IQ near-zero alto
+  - clipping grave
+  - SNR muy bajo
+  - señal fuera de la ventana
+  - margen prácticamente nulo
+
+### Ejemplos de decisión
+
+#### Captura 1
+- Margen al borde: 11.84 kHz
+- Estado recomendado: `doubtful`
+- Motivo: margen de ventana demasiado pequeño para confiar plenamente en esta adquisición
+
+#### Captura 2
+- Margen al borde: 97.97 kHz
+- Estado recomendado: `valid`
+- Motivo: señal usable, margen razonable, sin clipping, sin silencio, IQ íntegro
+
+### Analítica de sangre para QC
+
+| Parámetro | Rango objetivo | Síntoma | Acción |
+|---|---|---|---|
+| `SNR` | >= 15 dB | Señal buena | Dataset usable |
+| `Clipping` | 0–1% | Sin saturación | Dataset usable |
+| `Silence` | 0% | Ráfaga presente | Dataset usable |
+| `IQ near-zero` | 0% | Fichero íntegro | Dataset usable |
+| `Occupied bandwidth ratio` | 90–99% | Ventana ajustada | Warning |
+| `Margin al borde` | > 20 kHz | Suficiente guarda lateral | Valid |
+| `Pre/post QC mismatch` | Bajo | Validación offline diferente | Warning |
+| `Peak centering` | Centralizado idealmente | Band edge risk | Warning |
+
+> En este modelo, los problemas de captura se leen como alteraciones de laboratorio: el resultado principal puede estar sano (`valid`) aun cuando algunas métricas estén en la zona de advertencia.
+
 A comparison endpoint is available for investigating inconsistent captures:
 
 ```text

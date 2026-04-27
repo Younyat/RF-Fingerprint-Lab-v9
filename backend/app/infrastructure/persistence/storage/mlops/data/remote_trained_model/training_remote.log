@@ -1,30 +1,30 @@
 [WARN] These devices have less than 2 sessions and evaluation rigor will be weaker: ['remote_001', 'remote_002']
 [INFO] Device: cuda
-[INFO] Records discovered: 4
-[INFO] Current manifest hash: a8bb93f6307940b73f57683e8973059e4121b25063b3a3eb4d59068855e1ef40
+[INFO] Records discovered: 5
+[INFO] Current manifest hash: 0c37c20409a2544d7e199866eecf33c8732e183715b33239bc69953d7b82cecc
 [INFO] Devices: 2
-[INFO] Train captures: 4
-[INFO] Test captures: 4
-[EPOCH 001] train_loss=0.449207 train_acc=0.7856 test_loss=0.420845 test_acc=0.7835
-[EPOCH 002] train_loss=0.328339 train_acc=0.8456 test_loss=0.312138 test_acc=0.8425
-[EPOCH 003] train_loss=0.228169 train_acc=0.9054 test_loss=0.103872 test_acc=0.9692
-[EPOCH 004] train_loss=0.111974 train_acc=0.9647 test_loss=0.187023 test_acc=0.9355
-[EPOCH 005] train_loss=0.079087 train_acc=0.9755 test_loss=0.056601 test_acc=0.9820
-[EPOCH 006] train_loss=0.061510 train_acc=0.9821 test_loss=0.028050 test_acc=0.9920
-[EPOCH 007] train_loss=0.052602 train_acc=0.9842 test_loss=0.018909 test_acc=0.9950
-[EPOCH 008] train_loss=0.045692 train_acc=0.9865 test_loss=0.018877 test_acc=0.9952
-[EPOCH 009] train_loss=0.036239 train_acc=0.9888 test_loss=0.019944 test_acc=0.9940
-[EPOCH 010] train_loss=0.031743 train_acc=0.9904 test_loss=0.020314 test_acc=0.9945
-[EPOCH 011] train_loss=0.033305 train_acc=0.9906 test_loss=0.025931 test_acc=0.9922
-[EPOCH 012] train_loss=0.026032 train_acc=0.9923 test_loss=0.013073 test_acc=0.9968
-[EPOCH 013] train_loss=0.024024 train_acc=0.9931 test_loss=0.008876 test_acc=0.9980
-[EPOCH 014] train_loss=0.028951 train_acc=0.9914 test_loss=0.007234 test_acc=0.9990
-[EPOCH 015] train_loss=0.015829 train_acc=0.9960 test_loss=0.018600 test_acc=0.9938
-[EPOCH 016] train_loss=0.020767 train_acc=0.9942 test_loss=0.038583 test_acc=0.9848
-[EPOCH 017] train_loss=0.021904 train_acc=0.9935 test_loss=0.010838 test_acc=0.9970
-[EPOCH 018] train_loss=0.016977 train_acc=0.9952 test_loss=0.019010 test_acc=0.9940
-[EPOCH 019] train_loss=0.011619 train_acc=0.9968 test_loss=0.004506 test_acc=0.9992
-[EPOCH 020] train_loss=0.018215 train_acc=0.9947 test_loss=0.012869 test_acc=0.9950
+[INFO] Train captures: 5
+[INFO] Test captures: 5
+[EPOCH 001] train_loss=0.383020 train_acc=0.8287 test_loss=0.325275 test_acc=0.8322
+[EPOCH 002] train_loss=0.262895 train_acc=0.8771 test_loss=0.236892 test_acc=0.8684
+[EPOCH 003] train_loss=0.169716 train_acc=0.9309 test_loss=0.114085 test_acc=0.9564
+[EPOCH 004] train_loss=0.087087 train_acc=0.9720 test_loss=0.209156 test_acc=0.9312
+[EPOCH 005] train_loss=0.063696 train_acc=0.9790 test_loss=0.022717 test_acc=0.9944
+[EPOCH 006] train_loss=0.055954 train_acc=0.9828 test_loss=0.025280 test_acc=0.9924
+[EPOCH 007] train_loss=0.041947 train_acc=0.9863 test_loss=0.018687 test_acc=0.9964
+[EPOCH 008] train_loss=0.033053 train_acc=0.9899 test_loss=0.012689 test_acc=0.9966
+[EPOCH 009] train_loss=0.027799 train_acc=0.9924 test_loss=0.011824 test_acc=0.9970
+[EPOCH 010] train_loss=0.028208 train_acc=0.9912 test_loss=0.008384 test_acc=0.9980
+[EPOCH 011] train_loss=0.031106 train_acc=0.9900 test_loss=0.009198 test_acc=0.9978
+[EPOCH 012] train_loss=0.036724 train_acc=0.9887 test_loss=0.011996 test_acc=0.9966
+[EPOCH 013] train_loss=0.022377 train_acc=0.9932 test_loss=0.021461 test_acc=0.9922
+[EPOCH 014] train_loss=0.021601 train_acc=0.9936 test_loss=0.005433 test_acc=0.9988
+[EPOCH 015] train_loss=0.017671 train_acc=0.9948 test_loss=0.011531 test_acc=0.9966
+[EPOCH 016] train_loss=0.019498 train_acc=0.9942 test_loss=0.005446 test_acc=0.9986
+[EPOCH 017] train_loss=0.020499 train_acc=0.9937 test_loss=0.015540 test_acc=0.9942
+[EPOCH 018] train_loss=0.016002 train_acc=0.9950 test_loss=0.007801 test_acc=0.9974
+[EPOCH 019] train_loss=0.015277 train_acc=0.9957 test_loss=0.018241 test_acc=0.9936
+[EPOCH 020] train_loss=0.022452 train_acc=0.9932 test_loss=0.016676 test_acc=0.9942
 [OK] Training complete
 [OK] Best model: /tmp/rf_train_job/rf_model_store/best_model.pt
 [OK] Enrollment profiles: /tmp/rf_train_job/rf_model_store/enrollment_profiles.json
