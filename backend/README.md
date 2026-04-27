@@ -84,6 +84,33 @@ cd backend
 .\venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+
+## Backend Modular API Architecture
+
+The backend API surface is split physically under `backend/app/modules`. Each API/domain area owns a module definition, and `main.py` only calls the registry composer:
+
+```text
+backend/app/modules/
+  capture_lab/module.py
+  demodulation/module.py
+  device/module.py
+  fingerprinting/api_module.py
+  kiwisdr/api_module.py
+  markers/module.py
+  mlops/api_module.py
+  presets/module.py
+  recordings/module.py
+  sessions/module.py
+  spectrum/module.py
+  waterfall/module.py
+  registry.py
+  types.py
+```
+
+Each backend module declares a stable ID, name, enabled flag, order, description, and a `build_router(context)` function. `backend/app/modules/registry.py` composes the active modules and registers their FastAPI routers under the configured API prefix. This keeps endpoint ownership physically separated while preserving the existing controllers, services, routes, and URL contracts. Existing domain modules such as `fingerprinting`, `kiwisdr`, and `mlops` keep their internal services and expose API registration through `api_module.py` to avoid breaking their current package structure.
+
+To disable an API module without deleting code, set its `enabled` flag to `False` in that module's definition. To add a new backend module, create a new folder under `backend/app/modules/` with a `module.py` or `api_module.py` and add it to `backend_modules` in `registry.py`.
+
 ## Key API Endpoints
 
 - `GET /api/device/status`
@@ -191,6 +218,26 @@ If the capture is imported into the fingerprinting registry, the backend runs of
 - clipping percentage
 
 This is separate from the live preview shown in the frontend.
+
+
+### RF QC Profiles
+
+The fingerprinting registry now separates QC by signal family instead of applying one burst detector to every RF capture.
+
+- `continuous_fm_v1`: for continuous FM/broadcast-like channels. Uses spectral peak detection, spectral/channel SNR, occupied bandwidth, channel presence, edge margin, clipping, and raw IQ diagnostics. Temporal silence is not a rejection criterion for this profile.
+- `burst_rf_v1`: for intermittent RF, remotes, ASK/OOK, packet-like captures, and short events. Uses burst-region detection, burst SNR, silence, burst duration, clipping, and artifact diagnostics.
+
+Each imported or recomputed capture stores `signal_family`, `qc_profile_id`, `qc_profile`, `snr`, and `iq_file_diagnostics`. The IQ diagnostics include sample count, actual duration, dtype, endianness, mean/RMS power, zero and near-zero ratios, NaN/Inf ratios, and spectral peak offset. This makes it possible to distinguish a genuinely bad/corrupt IQ file from a QC profile mismatch.
+
+For continuous FM, the selected review SNR is spectral/channel SNR. For burst RF, the selected review SNR is burst/temporal SNR. Continuous FM captures are never rejected because a burst detector reports high temporal silence; if the channel is present but the occupied bandwidth nearly fills the selected capture window, the capture is marked doubtful rather than rejected.
+
+A comparison endpoint is available for investigating inconsistent captures:
+
+```text
+GET /api/fingerprinting/captures/compare/{left_capture_id}/{right_capture_id}
+```
+
+It reports metadata differences, sample-rate/duration differences, mean-power differences, spectral peak differences, occupied-bandwidth differences, SNR differences, zero/near-zero ratios, QC profile differences, detection method differences, ROI policy differences, and decision differences.
 
 ## RF Fingerprinting MLOps And Canonicalization
 

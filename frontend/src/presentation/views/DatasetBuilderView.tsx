@@ -75,6 +75,8 @@ export const DatasetBuilderView: React.FC = () => {
         clippingPct: selectedCapture.quality_metrics.clipping_pct,
         silencePct: selectedCapture.quality_metrics.silence_pct,
         canonicalizationEnabled: true,
+        qualityFlags: selectedCapture.quality_review.quality_flags,
+        liveOffsetHz: selectedCapture.quality_metrics.live_offset_hz,
       })
     : null;
 
@@ -340,12 +342,17 @@ export const DatasetBuilderView: React.FC = () => {
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                   <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Quality metrics</div>
                   <div className="mt-3 space-y-2 text-sm text-slate-700">
-                    <div>SNR estimado: {selectedCapture.quality_metrics.estimated_snr_db ?? 0} dB</div>
-                    <div>SNR espectral: {selectedCapture.quality_metrics.spectral_snr_db ?? 'not available'} dB</div>
+                    <div>Selected SNR: {selectedCapture.quality_metrics.selected_snr_db ?? selectedCapture.quality_metrics.estimated_snr_db ?? 0} dB</div>
+                    <div>SNR method: {selectedCapture.quality_metrics.selected_snr_method || selectedCapture.snr?.selected_snr_method || 'not available'}</div>
+                    <div>SNR temporal/burst: {selectedCapture.quality_metrics.burst_snr_db ?? selectedCapture.snr?.burst_snr_db ?? 'not available'} dB</div>
+                    <div>SNR espectral: {selectedCapture.quality_metrics.spectral_snr_db ?? selectedCapture.snr?.spectral_snr_db ?? 'not available'} dB</div>
+                    <div>Channel presence: {selectedCapture.quality_metrics.channel_presence_ratio !== undefined ? `${(Number(selectedCapture.quality_metrics.channel_presence_ratio) * 100).toFixed(1)}%` : 'not available'}</div>
                     <div>Offset de frecuencia: {selectedCapture.quality_metrics.frequency_offset_hz ?? 0} Hz</div>
                     <div>Occupied bandwidth: {selectedCapture.quality_metrics.occupied_bandwidth_hz ?? 0} Hz</div>
                     <div>Clipping: {selectedCapture.quality_metrics.clipping_pct ?? 0}%</div>
                     <div>Silence: {selectedCapture.quality_metrics.silence_pct ?? 0}%</div>
+                    <div>IQ samples: {selectedCapture.iq_file_diagnostics?.num_complex_samples ?? 'not available'}</div>
+                    <div>IQ near-zero: {selectedCapture.iq_file_diagnostics?.near_zero_ratio !== undefined ? `${(Number(selectedCapture.iq_file_diagnostics.near_zero_ratio) * 100).toFixed(3)}%` : 'not available'}</div>
                   </div>
                 </div>
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">

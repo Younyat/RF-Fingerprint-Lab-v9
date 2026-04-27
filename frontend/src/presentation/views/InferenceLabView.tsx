@@ -114,10 +114,14 @@ export const InferenceLabView: React.FC = () => {
 
   const refresh = async (jobId?: string | null) => {
     const [predictCaptures, predictionStatus] = await Promise.all([
-      api.getFingerprintingCaptures('predict'),
+      api.getPredictionCaptures(),
       api.getPredictionStatus(jobId ?? undefined),
     ]);
     setCaptures(predictCaptures);
+    setSelectedCaptureId((current) => {
+      if (current && predictCaptures.some((capture) => capture.capture_id === current)) return current;
+      return predictCaptures[0]?.capture_id ?? '';
+    });
     setStatus(predictionStatus);
     setLastRefresh(new Date().toISOString());
     if (predictionStatus?.job_id) {
@@ -182,6 +186,10 @@ export const InferenceLabView: React.FC = () => {
   }, [form.model_dir, selectedCapture, setGlobalActivity, status?.status]);
 
   const launchPrediction = async () => {
+    if (selectedCapture && selectedCapture.prediction_ready === false) {
+      setErrorMessage(selectedCapture.prediction_ready_reason || 'Selected predict capture is not ready for prediction.');
+      return;
+    }
     if (!form.cfile_path.trim()) {
       setErrorMessage('Select a predict capture or provide a valid cfile_path.');
       return;
@@ -430,11 +438,12 @@ export const InferenceLabView: React.FC = () => {
               <div className="text-xs app-muted-text">{captures.length} captures</div>
             </div>
             <div className="mb-4 rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-sm text-emerald-900">
-              Source: fingerprinting registry filtered by `dataset_split = predict`.
+              Source: inference backend inventory from the fingerprinting registry filtered by `dataset_split = predict`. Missing IQ artifacts are flagged before launch.
             </div>
             <div className="space-y-3">
               {captures.map((capture) => {
                 const active = capture.capture_id === selectedCaptureId;
+                const ready = capture.prediction_ready !== false;
                 return (
                   <button
                     key={capture.capture_id}
@@ -458,9 +467,14 @@ export const InferenceLabView: React.FC = () => {
                         <div className="mt-2 text-xs app-muted-text">
                           created {formatTimestamp(capture.created_at_utc)}
                         </div>
+                        {!ready && (
+                          <div className="mt-2 rounded-xl border border-amber-300/50 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                            {capture.prediction_ready_reason || 'IQ artifact is missing or not reachable'}
+                          </div>
+                        )}
                       </div>
                       <div className="rounded-full bg-white/80 px-3 py-1 text-xs font-semibold text-slate-700">
-                        {active ? 'selected' : 'use'}
+                        {!ready ? 'missing IQ' : active ? 'selected' : 'use'}
                       </div>
                     </div>
                   </button>

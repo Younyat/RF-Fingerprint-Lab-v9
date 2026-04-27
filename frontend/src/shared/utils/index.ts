@@ -241,6 +241,8 @@ export interface RfCaptureDiagnosticInput {
   clippingPct?: number | null;
   silencePct?: number | null;
   canonicalizationEnabled?: boolean;
+  qualityFlags?: string[];
+  liveOffsetHz?: number | null;
 }
 
 export interface RfCaptureDiagnostic {
@@ -317,6 +319,11 @@ export function buildRfCaptureDiagnostic(input: RfCaptureDiagnosticInput): RfCap
   if (silencePct > 80) {
     status = 'rejected';
     recommendations.push('Most of the capture is silent. Use triggered capture or shorten the window around the burst.');
+  }
+  if (input.qualityFlags?.includes('pre_post_qc_mismatch')) {
+    if (status === 'valid') status = 'doubtful';
+    facts.push('Pre-capture live preview and post-capture QC show significant offset disagreement.');
+    recommendations.push('The live preview detected a different peak location than the offline analysis. Review the spectrum manually to understand the discrepancy.');
   }
   if (input.canonicalizationEnabled !== false) {
     recommendations.push('The RF canonicalization stage will compensate coarse frequency offset before ML, so the model should not learn absolute SDR tuning center as the device identity.');

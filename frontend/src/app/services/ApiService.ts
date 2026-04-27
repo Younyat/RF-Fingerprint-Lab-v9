@@ -477,9 +477,9 @@ export class ApiService {
     return response.data;
   }
 
-  async getPredictionCaptures(): Promise<Record<string, unknown>[]> {
+  async getPredictionCaptures(): Promise<FingerprintingCaptureRecord[]> {
     const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.INFERENCE_PREDICT_CAPTURES}`);
-    return response.data;
+    return Array.isArray(response.data) ? response.data : response.data.captures ?? [];
   }
 
   async startPrediction(payload: unknown): Promise<AsyncJobStatus> {

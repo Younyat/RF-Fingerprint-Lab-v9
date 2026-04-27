@@ -163,8 +163,134 @@ class FingerprintingService:
             "deleted_artifacts": removed_files,
         }
 
+    def _infer_signal_family(self, capture: dict[str, Any], defaults: dict[str, Any] | None = None) -> str:
+        defaults = defaults or {}
+        explicit = str(defaults.get("signal_family") or capture.get("signal_family") or "").strip().lower()
+        if explicit in {"continuous_fm", "burst_rf", "packet_rf", "unknown"}:
+            return explicit
+        hint = str(capture.get("modulation_hint") or capture.get("transmitter_class") or "").strip().lower()
+        if hint in {"fm", "wfm", "broadcast_fm", "continuous_fm"}:
+            return "continuous_fm"
+        if hint in {"ask", "ook", "fsk", "psk", "lora", "ble", "packet_rf"}:
+            return "burst_rf"
+        return "unknown"
+
+    @staticmethod
+    def _qc_profile_for_signal_family(signal_family: str) -> dict[str, Any]:
+        if signal_family == "continuous_fm":
+            return {
+                "qc_profile_id": "continuous_fm_v1",
+                "signal_family": "continuous_fm",
+                "detection_method": "spectral_peak_detection",
+                "roi_policy": "full_capture_or_centered_channel",
+                "use_silence_metric": False,
+                "use_channel_presence_ratio": True,
+                "use_spectral_snr": True,
+                "use_occupied_bandwidth": True,
+                "use_edge_margin": True,
+            }
+        return {
+            "qc_profile_id": "burst_rf_v1",
+            "signal_family": signal_family if signal_family in {"burst_rf", "packet_rf"} else "burst_rf",
+            "detection_method": "auto_energy_burst",
+            "roi_policy": "burst_region",
+            "use_silence_metric": True,
+            "use_burst_start": True,
+            "use_burst_end": True,
+        }
+
+    @staticmethod
+    def _iq_file_diagnostics(samples: np.ndarray, sample_rate_hz: float, iq_dtype: str, peak_offset_hz: float | None = None) -> dict[str, Any]:
+        if samples.size == 0:
+            return {"num_complex_samples": 0, "duration_seconds": 0.0, "dtype": iq_dtype, "endianness": "native"}
+        abs_samples = np.abs(samples)
+        power = abs_samples ** 2
+        finite = np.isfinite(samples.real) & np.isfinite(samples.imag)
+        return {
+            "num_complex_samples": int(samples.size),
+            "duration_seconds": float(samples.size / sample_rate_hz) if sample_rate_hz > 0 else 0.0,
+            "dtype": iq_dtype or "complex64",
+            "endianness": "native",
+            "i_min": float(np.nanmin(samples.real)),
+            "i_max": float(np.nanmax(samples.real)),
+            "q_min": float(np.nanmin(samples.imag)),
+            "q_max": float(np.nanmax(samples.imag)),
+            "mean_power_db": float(_db10(float(np.nanmean(power)))),
+            "rms_power_db": float(_db10(float(np.sqrt(max(float(np.nanmean(power)), 0.0))))),
+            "zero_ratio": float(np.mean(abs_samples == 0.0)),
+            "near_zero_ratio": float(np.mean(abs_samples < 1e-8)),
+            "nan_ratio": float(np.mean(np.isnan(samples.real) | np.isnan(samples.imag))),
+            "inf_ratio": float(np.mean(np.isinf(samples.real) | np.isinf(samples.imag))),
+            "finite_ratio": float(np.mean(finite)),
+            "spectral_peak_offset_hz": _safe_float(peak_offset_hz),
+        }
+
+    def compare_rf_captures(self, left_capture_id: str, right_capture_id: str) -> dict[str, Any]:
+        left = self.get_capture_record(left_capture_id)
+        right = self.get_capture_record(right_capture_id)
+
+        def metric(record: dict[str, Any], key: str, default: float = 0.0) -> float:
+            return float((record.get("quality_metrics") or {}).get(key, default) or default)
+
+        def cfg(record: dict[str, Any], key: str, default: float = 0.0) -> float:
+            return float((record.get("capture_config") or {}).get(key, default) or default)
+
+        def diag(record: dict[str, Any], key: str, default: float = 0.0) -> float:
+            return float((record.get("iq_file_diagnostics") or {}).get(key, default) or default)
+
+        differences = {
+            "sample_rate_diff_hz": cfg(left, "sample_rate_hz") - cfg(right, "sample_rate_hz"),
+            "duration_diff_s": cfg(left, "capture_duration_s") - cfg(right, "capture_duration_s"),
+            "mean_power_diff_db": diag(left, "mean_power_db") - diag(right, "mean_power_db"),
+            "spectral_peak_diff_hz": metric(left, "peak_frequency_hz") - metric(right, "peak_frequency_hz"),
+            "occupied_bw_diff_hz": metric(left, "occupied_bandwidth_hz") - metric(right, "occupied_bandwidth_hz"),
+            "selected_snr_diff_db": metric(left, "selected_snr_db", metric(left, "estimated_snr_db")) - metric(right, "selected_snr_db", metric(right, "estimated_snr_db")),
+            "zero_ratio_diff": diag(left, "zero_ratio") - diag(right, "zero_ratio"),
+            "near_zero_ratio_diff": diag(left, "near_zero_ratio") - diag(right, "near_zero_ratio"),
+        }
+        method_left = (left.get("burst_detection") or {}).get("method")
+        method_right = (right.get("burst_detection") or {}).get("method")
+        profile_left = left.get("qc_profile_id") or (left.get("burst_detection") or {}).get("qc_profile_id")
+        profile_right = right.get("qc_profile_id") or (right.get("burst_detection") or {}).get("qc_profile_id")
+        findings: list[str] = []
+        if profile_left != profile_right:
+            findings.append("qc_profile_diff")
+        if method_left != method_right:
+            findings.append("detection_method_diff")
+        if (left.get("quality_review") or {}).get("status") != (right.get("quality_review") or {}).get("status"):
+            findings.append("decision_diff")
+        if abs(differences["near_zero_ratio_diff"]) > 0.10:
+            findings.append("near_zero_ratio_diff")
+        if abs(differences["selected_snr_diff_db"]) > 6.0:
+            findings.append("snr_diff")
+        return {
+            "left_capture_id": left_capture_id,
+            "right_capture_id": right_capture_id,
+            "metadata_diff": {
+                "sample_rate_hz": [cfg(left, "sample_rate_hz"), cfg(right, "sample_rate_hz")],
+                "center_frequency_hz": [cfg(left, "center_frequency_hz"), cfg(right, "center_frequency_hz")],
+                "effective_bandwidth_hz": [cfg(left, "effective_bandwidth_hz"), cfg(right, "effective_bandwidth_hz")],
+                "signal_family": [left.get("signal_family"), right.get("signal_family")],
+            },
+            "qc_profile_diff": [profile_left, profile_right],
+            "detection_method_diff": [method_left, method_right],
+            "roi_policy_diff": [(left.get("burst_detection") or {}).get("roi_policy"), (right.get("burst_detection") or {}).get("roi_policy")],
+            "decision_diff": [(left.get("quality_review") or {}).get("status"), (right.get("quality_review") or {}).get("status")],
+            "differences": differences,
+            "findings": findings,
+        }
+
     def recompute_capture_record_qc(self, capture_id: str) -> dict[str, Any]:
         record = self.get_capture_record(capture_id)
+        metadata_path = Path(str((record.get("artifacts") or {}).get("metadata_file", "")).strip())
+        preview_metrics = {}
+        if metadata_path.exists():
+            try:
+                with metadata_path.open("r", encoding="utf-8") as f:
+                    metadata = json.load(f)
+                    preview_metrics = metadata.get("preview_metrics", {})
+            except Exception:
+                pass
         iq_path = (
             str((record.get("artifacts") or {}).get("iq_file") or "").strip()
             or str((record.get("capture_config") or {}).get("output_path") or "").strip()
@@ -176,14 +302,27 @@ class FingerprintingService:
             "center_frequency_hz": (record.get("capture_config") or {}).get("center_frequency_hz", 0.0),
             "duration_seconds": (record.get("capture_config") or {}).get("capture_duration_s", 0.0),
             "sample_count": (record.get("capture_config") or {}).get("sample_count", 0),
+            "bandwidth_hz": (record.get("capture_config") or {}).get("effective_bandwidth_hz", 0.0),
+            "modulation_hint": (record.get("transmitter") or {}).get("transmitter_class") or (record.get("transmitter") or {}).get("family") or "unknown",
+            "signal_family": record.get("signal_family"),
         }
         analysis = self._analyze_imported_capture(capture_like)
         if not analysis:
             raise ValueError(f"Unable to recompute QC for capture: {capture_id}")
 
         quality_metrics = record.get("quality_metrics", {})
+        record["signal_family"] = analysis.get("signal_family", record.get("signal_family", "unknown"))
+        record["qc_profile_id"] = analysis.get("qc_profile_id", record.get("qc_profile_id", "burst_rf_v1"))
+        record["qc_profile"] = analysis.get("qc_profile", record.get("qc_profile", {}))
+        record["iq_file_diagnostics"] = analysis.get("iq_file_diagnostics", record.get("iq_file_diagnostics", {}))
+        record["snr"] = analysis.get("snr", record.get("snr", {}))
         quality_metrics["estimated_snr_db"] = float(analysis.get("estimated_snr_db", quality_metrics.get("estimated_snr_db", 0.0) or 0.0))
+        quality_metrics["temporal_snr_db"] = _safe_float(analysis.get("temporal_snr_db"))
+        quality_metrics["burst_snr_db"] = _safe_float(analysis.get("burst_snr_db"))
         quality_metrics["spectral_snr_db"] = _safe_float(analysis.get("spectral_snr_db"))
+        quality_metrics["selected_snr_db"] = _safe_float(analysis.get("selected_snr_db"))
+        quality_metrics["selected_snr_method"] = analysis.get("selected_snr_method")
+        quality_metrics["channel_presence_ratio"] = _safe_float(analysis.get("channel_presence_ratio"))
         quality_metrics["noise_floor_db"] = _safe_float(analysis.get("noise_floor_db"))
         quality_metrics["peak_power_db"] = _safe_float(analysis.get("peak_power_db"))
         quality_metrics["average_power_db"] = _safe_float(analysis.get("average_power_db"))
@@ -197,8 +336,17 @@ class FingerprintingService:
         quality_metrics["silence_pct"] = float(analysis.get("silence_pct", quality_metrics.get("silence_pct", 0.0) or 0.0))
         quality_metrics["burst_duration_ms"] = float(analysis.get("burst_duration_ms", quality_metrics.get("burst_duration_ms", 0.0) or 0.0))
 
+        # Add live preview offset
+        live_peak_freq = preview_metrics.get("live_preview_peak_frequency_hz")
+        center_freq = (record.get("capture_config") or {}).get("center_frequency_hz", 0.0)
+        if live_peak_freq is not None and center_freq:
+            live_offset_hz = live_peak_freq - center_freq
+            quality_metrics["live_offset_hz"] = live_offset_hz
+
         burst_detection = record.get("burst_detection", {})
         burst_detection["method"] = analysis.get("method", burst_detection.get("method", "manual"))
+        burst_detection["qc_profile_id"] = analysis.get("qc_profile_id")
+        burst_detection["roi_policy"] = analysis.get("roi_policy")
         burst_detection["energy_threshold_db"] = _safe_float(analysis.get("energy_threshold_db"))
         burst_detection["burst_count"] = int(analysis.get("burst_count", burst_detection.get("burst_count", 0) or 0))
         burst_detection["burst_start_sample"] = int(analysis.get("burst_start_sample", burst_detection.get("burst_start_sample", 0) or 0))
@@ -209,6 +357,9 @@ class FingerprintingService:
         ) or burst_detection.get("max_burst_duration_ms")
 
         quality_review = record.get("quality_review", {})
+        quality_metrics["signal_family"] = record.get("signal_family", "unknown")
+        quality_metrics["qc_profile_id"] = record.get("qc_profile_id")
+        quality_metrics["effective_bandwidth_hz"] = (record.get("capture_config") or {}).get("effective_bandwidth_hz", 0.0)
         evaluated = self._evaluate_quality(quality_metrics, quality_review.get("operator_decision"))
         quality_review["status"] = evaluated["status"]
         quality_review["reasons"] = evaluated["reasons"]
@@ -223,7 +374,9 @@ class FingerprintingService:
         center_frequency_hz = float(capture.get("center_frequency_hz", 0.0))
         sample_rate_hz = float(capture.get("sample_rate_hz", 0.0))
         bandwidth_hz = float(capture.get("bandwidth_hz", sample_rate_hz))
-        analysis = self._analyze_imported_capture(capture)
+        signal_family = self._infer_signal_family(capture, defaults)
+        capture_for_analysis = {**capture, "signal_family": signal_family}
+        analysis = self._analyze_imported_capture(capture_for_analysis)
         burst_duration_ms = float(
             defaults.get("burst_duration_ms", analysis.get("burst_duration_ms", float(capture.get("duration_seconds", 0.0)) * 1000.0))
         )
@@ -232,6 +385,12 @@ class FingerprintingService:
             "capture_mode": "guided_capture",
             "session_id": defaults.get("session_id", "session_unassigned"),
             "dataset_split": defaults.get("dataset_split", "train"),
+            "signal_family": analysis.get("signal_family", signal_family),
+            "qc_profile_id": analysis.get("qc_profile_id"),
+            "qc_profile": analysis.get("qc_profile", {}),
+            "iq_file_diagnostics": analysis.get("iq_file_diagnostics", {}),
+            "snr": analysis.get("snr", {}),
+            "canonicalization": analysis.get("canonicalization", {}),
             "capture_config": {
                 "device_source": defaults.get("device_source", capture.get("source_device", "uhd")),
                 "sdr_model": defaults.get("sdr_model", capture.get("driver", "uhd_gnuradio")),
@@ -278,7 +437,12 @@ class FingerprintingService:
             },
             "quality_metrics": {
                 "estimated_snr_db": defaults.get("estimated_snr_db", analysis.get("estimated_snr_db", 0.0)),
+                "temporal_snr_db": defaults.get("temporal_snr_db", analysis.get("temporal_snr_db")),
+                "burst_snr_db": defaults.get("burst_snr_db", analysis.get("burst_snr_db")),
                 "spectral_snr_db": defaults.get("spectral_snr_db", analysis.get("spectral_snr_db")),
+                "selected_snr_db": defaults.get("selected_snr_db", analysis.get("selected_snr_db")),
+                "selected_snr_method": defaults.get("selected_snr_method", analysis.get("selected_snr_method")),
+                "channel_presence_ratio": defaults.get("channel_presence_ratio", analysis.get("channel_presence_ratio")),
                 "noise_floor_db": defaults.get("noise_floor_db", analysis.get("noise_floor_db")),
                 "peak_power_db": defaults.get("peak_power_db", analysis.get("peak_power_db")),
                 "average_power_db": defaults.get("average_power_db", analysis.get("average_power_db")),
@@ -298,6 +462,8 @@ class FingerprintingService:
             },
             "burst_detection": {
                 "method": defaults.get("method", analysis.get("method", "manual_import")),
+                "qc_profile_id": analysis.get("qc_profile_id"),
+                "roi_policy": analysis.get("roi_policy"),
                 "energy_threshold_db": defaults.get("energy_threshold_db", analysis.get("energy_threshold_db")),
                 "pre_trigger_samples": defaults.get("pre_trigger_samples", 0),
                 "post_trigger_samples": defaults.get("post_trigger_samples", 0),
@@ -331,10 +497,13 @@ class FingerprintingService:
         sample_rate_hz = float(capture.get("sample_rate_hz", 0.0) or 0.0)
         center_frequency_hz = float(capture.get("center_frequency_hz", 0.0) or 0.0)
         capture_bandwidth_hz = float(capture.get("bandwidth_hz", sample_rate_hz) or sample_rate_hz)
+        iq_dtype = str(capture.get("iq_dtype", "complex64") or "complex64")
+        signal_family = self._infer_signal_family(capture)
+        qc_profile = self._qc_profile_for_signal_family(signal_family)
         if sample_rate_hz <= 0.0:
             return {}
 
-        samples = self._load_complex_samples(iq_file, str(capture.get("iq_dtype", "complex64")))
+        samples = self._load_complex_samples(iq_file, iq_dtype)
         if samples.size == 0:
             return {}
 
@@ -354,7 +523,6 @@ class FingerprintingService:
         smoothed = np.convolve(power.astype(np.float64), kernel, mode="same")
         energy_threshold_power = max(noise_power * (10.0 ** (6.0 / 10.0)), 1e-20)
         mask = smoothed > energy_threshold_power
-
         burst_start, burst_end, burst_count = self._find_burst_bounds(mask)
         burst_detected = burst_start is not None and burst_end is not None
         if burst_start is None or burst_end is None:
@@ -362,19 +530,18 @@ class FingerprintingService:
             burst_end = samples.size - 1
             burst_count = 0
 
-        silence_pct = float(np.mean(~mask) * 100.0) if mask.size > 0 else 0.0
+        temporal_silence_pct = float(np.mean(~mask) * 100.0) if mask.size > 0 else 0.0
         burst_duration_ms = max(0.0, ((burst_end - burst_start + 1) / sample_rate_hz) * 1000.0)
-
         signal_slice = samples[burst_start:burst_end + 1] if burst_end >= burst_start else samples
         signal_power = float(np.mean(np.abs(signal_slice) ** 2)) if signal_slice.size else mean_power
         noise_reference = power[~mask] if np.any(~mask) else power
         reference_noise_power = float(np.mean(noise_reference)) if noise_reference.size else noise_power
         signal_excess_power = max(signal_power - reference_noise_power, 0.0)
-        estimated_snr_db = _db10(signal_excess_power / max(reference_noise_power, 1e-20))
-        if not burst_detected or silence_pct >= 99.9:
-            estimated_snr_db = 0.0
+        burst_snr_db = _db10(signal_excess_power / max(reference_noise_power, 1e-20))
+        if not burst_detected or temporal_silence_pct >= 99.9:
+            burst_snr_db = 0.0
 
-        spectral_samples = signal_slice if signal_slice.size else samples
+        spectral_samples = samples if signal_family == "continuous_fm" else (signal_slice if signal_slice.size else samples)
         if spectral_samples.size > 262144:
             stride = int(np.ceil(spectral_samples.size / 262144))
             spectral_samples = spectral_samples[::stride]
@@ -383,7 +550,6 @@ class FingerprintingService:
         spectrum = np.fft.fftshift(np.fft.fft(windowed))
         psd_full = np.abs(spectrum) ** 2
         freqs_full = np.fft.fftshift(np.fft.fftfreq(spectral_samples.size, d=1.0 / sample_rate_hz))
-
         half_capture_band_hz = min(sample_rate_hz / 2.0, max(capture_bandwidth_hz, 0.0) / 2.0)
         if half_capture_band_hz > 0.0 and half_capture_band_hz < sample_rate_hz / 2.0:
             band_mask = np.abs(freqs_full) <= half_capture_band_hz
@@ -402,11 +568,9 @@ class FingerprintingService:
         spectral_peak = float(psd[peak_index])
         spectral_snr_db = _db10(spectral_peak / max(spectral_noise, 1e-20))
         psd_excess = np.clip(psd - spectral_noise, 0.0, None)
-        if float(np.sum(psd_excess)) > 0.0:
-            centroid_offset_hz = float(np.sum(freqs * psd_excess) / np.sum(psd_excess))
-        else:
-            centroid_offset_hz = peak_offset_hz
-        if float(np.sum(psd_excess)) > 0.0:
+        psd_excess_sum = float(np.sum(psd_excess))
+        centroid_offset_hz = float(np.sum(freqs * psd_excess) / psd_excess_sum) if psd_excess_sum > 0.0 else peak_offset_hz
+        if psd_excess_sum > 0.0:
             cumulative = np.cumsum(psd_excess)
             total = float(cumulative[-1])
             lower_index = int(np.searchsorted(cumulative, total * 0.005))
@@ -419,21 +583,89 @@ class FingerprintingService:
         capture_band_edge_margin_hz = float(half_capture_band_hz - abs(peak_offset_hz)) if half_capture_band_hz > 0 else 0.0
         signal_within_capture_band = bool(capture_band_edge_margin_hz >= 0.0)
         frequency_offset_ratio = float(abs(peak_offset_hz) / half_capture_band_hz) if half_capture_band_hz > 0 else 0.0
+        temporal_channel_presence_ratio = float(np.mean(smoothed > energy_threshold_power)) if smoothed.size else 0.0
+        channel_presence_ratio = temporal_channel_presence_ratio
 
-        analysis_method = "auto_energy_burst" if burst_detected else "no_burst_detected"
-        regions_of_interest = ["transient_start", "whole_burst"] if burst_detected else ["whole_burst"]
-        if not burst_detected and spectral_snr_db >= DEFAULT_THRESHOLDS["min_doubtful_snr_db"]:
+        occupied_ratio_for_profile = (occupied_bandwidth_hz / capture_bandwidth_hz) if capture_bandwidth_hz > 0 else 0.0
+        if (
+            signal_family in {"unknown", "burst_rf"}
+            and capture_bandwidth_hz >= 150_000.0
+            and spectral_snr_db >= DEFAULT_THRESHOLDS["min_valid_snr_db"]
+            and occupied_ratio_for_profile >= 0.70
+            and temporal_silence_pct > DEFAULT_THRESHOLDS["max_silence_pct"]
+        ):
+            signal_family = "continuous_fm"
+            qc_profile = self._qc_profile_for_signal_family(signal_family)
+
+        if signal_family == "continuous_fm":
+            channel_presence_ratio = 1.0 if spectral_snr_db >= DEFAULT_THRESHOLDS["min_doubtful_snr_db"] and signal_within_capture_band else 0.0
             analysis_method = "spectral_peak_detection"
-            estimated_snr_db = float(spectral_snr_db)
+            roi_policy = "full_capture_or_centered_channel"
             silence_pct = 0.0
-            burst_duration_ms = float((samples.size / sample_rate_hz) * 1000.0)
+            selected_snr_db = float(spectral_snr_db)
+            selected_snr_method = "spectral_channel_snr"
+            estimated_snr_db = selected_snr_db
             burst_count = 1
             burst_start = 0
             burst_end = samples.size - 1
-            regions_of_interest = ["whole_burst"]
+            burst_duration_ms = float((samples.size / sample_rate_hz) * 1000.0)
+            regions_of_interest = ["whole_capture", "centered_channel"]
+        else:
+            analysis_method = "auto_energy_burst" if burst_detected else "no_burst_detected"
+            roi_policy = "burst_region" if burst_detected else "full_capture"
+            regions_of_interest = ["transient_start", "whole_burst"] if burst_detected else ["whole_burst"]
+            silence_pct = temporal_silence_pct
+            selected_snr_db = float(burst_snr_db)
+            selected_snr_method = "burst_temporal_snr"
+            estimated_snr_db = selected_snr_db
+            if not burst_detected and spectral_snr_db >= DEFAULT_THRESHOLDS["min_doubtful_snr_db"]:
+                analysis_method = "spectral_peak_detection"
+                roi_policy = "full_capture_or_centered_channel"
+                selected_snr_db = float(spectral_snr_db)
+                selected_snr_method = "spectral_fallback_snr"
+                estimated_snr_db = selected_snr_db
+                silence_pct = 0.0
+                burst_duration_ms = float((samples.size / sample_rate_hz) * 1000.0)
+                burst_count = 1
+                burst_start = 0
+                burst_end = samples.size - 1
+                regions_of_interest = ["whole_burst"]
 
+        diagnostics = self._iq_file_diagnostics(samples, sample_rate_hz, iq_dtype, peak_offset_hz)
+        canonicalization = {
+            "enabled": True,
+            "estimated_signal_offset_hz": float(peak_offset_hz),
+            "frequency_shift_applied_hz": float(-peak_offset_hz),
+            "canonical_center_hz": 0.0,
+            "canonical_sample_rate_hz": float(sample_rate_hz),
+            "canonical_bandwidth_hz": float(capture_bandwidth_hz),
+            "preprocessing_profile_id": "continuous_fm_centered_iq_v1" if signal_family == "continuous_fm" else "burst_rf_centered_iq_v1",
+        }
+        snr = {
+            "temporal_snr_db": float(burst_snr_db),
+            "burst_snr_db": float(burst_snr_db),
+            "spectral_snr_db": float(spectral_snr_db),
+            "selected_snr_db": float(selected_snr_db),
+            "selected_snr_method": selected_snr_method,
+            "noise_estimation_method": "percentile_psd_with_temporal_percentile",
+            "signal_region_hz": [-float(half_capture_band_hz), float(half_capture_band_hz)] if half_capture_band_hz else None,
+            "noise_region_hz": "outside_channel_guarded_or_psd_percentile",
+        }
         return {
+            "signal_family": signal_family,
+            "qc_profile_id": qc_profile["qc_profile_id"],
+            "qc_profile": qc_profile,
+            "roi_policy": roi_policy,
             "estimated_snr_db": float(estimated_snr_db),
+            "temporal_snr_db": float(burst_snr_db),
+            "burst_snr_db": float(burst_snr_db),
+            "selected_snr_db": float(selected_snr_db),
+            "selected_snr_method": selected_snr_method,
+            "snr": snr,
+            "iq_file_diagnostics": diagnostics,
+            "canonicalization": canonicalization,
+            "channel_presence_ratio": float(channel_presence_ratio),
+            "temporal_channel_presence_ratio": float(temporal_channel_presence_ratio),
             "noise_floor_db": float(noise_floor_db),
             "peak_power_db": float(peak_power_db),
             "average_power_db": float(avg_power_db),
@@ -447,6 +679,7 @@ class FingerprintingService:
             "capture_band_edge_margin_hz": float(capture_band_edge_margin_hz),
             "clipping_pct": float(clipping_pct),
             "silence_pct": float(silence_pct),
+            "temporal_silence_pct": float(temporal_silence_pct),
             "burst_duration_ms": float(burst_duration_ms),
             "method": analysis_method,
             "energy_threshold_db": float(_db10(energy_threshold_power)),
@@ -570,6 +803,14 @@ class FingerprintingService:
         artifacts = deepcopy(payload.get("artifacts", {}))
         preview_metrics = deepcopy(payload.get("preview_metrics", {}))
 
+        # Calculate live offset
+        live_offset_hz = None
+        live_peak_freq = preview_metrics.get("live_preview_peak_frequency_hz")
+        center_freq = capture_config.get("center_frequency_hz", 0.0)
+        if live_peak_freq is not None and center_freq:
+            live_offset_hz = live_peak_freq - center_freq
+        quality_metrics["live_offset_hz"] = live_offset_hz
+
         iq_path = artifacts.get("iq_file") or capture_config.get("output_path")
         if iq_path and not artifacts.get("sha256"):
             iq_file = Path(iq_path)
@@ -579,12 +820,21 @@ class FingerprintingService:
         quality = self._evaluate_quality(
             {
                 "estimated_snr_db": float(quality_metrics.get("estimated_snr_db", 0.0) or 0.0),
+                "selected_snr_db": float(quality_metrics.get("selected_snr_db", quality_metrics.get("estimated_snr_db", 0.0)) or 0.0),
+                "signal_family": payload.get("signal_family", "unknown"),
+                "qc_profile_id": payload.get("qc_profile_id"),
+                "effective_bandwidth_hz": float(capture_config.get("effective_bandwidth_hz", 0.0) or 0.0),
+                "occupied_bandwidth_hz": float(quality_metrics.get("occupied_bandwidth_hz", 0.0) or 0.0),
+                "channel_presence_ratio": float(quality_metrics.get("channel_presence_ratio", 0.0) or 0.0),
                 "frequency_offset_hz": float(quality_metrics.get("frequency_offset_hz", 0.0) or 0.0),
+                "frequency_offset_ratio_of_capture_band": float(quality_metrics.get("frequency_offset_ratio_of_capture_band", 0.0) or 0.0),
+                "signal_within_capture_band": bool(quality_metrics.get("signal_within_capture_band", True)),
                 "clipping_pct": float(quality_metrics.get("clipping_pct", 0.0) or 0.0),
                 "sample_drop_count": int(quality_metrics.get("sample_drop_count", 0) or 0),
                 "buffer_overflow_count": int(quality_metrics.get("buffer_overflow_count", 0) or 0),
                 "silence_pct": float(quality_metrics.get("silence_pct", 0.0) or 0.0),
                 "burst_duration_ms": float(quality_metrics.get("burst_duration_ms", 0.0) or 0.0),
+                "live_offset_hz": live_offset_hz,
             },
             payload.get("operator_decision"),
         )
@@ -683,13 +933,17 @@ class FingerprintingService:
         reasons: list[str] = []
         flags: list[str] = []
 
-        snr = float(metrics.get("estimated_snr_db", 0.0) or 0.0)
+        signal_family = str(metrics.get("signal_family") or "burst_rf").strip().lower()
+        qc_profile_id = str(metrics.get("qc_profile_id") or ("continuous_fm_v1" if signal_family == "continuous_fm" else "burst_rf_v1"))
+        snr = float(metrics.get("selected_snr_db", metrics.get("estimated_snr_db", 0.0)) or 0.0)
         clipping_pct = float(metrics.get("clipping_pct", 0.0) or 0.0)
-        frequency_offset_hz = abs(float(metrics.get("frequency_offset_hz", 0.0) or 0.0))
         silence_pct = float(metrics.get("silence_pct", 0.0) or 0.0)
         sample_drop_count = int(metrics.get("sample_drop_count", 0) or 0)
         buffer_overflow_count = int(metrics.get("buffer_overflow_count", 0) or 0)
         burst_duration_ms = float(metrics.get("burst_duration_ms", 0.0) or 0.0)
+        occupied_bw = float(metrics.get("occupied_bandwidth_hz", 0.0) or 0.0)
+        effective_bw = float(metrics.get("effective_bandwidth_hz", 0.0) or 0.0)
+        occupied_ratio = occupied_bw / effective_bw if effective_bw > 0 else 0.0
 
         if snr < DEFAULT_THRESHOLDS["min_doubtful_snr_db"]:
             reasons.append("insufficient_snr")
@@ -714,36 +968,52 @@ class FingerprintingService:
             reasons.append("signal_near_capture_edge")
             flags.append("offset_near_capture_edge")
 
+        if signal_family == "continuous_fm":
+            channel_presence_ratio = float(metrics.get("channel_presence_ratio", 0.0) or 0.0)
+            if channel_presence_ratio < 0.50:
+                reasons.append("channel_not_present")
+                flags.append("channel_presence_low")
+            elif occupied_ratio > 0.95:
+                reasons.append("bandwidth_too_tight")
+                flags.append("occupied_bandwidth_near_capture_limit")
+            elif occupied_ratio > 0.85:
+                reasons.append("bandwidth_tight")
+                flags.append("occupied_bandwidth_high")
+        else:
+            if silence_pct > DEFAULT_THRESHOLDS["max_silence_pct"]:
+                reasons.append("absence_of_activity")
+                flags.append("silence_high")
+            if burst_duration_ms and burst_duration_ms < DEFAULT_THRESHOLDS["min_valid_burst_duration_ms"]:
+                reasons.append("duration_insufficient")
+                flags.append("burst_too_short")
+
         if sample_drop_count > 0:
             reasons.append("sample_drops_detected")
             flags.append("sample_drop")
-
         if buffer_overflow_count > 0:
             reasons.append("buffer_overflow")
             flags.append("buffer_overflow")
 
-        if silence_pct > DEFAULT_THRESHOLDS["max_silence_pct"]:
-            reasons.append("absence_of_activity")
-            flags.append("silence_high")
-
-        if burst_duration_ms and burst_duration_ms < DEFAULT_THRESHOLDS["min_valid_burst_duration_ms"]:
-            reasons.append("duration_insufficient")
-            flags.append("burst_too_short")
+        # Check for pre-post QC mismatch
+        live_offset_hz = metrics.get("live_offset_hz")
+        offline_offset_hz = metrics.get("frequency_offset_hz", 0.0)
+        effective_bandwidth_hz = metrics.get("effective_bandwidth_hz", 0.0)
+        if live_offset_hz is not None and effective_bandwidth_hz > 0:
+            offset_delta_hz = abs(live_offset_hz - offline_offset_hz)
+            mismatch_threshold_hz = 0.15 * effective_bandwidth_hz
+            if offset_delta_hz > mismatch_threshold_hz:
+                flags.append("pre_post_qc_mismatch")
+                reasons.append("pre_post_qc_mismatch")
+                metrics["pre_post_offset_delta_hz"] = offset_delta_hz
 
         status = "valid"
+        reject_reasons = {"insufficient_snr", "adc_clipping", "signal_outside_capture_band", "sample_drops_detected", "buffer_overflow"}
+        if signal_family == "continuous_fm":
+            reject_reasons.add("channel_not_present")
+        else:
+            reject_reasons.update({"absence_of_activity", "duration_insufficient"})
         if reasons:
-            status = "rejected" if any(
-                item in reasons
-                for item in (
-                    "insufficient_snr",
-                    "adc_clipping",
-                    "signal_outside_capture_band",
-                    "sample_drops_detected",
-                    "buffer_overflow",
-                    "absence_of_activity",
-                    "duration_insufficient",
-                )
-            ) else "doubtful"
+            status = "rejected" if any(item in reasons for item in reject_reasons) else "doubtful"
 
         if operator_decision in {"valid", "doubtful", "rejected"}:
             status = operator_decision
@@ -752,4 +1022,5 @@ class FingerprintingService:
             "status": status,
             "reasons": reasons,
             "flags": flags,
+            "qc_profile_id": qc_profile_id,
         }

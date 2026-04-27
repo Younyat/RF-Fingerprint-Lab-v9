@@ -87,6 +87,39 @@ From the project root:
 powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1 -UseRealSdr 1 -RadioCondaPythonPath "C:\path\to\radioconda\python.exe"
 ```
 
+
+## Modular Tab Architecture
+
+The frontend tabs are physically separated into one folder per module and composed through a small registry instead of being hardcoded separately in the router and sidebar. The module area lives in:
+
+```text
+frontend/src/app/modules/
+  capture-lab/module.tsx
+  dataset-builder/module.tsx
+  training/module.tsx
+  validation/module.tsx
+  ...
+  labModules.tsx
+  types.ts
+```
+
+Each `module.tsx` declares:
+
+- stable `id`
+- display `name`
+- primary `path`
+- optional `aliases`
+- sidebar `icon`
+- React `element`
+- `enabled` flag
+- `showInNavigation` flag
+- ordering metadata
+- short functional description
+
+`AppRouter` consumes `moduleRoutes` from `labModules.tsx`. `AppLayout` consumes `navigationModules` and `findModuleByPath`. This means a tab can be added, disabled, hidden from navigation, or removed from the active UI by changing that module's own `module.tsx`, without editing the router and sidebar separately.
+
+Disabling a module should be done by setting `enabled: false` in its own folder. Hiding a module while keeping its route active should be done by setting `showInNavigation: false`. Existing aliases such as `/guided-capture` and `/modulated-analysis` are preserved under the Capture Lab module for compatibility.
+
 ## Main UI Flow
 
 1. Click `Connect USB`.

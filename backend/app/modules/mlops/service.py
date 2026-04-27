@@ -481,10 +481,32 @@ class MlOpsService:
 
     def list_prediction_captures(self) -> list[dict[str, Any]]:
         captures: list[dict[str, Any]] = []
+        if self._fingerprinting_captures_dir.exists():
+            for path in sorted(self._fingerprinting_captures_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+                data = self._load_json(path)
+                if not isinstance(data, dict):
+                    continue
+                if str(data.get("dataset_split", "")).strip().lower() != "predict":
+                    continue
+                iq_path = str((data.get("artifacts") or {}).get("iq_file") or (data.get("capture_config") or {}).get("output_path") or "").strip()
+                data["prediction_ready"] = bool(iq_path and Path(iq_path).exists())
+                data["prediction_ready_reason"] = "ready" if data["prediction_ready"] else "IQ artifact is missing or not reachable"
+                captures.append(data)
+
+        # Backward-compatible fallback for older exported prediction datasets.
+        known_ids = {str(item.get("capture_id", "")) for item in captures}
         for path in sorted(self._predict_dataset_dir.rglob("*.json")):
             data = self._load_json(path)
-            if isinstance(data, dict):
-                captures.append(data)
+            if not isinstance(data, dict):
+                continue
+            capture_id = str(data.get("capture_id") or data.get("id") or path.stem)
+            if capture_id in known_ids:
+                continue
+            data["capture_id"] = capture_id
+            data["dataset_split"] = data.get("dataset_split", "predict")
+            data["prediction_ready"] = True
+            data["prediction_ready_reason"] = "legacy prediction dataset"
+            captures.append(data)
         return captures
 
     def start_prediction(self, payload: dict[str, Any]) -> dict[str, Any]:

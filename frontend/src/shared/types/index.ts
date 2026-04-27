@@ -222,9 +222,36 @@ export interface FingerprintingCaptureRecord {
     session_number: number;
     timestamp_utc: string;
   };
+  signal_family?: 'continuous_fm' | 'burst_rf' | 'packet_rf' | 'unknown';
+  qc_profile_id?: string | null;
+  iq_file_diagnostics?: {
+    num_complex_samples?: number;
+    duration_seconds?: number;
+    dtype?: string;
+    endianness?: string;
+    mean_power_db?: number;
+    rms_power_db?: number;
+    zero_ratio?: number;
+    near_zero_ratio?: number;
+    nan_ratio?: number;
+    inf_ratio?: number;
+    spectral_peak_offset_hz?: number | null;
+  };
+  snr?: {
+    temporal_snr_db?: number | null;
+    burst_snr_db?: number | null;
+    spectral_snr_db?: number | null;
+    selected_snr_db?: number | null;
+    selected_snr_method?: string | null;
+  };
   quality_metrics: {
     estimated_snr_db?: number;
+    temporal_snr_db?: number | null;
+    burst_snr_db?: number | null;
     spectral_snr_db?: number | null;
+    selected_snr_db?: number | null;
+    selected_snr_method?: string | null;
+    channel_presence_ratio?: number | null;
     noise_floor_db?: number | null;
     peak_power_db?: number | null;
     average_power_db?: number | null;
@@ -272,6 +299,8 @@ export interface FingerprintingCaptureRecord {
     live_preview_peak_level_db?: number | null;
     live_preview_peak_frequency_hz?: number | null;
   };
+  prediction_ready?: boolean;
+  prediction_ready_reason?: string;
 }
 
 export interface TrainingDashboard {

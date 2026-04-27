@@ -1,25 +1,9 @@
 import React from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
-import { Activity, BarChart3, Database, Settings, Radio, Waves, Globe2, LibraryBig, BrainCircuit, BadgeCheck, ScanSearch, Boxes, RefreshCcw, Loader2, RadioTower } from 'lucide-react';
+import { Activity, Loader2, RadioTower } from 'lucide-react';
 import { useAppActions, useGlobalActivity, useUiState } from '../../app/store/AppStore';
 import { cn } from '../../shared/utils';
-
-const navigation = [
-  { name: 'Mission Control', href: '/', icon: Activity },
-  { name: 'Live Monitor', href: '/spectrum', icon: Activity },
-  { name: 'Capture Lab', href: '/capture', icon: Database },
-  { name: 'Dataset Builder', href: '/dataset-builder', icon: LibraryBig },
-  { name: 'Training', href: '/training', icon: BrainCircuit },
-  { name: 'Retraining', href: '/retraining', icon: RefreshCcw },
-  { name: 'Validation', href: '/validation', icon: BadgeCheck },
-  { name: 'Inference', href: '/inference', icon: ScanSearch },
-  { name: 'Models', href: '/models', icon: Boxes },
-  { name: 'Waterfall', href: '/waterfall', icon: BarChart3 },
-  { name: 'Recordings', href: '/recordings', icon: Radio },
-  { name: 'Demodulation', href: '/demodulation', icon: Waves },
-  { name: 'KiwiSDR Map', href: '/kiwisdr', icon: Globe2 },
-  { name: 'Settings', href: '/settings', icon: Settings },
-];
+import { findModuleByPath, navigationModules } from '../../app/modules/labModules';
 
 export const AppLayout: React.FC = () => {
   const location = useLocation();
@@ -55,12 +39,12 @@ export const AppLayout: React.FC = () => {
 
         {/* Navigation */}
         <nav className="flex-1 p-4 space-y-2">
-          {navigation.map((item) => {
-            const isActive = location.pathname === item.href;
+          {navigationModules.map((item) => {
+            const isActive = location.pathname === item.path || (item.aliases ?? []).includes(location.pathname);
             return (
               <Link
-                key={item.name}
-                to={item.href}
+                key={item.id}
+                to={item.path}
                 className={cn(
                   "flex items-center rounded-2xl px-3 py-2 text-sm font-medium transition-colors",
                   isActive
@@ -119,7 +103,7 @@ export const AppLayout: React.FC = () => {
         <header className="app-surface border-b px-6 py-4 shadow-sm backdrop-blur">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold">
-              {navigation.find(item => item.href === location.pathname)?.name || 'Spectrum Lab'}
+              {findModuleByPath(location.pathname)?.name || 'Spectrum Lab'}
             </h2>
             <div className="flex items-center space-x-4">
               <select

@@ -145,6 +145,14 @@ def build_fingerprinting_router(service, modulated_signal_controller) -> APIRout
         captures = service.list_capture_records_by_split(dataset_split) if dataset_split else service.list_capture_records()
         return {"captures": captures}
 
+
+    @router.get("/captures/compare/{left_capture_id}/{right_capture_id}")
+    async def compare_captures(left_capture_id: str, right_capture_id: str) -> dict[str, Any]:
+        try:
+            return service.compare_rf_captures(left_capture_id, right_capture_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @router.get("/captures/{capture_id}")
     async def get_capture(capture_id: str) -> dict[str, Any]:
         try:
