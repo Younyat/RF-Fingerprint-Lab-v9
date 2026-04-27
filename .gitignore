@@ -29,7 +29,7 @@ spectrum-lab/backend/app/infrastructure/persistence/storage/recordings/modulated
 spectrum-lab/backend/app/infrastructure/persistence/storage/recordings/modulated_signal_iq_captures/*
    
 
-
+backend/app/infrastructure/persistence/storage/recordings/modulated_signal_iq_captures/*
 
 *.iq
 *.cfile
