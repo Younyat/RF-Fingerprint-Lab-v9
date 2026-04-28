@@ -192,20 +192,6 @@ The optional `RF Overlay` draws transparent detections directly on top of the li
 
 ![Live spectrum and waterfall with active RF Intelligence overlay detections](readme_img/spectrum_waterfall_active_rf_intelligence_v5.png)
 
-### RF Intelligence Dashboard
-
-The dedicated `RF Intelligence` tab gives a focused view of detected RF objects, confidence, evidence, threshold controls, and current scene statistics.
-
-![RF Intelligence dashboard with detected RF objects and evidence panel](readme_img/rf_intelligence_v5.png)
-
-### Capture And Dataset Workflow
-
-Capture Lab is used for controlled IQ acquisition, while Dataset Builder is used later to inspect quality metrics, review records, and keep the ML dataset scientifically consistent.
-
-![Capture Lab workflow for controlled IQ acquisition and metadata capture](readme_img/capture_lab.png)
-
-![Dataset Builder view for capture review, QC metrics, and split assignment](readme_img/dataset_analyser.png)
-
 ## RF Intelligence
 
 The `RF Intelligence` tab adds a first operational layer of RF scene understanding on top of the live spectrum stream. It does not try to decode private communications or claim protocol confirmation. It detects active RF regions and produces technical hypotheses that are useful for monitoring, triage, and dataset capture planning.
