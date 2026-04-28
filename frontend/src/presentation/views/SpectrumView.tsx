@@ -1,19 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { BarChart3, ChevronLeft, ChevronRight, Download, Eye, EyeOff, Image, Move, Play, Square, RotateCcw, Target, Usb, Unplug, Radio, Trash2, SlidersHorizontal, X } from 'lucide-react';
+import { BarChart3, BrainCircuit, ChevronLeft, ChevronRight, Download, Eye, EyeOff, Image, Move, Play, Square, RotateCcw, Target, Usb, Unplug, Radio, Trash2, SlidersHorizontal, X } from 'lucide-react';
 import { useSpectrum } from '../hooks/useSpectrum';
 import { useWaterfall } from '../hooks/useWaterfall';
 import { useSpectrumController } from '../controllers/SpectrumController';
 import { getLevelAtFrequency, useMarkerController } from '../controllers/MarkerController';
 import { useAnalyzerSettings, useAppActions, useDeviceStatus, useMarkers, useSpectrumData } from '../../app/store/AppStore';
+import { ApiService } from '../../app/services/ApiService';
 import { estimateBandQuality, formatFrequency, formatPowerLevel } from '../../shared/utils';
 import { cn } from '../../shared/utils';
 import { DETECTOR_MODES, SPECTRUM_COLOR_SCHEMES, TRACE_MODES } from '../../shared/constants';
-import type { AnalyzerSettings } from '../../shared/types';
+import type { AnalyzerSettings, RFObjectDetection, RFSceneAnalysis } from '../../shared/types';
 
 const hzToMhz = (hz: number) => Number.isFinite(hz) ? hz / 1e6 : 0;
 const mhzToHz = (mhz: string) => Number(mhz) * 1e6;
 const khzToHz = (khz: string) => Number(khz) * 1e3;
 const spectrumOverlayStorageKey = 'spectrum-view-overlay-preferences';
+const apiService = new ApiService();
 
 const formatInput = (value: number, digits = 6) => {
   if (!Number.isFinite(value)) return '';
@@ -74,6 +76,23 @@ const findStrongestPeak = (frequencies: number[], levels: number[]) => {
   };
 };
 
+const formatBandwidth = (hz: number) => {
+  if (!Number.isFinite(hz)) return 'n/a';
+  if (Math.abs(hz) >= 1e6) return `${(hz / 1e6).toFixed(2)} MHz`;
+  if (Math.abs(hz) >= 1e3) return `${(hz / 1e3).toFixed(1)} kHz`;
+  return `${hz.toFixed(0)} Hz`;
+};
+
+const rfFamilyStyle = (family: string) => {
+  if (family.includes('wifi')) return { border: 'rgba(56,189,248,0.82)', fill: 'rgba(14,165,233,0.13)', text: 'text-sky-100', badge: 'bg-sky-400/20 border-sky-300/40' };
+  if (family.includes('fm') || family.includes('broadcast')) return { border: 'rgba(52,211,153,0.82)', fill: 'rgba(16,185,129,0.13)', text: 'text-emerald-100', badge: 'bg-emerald-400/20 border-emerald-300/40' };
+  if (family.includes('bluetooth')) return { border: 'rgba(129,140,248,0.82)', fill: 'rgba(99,102,241,0.13)', text: 'text-indigo-100', badge: 'bg-indigo-400/20 border-indigo-300/40' };
+  if (family.includes('zigbee')) return { border: 'rgba(250,204,21,0.86)', fill: 'rgba(234,179,8,0.13)', text: 'text-yellow-100', badge: 'bg-yellow-400/20 border-yellow-300/40' };
+  if (family.includes('lte') || family.includes('nr')) return { border: 'rgba(244,114,182,0.84)', fill: 'rgba(236,72,153,0.13)', text: 'text-pink-100', badge: 'bg-pink-400/20 border-pink-300/40' };
+  if (family.includes('ism')) return { border: 'rgba(251,146,60,0.84)', fill: 'rgba(249,115,22,0.13)', text: 'text-orange-100', badge: 'bg-orange-400/20 border-orange-300/40' };
+  return { border: 'rgba(203,213,225,0.72)', fill: 'rgba(148,163,184,0.10)', text: 'text-slate-100', badge: 'bg-slate-400/15 border-slate-300/30' };
+};
+
 export const SpectrumView: React.FC = () => {
   const { canvasRef } = useSpectrum();
   const [showWaterfallSplit, setShowWaterfallSplit] = useState(false);
@@ -108,6 +127,9 @@ export const SpectrumView: React.FC = () => {
   const [showPanOverlay, setShowPanOverlay] = useState(true);
   const [showMarkerBadges, setShowMarkerBadges] = useState(true);
   const [showCursorBadge, setShowCursorBadge] = useState(true);
+  const [showRfIntelligenceOverlay, setShowRfIntelligenceOverlay] = useState(true);
+  const [rfScene, setRfScene] = useState<RFSceneAnalysis | null>(null);
+  const [rfOverlayError, setRfOverlayError] = useState<string | null>(null);
   const [panOverlayPosition, setPanOverlayPosition] = useState({ x: 16, y: 16 });
   const dragStateRef = useRef<{ type: 'pan' | null; offsetX: number; offsetY: number }>({ type: null, offsetX: 0, offsetY: 0 });
   const suppressNextClickRef = useRef(false);
@@ -120,11 +142,13 @@ export const SpectrumView: React.FC = () => {
         showPanOverlay?: boolean;
         showMarkerBadges?: boolean;
         showCursorBadge?: boolean;
+        showRfIntelligenceOverlay?: boolean;
         panOverlayPosition?: { x?: number; y?: number };
       };
       if (typeof parsed.showPanOverlay === 'boolean') setShowPanOverlay(parsed.showPanOverlay);
       if (typeof parsed.showMarkerBadges === 'boolean') setShowMarkerBadges(parsed.showMarkerBadges);
       if (typeof parsed.showCursorBadge === 'boolean') setShowCursorBadge(parsed.showCursorBadge);
+      if (typeof parsed.showRfIntelligenceOverlay === 'boolean') setShowRfIntelligenceOverlay(parsed.showRfIntelligenceOverlay);
       if (
         parsed.panOverlayPosition &&
         Number.isFinite(parsed.panOverlayPosition.x) &&
@@ -148,13 +172,14 @@ export const SpectrumView: React.FC = () => {
           showPanOverlay,
           showMarkerBadges,
           showCursorBadge,
+          showRfIntelligenceOverlay,
           panOverlayPosition,
         }),
       );
     } catch {
       // Ignore storage failures.
     }
-  }, [showPanOverlay, showMarkerBadges, showCursorBadge, panOverlayPosition]);
+  }, [showPanOverlay, showMarkerBadges, showCursorBadge, showRfIntelligenceOverlay, panOverlayPosition]);
 
   useEffect(() => {
     setCenterMHz(formatInput(hzToMhz(settings.centerFrequency)));
@@ -192,6 +217,34 @@ export const SpectrumView: React.FC = () => {
     setGainDb(formatInput(deviceStatus.gain, 1));
   }, [deviceStatus.gain]);
 
+  useEffect(() => {
+    if (!showRfIntelligenceOverlay || !deviceStatus.isConnected) {
+      return;
+    }
+
+    let cancelled = false;
+    const refreshRfScene = async () => {
+      try {
+        const scene = await apiService.getLiveRFScene({ thresholdOffsetDb: 10, minSnrDb: 6 });
+        if (!cancelled) {
+          setRfScene(scene);
+          setRfOverlayError(null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setRfOverlayError(getErrorMessage(error));
+        }
+      }
+    };
+
+    refreshRfScene();
+    const interval = window.setInterval(refreshRfScene, 1200);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [deviceStatus.isConnected, showRfIntelligenceOverlay]);
+
   const markerRows = useMemo(() => {
     return markers.map((marker) => {
       const liveLevel = spectrumData
@@ -224,6 +277,16 @@ export const SpectrumView: React.FC = () => {
     const stop = Math.max(first.frequency, second.frequency);
     return estimateBandQuality(spectrumData.frequencyArray, spectrumData.powerLevels, start, stop);
   }, [markerRows, spectrumData]);
+
+  const visibleRfDetections = useMemo(() => {
+    if (!showRfIntelligenceOverlay || !rfScene) return [];
+    const start = settings.centerFrequency - settings.span / 2;
+    const stop = settings.centerFrequency + settings.span / 2;
+    return rfScene.detections
+      .filter((detection) => detection.stop_frequency_hz >= start && detection.start_frequency_hz <= stop)
+      .sort((left, right) => right.confidence - left.confidence)
+      .slice(0, 8);
+  }, [rfScene, settings.centerFrequency, settings.span, showRfIntelligenceOverlay]);
 
   const applyCenterSpan = async () => {
     const center = mhzToHz(centerMHz);
@@ -623,6 +686,18 @@ export const SpectrumView: React.FC = () => {
             Cursor Badge
           </button>
 
+          <button
+            onClick={() => setShowRfIntelligenceOverlay((current) => !current)}
+            aria-pressed={showRfIntelligenceOverlay}
+            className={cn(
+              'h-9 flex items-center px-3 rounded-md text-sm font-medium',
+              showRfIntelligenceOverlay ? 'bg-amber-400 text-slate-950 hover:bg-amber-300' : 'bg-slate-700 hover:bg-slate-600'
+            )}
+          >
+            <BrainCircuit className="w-4 h-4 mr-2" />
+            RF Overlay
+          </button>
+
           <div className="h-9 w-px bg-slate-700 mx-1" />
 
           <LabeledInput label="Center MHz" value={centerMHz} onChange={setCenterMHz} onEnter={applyCenterSpan} />
@@ -758,6 +833,7 @@ export const SpectrumView: React.FC = () => {
         {controlError && <div className="mt-2 text-sm text-red-300">{controlError}</div>}
         {deviceStatus.lastError && <div className="mt-2 text-sm text-red-300">{deviceStatus.lastError}</div>}
         {showWaterfallSplit && waterfallError && <div className="mt-2 text-sm text-red-300">{waterfallError}</div>}
+        {showRfIntelligenceOverlay && rfOverlayError && <div className="mt-2 text-sm text-amber-200">RF Intelligence overlay: {rfOverlayError}</div>}
       </div>
 
       <div className="flex-1 grid grid-cols-[minmax(0,1fr)_320px] min-h-0">
@@ -827,6 +903,22 @@ export const SpectrumView: React.FC = () => {
               }}
               onWheel={zoomFromWheel}
             />
+            {showRfIntelligenceOverlay && (
+              <div className="pointer-events-none absolute inset-0 z-[8]">
+                {visibleRfDetections.map((detection, index) => (
+                  <RfDetectionBand
+                    key={`${detection.track_id ?? detection.id}-${detection.start_frequency_hz}-${detection.stop_frequency_hz}`}
+                    detection={detection}
+                    centerFrequency={settings.centerFrequency}
+                    span={settings.span}
+                    row={index}
+                  />
+                ))}
+                <div className="absolute left-12 top-12 rounded-md border border-amber-300/30 bg-slate-950/35 px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-amber-100 shadow-lg backdrop-blur-sm">
+                  RF intelligence live
+                </div>
+              </div>
+            )}
             {cursor && showCursorBadge && (
               <div className="absolute right-4 top-4 z-10 rounded-lg border border-slate-700/80 bg-slate-950/55 px-2 py-1 text-[11px] text-slate-100 shadow-lg backdrop-blur-md">
                 {formatFrequency(cursor.frequency)} | {formatPowerLevel(cursor.level)}
@@ -895,6 +987,40 @@ export const SpectrumView: React.FC = () => {
           <StatusRow label="Max" value={formatPowerLevel(traceStats.max)} />
           <StatusRow label="Min" value={formatPowerLevel(traceStats.min)} />
           <StatusRow label="Std Dev" value={formatPowerLevel(traceStats.std)} />
+
+          {showRfIntelligenceOverlay && (
+            <>
+              <div className="mt-5 flex items-center justify-between gap-2">
+                <div className="text-xs uppercase text-slate-400">RF Intelligence</div>
+                <div className="rounded-full border border-amber-300/30 bg-amber-300/10 px-2 py-0.5 text-[10px] text-amber-100">
+                  {visibleRfDetections.length} live
+                </div>
+              </div>
+              <div className="mt-2 space-y-2">
+                {visibleRfDetections.length === 0 ? (
+                  <div className="rounded-md border border-slate-800 bg-slate-950/50 px-2 py-2 text-xs text-slate-400">
+                    No RF objects above threshold in this span.
+                  </div>
+                ) : visibleRfDetections.slice(0, 5).map((detection) => {
+                  const style = rfFamilyStyle(detection.candidate_family);
+                  return (
+                    <div key={detection.track_id ?? detection.id} className={cn('rounded-md border px-2 py-2 text-xs', style.badge)}>
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="font-semibold text-slate-100">{detection.label}</span>
+                        <span className="text-amber-100">{Math.round(detection.confidence * 100)}%</span>
+                      </div>
+                      <div className="mt-1 grid grid-cols-2 gap-x-2 gap-y-1 text-slate-300">
+                        <span>{formatFrequency(detection.center_frequency_hz)}</span>
+                        <span className="text-right">{formatBandwidth(Math.max(detection.bandwidth_hz, detection.occupied_bandwidth_hz))}</span>
+                        <span>SNR {detection.snr_db.toFixed(1)} dB</span>
+                        <span className="text-right">{detection.temporal_type.replace('_', ' ')}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
 
           {deltaMarker && (
             <>
@@ -971,6 +1097,71 @@ function LabeledInput({
         )}
       />
     </label>
+  );
+}
+
+function RfDetectionBand({
+  detection,
+  centerFrequency,
+  span,
+  row,
+}: {
+  detection: RFObjectDetection;
+  centerFrequency: number;
+  span: number;
+  row: number;
+}) {
+  const graphWidth = 1400;
+  const graphHeight = 720;
+  const padding = 40;
+  const plotWidth = graphWidth - padding * 2;
+  const start = centerFrequency - span / 2;
+  const stop = centerFrequency + span / 2;
+  const clippedStart = Math.max(detection.start_frequency_hz, start);
+  const clippedStop = Math.min(detection.stop_frequency_hz, stop);
+  const leftPx = padding + ((clippedStart - start) / span) * plotWidth;
+  const rightPx = padding + ((clippedStop - start) / span) * plotWidth;
+  const leftPct = (leftPx / graphWidth) * 100;
+  const widthPct = Math.max(0.35, ((rightPx - leftPx) / graphWidth) * 100);
+  const topPct = (padding / graphHeight) * 100;
+  const bottomPct = (padding / graphHeight) * 100;
+  const style = rfFamilyStyle(detection.candidate_family);
+  const labelTop = 58 + row * 34;
+
+  return (
+    <div
+      className="absolute"
+      style={{
+        left: `${leftPct}%`,
+        width: `${widthPct}%`,
+        top: `${topPct}%`,
+        bottom: `${bottomPct}%`,
+      }}
+    >
+      <div
+        className="absolute inset-y-0 left-0 right-0 rounded-sm border-x-2 border-t border-b shadow-[0_0_22px_rgba(255,255,255,0.08)]"
+        style={{ borderColor: style.border, background: style.fill }}
+      />
+      <div className="absolute inset-y-0 left-1/2 border-l border-white/25" />
+      <div
+        className={cn(
+          'absolute min-w-[13rem] max-w-[24rem] rounded-md border px-2 py-1 text-[11px] shadow-xl backdrop-blur-md',
+          style.text,
+          style.badge,
+        )}
+        style={{ top: `${labelTop}px`, left: 0 }}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <span className="truncate font-semibold">{detection.label}</span>
+          <span className="shrink-0 text-amber-100">{Math.round(detection.confidence * 100)}%</span>
+        </div>
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-slate-200/95">
+          <span>{formatFrequency(detection.center_frequency_hz)}</span>
+          <span>{formatBandwidth(Math.max(detection.bandwidth_hz, detection.occupied_bandwidth_hz))}</span>
+          <span>SNR {detection.snr_db.toFixed(1)} dB</span>
+        </div>
+      </div>
+    </div>
   );
 }
 

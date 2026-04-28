@@ -14,6 +14,48 @@ export interface WaterfallData {
   data: number[][];
 }
 
+export interface RFObjectEvidence {
+  frequency_band_match: boolean;
+  bandwidth_match: boolean;
+  temporal_match: boolean;
+  channel_grid_match?: string | null;
+  notes: string[];
+}
+
+export interface RFObjectDetection {
+  id: string;
+  track_id?: string | null;
+  label: string;
+  candidate_family: string;
+  confidence: number;
+  center_frequency_hz: number;
+  start_frequency_hz: number;
+  stop_frequency_hz: number;
+  bandwidth_hz: number;
+  occupied_bandwidth_hz: number;
+  snr_db: number;
+  peak_power_db: number;
+  mean_power_db: number;
+  noise_floor_db: number;
+  temporal_type: 'continuous' | 'bursty' | 'hopping_candidate' | 'unknown';
+  persistence: number;
+  first_seen_utc?: string | null;
+  last_seen_utc?: string | null;
+  evidence: RFObjectEvidence;
+}
+
+export interface RFSceneAnalysis {
+  timestamp_utc?: string | null;
+  noise_floor_db?: number | null;
+  threshold_db?: number | null;
+  detections: RFObjectDetection[];
+  summary: {
+    total_detections: number;
+    families: Record<string, number>;
+    classifier_mode: string;
+  };
+}
+
 export interface Marker {
   id: string;
   label: string;
@@ -258,6 +300,7 @@ export interface FingerprintingCaptureRecord {
     occupied_bandwidth_hz?: number | null;
     peak_frequency_hz?: number | null;
     frequency_offset_hz?: number;
+    live_offset_hz?: number | null;
     clipping_pct?: number;
     sample_drop_count?: number;
     buffer_overflow_count?: number;

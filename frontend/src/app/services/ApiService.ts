@@ -15,6 +15,7 @@ import {
   TrainingDashboard,
   AsyncJobStatus,
   ModelArtifactSummary,
+  RFSceneAnalysis,
 } from '../../shared/types';
 import { API_ENDPOINTS } from '../../shared/constants';
 
@@ -199,6 +200,23 @@ export class ApiService {
   async getLiveWaterfall(): Promise<WaterfallData> {
     const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.WATERFALL_LIVE}`);
     return toWaterfallData(response.data);
+  }
+
+  async getLiveRFScene(params?: {
+    thresholdOffsetDb?: number;
+    minSnrDb?: number;
+    minBins?: number;
+    mergeGapBins?: number;
+  }): Promise<RFSceneAnalysis> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RF_INTELLIGENCE_LIVE}`, {
+      params: {
+        threshold_offset_db: params?.thresholdOffsetDb,
+        min_snr_db: params?.minSnrDb,
+        min_bins: params?.minBins,
+        merge_gap_bins: params?.mergeGapBins,
+      },
+    });
+    return response.data;
   }
 
   // Marker endpoints

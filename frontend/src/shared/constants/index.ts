@@ -154,6 +154,10 @@ export const API_ENDPOINTS = {
   // Waterfall
   WATERFALL_LIVE: '/api/waterfall/live',
 
+  // RF Intelligence
+  RF_INTELLIGENCE_LIVE: '/api/rf-intelligence/live',
+  RF_INTELLIGENCE_ANALYZE: '/api/rf-intelligence/analyze',
+
   // Markers
   MARKERS_LIST: '/api/markers/',
   MARKERS_CREATE: '/api/markers/',

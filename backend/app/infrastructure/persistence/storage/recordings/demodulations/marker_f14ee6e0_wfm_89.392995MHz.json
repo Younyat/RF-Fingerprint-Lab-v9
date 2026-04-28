@@ -1,0 +1,21 @@
+{
+  "generated_at_utc": "2026-04-28T13:19:06.838940+00:00",
+  "mode": "wfm",
+  "start_frequency_hz": 89202848.62020433,
+  "stop_frequency_hz": 89583142.25615886,
+  "center_frequency_hz": 89392995.4381816,
+  "bandwidth_hz": 380293.63595452905,
+  "duration_seconds": 10.0,
+  "sample_rate_hz": 2000000.0,
+  "gain_db": 20.0,
+  "antenna": "RX2",
+  "device_addr": "",
+  "iq_file": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\demodulations\\marker_f14ee6e0_wfm_89.392995MHz.cfile",
+  "audio_file": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\demodulations\\marker_f14ee6e0_wfm_89.392995MHz.wav",
+  "audio_supported": true,
+  "audio_rate_hz": 48000,
+  "notes": [
+    "AM/FM/WFM generate WAV audio.",
+    "ASK/FSK/PSK/OOK currently capture IQ and metadata for digital analysis/export."
+  ]
+}

@@ -1,0 +1,173 @@
+{
+  "capture_id": "c4a431e7",
+  "capture_mode": "guided_capture",
+  "session_id": "session_001",
+  "dataset_split": "train",
+  "created_at_utc": "2026-04-27T11:38:21.719204+00:00",
+  "capture_config": {
+    "device_source": "USRP-B200 from Ettus Research",
+    "sdr_model": "uhd_gnuradio",
+    "sdr_serial": "unknown",
+    "gain_stage": "manual",
+    "antenna_port": "RX2",
+    "capture_type": "marker_band_iq",
+    "center_frequency_hz": 2411898008.2482347,
+    "sample_rate_hz": 11448779.8812145,
+    "effective_bandwidth_hz": 9159023.9049716,
+    "frontend_bandwidth_hz": 9159023.9049716,
+    "gain_mode": "manual",
+    "gain_settings": {
+      "lna_db": null,
+      "vga_db": null,
+      "if_db": null,
+      "composite_gain_db": 20.0
+    },
+    "ppm_correction": 0.0,
+    "lo_offset_hz": 0.0,
+    "capture_duration_s": 5.0,
+    "sample_count": 57243899,
+    "file_format": ".cfile",
+    "sample_dtype": "complex64",
+    "byte_order": "native",
+    "channel_count": 1,
+    "output_path": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\modulated_signal_captures\\cfile_c4a431e7_2411.898008MHz_9159.0kHz.cfile",
+    "dataset_destination": "fingerprinting/train"
+  },
+  "transmitter": {
+    "transmitter_label": "remote_001",
+    "transmitter_class": "garage_remote",
+    "transmitter_id": "tx_remote_001",
+    "family": "unknown",
+    "ground_truth_confidence": "confirmed"
+  },
+  "scenario": {
+    "operator": "operator_a",
+    "environment": "indoor_lab_los",
+    "distance_m": null,
+    "line_of_sight": null,
+    "indoor": null,
+    "notes": "",
+    "session_number": 1,
+    "timestamp_utc": "2026-04-27T11:37:03.590809+00:00"
+  },
+  "quality_metrics": {
+    "estimated_snr_db": 10.491966707207478,
+    "temporal_snr_db": 10.491966707207478,
+    "burst_snr_db": 10.491966707207478,
+    "spectral_snr_db": 16.196331157713594,
+    "selected_snr_db": 10.491966707207478,
+    "selected_snr_method": "burst_temporal_snr",
+    "channel_presence_ratio": 0.9911615908622856,
+    "noise_floor_db": -71.01454710634478,
+    "peak_power_db": -14.516784769520353,
+    "average_power_db": -54.186545601482486,
+    "occupied_bandwidth_hz": 9062958.559111834,
+    "peak_frequency_hz": 2414010070.4915376,
+    "frequency_offset_hz": 2112062.2433029506,
+    "frequency_offset_ratio_of_capture_band": 0.46119810696345154,
+    "signal_within_capture_band": true,
+    "capture_band_edge_margin_hz": 2467449.709182849,
+    "clipping_pct": 0.0,
+    "sample_drop_count": 0,
+    "buffer_overflow_count": 0,
+    "silence_pct": 0.8838409137714396,
+    "peak_to_average_ratio_db": null,
+    "kurtosis": null,
+    "burst_duration_ms": 4999.832173725721,
+    "live_offset_hz": 27284.93926525116,
+    "signal_family": "unknown",
+    "qc_profile_id": "burst_rf_v1",
+    "effective_bandwidth_hz": 9159023.9049716,
+    "pre_post_offset_delta_hz": 2084777.3040376995
+  },
+  "burst_detection": {
+    "method": "auto_energy_burst",
+    "energy_threshold_db": -65.01454710634478,
+    "pre_trigger_samples": 0,
+    "post_trigger_samples": 0,
+    "min_burst_duration_ms": 1.0,
+    "max_burst_duration_ms": 4999.832173725721,
+    "burst_count": 8560,
+    "regions_of_interest": [
+      "transient_start",
+      "whole_burst"
+    ],
+    "burst_start_sample": 0,
+    "burst_end_sample": 57241977,
+    "qc_profile_id": "burst_rf_v1",
+    "roi_policy": "burst_region"
+  },
+  "quality_review": {
+    "status": "valid",
+    "reasons": [
+      "borderline_snr"
+    ],
+    "quality_flags": [
+      "snr_borderline",
+      "occupied_bandwidth_near_capture_limit",
+      "pre_post_qc_mismatch"
+    ],
+    "operator_decision": "valid",
+    "review_notes": "Accepted for dataset export.",
+    "export_windows": [
+      "transient_start",
+      "whole_burst"
+    ],
+    "updated_at_utc": "2026-04-27T11:47:08.150806+00:00"
+  },
+  "artifacts": {
+    "iq_file": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\modulated_signal_captures\\cfile_c4a431e7_2411.898008MHz_9159.0kHz.cfile",
+    "metadata_file": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\modulated_signal_captures\\cfile_c4a431e7_2411.898008MHz_9159.0kHz.json",
+    "sha256": "f70e7c4d1a35d4ffa7a857f1fcef6ee166be7c063b0e8495c58d22dc9886ae5f",
+    "source_capture_id": "c4a431e7"
+  },
+  "preview_metrics": {
+    "live_preview_snr_db": 20.572959899902344,
+    "live_preview_noise_floor_db": -104.83596801757812,
+    "live_preview_peak_level_db": -84.26300811767578,
+    "live_preview_peak_frequency_hz": 2411925293.1875
+  },
+  "updated_at_utc": "2026-04-27T11:47:08.150806+00:00",
+  "signal_family": "unknown",
+  "qc_profile_id": "burst_rf_v1",
+  "qc_profile": {
+    "qc_profile_id": "burst_rf_v1",
+    "signal_family": "burst_rf",
+    "detection_method": "auto_energy_burst",
+    "roi_policy": "burst_region",
+    "use_silence_metric": true,
+    "use_burst_start": true,
+    "use_burst_end": true
+  },
+  "iq_file_diagnostics": {
+    "num_complex_samples": 57243899,
+    "duration_seconds": 4.999999964531374,
+    "dtype": "complex64",
+    "endianness": "native",
+    "i_min": -0.18201234936714172,
+    "i_max": 0.1838739812374115,
+    "q_min": -0.1850031614303589,
+    "q_max": 0.18640701472759247,
+    "mean_power_db": -54.186545601482486,
+    "rms_power_db": -27.093272800741243,
+    "zero_ratio": 0.0008785739769403199,
+    "near_zero_ratio": 0.0008785739769403199,
+    "nan_ratio": 0.0,
+    "inf_ratio": 0.0,
+    "finite_ratio": 1.0,
+    "spectral_peak_offset_hz": 2112062.2433029506
+  },
+  "snr": {
+    "temporal_snr_db": 10.491966707207478,
+    "burst_snr_db": 10.491966707207478,
+    "spectral_snr_db": 16.196331157713594,
+    "selected_snr_db": 10.491966707207478,
+    "selected_snr_method": "burst_temporal_snr",
+    "noise_estimation_method": "percentile_psd_with_temporal_percentile",
+    "signal_region_hz": [
+      -4579511.9524858,
+      4579511.9524858
+    ],
+    "noise_region_hz": "outside_channel_guarded_or_psd_percentile"
+  }
+}

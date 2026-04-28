@@ -8,6 +8,7 @@ import { missionControlModule } from './mission-control/module';
 import { modelsModule } from './models/module';
 import { recordingsModule } from './recordings/module';
 import { retrainingModule } from './retraining/module';
+import { rfIntelligenceModule } from './rf-intelligence/module';
 import { settingsModule } from './settings/module';
 import { trainingModule } from './training/module';
 import { validationModule } from './validation/module';
@@ -26,6 +27,7 @@ export const labModules: LabModuleDefinition[] = [
   validationModule,
   inferenceModule,
   modelsModule,
+  rfIntelligenceModule,
   waterfallModule,
   recordingsModule,
   demodulationModule,

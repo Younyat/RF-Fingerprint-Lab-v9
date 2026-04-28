@@ -29,6 +29,7 @@ The application is built with a FastAPI backend and a React/TypeScript frontend.
 - Guided `Capture Lab` safety checks for bandwidth, duration, and invalid frequency windows before launching IQ acquisition
 - Persistent transparent execution overlay for SDR operations and ML jobs (training, retraining, validation, prediction) that stays visible while navigating between tabs without blocking the interface
 - Live marker-band QC preview with peak, noise floor, SNR, and peak frequency before recording
+- RF Intelligence tab and optional Live Monitor overlay for real-time RF object detection, bandwidth/SNR estimation, rule-based protocol hypotheses, temporal tracking, and evidence notes
 - Automatic RadioConda Python propagation to `Validation` and `Inference` so `python_exe` appears prefilled by default
 - Persistent `.cfile` and `.iq` capture libraries for replay workflows and AI model training datasets
 - Automatic local peak markers
@@ -55,6 +56,7 @@ SpectraEase combines RF acquisition, dataset curation, and RF fingerprinting wor
 Main capabilities:
 
 - Live RF monitoring with analyzer-style controls, markers, measurements, and spectrum/waterfall visualization.
+- RF scene understanding that turns live PSD frames into detected RF objects with frequency bounds, SNR, bandwidth, confidence, and explainable labels, with no mock detections in the live path.
 - Marker-driven RF capture for focused IQ acquisition around signals of interest.
 - Capture Lab workflows for generating train, validation, and prediction datasets with metadata and quality checks.
 - Dataset Builder for reviewing captures, assigning splits, and keeping the fingerprinting registry consistent.
@@ -163,11 +165,12 @@ Then open:
 5. Click `Start`.
 6. Tune center/span or start/stop from the controls.
 7. Use `Spectrum Left` and `Spectrum Right` to move across the band.
-8. Click the spectrum to add markers with frequency and signal level.
-9. Open `Demodulation` to demodulate or capture the RF band between M1 and M2.
-10. Open `Capture Lab` to capture IQ for `train`, `val`, or `predict`.
-11. Use `Dataset Builder` to accept, reject, or mark the imported capture as doubtful before using it in ML workflows.
-12. Continue in `Training`, `Validation`, or `Inference` according to the split assigned during capture.
+8. Enable `RF Overlay` in `Live Monitor` or open `RF Intelligence` to inspect automatically detected RF objects, candidate labels, confidence, and evidence.
+9. Click the spectrum to add markers with frequency and signal level.
+10. Open `Demodulation` to demodulate or capture the RF band between M1 and M2.
+11. Open `Capture Lab` to capture IQ for `train`, `val`, or `predict`.
+12. Use `Dataset Builder` to accept, reject, or mark the imported capture as doubtful before using it in ML workflows.
+13. Continue in `Training`, `Validation`, or `Inference` according to the split assigned during capture.
 
 ## Application Screenshots
 
@@ -181,7 +184,104 @@ The main spectrum view shows the live RF trace from the USRP-B200 with analyzer 
 
 The combined view splits the analyzer horizontally so the live spectrum trace and the waterfall history share the same center frequency and span.
 
-![Combined spectrum and waterfall display using the same RF frequency window](readme_img/spectrum_waterfall.png)
+![Modern live spectrum and waterfall workspace with analyzer controls and RF side panels](readme_img/spectrum_waterfall_v5.png)
+
+### Live RF Intelligence Overlay
+
+The optional `RF Overlay` draws transparent detections directly on top of the live spectrum/waterfall workspace. The highlighted bands are generated from the live RF Intelligence endpoint, not from mock data.
+
+![Live spectrum and waterfall with active RF Intelligence overlay detections](readme_img/spectrum_waterfall_active_rf_intelligence_v5.png)
+
+### RF Intelligence Dashboard
+
+The dedicated `RF Intelligence` tab gives a focused view of detected RF objects, confidence, evidence, threshold controls, and current scene statistics.
+
+![RF Intelligence dashboard with detected RF objects and evidence panel](readme_img/rf_intelligence_v5.png)
+
+### Capture And Dataset Workflow
+
+Capture Lab is used for controlled IQ acquisition, while Dataset Builder is used later to inspect quality metrics, review records, and keep the ML dataset scientifically consistent.
+
+![Capture Lab workflow for controlled IQ acquisition and metadata capture](readme_img/capture_lab.png)
+
+![Dataset Builder view for capture review, QC metrics, and split assignment](readme_img/dataset_analyser.png)
+
+## RF Intelligence
+
+The `RF Intelligence` tab adds a first operational layer of RF scene understanding on top of the live spectrum stream. It does not try to decode private communications or claim protocol confirmation. It detects active RF regions and produces technical hypotheses that are useful for monitoring, triage, and dataset capture planning.
+
+The same detector can also be displayed directly in `Live Monitor` with the `RF Overlay` button. When enabled, the spectrum canvas shows transparent frequency bands over the live trace, aligned to the detected `start_frequency_hz` and `stop_frequency_hz`. Each overlay label shows the candidate family, confidence, center frequency, bandwidth, and SNR. The right-side monitor panel also lists the current RF Intelligence detections.
+
+The live UI path is not mocked. `RF Overlay` and the `RF Intelligence` tab call `GET /api/rf-intelligence/live`, which analyzes the latest frame returned by `real_spectrum_stream.get_latest(...)`. If the SDR is not connected, the stream is stopped, or the backend has no live `frequencies_hz` and `levels_db`, the detector returns an empty scene instead of fabricated detections.
+
+![RF Intelligence tab showing live detections, evidence, and confidence metrics](readme_img/rf_intelligence_v5.png)
+
+The current implementation is intentionally classical and explainable:
+
+1. Estimate the noise floor from the live PSD using a robust median.
+2. Apply an adaptive threshold.
+3. Group adjacent active bins into RF object candidates.
+4. Estimate center frequency, start/stop frequency, bandwidth, occupied bandwidth, peak power, mean power, and SNR.
+5. Compare the candidate against band profiles.
+6. Assign a rule-based label, confidence, temporal type, and evidence notes.
+7. Track repeated detections across live refreshes.
+
+Initial rule profiles include:
+
+- WFM broadcast in the European FM band
+- 433 MHz OOK/FSK remote-control style signals
+- 868 MHz ISM narrowband signals
+- Wi-Fi 2.4 GHz candidates
+- Bluetooth/BLE hopping candidates
+- ZigBee / IEEE 802.15.4 candidates
+- LTE candidates
+- 5G NR sub-6 candidates
+- Unknown RF signal when no profile is strong enough
+
+Example output from the backend:
+
+```json
+{
+  "label": "WFM broadcast candidate",
+  "candidate_family": "broadcast_fm",
+  "confidence": 0.95,
+  "center_frequency_hz": 98400000,
+  "bandwidth_hz": 180000,
+  "snr_db": 38.2,
+  "temporal_type": "continuous",
+  "evidence": {
+    "frequency_band_match": true,
+    "bandwidth_match": true,
+    "temporal_match": true,
+    "notes": [
+      "Center frequency is inside the profile band.",
+      "Occupied bandwidth is inside the expected range."
+    ]
+  }
+}
+```
+
+API endpoints:
+
+```text
+GET  /api/rf-intelligence/live
+POST /api/rf-intelligence/analyze
+```
+
+Useful query parameters for the live endpoint:
+
+- `threshold_offset_db`: dB above the estimated noise floor. Default: `10.0`.
+- `min_snr_db`: minimum candidate SNR. Default: `6.0`.
+- `min_bins`: minimum contiguous active FFT bins. Default: `2`.
+- `merge_gap_bins`: inactive gap tolerated while merging active regions. Default: `2`.
+
+Scientific boundary:
+
+- Detection means there is an active RF region.
+- Classification means the frequency, bandwidth, and shape match a technical profile.
+- Confirmation of Wi-Fi, Bluetooth, LTE, or 5G would require deeper protocol-specific analysis, IQ features, temporal tracking, or later ML models.
+
+This module is the intended base for later CFAR detection, waterfall object detection, IQ modulation classification, anomaly detection, and auto-capture of unknown signals.
 
 ## Marker-Band Demodulation
 
@@ -207,6 +307,8 @@ Example FM workflow using a broadcast channel around `98.4 MHz` in Spain:
 
 - `Markers M1-M2`: capture exactly the band delimited by the first two spectrum markers
 - `Custom Frequencies`: define `center + bandwidth` or `start + stop`, with the other pair recalculated automatically
+
+![Capture Lab screen configured for reproducible IQ acquisition](readme_img/capture_lab.png)
 
 Before recording, the operator also gets a live band-quality preview for the active window:
 
@@ -245,6 +347,12 @@ If `Auto-import to fingerprinting` is enabled, the capture is also imported into
 - clipping percentage
 
 Those QC metrics are computed from the saved IQ file itself, not only from the live preview. This is why a capture that looked plausible live can still be rejected later if the stored burst is mostly silence, strongly off-center, or too weak once analyzed offline.
+
+## Dataset Builder Review
+
+`Dataset Builder` is the curation stage after acquisition. It is used to inspect saved captures, compare live preview metrics with offline QC, assign dataset splits, and mark each capture as `valid`, `doubtful`, or `rejected` before it enters training, validation, or prediction workflows.
+
+![Dataset Builder capture review with QC metrics and dataset split controls](readme_img/dataset_analyser.png)
 
 ### QC Semantics for burst RF captures
 
@@ -440,6 +548,7 @@ backend/app/modules/
   mlops/api_module.py
   presets/module.py
   recordings/module.py
+  rf_intelligence/module.py
   sessions/module.py
   spectrum/module.py
   waterfall/module.py
@@ -460,6 +569,7 @@ frontend/src/app/modules/
   capture-lab/module.tsx
   dataset-builder/module.tsx
   training/module.tsx
+  rf-intelligence/module.tsx
   validation/module.tsx
   ...
   labModules.tsx
@@ -487,6 +597,7 @@ Disabling a module should be done by setting `enabled: false` in its own folder.
 
 - `Mission Control`: explains the recommended end-to-end workflow and separates monitoring, acquisition, curation, and ML tasks.
 - `Live Monitor`: used to tune, inspect the band, place markers, and verify the signal visually before capture.
+- `RF Intelligence`: detects active RF regions in the live PSD, estimates physical metrics, assigns explainable rule-based signal hypotheses, and keeps a short-lived track identity.
 - `Capture Lab`: controlled dataset acquisition. This is where the operator records `.cfile`/`.iq` and sets the purpose as `train`, `val`, or `predict`.
 - `Dataset Builder`: dataset curation, not acquisition. It is used to inspect QC, accept/reject captures, and keep the registry scientifically consistent.
 - `Training`: exports the current `train` registry into the internal `backend/app/infrastructure/persistence/storage/mlops/data/rf_dataset` dataset and then launches the remote training job.
