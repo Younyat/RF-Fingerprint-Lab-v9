@@ -30,6 +30,22 @@ def normalize_device_addr(device_addr: str) -> str:
     return str(device_addr).strip()
 
 
+def describe_uhd_lookup_failure(device_addr: str, error: Exception) -> str:
+    device_addr = normalize_device_addr(device_addr)
+    requested = device_addr or "<empty/default>"
+    return (
+        "UHD did not find a USRP device.\n"
+        f"Requested device address: {requested}\n"
+        f"UHD error: {error}\n\n"
+        "Checks:\n"
+        "  1. Run `uhd_find_devices` and confirm the radio is listed.\n"
+        "  2. Run `uhd_usrp_probe` to confirm UHD can open it.\n"
+        "  3. If more than one device is present, pass `--device-addr \"serial=<serial>\"`.\n"
+        "  4. For network USRPs, pass `--device-addr \"addr=<ip>\"` and verify the host can reach that IP.\n"
+        "  5. For USB B2xx devices on Windows, verify the USB cable, power, and installed UHD/USB driver."
+    )
+
+
 class CaptureAndDemodulateFM(gr.top_block):
     def __init__(
         self,
@@ -129,17 +145,23 @@ def main() -> None:
     wav_path = output_dir / f"{base_name}.wav"
     meta_path = output_dir / f"{base_name}.json"
 
-    tb = CaptureAndDemodulateFM(
-        center_freq_hz=center_freq_hz,
-        iq_output_path=str(iq_path),
-        wav_output_path=str(wav_path),
-        duration_s=args.duration,
-        samp_rate=args.sample_rate,
-        gain=args.gain,
-        antenna=args.antenna,
-        device_addr=args.device_addr,
-        use_agc=args.use_agc,
-    )
+    try:
+        tb = CaptureAndDemodulateFM(
+            center_freq_hz=center_freq_hz,
+            iq_output_path=str(iq_path),
+            wav_output_path=str(wav_path),
+            duration_s=args.duration,
+            samp_rate=args.sample_rate,
+            gain=args.gain,
+            antenna=args.antenna,
+            device_addr=args.device_addr,
+            use_agc=args.use_agc,
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+        if "No devices found" in message or "LookupError" in message:
+            raise SystemExit(describe_uhd_lookup_failure(args.device_addr, exc)) from exc
+        raise
 
     time.sleep(args.settle_ms / 1000.0)
     tb.start()

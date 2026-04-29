@@ -11,6 +11,9 @@ There is no mock signal in the active development flow. The UI and API are expec
 - Python virtual environment for the FastAPI backend
 - Backend Python dependencies from `backend/requirements.txt`, including `numpy` and `scipy` for RF canonicalization
 - RadioConda Python with GNU Radio and UHD installed
+- Ettus UHD runtime/USB driver installed for Windows:
+  - Windows 11: `https://files.ettus.com/binaries/uhd/latest_release/Windows11/VS2026/`
+  - All latest UHD release builds: `https://files.ettus.com/binaries/uhd/latest_release/`
 - Ettus Research USRP-B200 connected over USB
 
 Current RadioConda path used during development:
@@ -201,16 +204,24 @@ backend/app/infrastructure/persistence/storage/recordings/modulated_signal_iq_ca
 ```text
 backend/
   app/
+    modules/
     config/
     domain/
     application/
     infrastructure/
+      devices/
+      di/
+      dsp/
+      persistence/
+      scripts/
       sdr/
       web/
-      di/
-      persistence/
   tools/
     capture_and_demodulate_fm.py
+    capture_marker_band_iq.py
+    capture_spectrum_snapshot.py
+    demodulate_marker_band.py
+    probe_uhd_device.py
     spectrum_stream_worker.py
     wfm_receiver_qt.py
 ```
@@ -220,6 +231,12 @@ backend/
 ### Device shows disconnected
 
 - Check the USRP-B200 USB connection.
+- On Windows, reinstall or repair the Ettus UHD USB driver if UHD reports `No UHD Devices Found`.
+- Confirm the device is visible to UHD:
+  ```powershell
+  & 'C:\Program Files\UHD\bin\uhd_find_devices.exe'
+  & 'C:\Program Files\UHD\bin\uhd_usrp_probe.exe'
+  ```
 - Confirm the backend was launched with `-UseRealSdr 1`.
 - Confirm `RADIOCONDA_PYTHON` points to the RadioConda Python executable.
 - Confirm RadioConda can run GNU Radio/UHD scripts outside the app.

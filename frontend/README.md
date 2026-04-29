@@ -134,6 +134,59 @@ Disabling a module should be done by setting `enabled: false` in its own folder.
 10. Use `Dataset Builder` to review QC and mark the imported record as `valid`, `doubtful`, or `rejected`.
 11. Continue in `Training`, `Validation`, or `Inference` depending on the assigned split.
 
+## UI Screens
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="../readme_img/spectrum_waterfall_v5.png" alt="Spectrum and waterfall workspace" width="100%">
+      <br>
+      <strong>Live Monitor</strong>
+      <br>
+      Spectrum, waterfall, analyzer controls, marker workflow, and device state in the primary operator view.
+    </td>
+    <td width="50%">
+      <img src="../readme_img/spectrum_waterfall_active_rf_intelligence_v5.png" alt="RF Intelligence overlay in live monitor" width="100%">
+      <br>
+      <strong>RF Overlay</strong>
+      <br>
+      Live RF Intelligence detections rendered directly on top of the spectrum and waterfall workspace.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="../readme_img/demodulation.png" alt="Demodulation workflow" width="100%">
+      <br>
+      <strong>Demodulation</strong>
+      <br>
+      Marker-band AM/FM/WFM demodulation with generated audio playback and export.
+    </td>
+    <td width="50%">
+      <img src="../readme_img/capture_lab.png" alt="Capture Lab workflow" width="100%">
+      <br>
+      <strong>Capture Lab</strong>
+      <br>
+      Dataset-oriented IQ acquisition with marker/custom windows, metadata, labels, and split selection.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="../readme_img/dataset_analyser.png" alt="Dataset Builder review workflow" width="100%">
+      <br>
+      <strong>Dataset Builder</strong>
+      <br>
+      QC-driven review, split assignment, and acceptance status before ML workflows.
+    </td>
+    <td width="50%">
+      <img src="../readme_img/rf_intelligence_v5.png" alt="RF Intelligence console" width="100%">
+      <br>
+      <strong>RF Intelligence</strong>
+      <br>
+      Explainable detected RF objects with bandwidth, confidence, SNR, candidate family, and evidence notes.
+    </td>
+  </tr>
+</table>
+
 ## Demodulation Workflow
 
 The frontend sends the first two markers as the selected RF band. The backend captures that real band from the USRP-B200.

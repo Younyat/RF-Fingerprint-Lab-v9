@@ -82,6 +82,20 @@ The execution overlay is intentionally global: if a training, retraining, valida
 
 ## Run On Windows
 
+Before starting the app, install the Ettus UHD runtime/USB drivers for Windows and confirm UHD can see the USRP:
+
+- Windows 11 UHD builds/drivers: `https://files.ettus.com/binaries/uhd/latest_release/Windows11/VS2026/`
+- All latest UHD release builds: `https://files.ettus.com/binaries/uhd/latest_release/`
+
+After installing or reinstalling the driver, run:
+
+```powershell
+& 'C:\Program Files\UHD\bin\uhd_find_devices.exe'
+& 'C:\Program Files\UHD\bin\uhd_usrp_probe.exe'
+```
+
+The app will only work once UHD lists and probes the USRP successfully.
+
 Use PowerShell from the project root:
 
 ```powershell
@@ -174,23 +188,81 @@ Then open:
 
 ## Application Screenshots
 
-### Live Spectrum View
+The interface is organized as a complete RF lab: live monitoring, waterfall inspection, RF intelligence, marker-band demodulation, IQ capture, and dataset review.
 
-The main spectrum view shows the live RF trace from the USRP-B200 with analyzer controls, marker placement, cursor readout, and export options.
+<table>
+  <tr>
+    <td width="50%">
+      <img src="readme_img/spectrum_pic.png" alt="Live RF spectrum view with analyzer controls and markers" width="100%">
+      <br>
+      <strong>Live Spectrum Monitor</strong>
+      <br>
+      Analyzer-style controls, cursor readout, markers, trace statistics, and export actions around the real USRP-B200 stream.
+    </td>
+    <td width="50%">
+      <img src="readme_img/spectrum_waterfall_v5.png" alt="Modern live spectrum and waterfall workspace with analyzer controls" width="100%">
+      <br>
+      <strong>Spectrum And Waterfall Workspace</strong>
+      <br>
+      Synchronized spectrum and waterfall views for inspecting frequency activity over time with the same center/span context.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="readme_img/spectrum_waterfall_active_rf_intelligence_v5.png" alt="Live spectrum and waterfall with active RF Intelligence overlay detections" width="100%">
+      <br>
+      <strong>RF Intelligence Overlay</strong>
+      <br>
+      Transparent live detections over the spectrum/waterfall view, generated from real RF Intelligence analysis.
+    </td>
+    <td width="50%">
+      <img src="readme_img/rf_intelligence_v5.png" alt="RF Intelligence tab showing detections, evidence, and confidence metrics" width="100%">
+      <br>
+      <strong>RF Intelligence Console</strong>
+      <br>
+      Detected RF objects, confidence, SNR, bandwidth, temporal behavior, and explainable evidence notes.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="readme_img/demodulation.png" alt="FM demodulation workflow with generated audio output" width="100%">
+      <br>
+      <strong>Marker-Band Demodulation</strong>
+      <br>
+      AM/FM/WFM audio workflows and digital modulation IQ capture driven by M1/M2 marker limits.
+    </td>
+    <td width="50%">
+      <img src="readme_img/capture_lab.png" alt="Capture Lab configured for reproducible IQ acquisition" width="100%">
+      <br>
+      <strong>Capture Lab</strong>
+      <br>
+      Reproducible `.cfile` / `.iq` acquisition with frequency guardrails, labels, splits, metadata, and QC preview.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="readme_img/dataset_analyser.png" alt="Dataset Builder capture review with QC metrics and split controls" width="100%">
+      <br>
+      <strong>Dataset Builder Review</strong>
+      <br>
+      Capture curation with QC metrics, review status, dataset split assignment, and RF fingerprinting readiness.
+    </td>
+    <td width="50%">
+      <img src="readme_img/cfile_iqfile_generator_from_marker_BW.png" alt="Marker-band cfile and IQ generation workflow" width="100%">
+      <br>
+      <strong>Marker-Band IQ Export</strong>
+      <br>
+      Focused `.cfile` / `.iq` generation from selected marker bandwidths for replay, analysis, and ML datasets.
+    </td>
+  </tr>
+</table>
 
-![Live RF spectrum view with analyzer controls and markers](readme_img/spectrum_pic.png)
+<details>
+<summary>Additional waterfall reference</summary>
 
-### Spectrum And Waterfall View
+<img src="readme_img/spectrum_waterfall.png" alt="Spectrum waterfall reference view" width="100%">
 
-The combined view splits the analyzer horizontally so the live spectrum trace and the waterfall history share the same center frequency and span.
-
-![Modern live spectrum and waterfall workspace with analyzer controls and RF side panels](readme_img/spectrum_waterfall_v5.png)
-
-### Live RF Intelligence Overlay
-
-The optional `RF Overlay` draws transparent detections directly on top of the live spectrum/waterfall workspace. The highlighted bands are generated from the live RF Intelligence endpoint, not from mock data.
-
-![Live spectrum and waterfall with active RF Intelligence overlay detections](readme_img/spectrum_waterfall_active_rf_intelligence_v5.png)
+</details>
 
 ## RF Intelligence
 
@@ -745,13 +817,24 @@ Software limits do not protect the RF input from excessive external power. Use a
 spectrum-lab/
   backend/
     app/
+      modules/
       config/
       domain/
       application/
       infrastructure/
+        devices/
+        di/
+        dsp/
+        persistence/
         scripts/
+        sdr/
+        web/
     tools/
       capture_and_demodulate_fm.py
+      capture_marker_band_iq.py
+      capture_spectrum_snapshot.py
+      demodulate_marker_band.py
+      probe_uhd_device.py
       spectrum_stream_worker.py
       wfm_receiver_qt.py
   frontend/
@@ -764,4 +847,5 @@ spectrum-lab/
     run_dev.ps1
     run_dev.sh
     init_project.sh
+  start_unified.ps1
 ```
