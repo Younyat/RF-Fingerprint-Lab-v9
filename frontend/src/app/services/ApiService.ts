@@ -16,6 +16,8 @@ import {
   AsyncJobStatus,
   ModelArtifactSummary,
   RFSceneAnalysis,
+  RFSignalUnderstandingComparison,
+  RFSignalUnderstandingResult,
 } from '../../shared/types';
 import { API_ENDPOINTS } from '../../shared/constants';
 
@@ -216,6 +218,48 @@ export class ApiService {
         merge_gap_bins: params?.mergeGapBins,
       },
     });
+    return response.data;
+  }
+
+  async analyzeRFSignalUnderstanding(payload: {
+    file_path: string;
+    sample_rate_hz: number;
+    center_frequency_hz: number;
+    format?: string;
+    n_fft?: number;
+    hop_length?: number;
+    window?: string;
+  }): Promise<RFSignalUnderstandingResult> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_ANALYZE}`, payload);
+    return response.data;
+  }
+
+  async getLiveRFSignalUnderstanding(): Promise<RFSignalUnderstandingResult> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_LIVE}`);
+    return response.data;
+  }
+
+  async compareLiveRFSignalUnderstanding(): Promise<RFSignalUnderstandingComparison> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_COMPARE_LIVE}`);
+    return response.data;
+  }
+
+  async compareRFSignalUnderstanding(payload: {
+    file_path: string;
+    sample_rate_hz: number;
+    center_frequency_hz: number;
+    format?: string;
+    n_fft?: number;
+    hop_length?: number;
+    window?: string;
+    legacy_frame?: Record<string, unknown>;
+  }): Promise<RFSignalUnderstandingComparison> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_COMPARE}`, payload);
+    return response.data;
+  }
+
+  async getRFSignalUnderstandingReferences(): Promise<Record<string, any>> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_REFERENCES}`);
     return response.data;
   }
 

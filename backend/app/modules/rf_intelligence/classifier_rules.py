@@ -46,8 +46,7 @@ def _score_profile(candidate: SignalCandidate, profile: dict[str, Any]) -> tuple
     center = candidate.center_frequency_hz
     bandwidth = max(candidate.occupied_bandwidth_hz, candidate.bandwidth_hz)
     frequency_match = profile["frequency_min_hz"] <= center <= profile["frequency_max_hz"]
-    bw_min, bw_max = profile["expected_bandwidth_hz"]
-    bandwidth_match = bw_min <= bandwidth <= bw_max
+    bandwidth_match = _bandwidth_matches(bandwidth, profile.get("expected_bandwidth_hz"))
 
     score = 0.0
     notes: list[str] = []
@@ -78,6 +77,32 @@ def _score_profile(candidate: SignalCandidate, profile: dict[str, Any]) -> tuple
         channel_grid_match=channel_grid_match,
         notes=notes,
     )
+
+
+def _bandwidth_matches(bandwidth_hz: float, expected_bandwidth_hz: Any) -> bool:
+    if not isinstance(expected_bandwidth_hz, list) or not expected_bandwidth_hz:
+        return False
+
+    values: list[float] = []
+    for value in expected_bandwidth_hz:
+        try:
+            values.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    if not values:
+        return False
+
+    if len(values) == 2:
+        bw_min, bw_max = sorted(values)
+        return bw_min <= bandwidth_hz <= bw_max
+
+    # One or more nominal channel bandwidths. Accept a practical tolerance around
+    # each nominal value because live occupied-bandwidth estimates are noisy.
+    for nominal in values:
+        tolerance = max(nominal * 0.35, 25_000.0)
+        if nominal - tolerance <= bandwidth_hz <= nominal + tolerance:
+            return True
+    return False
 
 
 def _nearest_channel(center_hz: float, channels: list[float] | None) -> str | None:

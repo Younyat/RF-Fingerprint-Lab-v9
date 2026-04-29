@@ -158,6 +158,15 @@ export const API_ENDPOINTS = {
   RF_INTELLIGENCE_LIVE: '/api/rf-intelligence/live',
   RF_INTELLIGENCE_ANALYZE: '/api/rf-intelligence/analyze',
 
+  // RF Signal Understanding
+  RF_SIGNAL_UNDERSTANDING_LIVE: '/api/rf-signal-understanding/live',
+  RF_SIGNAL_UNDERSTANDING_ANALYZE: '/api/rf-signal-understanding/analyze',
+  RF_SIGNAL_UNDERSTANDING_COMPARE: '/api/rf-signal-understanding/compare-with-rf-intelligence',
+  RF_SIGNAL_UNDERSTANDING_COMPARE_LIVE: '/api/rf-signal-understanding/compare-live-with-rf-intelligence',
+  RF_SIGNAL_UNDERSTANDING_RESULTS: (id: string) => `/api/rf-signal-understanding/results/${id}`,
+  RF_SIGNAL_UNDERSTANDING_MODELS: '/api/rf-signal-understanding/models',
+  RF_SIGNAL_UNDERSTANDING_REFERENCES: '/api/rf-signal-understanding/references',
+
   // Markers
   MARKERS_LIST: '/api/markers/',
   MARKERS_CREATE: '/api/markers/',

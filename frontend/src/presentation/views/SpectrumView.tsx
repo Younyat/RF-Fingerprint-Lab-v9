@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { BarChart3, BrainCircuit, ChevronLeft, ChevronRight, Download, Eye, EyeOff, Image, Move, Play, Square, RotateCcw, Target, Usb, Unplug, Radio, Trash2, SlidersHorizontal, X } from 'lucide-react';
+import { BarChart3, BrainCircuit, ChevronLeft, ChevronRight, Download, Eye, EyeOff, Image, Move, Play, Square, RotateCcw, ScanSearch, Target, Usb, Unplug, Radio, Trash2, SlidersHorizontal, X } from 'lucide-react';
 import { useSpectrum } from '../hooks/useSpectrum';
 import { useWaterfall } from '../hooks/useWaterfall';
 import { useSpectrumController } from '../controllers/SpectrumController';
@@ -9,7 +9,7 @@ import { ApiService } from '../../app/services/ApiService';
 import { estimateBandQuality, formatFrequency, formatPowerLevel } from '../../shared/utils';
 import { cn } from '../../shared/utils';
 import { DETECTOR_MODES, SPECTRUM_COLOR_SCHEMES, TRACE_MODES } from '../../shared/constants';
-import type { AnalyzerSettings, RFObjectDetection, RFSceneAnalysis } from '../../shared/types';
+import type { AnalyzerSettings, RFObjectDetection, RFSceneAnalysis, RFSignalUnderstandingResult } from '../../shared/types';
 
 const hzToMhz = (hz: number) => Number.isFinite(hz) ? hz / 1e6 : 0;
 const mhzToHz = (mhz: string) => Number(mhz) * 1e6;
@@ -128,8 +128,11 @@ export const SpectrumView: React.FC = () => {
   const [showMarkerBadges, setShowMarkerBadges] = useState(true);
   const [showCursorBadge, setShowCursorBadge] = useState(true);
   const [showRfIntelligenceOverlay, setShowRfIntelligenceOverlay] = useState(true);
+  const [showRsuOverlay, setShowRsuOverlay] = useState(false);
   const [rfScene, setRfScene] = useState<RFSceneAnalysis | null>(null);
   const [rfOverlayError, setRfOverlayError] = useState<string | null>(null);
+  const [rsuLive, setRsuLive] = useState<RFSignalUnderstandingResult | null>(null);
+  const [rsuOverlayError, setRsuOverlayError] = useState<string | null>(null);
   const [panOverlayPosition, setPanOverlayPosition] = useState({ x: 16, y: 16 });
   const dragStateRef = useRef<{ type: 'pan' | null; offsetX: number; offsetY: number }>({ type: null, offsetX: 0, offsetY: 0 });
   const suppressNextClickRef = useRef(false);
@@ -143,12 +146,14 @@ export const SpectrumView: React.FC = () => {
         showMarkerBadges?: boolean;
         showCursorBadge?: boolean;
         showRfIntelligenceOverlay?: boolean;
+        showRsuOverlay?: boolean;
         panOverlayPosition?: { x?: number; y?: number };
       };
       if (typeof parsed.showPanOverlay === 'boolean') setShowPanOverlay(parsed.showPanOverlay);
       if (typeof parsed.showMarkerBadges === 'boolean') setShowMarkerBadges(parsed.showMarkerBadges);
       if (typeof parsed.showCursorBadge === 'boolean') setShowCursorBadge(parsed.showCursorBadge);
       if (typeof parsed.showRfIntelligenceOverlay === 'boolean') setShowRfIntelligenceOverlay(parsed.showRfIntelligenceOverlay);
+      if (typeof parsed.showRsuOverlay === 'boolean') setShowRsuOverlay(parsed.showRsuOverlay);
       if (
         parsed.panOverlayPosition &&
         Number.isFinite(parsed.panOverlayPosition.x) &&
@@ -173,13 +178,14 @@ export const SpectrumView: React.FC = () => {
           showMarkerBadges,
           showCursorBadge,
           showRfIntelligenceOverlay,
+          showRsuOverlay,
           panOverlayPosition,
         }),
       );
     } catch {
       // Ignore storage failures.
     }
-  }, [showPanOverlay, showMarkerBadges, showCursorBadge, showRfIntelligenceOverlay, panOverlayPosition]);
+  }, [showPanOverlay, showMarkerBadges, showCursorBadge, showRfIntelligenceOverlay, showRsuOverlay, panOverlayPosition]);
 
   useEffect(() => {
     setCenterMHz(formatInput(hzToMhz(settings.centerFrequency)));
@@ -245,6 +251,34 @@ export const SpectrumView: React.FC = () => {
     };
   }, [deviceStatus.isConnected, showRfIntelligenceOverlay]);
 
+  useEffect(() => {
+    if (!showRsuOverlay || !deviceStatus.isConnected) {
+      return;
+    }
+
+    let cancelled = false;
+    const refreshRsuLive = async () => {
+      try {
+        const live = await apiService.getLiveRFSignalUnderstanding();
+        if (!cancelled) {
+          setRsuLive(live);
+          setRsuOverlayError(null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setRsuOverlayError(getErrorMessage(error));
+        }
+      }
+    };
+
+    refreshRsuLive();
+    const interval = window.setInterval(refreshRsuLive, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [deviceStatus.isConnected, showRsuOverlay]);
+
   const markerRows = useMemo(() => {
     return markers.map((marker) => {
       const liveLevel = spectrumData
@@ -287,6 +321,16 @@ export const SpectrumView: React.FC = () => {
       .sort((left, right) => right.confidence - left.confidence)
       .slice(0, 8);
   }, [rfScene, settings.centerFrequency, settings.span, showRfIntelligenceOverlay]);
+
+  const visibleRsuRegions = useMemo(() => {
+    if (!showRsuOverlay || !rsuLive) return [];
+    const start = settings.centerFrequency - settings.span / 2;
+    const stop = settings.centerFrequency + settings.span / 2;
+    return (rsuLive.regions ?? [])
+      .filter((region) => Number(region.freq_end_hz) >= start && Number(region.freq_start_hz) <= stop)
+      .sort((left, right) => Number(right.final_decision?.confidence ?? 0) - Number(left.final_decision?.confidence ?? 0))
+      .slice(0, 8);
+  }, [rsuLive, settings.centerFrequency, settings.span, showRsuOverlay]);
 
   const applyCenterSpan = async () => {
     const center = mhzToHz(centerMHz);
@@ -698,6 +742,18 @@ export const SpectrumView: React.FC = () => {
             RF Overlay
           </button>
 
+          <button
+            onClick={() => setShowRsuOverlay((current) => !current)}
+            aria-pressed={showRsuOverlay}
+            className={cn(
+              'h-9 flex items-center px-3 rounded-md text-sm font-medium',
+              showRsuOverlay ? 'bg-cyan-300 text-slate-950 hover:bg-cyan-200' : 'bg-slate-700 hover:bg-slate-600'
+            )}
+          >
+            <ScanSearch className="w-4 h-4 mr-2" />
+            Understanding Overlay
+          </button>
+
           <div className="h-9 w-px bg-slate-700 mx-1" />
 
           <LabeledInput label="Center MHz" value={centerMHz} onChange={setCenterMHz} onEnter={applyCenterSpan} />
@@ -834,6 +890,7 @@ export const SpectrumView: React.FC = () => {
         {deviceStatus.lastError && <div className="mt-2 text-sm text-red-300">{deviceStatus.lastError}</div>}
         {showWaterfallSplit && waterfallError && <div className="mt-2 text-sm text-red-300">{waterfallError}</div>}
         {showRfIntelligenceOverlay && rfOverlayError && <div className="mt-2 text-sm text-amber-200">RF Intelligence overlay: {rfOverlayError}</div>}
+        {showRsuOverlay && rsuOverlayError && <div className="mt-2 text-sm text-cyan-200">RF Signal Understanding overlay: {rsuOverlayError}</div>}
       </div>
 
       <div className="flex-1 grid grid-cols-[minmax(0,1fr)_320px] min-h-0">
@@ -916,6 +973,22 @@ export const SpectrumView: React.FC = () => {
                 ))}
                 <div className="absolute left-12 top-12 rounded-md border border-amber-300/30 bg-slate-950/35 px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-amber-100 shadow-lg backdrop-blur-sm">
                   RF intelligence live
+                </div>
+              </div>
+            )}
+            {showRsuOverlay && (
+              <div className="pointer-events-none absolute inset-0 z-[9]">
+                {visibleRsuRegions.map((region, index) => (
+                  <RsuDetectionBand
+                    key={`${region.bbox_id}-${region.freq_start_hz}-${region.freq_end_hz}`}
+                    region={region}
+                    centerFrequency={settings.centerFrequency}
+                    span={settings.span}
+                    row={index}
+                  />
+                ))}
+                <div className="absolute left-12 top-24 rounded-md border border-cyan-200/35 bg-slate-950/30 px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-cyan-100 shadow-lg backdrop-blur-sm">
+                  RF signal understanding live
                 </div>
               </div>
             )}
@@ -1014,6 +1087,41 @@ export const SpectrumView: React.FC = () => {
                         <span className="text-right">{formatBandwidth(Math.max(detection.bandwidth_hz, detection.occupied_bandwidth_hz))}</span>
                         <span>SNR {detection.snr_db.toFixed(1)} dB</span>
                         <span className="text-right">{detection.temporal_type.replace('_', ' ')}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+
+          {showRsuOverlay && (
+            <>
+              <div className="mt-5 flex items-center justify-between gap-2">
+                <div className="text-xs uppercase text-slate-400">Signal Understanding</div>
+                <div className="rounded-full border border-cyan-200/30 bg-cyan-300/10 px-2 py-0.5 text-[10px] text-cyan-100">
+                  {visibleRsuRegions.length} live
+                </div>
+              </div>
+              <div className="mt-2 space-y-2">
+                {visibleRsuRegions.length === 0 ? (
+                  <div className="rounded-md border border-slate-800 bg-slate-950/50 px-2 py-2 text-xs text-slate-400">
+                    No time-frequency regions above the understanding threshold.
+                  </div>
+                ) : visibleRsuRegions.slice(0, 5).map((region) => {
+                  const decision = region.final_decision ?? {};
+                  const spectral = region.features?.spectral ?? {};
+                  return (
+                    <div key={region.bbox_id} className="rounded-md border border-cyan-200/35 bg-cyan-300/10 px-2 py-2 text-xs">
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="font-semibold text-cyan-50">{decision.label ?? 'unknown'}</span>
+                        <span className="text-cyan-100">{Math.round(Number(decision.confidence ?? 0) * 100)}%</span>
+                      </div>
+                      <div className="mt-1 grid grid-cols-2 gap-x-2 gap-y-1 text-slate-300">
+                        <span>{formatFrequency((Number(region.freq_start_hz) + Number(region.freq_end_hz)) / 2)}</span>
+                        <span className="text-right">{formatBandwidth(Number(region.freq_end_hz) - Number(region.freq_start_hz))}</span>
+                        <span>SNR {Number(spectral.snr_db ?? 0).toFixed(1)} dB</span>
+                        <span className="text-right">{decision.status ?? 'unknown'}</span>
                       </div>
                     </div>
                   );
@@ -1159,6 +1267,71 @@ function RfDetectionBand({
           <span>{formatFrequency(detection.center_frequency_hz)}</span>
           <span>{formatBandwidth(Math.max(detection.bandwidth_hz, detection.occupied_bandwidth_hz))}</span>
           <span>SNR {detection.snr_db.toFixed(1)} dB</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RsuDetectionBand({
+  region,
+  centerFrequency,
+  span,
+  row,
+}: {
+  region: Record<string, any>;
+  centerFrequency: number;
+  span: number;
+  row: number;
+}) {
+  const graphWidth = 1400;
+  const graphHeight = 720;
+  const padding = 40;
+  const plotWidth = graphWidth - padding * 2;
+  const start = centerFrequency - span / 2;
+  const stop = centerFrequency + span / 2;
+  const regionStart = Number(region.freq_start_hz);
+  const regionStop = Number(region.freq_end_hz);
+  const clippedStart = Math.max(regionStart, start);
+  const clippedStop = Math.min(regionStop, stop);
+  const leftPx = padding + ((clippedStart - start) / span) * plotWidth;
+  const rightPx = padding + ((clippedStop - start) / span) * plotWidth;
+  const leftPct = (leftPx / graphWidth) * 100;
+  const widthPct = Math.max(0.35, ((rightPx - leftPx) / graphWidth) * 100);
+  const topPct = (padding / graphHeight) * 100;
+  const bottomPct = (padding / graphHeight) * 100;
+  const decision = region.final_decision ?? {};
+  const classification = region.classification ?? {};
+  const labelTop = 112 + row * 34;
+  const confidence = Number(decision.confidence ?? 0);
+
+  return (
+    <div
+      className="absolute"
+      style={{
+        left: `${leftPct}%`,
+        width: `${widthPct}%`,
+        top: `${topPct}%`,
+        bottom: `${bottomPct}%`,
+      }}
+    >
+      <div
+        className="absolute inset-y-0 left-0 right-0 rounded-sm border-x-2 border-t border-b shadow-[0_0_24px_rgba(34,211,238,0.12)]"
+        style={{ borderColor: 'rgba(103,232,249,0.88)', background: 'rgba(8,145,178,0.12)' }}
+      />
+      <div className="absolute inset-y-0 left-1/2 border-l border-cyan-100/35" />
+      <div
+        className="absolute min-w-[13rem] max-w-[24rem] rounded-md border border-cyan-200/40 bg-cyan-300/15 px-2 py-1 text-[11px] text-cyan-50 shadow-xl backdrop-blur-md"
+        style={{ top: `${labelTop}px`, left: 0 }}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <span className="truncate font-semibold">{decision.label ?? 'unknown'}</span>
+          <span className="shrink-0 text-cyan-100">{Math.round(confidence * 100)}%</span>
+        </div>
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-slate-100/95">
+          <span>{formatFrequency((regionStart + regionStop) / 2)}</span>
+          <span>{formatBandwidth(regionStop - regionStart)}</span>
+          <span>{classification.visual_label ?? 'visual unknown'}</span>
         </div>
       </div>
     </div>

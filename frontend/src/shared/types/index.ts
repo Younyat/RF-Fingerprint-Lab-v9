@@ -426,6 +426,26 @@ export interface ModelArtifactSummary {
   [key: string]: unknown;
 }
 
+export interface RFSignalUnderstandingResult {
+  analysis_id: string;
+  mode?: string;
+  source?: string;
+  timestamp_utc?: string;
+  input: Record<string, unknown>;
+  waterfall: Record<string, unknown>;
+  regions: Array<Record<string, any>>;
+  summary?: Record<string, unknown>;
+  scientific_traceability: Array<Record<string, string>>;
+}
+
+export interface RFSignalUnderstandingComparison {
+  analysis_id: string;
+  legacy_rf_intelligence: Record<string, any>;
+  new_rf_signal_understanding: Record<string, any>;
+  comparison: Record<string, any>;
+  live_result?: RFSignalUnderstandingResult;
+}
+
 // API Response Types
 export interface ApiResponse<T> {
   data: T;
