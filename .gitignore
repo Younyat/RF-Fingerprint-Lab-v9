@@ -31,6 +31,16 @@ spectrum-lab/backend/app/infrastructure/persistence/storage/recordings/modulated
 
 backend/app/infrastructure/persistence/storage/recordings/modulated_signal_iq_captures/*
 
+
+
+backend/app/infrastructure/persistence/storage/recordings/
+backend/app/infrastructure/persistence/storage/fingerprinting/captures/
+backend/app/infrastructure/persistence/storage/mlops/data/rf_dataset/
+backend/app/infrastructure/persistence/storage/temp/
+
+
+
+
 *.iq
 *.cfile
 *.cf32
