@@ -266,6 +266,397 @@ The interface is organized as a complete RF lab: live monitoring, waterfall insp
 
 ## RF Intelligence
 
+## RF Signal Understanding Module
+
+The `rf_signal_understanding` module is an experimental second RF analysis pipeline designed to run in parallel with the legacy `rf_intelligence` module.
+
+The legacy `rf_intelligence` module performs classical rule-based RF candidate classification using PSD thresholding, frequency range, occupied bandwidth, SNR and predefined band profiles.
+
+The new `rf_signal_understanding` module follows a waterfall-based and evidence-fusion approach. It generates time-frequency representations, detects candidate signal regions, classifies region crops with cautious signal-type hypotheses, extracts spectral features, optionally extracts bispectral features from offline I/Q segments, and compares its output against the legacy RF Intelligence baseline.
+
+Current maturity:
+
+- live mode uses PSD/waterfall frames, not raw I/Q;
+- offline mode can analyze `.iq` and `.cfile` captures;
+- the current detector is morphological and heuristic;
+- SSD and Faster R-CNN hooks exist, but no trained detector is enabled yet;
+- the current waterfall classifier remains heuristic, but the signal-type softmax classifier can now be trained from the UI;
+- the trained signal-type classifier is saved locally as `models/mlp_spectral_classifier/model.npz`;
+- if I/Q region segments are available, training uses fixed-length spectral features from I/Q;
+- if only reviewed live/metadata samples exist, the module can train a metadata-only bootstrap model so the operator can start iterating immediately;
+- remote training controls are visible for future RSU runner support, but RSU signal-type training currently runs locally;
+- the module must not be interpreted as confirmed protocol decoding.
+
+The module is intended to support a progressive scientific workflow:
+
+1. capture RF data;
+2. generate waterfall representations;
+3. detect candidate regions;
+4. manually review and label regions;
+5. export labelled waterfall-region datasets;
+6. train signal-type classifiers;
+7. train ML region detectors;
+8. validate by SNR, frequency, gain, session, day and environment;
+9. compare against the legacy `rf_intelligence` baseline.
+
+Current simplified operator workflow:
+
+1. In `Spectrum`, place Marker 1 and Marker 2 around the signal region to teach.
+2. Open `RF Signal Understanding`.
+3. In `Simple learning flow`, type the desired cautious label, for example `fm_broadcast_like`, `NOISE`, `ook_like`, or `unknown`.
+4. Press `Teach this signal`.
+5. The system captures I/Q for the marker band, analyzes it, selects a candidate region, and saves a labelled training sample.
+6. Repeat for at least two different classes.
+7. Press `Train signal-type classifier` in local mode.
+8. Enable `Understanding Overlay` in `Spectrum` and choose `Hybrid` or `AI Only`.
+
+The low-level API workflow remains available for scripts and experiments:
+
+1. `POST /api/rf-signal-understanding/analyze` on `.iq` or `.cfile` captures creates waterfall, region crops, and I/Q segments.
+2. `POST /api/rf-signal-understanding/regions/review` stores strong labels.
+3. `POST /api/rf-signal-understanding/train-classifier-incremental` trains the current signal-type classifier.
+4. `POST /api/rf-signal-understanding/validate` can validate `task = signal_type_classification`.
+
+Example region review:
+
+```json
+{
+  "analysis_id": "rsu_20260429_001",
+  "bbox_id": "box_001",
+  "label": "fm_broadcast_like",
+  "review_status": "corrected",
+  "reviewer": "operator",
+  "notes": "Manual review corrected the candidate label."
+}
+```
+
+Example dataset export:
+
+```json
+{
+  "analysis_ids": ["rsu_20260429_001"],
+  "dataset_name": "signal_type_regions_v1",
+  "include_unreviewed": false
+}
+```
+
+Example incremental classifier training:
+
+```json
+{
+  "dataset_name": "learning_buffer",
+  "model_type": "mlp_spectral_classifier",
+  "new_model_id": "signal_type_softmax_v1",
+  "execution_target": "local",
+  "include_weak_labels": true,
+  "weak_label_weight": 0.4,
+  "min_samples_per_class": 1,
+  "epochs": 250,
+  "learning_rate": 0.05,
+  "test_split": 0.25,
+  "feature_bins": 128
+}
+```
+
+The first trainable classifier is a lightweight NumPy softmax model saved as `models/mlp_spectral_classifier/model.npz` with `metadata.json`. Versioned copies are written under `learning_buffer/model_versions/<model_id>/`. Region detector training remains a separate task and requires labelled waterfall images with bounding-box ground truth.
+
+### Spectrum Understanding Overlay
+
+The live `Spectrum` page exposes `Understanding Overlay` for the new RF Signal Understanding pipeline. When enabled, the overlay has two modes:
+
+- `Hybrid`: current default. A morphological region detector proposes time-frequency regions, heuristic classifiers and the trained signal-type classifier provide evidence, and the fusion layer decides the displayed label.
+- `AI Only`: only regions that receive a prediction from the trained `trained_signal_type_classifier` are displayed. The initial region proposal is still morphological; the trained model controls the displayed signal-type hypothesis.
+
+This means current training improves the classification of detected regions, not the region detector itself. A future SSD/Faster R-CNN/YOLO region detector would be a separate training task.
+
+### Current AI Model: Scientific And Technical Definition
+
+The current trainable model in `rf_signal_understanding` is a lightweight supervised signal-type classifier:
+
+```text
+numpy_softmax_regression
+```
+
+Scientifically, this is a multiclass linear softmax classifier, equivalent to multinomial logistic regression. It is not a CNN, YOLO, SSD, Faster R-CNN, Transformer, or deep neural network. Its current task is signal-type classification over already proposed RF regions.
+
+The model answers:
+
+```text
+"Given this detected RF region, which learned signal-type label does it most resemble?"
+```
+
+It does not answer:
+
+```text
+"Where is every signal in the spectrum?"
+"Which exact protocol was decoded?"
+"Which physical transmitter produced this emission?"
+```
+
+#### Mathematical Form
+
+Each reviewed training sample is converted into a numeric feature vector:
+
+```text
+x in R^n
+```
+
+For `K` labels, the model learns:
+
+```text
+W in R^(n x K)
+b in R^K
+```
+
+It computes:
+
+```text
+logits = xW + b
+p(class_i | x) = exp(logit_i) / sum(exp(logit_j))
+```
+
+The predicted label is:
+
+```text
+argmax_i p(class_i | x)
+```
+
+Training minimizes multiclass cross-entropy with gradient descent, optional per-sample weights, and light L2 regularization.
+
+#### Feature Inputs
+
+When I/Q segments are available, the model uses spectral features:
+
+```text
+I/Q segment
+-> FFT / PSD
+-> fixed-length spectral vector
+-> z-score normalization
+-> softmax classifier
+```
+
+When I/Q segments are not yet available, the system can train a metadata-only bootstrap model from reviewed region metadata:
+
+```text
+center frequency
+occupied bandwidth
+sample rate
+SNR when available
+gain when available
+duration
+candidate confidence
+constant bias feature
+-> softmax classifier
+```
+
+The metadata bootstrap mode is useful for starting the learning loop immediately, but it is weaker than I/Q-backed training because it learns RF context and coarse region descriptors rather than the actual signal shape.
+
+#### Learning Process
+
+The intended operator loop is:
+
+```text
+Marker 1 / Marker 2 define the RF region
+-> operator enters a cautious label
+-> Teach this signal
+-> capture/analyze the region
+-> store a labelled sample in the learning buffer
+-> train signal-type classifier
+-> save a versioned model
+-> use the model in live Understanding Overlay
+-> correct mistakes
+-> retrain
+```
+
+The learning buffer stores traceability for every sample:
+
+```text
+sample_id
+analysis_id
+bbox_id
+iq_path when available
+region_image_path when available
+label
+label_source
+label_strength
+training_weight
+center_frequency_hz
+occupied_bandwidth_hz
+snr_db
+sample_rate_hz
+gain_db
+session_id
+capture_id
+created_at
+```
+
+The active model is stored at:
+
+```text
+backend/app/modules/rf_signal_understanding/models/mlp_spectral_classifier/model.npz
+```
+
+The model metadata is stored at:
+
+```text
+backend/app/modules/rf_signal_understanding/models/mlp_spectral_classifier/metadata.json
+```
+
+Every training run also writes a versioned copy under:
+
+```text
+backend/app/infrastructure/persistence/storage/rf_signal_understanding/learning_buffer/model_versions/<model_id>/
+```
+
+#### Hybrid Mode
+
+`Hybrid` mode combines classical detection, heuristic classification, the trained classifier, and decision fusion:
+
+```text
+live waterfall / PSD frames
+-> morphological region detector proposes active regions
+-> heuristic waterfall classifiers produce cautious labels
+-> trained_signal_type_classifier produces a learned label if available
+-> decision_fusion_pipeline combines the evidence
+-> overlay displays the fused result
+```
+
+In this mode, the system may still display regions even when the trained model is absent or uncertain, because the heuristic and fusion layers remain active. This mode is useful for exploration, dataset creation, and comparison against the legacy `rf_intelligence` baseline.
+
+#### AI Only Mode
+
+`AI Only` mode is stricter:
+
+```text
+live waterfall / PSD frames
+-> morphological region detector proposes active regions
+-> trained_signal_type_classifier must classify the region
+-> only AI-classified regions are displayed
+```
+
+Important: `AI Only` does not mean end-to-end AI detection yet. The first region proposal is still generated by the morphological detector. The trained AI model controls the signal-type hypothesis and whether a proposed region is shown as an AI-classified result.
+
+#### Current Limitations
+
+The current trainable model is a supervised baseline for signal-type classification. It is not:
+
+```text
+an object detector
+a protocol decoder
+a transmitter fingerprint model
+an end-to-end RF recognition network
+a Wi-Fi/Bluetooth/ZigBee/LTE confirmation system
+```
+
+Therefore labels must remain cautious:
+
+```text
+fm_broadcast_like
+ook_like
+fsk_like
+ofdm_like
+wideband_noise_like
+NOISE
+unknown
+ambiguous
+```
+
+Protocol confirmation would require future standard-specific decoding, synchronization, or validated protocol detectors. Transmitter identification would require a separate fingerprinting model trained and evaluated with device-level labels.
+
+## Model Training Strategy
+
+The `rf_signal_understanding` module separates model training into three independent tasks.
+
+### 1. Signal-Type Classification
+
+The first trainable model is a supervised signal-type classifier. It is trained from exported labelled regions stored in a dataset `manifest.json`. Each sample may include an I/Q segment, a waterfall crop, RF metadata, a label, the label source and the label strength.
+
+The initial baseline uses fixed-length spectral features extracted from I/Q segments and trains a NumPy-based multiclass softmax classifier. If I/Q segments are not yet available, a metadata-only bootstrap mode can train from reviewed labels, center frequency, occupied bandwidth, confidence, and related RF metadata. The bootstrap mode is useful for starting the loop immediately, but it should be replaced by I/Q-backed training as soon as enough captures exist. The model is saved as `model.npz` with an associated `metadata.json`.
+
+This model predicts cautious signal-type hypotheses such as `fm_broadcast_like`, `ook_like`, `fsk_like`, `ofdm_like`, `wideband_noise_like` and `unknown`.
+
+### 2. Region Detection
+
+The region detector is a separate model. It requires waterfall images annotated with bounding boxes. It must not be mixed with signal-type classification. Candidate models include SSD, Faster R-CNN and YOLO. The region detector is evaluated with IoU, mAP, precision, recall, false positives and false negatives.
+
+### 3. Transmitter Fingerprinting
+
+The transmitter fingerprint model is a third task. It uses I/Q segments and hardware-related features, including spectral and bispectral descriptors, to distinguish individual transmitters. It is evaluated with closed-set accuracy, open-set AUROC, EER, FAR and FRR.
+
+### Legacy-Guided Active Learning
+
+The module supports a legacy-guided active learning strategy. The legacy `rf_intelligence` module acts as a weak teacher by generating pseudo-labels when confidence is high. Operator-confirmed labels and corrected labels are treated as strong labels. Training uses strong labels with full weight and weak labels with reduced weight. Each training run produces a versioned model and metadata to preserve traceability.
+
+The proposed strategy follows a legacy-guided active learning approach. Instead of replacing the legacy RF Intelligence module, the system uses it as a weak teacher to bootstrap labelled datasets from real RF captures. The new RF Signal Understanding module learns progressively from a combination of weak labels, operator-confirmed labels and corrected labels. This creates a controlled transition from rule-based RF candidate profiling to supervised signal-type classification, while preserving traceability, model versioning and scientific comparability.
+
+This approach is especially useful in RF environments where fully labelled datasets are expensive to build. The legacy module provides initial weak supervision, the operator resolves uncertain cases through marker-based review, and the trained model is evaluated against both manually reviewed samples and the legacy baseline.
+
+Learning buffer:
+
+```text
+backend/app/infrastructure/persistence/storage/rf_signal_understanding/learning_buffer/
+  samples/
+  manifest.json
+  pseudo_labels.json
+  strong_labels.json
+  model_versions/
+```
+
+Weak pseudo-labels are accepted only when the legacy confidence is at least `0.85`. Automatic pseudo-labels are disabled in ambiguous 2.4 GHz bands unless the operator confirms the label. Strong labels have `training_weight = 1.0`; weak labels normally use `0.3` to `0.4`. `unknown` is a real class. `ambiguous` samples are not used for training unless explicitly included in a future workflow.
+
+Incremental classifier training:
+
+```json
+{
+  "dataset_name": "learning_buffer",
+  "base_model_id": "signal_type_softmax_v1",
+  "new_model_id": "signal_type_softmax_v2",
+  "include_weak_labels": true,
+  "weak_label_weight": 0.4,
+  "min_samples_per_class": 1,
+  "split_strategy": "session_id"
+}
+```
+
+Use:
+
+```text
+POST /api/rf-signal-understanding/regions/pseudo-label
+POST /api/rf-signal-understanding/train-classifier-incremental
+POST /api/rf-signal-understanding/compare-models
+```
+
+Every incremental run writes a new version under `learning_buffer/model_versions/<model_id>/` and does not erase previous version metadata.
+
+### Closed-Loop RF Signal Learning
+
+The UI is intended to hide the low-level endpoint workflow from the operator. The `RF Signal Understanding` tab includes:
+
+- `Simple learning flow`, where the operator enters a label and presses `Teach this signal` to capture, analyze, review, and add one trainable sample from the M1/M2 marker band;
+- `Capture I/Q for training`, which captures I/Q through Capture Lab, registers the file, analyzes it, and prepares regions for review;
+- `Captured RF files`, the internal capture registry;
+- `Active learning review`, where the operator confirms, corrects, marks unknown, marks ambiguous, or sends a weak legacy label;
+- `Training Queue`, showing strong labels, weak labels, unknowns, excluded/ambiguous samples and samples per class;
+- `Train signal-type classifier`, which calls incremental batch training and writes a new model version.
+
+The system implements a closed-loop RF learning workflow where legacy rule-based detection, I/Q capture, waterfall analysis, human review, weak supervision, supervised training, model versioning and validation are integrated into a single iterative process. Live-only reviews can bootstrap a metadata model, but training-quality models should progressively move toward captured I/Q samples registered through the training loop.
+
+Important current limitation:
+
+- Training a signal-type classifier does not train the region detector.
+- `AI Only` means only AI-classified proposed regions are shown; the region proposal itself is still generated by the morphological detector.
+- Remote RSU training is reserved for a future dedicated runner. Use local mode for the current `numpy_softmax_regression` signal-type classifier.
+
+Scientific traceability:
+
+| Component | Supporting paper |
+|---|---|
+| STFT waterfall generation | A Radio Frequency Signal Recognition Method Based on Spectrogram |
+| Waterfall region extraction | A Radio Frequency Signal Recognition Method Based on Spectrogram |
+| SSD-style waterfall object detection | RF Fingerprint Recognition Based on Spectrum Waterfall Diagram |
+| MLP over spectrogram rows | Simple Detection and Classification of Spectrogram RF Signals Using a Four-Layer Perceptron |
+| Bispectrum-waterfall feature fusion | Bispectrum-Based Signal Processing Using Waterfall Features |
+
 The `RF Intelligence` tab adds a first operational layer of RF scene understanding on top of the live spectrum stream. It does not try to decode private communications or claim protocol confirmation. It detects active RF regions and produces technical hypotheses that are useful for monitoring, triage, and dataset capture planning.
 
 The same detector can also be displayed directly in `Live Monitor` with the `RF Overlay` button. When enabled, the spectrum canvas shows transparent frequency bands over the live trace, aligned to the detected `start_frequency_hz` and `stop_frequency_hz`. Each overlay label shows the candidate family, confidence, center frequency, bandwidth, and SNR. The right-side monitor panel also lists the current RF Intelligence detections.
