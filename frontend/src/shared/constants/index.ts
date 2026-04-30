@@ -192,6 +192,7 @@ export const API_ENDPOINTS = {
   DEMODULATION_AUDIO_STATUS: '/api/demodulation/audio/status',
   DEMODULATION_MARKER_BAND: '/api/demodulation/marker-band',
   DEMODULATION_RESULTS: '/api/demodulation/results',
+  DEMODULATION_RESULT: (id: string) => `/api/demodulation/results/${id}`,
   DEMODULATION_AUDIO: (id: string) => `/api/demodulation/audio/${id}`,
 
   // Modulated signal analysis captures

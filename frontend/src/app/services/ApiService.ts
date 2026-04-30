@@ -342,6 +342,12 @@ export class ApiService {
     label_hint?: string;
     session_id?: string;
     file_format?: 'iq' | 'cfile';
+    gain_db?: number;
+    profile_key?: string;
+    profile?: Record<string, unknown>;
+    apply_bandpass_filter?: boolean;
+    filter_stopband_attenuation_db?: number;
+    filter_transition_width_hz?: number | null;
   }): Promise<Record<string, any>> {
     const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_CAPTURE_FOR_TRAINING}`, payload);
     return response.data;
@@ -423,12 +429,18 @@ export class ApiService {
     stopFrequencyHz: number;
     mode: string;
     durationSeconds: number;
+    applyBandpassFilter?: boolean;
+    filterStopbandAttenuationDb?: number;
+    filterTransitionWidthHz?: number | null;
   }): Promise<DemodulationResult> {
     const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.DEMODULATION_MARKER_BAND}`, {
       start_frequency_hz: request.startFrequencyHz,
       stop_frequency_hz: request.stopFrequencyHz,
       mode: request.mode,
       duration_seconds: request.durationSeconds,
+      apply_bandpass_filter: request.applyBandpassFilter,
+      filter_stopband_attenuation_db: request.filterStopbandAttenuationDb,
+      filter_transition_width_hz: request.filterTransitionWidthHz,
     });
     return response.data;
   }
@@ -436,6 +448,11 @@ export class ApiService {
   async getDemodulationResults(): Promise<DemodulationResult[]> {
     const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.DEMODULATION_RESULTS}`);
     return Array.isArray(response.data) ? response.data : response.data.results ?? [];
+  }
+
+  async deleteDemodulationResult(id: string): Promise<Record<string, any>> {
+    const response = await axios.delete(`${this.baseURL}${API_ENDPOINTS.DEMODULATION_RESULT(id)}`);
+    return response.data;
   }
 
   getDemodulationAudioUrl(id: string): string {

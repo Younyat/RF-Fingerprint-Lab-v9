@@ -17,7 +17,7 @@ if (-not (Test-Path $Runner)) {
     throw "No se encontro scripts\run_dev.ps1"
 }
 
-powershell -ExecutionPolicy Bypass -File $Runner `
+& $Runner `
     -UseRealSdr 1 `
     -RadioCondaPythonPath $RadioCondaPythonPath `
     -RemoteUser $RemoteUser `

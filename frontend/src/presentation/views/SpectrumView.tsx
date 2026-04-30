@@ -9,6 +9,7 @@ import { ApiService } from '../../app/services/ApiService';
 import { estimateBandQuality, formatFrequency, formatPowerLevel } from '../../shared/utils';
 import { cn } from '../../shared/utils';
 import { DETECTOR_MODES, SPECTRUM_COLOR_SCHEMES, TRACE_MODES } from '../../shared/constants';
+import { RF_PROFILE_LIST, RF_PROFILE_STORAGE_KEY, RF_PROFILES, applyRFProfile } from '../../shared/rfProfiles';
 import type { AnalyzerSettings, RFObjectDetection, RFSceneAnalysis, RFSignalUnderstandingResult, SpectrumData, WaterfallData } from '../../shared/types';
 
 const hzToMhz = (hz: number) => Number.isFinite(hz) ? hz / 1e6 : 0;
@@ -22,6 +23,8 @@ const AUTO_FREEZE_MIN_REGION_BINS = 3;
 const AUTO_FREEZE_MIN_RELATIVE_BW = 0.3;
 const AUTO_FREEZE_MAX_RELATIVE_BW = 0.7;
 const AUTO_FREEZE_FRAME_BUFFER_SIZE = 12;
+const MARKER_BANDPASS_ATTENUATION_DB = 60;
+const markerBandpassStorageKey = 'spectrum-view-marker-bandpass-settings';
 
 const formatInput = (value: number, digits = 6) => {
   if (!Number.isFinite(value)) return '';
@@ -94,6 +97,28 @@ const cloneSpectrumFrame = (frame: SpectrumData): SpectrumData => ({
   frequencyArray: [...frame.frequencyArray],
   powerLevels: [...frame.powerLevels],
 });
+
+const applyMarkerBandpassMask = (
+  frame: SpectrumData,
+  band: { start: number; stop: number; span: number } | null,
+  attenuationDb = MARKER_BANDPASS_ATTENUATION_DB,
+): SpectrumData => {
+  if (!band || band.span <= 0) return frame;
+  const frameStart = frame.centerFrequency - frame.span / 2;
+  const frameStop = frame.centerFrequency + frame.span / 2;
+  if (band.start < frameStart || band.stop > frameStop) return frame;
+
+  return {
+    ...frame,
+    powerLevels: frame.powerLevels.map((level, index) => {
+      const frequency = frame.frequencyArray[index];
+      if (!Number.isFinite(frequency) || frequency < band.start || frequency > band.stop) {
+        return Number.isFinite(level) ? level - attenuationDb : level;
+      }
+      return level;
+    }),
+  };
+};
 
 interface AutoFreezeCandidate {
   peakFrequencyHz: number;
@@ -190,22 +215,58 @@ export const SpectrumView: React.FC = () => {
   const spectrumData = isFrozen ? frozenSpectrumData : liveSpectrumData;
   const deviceStatus = useDeviceStatus();
   const settings = useAnalyzerSettings();
+  const markers = useMarkers();
   const displaySettings = isFrozen && frozenViewRange ? { ...settings, ...frozenViewRange } : settings;
   const [peakHoldEnabled, setPeakHoldEnabled] = useState(false);
   const [peakHoldMode, setPeakHoldMode] = useState<'permanent' | 'decay'>('permanent');
   const [peakHoldDecayDbPerSecond, setPeakHoldDecayDbPerSecond] = useState(3);
   const [usePeakTraceForDetection, setUsePeakTraceForDetection] = useState(false);
   const [peakHoldData, setPeakHoldData] = useState<SpectrumData | null>(null);
+  const [selectedProfileKey, setSelectedProfileKey] = useState('');
+  const [markerBandpassEnabled, setMarkerBandpassEnabled] = useState(false);
+  const [markerBandpassAttenuationDb, setMarkerBandpassAttenuationDb] = useState(MARKER_BANDPASS_ATTENUATION_DB);
+  const markerBand = useMemo(() => {
+    if (markers.length < 2) return null;
+    const first = markers[0];
+    const second = markers[1];
+    const start = Math.min(first.frequency, second.frequency);
+    const stop = Math.max(first.frequency, second.frequency);
+    const span = stop - start;
+    if (!Number.isFinite(start) || !Number.isFinite(stop) || span <= 0) return null;
+    return {
+      start,
+      stop,
+      span,
+      center: start + span / 2,
+      firstLabel: first.label || 'M1',
+      secondLabel: second.label || 'M2',
+    };
+  }, [markers]);
+  const analysisSourceSpectrumData = usePeakTraceForDetection && peakHoldEnabled && peakHoldData ? peakHoldData : spectrumData;
+  const markerBandpassIsValid = useMemo(() => {
+    if (!analysisSourceSpectrumData || !markerBand) return false;
+    const sourceStart = analysisSourceSpectrumData.centerFrequency - analysisSourceSpectrumData.span / 2;
+    const sourceStop = analysisSourceSpectrumData.centerFrequency + analysisSourceSpectrumData.span / 2;
+    return markerBand.start >= sourceStart && markerBand.stop <= sourceStop;
+  }, [analysisSourceSpectrumData, markerBand]);
+  const analysisSpectrumData = useMemo(() => {
+    if (!analysisSourceSpectrumData) return null;
+    if (!markerBandpassEnabled || !markerBandpassIsValid) return analysisSourceSpectrumData;
+    return applyMarkerBandpassMask(analysisSourceSpectrumData, markerBand, markerBandpassAttenuationDb);
+  }, [analysisSourceSpectrumData, markerBand, markerBandpassAttenuationDb, markerBandpassEnabled, markerBandpassIsValid]);
+  const displayedSpectrumData = markerBandpassEnabled && markerBandpassIsValid ? analysisSpectrumData : spectrumData;
+  const peakHoldOverlayData = peakHoldEnabled && peakHoldData
+    ? (markerBandpassEnabled && markerBandpassIsValid ? applyMarkerBandpassMask(peakHoldData, markerBand, markerBandpassAttenuationDb) : peakHoldData)
+    : null;
   const { canvasRef } = useSpectrum({
     enabled: !isFrozen,
-    displayData: spectrumData,
+    displayData: displayedSpectrumData,
     displaySettings,
-    overlayData: peakHoldEnabled ? peakHoldData : null,
+    overlayData: peakHoldOverlayData,
     overlayLabel: peakHoldMode === 'decay' ? `Peak Hold Decay ${peakHoldDecayDbPerSecond} dB/s` : 'Max Hold',
   });
   const [showWaterfallSplit, setShowWaterfallSplit] = useState(false);
   const { canvasRef: waterfallCanvasRef, error: waterfallError } = useWaterfall(showWaterfallSplit && !isFrozen, isFrozen ? frozenWaterfallData : null, displaySettings);
-  const markers = useMarkers();
   const { setGlobalActivity, clearGlobalActivity } = useAppActions();
   const spectrumController = useSpectrumController();
   const markerController = useMarkerController();
@@ -246,6 +307,7 @@ export const SpectrumView: React.FC = () => {
   const autoFreezeTriggeringRef = useRef(false);
   const autoFreezeFrameBufferRef = useRef<SpectrumData[]>([]);
   const peakHoldTimestampRef = useRef<number | null>(null);
+  const selectedProfile = selectedProfileKey ? RF_PROFILES[selectedProfileKey] : null;
 
   useEffect(() => {
     try {
@@ -299,6 +361,48 @@ export const SpectrumView: React.FC = () => {
       // Ignore storage failures.
     }
   }, [showPanOverlay, showMarkerBadges, showCursorBadge, showRfIntelligenceOverlay, showRsuOverlay, rsuOverlayMode, panOverlayPosition]);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(RF_PROFILE_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as { selected_profile_key?: string };
+      if (parsed.selected_profile_key && RF_PROFILES[parsed.selected_profile_key]) {
+        setSelectedProfileKey(parsed.selected_profile_key);
+      }
+    } catch {
+      // Ignore invalid persisted profile state.
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(markerBandpassStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as { enabled?: boolean; attenuation_db?: number };
+      if (typeof parsed.enabled === 'boolean') setMarkerBandpassEnabled(parsed.enabled);
+      if (Number.isFinite(parsed.attenuation_db)) {
+        setMarkerBandpassAttenuationDb(Math.max(1, Math.min(60, Number(parsed.attenuation_db))));
+      }
+    } catch {
+      // Ignore invalid persisted filter state.
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        markerBandpassStorageKey,
+        JSON.stringify({
+          enabled: markerBandpassEnabled,
+          attenuation_db: markerBandpassAttenuationDb,
+          filter_mode: 'fft_soft_mask_preview_and_iq_fir_on_capture',
+        }),
+      );
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [markerBandpassAttenuationDb, markerBandpassEnabled]);
 
   useEffect(() => {
     if (isFrozen) return;
@@ -394,8 +498,8 @@ export const SpectrumView: React.FC = () => {
     let cancelled = false;
     const refreshRfScene = async () => {
       try {
-        const scene = usePeakTraceForDetection && peakHoldData
-          ? await apiService.analyzeRFScene(peakHoldData, { thresholdOffsetDb: 10, minSnrDb: 6 })
+        const scene = analysisSpectrumData && (usePeakTraceForDetection || markerBandpassEnabled)
+          ? await apiService.analyzeRFScene(analysisSpectrumData, { thresholdOffsetDb: 10, minSnrDb: 6 })
           : await apiService.getLiveRFScene({ thresholdOffsetDb: 10, minSnrDb: 6 });
         if (!cancelled) {
           setRfScene(scene);
@@ -414,7 +518,7 @@ export const SpectrumView: React.FC = () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [deviceStatus.isConnected, isFrozen, peakHoldData, showRfIntelligenceOverlay, usePeakTraceForDetection]);
+  }, [analysisSpectrumData, deviceStatus.isConnected, isFrozen, markerBandpassEnabled, showRfIntelligenceOverlay, usePeakTraceForDetection]);
 
   useEffect(() => {
     if (isFrozen || !showRsuOverlay || !deviceStatus.isConnected) {
@@ -424,8 +528,8 @@ export const SpectrumView: React.FC = () => {
     let cancelled = false;
     const refreshRsuLive = async () => {
       try {
-        const live = usePeakTraceForDetection && peakHoldData
-          ? await apiService.analyzeRFSignalUnderstandingFrame(peakHoldData, { decision_mode: rsuOverlayMode })
+        const live = analysisSpectrumData && (usePeakTraceForDetection || markerBandpassEnabled)
+          ? await apiService.analyzeRFSignalUnderstandingFrame(analysisSpectrumData, { decision_mode: rsuOverlayMode })
           : await apiService.getLiveRFSignalUnderstanding({ decision_mode: rsuOverlayMode });
         if (!cancelled) {
           setRsuLive(live);
@@ -444,9 +548,7 @@ export const SpectrumView: React.FC = () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [deviceStatus.isConnected, isFrozen, peakHoldData, showRsuOverlay, rsuOverlayMode, usePeakTraceForDetection]);
-
-  const analysisSpectrumData = usePeakTraceForDetection && peakHoldEnabled && peakHoldData ? peakHoldData : spectrumData;
+  }, [analysisSpectrumData, deviceStatus.isConnected, isFrozen, markerBandpassEnabled, showRsuOverlay, rsuOverlayMode, usePeakTraceForDetection]);
 
   const markerRows = useMemo(() => {
     return markers.map((marker) => {
@@ -469,22 +571,6 @@ export const SpectrumView: React.FC = () => {
     return {
       frequencyDelta: second.frequency - first.frequency,
       levelDelta: second.level - first.level,
-    };
-  }, [markerRows]);
-
-  const markerBand = useMemo(() => {
-    if (markerRows.length < 2) return null;
-    const first = markerRows[0];
-    const second = markerRows[1];
-    const start = Math.min(first.frequency, second.frequency);
-    const stop = Math.max(first.frequency, second.frequency);
-    const span = stop - start;
-    if (!Number.isFinite(start) || !Number.isFinite(stop) || span <= 0) return null;
-    return {
-      start,
-      stop,
-      span,
-      center: start + span / 2,
     };
   }, [markerRows]);
 
@@ -575,6 +661,10 @@ export const SpectrumView: React.FC = () => {
   }, [isFrozen, markerBand, markerBandIsVisible]);
 
   useEffect(() => {
+    if (!markerBand) setMarkerBandpassEnabled(false);
+  }, [markerBand]);
+
+  useEffect(() => {
     if (!autoFreezeArmed || isFrozen || !markerBand || !liveSpectrumData || autoFreezeTriggeringRef.current) {
       return;
     }
@@ -583,7 +673,8 @@ export const SpectrumView: React.FC = () => {
     const recentFrames = [...autoFreezeFrameBufferRef.current, liveSpectrumData].slice(-AUTO_FREEZE_FRAME_BUFFER_SIZE);
     for (let index = recentFrames.length - 1; index >= 0; index -= 1) {
       const frame = recentFrames[index];
-      const candidate = findAutoFreezeCandidate(frame, markerBand);
+      const candidateFrame = markerBandpassEnabled ? applyMarkerBandpassMask(frame, markerBand, markerBandpassAttenuationDb) : frame;
+      const candidate = findAutoFreezeCandidate(candidateFrame, markerBand);
       if (candidate && (!triggerCandidate || candidate.snrDb > triggerCandidate.snrDb)) {
         triggerFrame = frame;
         triggerCandidate = candidate;
@@ -607,7 +698,7 @@ export const SpectrumView: React.FC = () => {
       );
       autoFreezeTriggeringRef.current = false;
     });
-  }, [autoFreezeArmed, isFrozen, liveSpectrumData, markerBand]);
+  }, [autoFreezeArmed, isFrozen, liveSpectrumData, markerBand, markerBandpassAttenuationDb, markerBandpassEnabled]);
 
   useEffect(() => {
     if (!isFrozen || !showRsuOverlay || !frozenSpectrumData) return;
@@ -734,6 +825,46 @@ export const SpectrumView: React.FC = () => {
     setControlError(null);
     try {
       await spectrumController.setGain(gain);
+    } catch (error) {
+      setControlError(getErrorMessage(error));
+    }
+  };
+
+  const applySelectedRFProfile = async (profileKey: string) => {
+    if (!profileKey) {
+      setSelectedProfileKey('');
+      window.localStorage.removeItem(RF_PROFILE_STORAGE_KEY);
+      return;
+    }
+    const profile = RF_PROFILES[profileKey];
+    if (!profile) return;
+    if (isFrozen) {
+      setControlError('Resume Live before applying an RF profile.');
+      return;
+    }
+
+    const applied = applyRFProfile(profile);
+    setSelectedProfileKey(profile.key);
+    setCenterMHz(formatInput(hzToMhz(applied.center_frequency_hz)));
+    setSpanMHz(formatInput(hzToMhz(applied.span_hz), 3));
+    setStartMHz(formatInput(hzToMhz(applied.start_frequency_hz)));
+    setStopMHz(formatInput(hzToMhz(applied.stop_frequency_hz)));
+    setGainDb(formatInput(applied.recommended_gain_db, 1));
+
+    try {
+      setControlError(null);
+      await spectrumController.setStartStop(applied.start_frequency_hz, applied.stop_frequency_hz);
+      await spectrumController.setGain(applied.recommended_gain_db);
+
+      for (const marker of markerRows) {
+        await markerController.deleteMarker(marker.id);
+      }
+      await markerController.createMarker(applied.marker_left_hz, 'M1 Profile Left');
+      await markerController.createMarker(applied.marker_right_hz, 'M2 Profile Right');
+      await markerController.createMarker(applied.center_frequency_hz, 'Profile Center');
+
+      window.localStorage.setItem(RF_PROFILE_STORAGE_KEY, JSON.stringify(applied));
+      await spectrumController.refreshSpectrum();
     } catch (error) {
       setControlError(getErrorMessage(error));
     }
@@ -1065,6 +1196,42 @@ export const SpectrumView: React.FC = () => {
           </button>
 
           <button
+            onClick={() => setMarkerBandpassEnabled((current) => !current)}
+            disabled={!markerBand}
+            aria-pressed={markerBandpassEnabled}
+            className={cn(
+              'h-9 flex items-center px-3 rounded-md text-sm font-medium disabled:opacity-50',
+              markerBandpassEnabled ? 'bg-lime-300 text-slate-950 hover:bg-lime-200' : 'bg-slate-700 hover:bg-slate-600',
+            )}
+            title={
+              markerBand
+                ? `FFT preview mask for live spectrum and real FIR filter for I/Q captures. Outside-band attenuation: ${markerBandpassAttenuationDb} dB.`
+                : 'Place Marker 1 and Marker 2 before enabling marker band-pass filtering'
+            }
+          >
+            <SlidersHorizontal className="w-4 h-4 mr-2" />
+            Band-Pass {markerBandpassEnabled ? 'On' : 'Off'}
+          </button>
+          {markerBandpassEnabled && (
+            <label className="flex flex-col gap-1 text-[11px] text-slate-400">
+              Stopband
+              <select
+                value={markerBandpassAttenuationDb}
+                onChange={(event) => setMarkerBandpassAttenuationDb(Number(event.target.value))}
+                className="h-9 w-24 rounded-md border border-slate-700 bg-slate-950 px-2 text-sm text-slate-100 outline-none focus:border-blue-400"
+              >
+                <option value={1}>1 dB</option>
+                <option value={3}>3 dB</option>
+                <option value={6}>6 dB</option>
+                <option value={10}>10 dB</option>
+                <option value={20}>20 dB</option>
+                <option value={40}>40 dB</option>
+                <option value={60}>60 dB</option>
+              </select>
+            </label>
+          )}
+
+          <button
             onClick={() => {
               setPeakHoldEnabled((current) => !current);
               peakHoldTimestampRef.current = null;
@@ -1211,6 +1378,22 @@ export const SpectrumView: React.FC = () => {
           )}
 
           <div className="h-9 w-px bg-slate-700 mx-1" />
+
+          <label className="flex flex-col gap-1 text-[11px] text-slate-400">
+            RF Profile
+            <select
+              value={selectedProfileKey}
+              onChange={(event) => applySelectedRFProfile(event.target.value)}
+              disabled={isFrozen}
+              className="h-9 w-64 rounded-md border border-slate-700 bg-slate-950 px-2 text-sm text-slate-100 outline-none focus:border-blue-400 disabled:opacity-50"
+              title="Applies stable RF observation settings and M1-M2 profile markers"
+            >
+              <option value="">Manual / no profile</option>
+              {RF_PROFILE_LIST.map((profile) => (
+                <option key={profile.key} value={profile.key}>{profile.label}</option>
+              ))}
+            </select>
+          </label>
 
           <LabeledInput label="Center MHz" value={centerMHz} onChange={setCenterMHz} onEnter={applyCenterSpan} />
           <LabeledInput label="Span MHz" value={spanMHz} onChange={setSpanMHz} onEnter={applyCenterSpan} />
@@ -1497,6 +1680,7 @@ export const SpectrumView: React.FC = () => {
           <StatusRow label="View" value={isFrozen ? 'Frozen View' : 'Live View'} tone={isFrozen ? undefined : 'ok'} />
           <StatusRow label="Status" value={deviceStatus.isConnected ? 'Connected' : 'Disconnected'} tone={deviceStatus.isConnected ? 'ok' : 'bad'} />
           <StatusRow label="Driver" value={deviceStatus.driver} />
+          <StatusRow label="RF Profile" value={selectedProfile?.label ?? 'manual'} tone={selectedProfile ? 'ok' : undefined} />
           <StatusRow label="Center" value={formatFrequency(displaySettings.centerFrequency)} />
           <StatusRow label="Span" value={formatFrequency(displaySettings.span)} />
           <StatusRow label="Start" value={formatFrequency(displaySettings.centerFrequency - displaySettings.span / 2)} />
@@ -1514,9 +1698,37 @@ export const SpectrumView: React.FC = () => {
             tone={peakHoldEnabled ? 'ok' : undefined}
           />
           <StatusRow label="Peak Source" value={usePeakTraceForDetection && peakHoldEnabled ? 'measure/detect' : 'visual only'} />
+          <StatusRow label="Marker BPF" value={markerBandpassEnabled ? 'ON' : 'OFF'} tone={markerBandpassEnabled ? 'ok' : undefined} />
+          {markerBand && (
+            <>
+              <StatusRow label="Filter source" value={`${markerBand.firstLabel} - ${markerBand.secondLabel}`} />
+              <StatusRow label="Band start" value={formatFrequency(markerBand.start)} />
+              <StatusRow label="Band stop" value={formatFrequency(markerBand.stop)} />
+              <StatusRow label="Filter BW" value={formatFrequency(markerBand.span)} />
+              <StatusRow label="Attenuation" value={`${markerBandpassAttenuationDb} dB`} />
+              <StatusRow label="Filter mode" value="FFT mask preview / FIR on I/Q capture" />
+              <StatusRow label="Filter valid" value={markerBandpassIsValid ? 'yes' : 'outside span'} tone={markerBandpassIsValid ? 'ok' : 'bad'} />
+            </>
+          )}
           <StatusRow label="Scale" value={`${settings.dbPerDiv} dB/div`} />
           <StatusRow label="Averaging" value={`${settings.averaging}x`} />
           <StatusRow label="Gain" value={formatPowerLevel(deviceStatus.gain)} />
+
+          {selectedProfile && (
+            <>
+              <div className="mt-5 text-xs uppercase text-slate-400 mb-2">RF Profile Metadata</div>
+              <StatusRow label="Profile key" value={selectedProfile.key} />
+              <StatusRow label="Signal type" value={selectedProfile.signal_type} />
+              <StatusRow label="Family" value={selectedProfile.family} />
+              <StatusRow label="Modulation" value={selectedProfile.modulation.join(', ')} />
+              <StatusRow label="Temporal" value={selectedProfile.temporal_pattern} />
+              <StatusRow label="Expected BW" value={selectedProfile.expected_bandwidth_hz.map(formatBandwidth).join(', ')} />
+              <StatusRow label="Capture" value={`${selectedProfile.capture_duration_seconds}s @ ${formatFrequency(selectedProfile.sample_rate_hz)}/s`} />
+              <div className="mt-2 rounded-md border border-slate-800 bg-slate-950/50 px-2 py-2 text-xs text-slate-300">
+                {selectedProfile.training_note}
+              </div>
+            </>
+          )}
 
           <div className="mt-5 text-xs uppercase text-slate-400 mb-2">Trace Stats</div>
           <StatusRow label="Mean" value={formatPowerLevel(traceStats.mean)} />

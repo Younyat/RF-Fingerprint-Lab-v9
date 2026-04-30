@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Play, RotateCcw, Radio, Download } from 'lucide-react';
+import { Play, RotateCcw, Radio, Download, Trash2 } from 'lucide-react';
 import { ApiService } from '../../app/services/ApiService';
 import { useMarkers } from '../../app/store/AppStore';
 import { DEMODULATION_MODES } from '../../shared/constants';
@@ -8,6 +8,21 @@ import { formatFrequency } from '../../shared/utils';
 import { cn } from '../../shared/utils';
 
 const apiService = new ApiService();
+const markerBandpassStorageKey = 'spectrum-view-marker-bandpass-settings';
+
+const loadMarkerBandpassSettings = () => {
+  try {
+    const raw = window.localStorage.getItem(markerBandpassStorageKey);
+    if (!raw) return { enabled: false, attenuationDb: 60 };
+    const parsed = JSON.parse(raw) as { enabled?: boolean; attenuation_db?: number };
+    return {
+      enabled: Boolean(parsed.enabled),
+      attenuationDb: Number.isFinite(parsed.attenuation_db) ? Number(parsed.attenuation_db) : 60,
+    };
+  } catch {
+    return { enabled: false, attenuationDb: 60 };
+  }
+};
 
 const getErrorMessage = (error: unknown) => {
   if (typeof error === 'object' && error !== null && 'response' in error) {
@@ -24,6 +39,7 @@ export const DemodulationView: React.FC = () => {
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<DemodulationResult[]>([]);
+  const [markerBandpass, setMarkerBandpass] = useState(() => loadMarkerBandpassSettings());
 
   const selectedBand = useMemo(() => {
     if (markers.length < 2) return null;
@@ -49,6 +65,17 @@ export const DemodulationView: React.FC = () => {
     loadResults().catch(() => undefined);
   }, []);
 
+  useEffect(() => {
+    const syncFilter = () => setMarkerBandpass(loadMarkerBandpassSettings());
+    syncFilter();
+    window.addEventListener('focus', syncFilter);
+    window.addEventListener('storage', syncFilter);
+    return () => {
+      window.removeEventListener('focus', syncFilter);
+      window.removeEventListener('storage', syncFilter);
+    };
+  }, []);
+
   const applyDemodulation = async () => {
     if (!selectedBand) {
       setError('Create at least two markers first. M1 and M2 define the demodulation band.');
@@ -69,12 +96,26 @@ export const DemodulationView: React.FC = () => {
         stopFrequencyHz: selectedBand.stop,
         mode,
         durationSeconds: duration,
+        applyBandpassFilter: markerBandpass.enabled,
+        filterStopbandAttenuationDb: markerBandpass.attenuationDb,
       });
       setResults((current) => [result, ...current]);
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
       setIsRunning(false);
+    }
+  };
+
+  const deleteResult = async (id: string) => {
+    const confirmed = window.confirm('Delete this demodulation recording and its local files?');
+    if (!confirmed) return;
+    setError(null);
+    try {
+      await apiService.deleteDemodulationResult(id);
+      setResults((current) => current.filter((item) => item.id !== id));
+    } catch (err) {
+      setError(getErrorMessage(err));
     }
   };
 
@@ -106,6 +147,7 @@ export const DemodulationView: React.FC = () => {
               <Info label="M2" value={selectedBand ? formatFrequency(selectedBand.second.frequency) : 'Not set'} />
               <Info label="Center" value={selectedBand ? formatFrequency(selectedBand.center) : 'Not set'} />
               <Info label="Bandwidth" value={selectedBand ? formatFrequency(selectedBand.bandwidth) : 'Not set'} />
+              <Info label="FIR filter" value={markerBandpass.enabled ? `ON, ${markerBandpass.attenuationDb} dB` : 'Off'} />
             </div>
 
             <div className="flex flex-wrap items-end gap-3">
@@ -155,6 +197,7 @@ export const DemodulationView: React.FC = () => {
               <p><span className="text-slate-100 font-medium">AM/FM/WFM:</span> produce a WAV file that can be played in the dashboard.</p>
               <p><span className="text-slate-100 font-medium">ASK/FSK/PSK/OOK:</span> capture the selected marker band as IQ plus metadata for later symbol analysis.</p>
               <p>The selected center is the midpoint between M1 and M2.</p>
+              <p><span className="text-slate-100 font-medium">Marker Band-Pass:</span> when enabled in Spectrum, a real FIR filter is applied to the demodulation IQ before audio/digital output.</p>
             </div>
           </div>
         </section>
@@ -168,7 +211,7 @@ export const DemodulationView: React.FC = () => {
             {results.length === 0 ? (
               <div className="p-4 text-sm text-slate-500">No demodulation results yet.</div>
             ) : results.map((result) => (
-              <ResultRow key={result.id} result={result} />
+              <ResultRow key={result.id} result={result} onDelete={deleteResult} />
             ))}
           </div>
         </section>
@@ -186,7 +229,7 @@ function Info({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ResultRow({ result }: { result: DemodulationResult }) {
+function ResultRow({ result, onDelete }: { result: DemodulationResult; onDelete: (id: string) => void }) {
   const audioUrl = result.audio_url ? apiService.getDemodulationAudioUrl(result.id) : null;
   return (
     <div className="p-4 space-y-3">
@@ -199,15 +242,25 @@ function ResultRow({ result }: { result: DemodulationResult }) {
             {result.duration_seconds}s capture | {formatFrequency(result.sample_rate_hz)}/s | {result.status}
           </div>
         </div>
-        {audioUrl && (
-          <a
-            href={audioUrl}
-            className="h-9 inline-flex items-center px-3 rounded-md bg-blue-600 hover:bg-blue-500 text-sm font-medium"
+        <div className="flex flex-wrap gap-2">
+          {audioUrl && (
+            <a
+              href={audioUrl}
+              className="h-9 inline-flex items-center px-3 rounded-md bg-blue-600 hover:bg-blue-500 text-sm font-medium"
+            >
+              <Download className="w-4 h-4 mr-2" />
+              WAV
+            </a>
+          )}
+          <button
+            onClick={() => onDelete(result.id)}
+            className="h-9 inline-flex items-center px-3 rounded-md bg-red-700 hover:bg-red-600 text-sm font-medium"
+            title="Delete demodulation metadata, audio, and IQ files from local storage"
           >
-            <Download className="w-4 h-4 mr-2" />
-            WAV
-          </a>
-        )}
+            <Trash2 className="w-4 h-4 mr-2" />
+            Delete
+          </button>
+        </div>
       </div>
       {audioUrl ? (
         <audio controls src={audioUrl} className="w-full" />

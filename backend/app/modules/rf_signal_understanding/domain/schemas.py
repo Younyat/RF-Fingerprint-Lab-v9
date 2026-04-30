@@ -96,6 +96,11 @@ class CaptureForTrainingRequest(BaseModel):
     session_id: str = ""
     file_format: Literal["iq", "cfile"] = "iq"
     gain_db: float | None = None
+    profile_key: str | None = None
+    profile: dict[str, Any] | None = None
+    apply_bandpass_filter: bool = False
+    filter_stopband_attenuation_db: float = 60.0
+    filter_transition_width_hz: float | None = None
 
 
 class RegisterCaptureRequest(BaseModel):
@@ -108,6 +113,8 @@ class RegisterCaptureRequest(BaseModel):
     duration_s: float | None = None
     source: str = "capture_lab"
     session_id: str | None = None
+    profile_key: str | None = None
+    profile: dict[str, Any] | None = None
 
 
 class ModelSummary(BaseModel):

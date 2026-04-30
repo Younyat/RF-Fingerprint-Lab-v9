@@ -673,6 +673,8 @@ class RFSignalUnderstandingService:
             "duration_s": request.duration_s,
             "source": request.source,
             "session_id": request.session_id,
+            "profile_key": request.profile_key,
+            "profile": request.profile,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "analysis_status": "pending",
             "training_status": "not_reviewed",
@@ -722,6 +724,9 @@ class RFSignalUnderstandingService:
             modulation_hint=request.label_hint or "unknown",
             session_id=request.session_id,
             file_format=request.file_format,
+            apply_bandpass_filter=bool(request.apply_bandpass_filter),
+            filter_stopband_attenuation_db=float(request.filter_stopband_attenuation_db),
+            filter_transition_width_hz=request.filter_transition_width_hz,
         )
         iq_path = capture.get("iq_file")
         if not iq_path:
@@ -737,6 +742,8 @@ class RFSignalUnderstandingService:
                 duration_s=float(capture.get("duration_seconds") or request.duration_seconds),
                 source="capture_lab",
                 session_id=request.session_id,
+                profile_key=request.profile_key,
+                profile=request.profile,
             )
         )
         analyzed = self.analyze_registered_capture(registered["capture_id"])

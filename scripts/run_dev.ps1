@@ -94,6 +94,24 @@ function Invoke-Native {
     }
 }
 
+function Stop-ProcessTree {
+    param([int]$ProcessId)
+
+    if ($ProcessId -le 0) {
+        return
+    }
+
+    $Children = Get-CimInstance Win32_Process -Filter "ParentProcessId=$ProcessId" -ErrorAction SilentlyContinue
+    foreach ($Child in $Children) {
+        Stop-ProcessTree -ProcessId ([int]$Child.ProcessId)
+    }
+
+    $Process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if ($Process) {
+        Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-PythonVersion {
     param(
         [string]$FilePath,
@@ -355,9 +373,9 @@ try {
 } finally {
     Write-Step "Stopping services"
     if ($BackendProcess -and -not $BackendProcess.HasExited) {
-        Stop-Process -Id $BackendProcess.Id -Force
+        Stop-ProcessTree -ProcessId $BackendProcess.Id
     }
     if ($FrontendProcess -and -not $FrontendProcess.HasExited) {
-        Stop-Process -Id $FrontendProcess.Id -Force
+        Stop-ProcessTree -ProcessId $FrontendProcess.Id
     }
 }

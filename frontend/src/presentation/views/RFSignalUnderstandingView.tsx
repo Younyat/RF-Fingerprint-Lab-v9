@@ -3,6 +3,7 @@ import { Beaker, BrainCircuit, FileInput, GitCompare, Microscope, Network, Radio
 import { ApiService } from '../../app/services/ApiService';
 import { useAnalyzerSettings, useDeviceStatus, useMarkers } from '../../app/store/AppStore';
 import { RUNTIME_CONFIG } from '../../shared/config/runtime';
+import { RF_PROFILE_STORAGE_KEY, RF_PROFILES, type AppliedRFProfile } from '../../shared/rfProfiles';
 import type { RFSignalUnderstandingComparison, RFSignalUnderstandingResult } from '../../shared/types';
 import { formatFrequency } from '../../shared/utils';
 
@@ -21,6 +22,33 @@ const techniqueRows = [
   ['MLP over spectrogram rows', 'Simple Detection and Classification of Spectrogram RF Signals Using a Four-Layer Perceptron'],
   ['Bispectrum-waterfall fusion', 'Bispectrum-Based Signal Processing Using Waterfall Features'],
 ];
+const markerBandpassStorageKey = 'spectrum-view-marker-bandpass-settings';
+
+const loadSelectedRFProfile = (): AppliedRFProfile | null => {
+  try {
+    const raw = window.localStorage.getItem(RF_PROFILE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as AppliedRFProfile;
+    if (parsed?.selected_profile_key && RF_PROFILES[parsed.selected_profile_key]) return parsed;
+  } catch {
+    // Ignore invalid persisted profile state.
+  }
+  return null;
+};
+
+const loadMarkerBandpassSettings = () => {
+  try {
+    const raw = window.localStorage.getItem(markerBandpassStorageKey);
+    if (!raw) return { enabled: false, attenuationDb: 60 };
+    const parsed = JSON.parse(raw) as { enabled?: boolean; attenuation_db?: number };
+    return {
+      enabled: Boolean(parsed.enabled),
+      attenuationDb: Number.isFinite(parsed.attenuation_db) ? Number(parsed.attenuation_db) : 60,
+    };
+  } catch {
+    return { enabled: false, attenuationDb: 60 };
+  }
+};
 
 const isTrainableLabel = (label: string) => label !== 'ambiguous' && label !== 'rejected' && label.trim().length > 0;
 
@@ -62,6 +90,8 @@ export const RFSignalUnderstandingView: React.FC = () => {
   const [reviewStatus, setReviewStatus] = useState<string | null>(null);
   const [captureDuration, setCaptureDuration] = useState(5);
   const [captureLabelHint, setCaptureLabelHint] = useState('');
+  const [selectedRFProfile, setSelectedRFProfile] = useState<AppliedRFProfile | null>(() => loadSelectedRFProfile());
+  const [markerBandpass, setMarkerBandpass] = useState(() => loadMarkerBandpassSettings());
   const [captureRegistry, setCaptureRegistry] = useState<Array<Record<string, any>>>([]);
   const [trainingQueue, setTrainingQueue] = useState<Record<string, any> | null>(null);
   const [trainingResult, setTrainingResult] = useState<Record<string, any> | null>(null);
@@ -125,6 +155,25 @@ export const RFSignalUnderstandingView: React.FC = () => {
     setCenterFrequencyHz(Math.round(activeCenterHz));
     setSampleRateHz(Math.round(activeSampleRateHz));
   }, [activeCenterHz, activeSampleRateHz]);
+
+  useEffect(() => {
+    const syncProfile = () => {
+      const profile = loadSelectedRFProfile();
+      setSelectedRFProfile(profile);
+      setMarkerBandpass(loadMarkerBandpassSettings());
+      if (profile) {
+        setCaptureDuration(profile.capture_duration_seconds);
+        setCaptureLabelHint((current) => current || profile.signal_type);
+      }
+    };
+    syncProfile();
+    window.addEventListener('focus', syncProfile);
+    window.addEventListener('storage', syncProfile);
+    return () => {
+      window.removeEventListener('focus', syncProfile);
+      window.removeEventListener('storage', syncProfile);
+    };
+  }, []);
 
   useEffect(() => {
     apiService.getRFSignalUnderstandingReferences().then(setReferences).catch(() => setReferences(null));
@@ -271,6 +320,11 @@ export const RFSignalUnderstandingView: React.FC = () => {
         label_hint: captureLabelHint,
         session_id: `session_${new Date().toISOString().slice(0, 10)}`,
         file_format: 'iq',
+        gain_db: selectedRFProfile?.recommended_gain_db,
+        profile_key: selectedRFProfile?.selected_profile_key,
+        profile: selectedRFProfile ?? undefined,
+        apply_bandpass_filter: markerBandpass.enabled,
+        filter_stopband_attenuation_db: markerBandpass.attenuationDb,
       });
       setResult(response.analysis as RFSignalUnderstandingResult);
       await refreshLearningLoop();
@@ -297,6 +351,11 @@ export const RFSignalUnderstandingView: React.FC = () => {
         label_hint: captureLabelHint,
         session_id: `session_${new Date().toISOString().slice(0, 10)}`,
         file_format: 'iq',
+        gain_db: selectedRFProfile?.recommended_gain_db,
+        profile_key: selectedRFProfile?.selected_profile_key,
+        profile: selectedRFProfile ?? undefined,
+        apply_bandpass_filter: markerBandpass.enabled,
+        filter_stopband_attenuation_db: markerBandpass.attenuationDb,
       });
       const analysis = captured.analysis as RFSignalUnderstandingResult;
       const region = pickTrainingRegion((analysis.regions ?? []) as Array<Record<string, any>>);
@@ -441,6 +500,8 @@ export const RFSignalUnderstandingView: React.FC = () => {
         </Panel>
 
         <Panel title="Capture for training" icon={<Save className="h-4 w-4" />}>
+          <Metric label="RF profile" value={selectedRFProfile?.selected_profile_key ?? 'manual'} />
+          <Metric label="I/Q FIR filter" value={markerBandpass.enabled ? `ON, ${markerBandpass.attenuationDb} dB stopband` : 'off'} />
           <Metric label="Band source" value={activeConfigSource} />
           <Metric label="Capture start" value={formatFrequency(markerBand?.start ?? centerFrequencyHz - sampleRateHz / 2)} />
           <Metric label="Capture stop" value={formatFrequency(markerBand?.stop ?? centerFrequencyHz + sampleRateHz / 2)} />
@@ -449,6 +510,11 @@ export const RFSignalUnderstandingView: React.FC = () => {
           <button type="button" onClick={captureForTraining} disabled={loading} className="w-full rounded-md border px-3 py-2 text-sm disabled:opacity-50" style={{ borderColor: 'var(--app-border)', background: 'var(--app-accent)', color: 'var(--app-accent-foreground)' }}>
             Capture I/Q for training
           </button>
+          {selectedRFProfile && (
+            <div className="text-xs text-[var(--app-text-muted)]">
+              Profile metadata will be stored with the capture for homogeneous fingerprinting experiments.
+            </div>
+          )}
         </Panel>
 
         <Panel title="Live input" icon={<FileInput className="h-4 w-4" />}>

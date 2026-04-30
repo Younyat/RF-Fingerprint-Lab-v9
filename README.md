@@ -41,6 +41,10 @@ The application is built with a FastAPI backend and a React/TypeScript frontend.
 - Mouse-wheel zoom on spectrum span
 - Crosshair cursor readout with frequency and level
 - Frozen View mode for pausing the current spectrum/waterfall frame in memory while preserving markers, zoom, overlays, and existing detection interactions
+- Auto Freeze M1-M2 trigger for fast transient signals inside the marker-defined band
+- RF Profile dropdown with hardcoded professional observation presets for reproducible capture and fingerprinting experiments
+- Peak Hold overlay with permanent Max Hold and configurable decay
+- Marker Band-Pass controls with live FFT-mask preview and real FIR filtering for I/Q capture and demodulation
 - Trace modes: Clear/Write, Average, Max Hold, Min Hold, and Video Average
 - Detector modes: Sample, RMS, Average, Peak, Max Hold, Min Hold, and Video
 - Display controls for reference level, dB/div, offset, and color scheme
@@ -290,6 +294,57 @@ Frozen View: source = frozen_spectrum_frame
 ```
 
 The mode does not save files, does not capture I/Q, does not create datasets, does not export evidence, and does not add new models. `Resume Live` clears the frozen frame from memory and returns the dashboard to live frame consumption.
+
+## Spectrum Observation Tools
+
+### RF Profile Dropdown
+
+The `Spectrum` view includes a hardcoded `RF Profile` dropdown for serious, repeatable observation setups. A profile is not only a visual marker preset. It defines a stable RF observation configuration so captures made under the same profile are comparable.
+
+When a profile is selected, the dashboard applies:
+
+- center frequency;
+- start/stop frequency and span;
+- recommended gain;
+- Marker 1 and Marker 2 as the useful analysis band;
+- a center marker;
+- signal type, RF family, expected modulation, expected bandwidth, temporal pattern, recommended capture duration, and training notes.
+
+The selected profile is stored locally and passed to RF Signal Understanding captures as `profile_key` plus profile metadata. This is important for RF fingerprinting: captures from different transmitters should use the same profile, channel, span, sample rate, gain, antenna, distance policy, and marker band when the experiment is meant to compare transmitter identity.
+
+### Peak Hold And Max Hold
+
+The live spectrum supports a visual peak trace:
+
+- `Permanent`: maximum observed power per FFT bin is retained until `Reset Peaks`.
+- `Decay`: the held peak decays at a configurable rate (`1`, `3`, or `6 dB/s`).
+
+This is a visual analysis mode. It does not save I/Q, does not create dataset records, and does not trigger capture. If `Use Peak For Detection` is enabled, markers, local measurements, peak search, RF Intelligence overlay, and RF Signal Understanding overlay consume the peak trace instead of the instantaneous live trace.
+
+### Marker Band-Pass
+
+`Band-Pass On/Off` uses Marker 1 and Marker 2 as the selected band:
+
+```text
+band_start_hz = min(M1, M2)
+band_stop_hz  = max(M1, M2)
+bandwidth_hz  = band_stop_hz - band_start_hz
+```
+
+There are two different implementations, and the distinction matters:
+
+1. Live spectrum preview: the frontend only has FFT power bins, not raw I/Q. Therefore the live spectrum uses an FFT-bin soft mask preview. Bins outside M1-M2 are attenuated by the selected preview attenuation so the operator can visually focus on the selected band.
+2. I/Q capture and demodulation: the backend has complex I/Q samples. When the filter is enabled, the backend applies a real FIR Kaiser filter to the captured complex baseband samples before saving I/Q, demodulating audio, or adding samples to the learning loop.
+
+Available stopband attenuation values are `1`, `3`, `6`, `10`, `20`, `40`, and `60 dB`. Filter metadata is written with the capture/demodulation result, including filter type, passband width, cutoff, transition width, requested stopband attenuation, number of taps, and Kaiser beta.
+
+For live FFT preview the UI labels the mode as:
+
+```text
+FFT mask preview / FIR on I/Q capture
+```
+
+This avoids treating a visual FFT mask as a physical RF filter.
 
 ## RF Signal Understanding Module
 
@@ -771,6 +826,8 @@ For `AM`, `FM`, and `WFM`, the backend captures real IQ from the USRP-B200, demo
 
 For `ASK`, `FSK`, `PSK`, and `OOK`, the backend captures the marker-limited IQ plus metadata for later digital analysis/export. These modes do not currently generate dashboard audio.
 
+If `Band-Pass` is enabled in `Spectrum`, `Demodulation` reads the same marker-band filter setting. The demodulation worker applies a real FIR Kaiser filter to the captured complex I/Q before audio generation or digital IQ output. The configured stopband attenuation is included in the result metadata. This is separate from the live spectrum FFT-mask preview.
+
 Example FM workflow using a broadcast channel around `98.4 MHz` in Spain:
 
 ![FM demodulation workflow with generated audio output](readme_img/demodulation.png)
@@ -795,6 +852,8 @@ For each acquisition it creates:
 
 - `.cfile` or `.iq`: raw complex64 IQ samples, selected by the user
 - `.json`: metadata with center, start/stop, bandwidth, sample rate, gain, antenna, format, SHA256, label, modulation hint, and replay parameters
+
+When Marker Band-Pass is enabled from the spectrum view and the capture path supports it, the saved I/Q is filtered by a real FIR Kaiser filter before it is written. The metadata includes a `marker_band_filter` block with the requested stopband attenuation and filter design parameters.
 
 The same screen also lets the user declare the purpose of the capture from the beginning:
 

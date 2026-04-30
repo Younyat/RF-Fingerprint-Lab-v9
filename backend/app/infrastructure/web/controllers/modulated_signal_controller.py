@@ -52,6 +52,9 @@ class ModulatedSignalController:
         pre_trigger_ms: float = 0.0,
         post_trigger_ms: float = 50.0,
         trigger_max_wait_s: float = 5.0,
+        apply_bandpass_filter: bool = False,
+        filter_stopband_attenuation_db: float = 60.0,
+        filter_transition_width_hz: float | None = None,
     ) -> dict:
         file_format = file_format.lower()
         if file_format not in {"cfile", "iq"}:
@@ -64,6 +67,8 @@ class ModulatedSignalController:
             raise ValueError("pre_trigger_ms and post_trigger_ms must be non-negative")
         if trigger_max_wait_s <= 0 or trigger_max_wait_s > 120:
             raise ValueError("trigger_max_wait_s must be between 0 and 120")
+        if filter_stopband_attenuation_db < 1 or filter_stopband_attenuation_db > 60:
+            raise ValueError("filter_stopband_attenuation_db must be between 1 and 60 dB")
 
         center_frequency_hz, bandwidth_hz = validate_start_stop(start_frequency_hz, stop_frequency_hz)
         validate_gain(self._settings.gain.gain_db)
@@ -165,6 +170,11 @@ class ModulatedSignalController:
             "--trigger-max-wait-s",
             str(float(trigger_max_wait_s)),
         ]
+        if apply_bandpass_filter:
+            command.append("--apply-bandpass-filter")
+            command.extend(["--filter-stopband-attenuation-db", str(float(filter_stopband_attenuation_db))])
+            if filter_transition_width_hz is not None:
+                command.extend(["--filter-transition-width-hz", str(float(filter_transition_width_hz))])
         if live_preview_snr_db is not None:
             command.extend(["--live-preview-snr-db", str(float(live_preview_snr_db))])
         if live_preview_noise_floor_db is not None:

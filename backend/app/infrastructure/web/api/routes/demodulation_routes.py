@@ -14,6 +14,9 @@ class MarkerBandDemodulationBody(BaseModel):
     stop_frequency_hz: float
     mode: str
     duration_seconds: float = 5.0
+    apply_bandpass_filter: bool = False
+    filter_stopband_attenuation_db: float = 60.0
+    filter_transition_width_hz: float | None = None
 
 
 def build_demodulation_router(controller) -> APIRouter:
@@ -39,6 +42,9 @@ def build_demodulation_router(controller) -> APIRouter:
                 stop_frequency_hz=body.stop_frequency_hz,
                 mode=body.mode,
                 duration_seconds=body.duration_seconds,
+                apply_bandpass_filter=body.apply_bandpass_filter,
+                filter_stopband_attenuation_db=body.filter_stopband_attenuation_db,
+                filter_transition_width_hz=body.filter_transition_width_hz,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -51,6 +57,13 @@ def build_demodulation_router(controller) -> APIRouter:
     async def get_demodulation_result(demodulation_id: str):
         try:
             return controller.get_result(demodulation_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.delete("/results/{demodulation_id}")
+    async def delete_demodulation_result(demodulation_id: str):
+        try:
+            return controller.delete_result(demodulation_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

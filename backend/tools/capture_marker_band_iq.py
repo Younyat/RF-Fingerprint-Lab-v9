@@ -42,6 +42,76 @@ def db10(value: float) -> float:
     return 10.0 * np.log10(max(float(value), 1e-20))
 
 
+def apply_marker_band_fir_filter(
+    samples: np.ndarray,
+    sample_rate_hz: float,
+    selected_bandwidth_hz: float,
+    stopband_attenuation_db: float,
+    transition_width_hz: float | None = None,
+) -> tuple[np.ndarray, dict]:
+    """Apply a real FIR low-pass filter to complex baseband marker-band IQ.
+
+    The USRP is tuned to the marker-band center frequency, therefore the RF
+    marker interval maps to a complex-baseband low-pass passband.
+    """
+    if samples.size == 0:
+        raise ValueError("Cannot filter an empty IQ capture")
+    if sample_rate_hz <= 0 or selected_bandwidth_hz <= 0:
+        raise ValueError("sample_rate_hz and selected_bandwidth_hz must be positive")
+
+    nyquist_hz = float(sample_rate_hz) / 2.0
+    passband_edge_hz = float(selected_bandwidth_hz) / 2.0
+    guard_hz = nyquist_hz - passband_edge_hz
+    if guard_hz <= 0:
+        raise ValueError(
+            "Cannot apply marker-band FIR filter: selected bandwidth reaches or exceeds Nyquist. "
+            "Increase sample rate or reduce Marker 1-2 bandwidth."
+        )
+
+    try:
+        from scipy import signal
+    except Exception as exc:  # pragma: no cover - depends on runtime env
+        raise RuntimeError("SciPy is required for real FIR marker-band filtering") from exc
+
+    requested_transition_hz = transition_width_hz
+    if requested_transition_hz is None or requested_transition_hz <= 0:
+        requested_transition_hz = max(guard_hz * 0.8, min(2_000.0, guard_hz))
+    transition_hz = min(float(requested_transition_hz), guard_hz * 0.95)
+    transition_hz = max(transition_hz, max(sample_rate_hz / 100_000.0, 1.0))
+    cutoff_hz = min(passband_edge_hz + transition_hz / 2.0, nyquist_hz * 0.999)
+    normalized_transition = max(transition_hz / nyquist_hz, 1e-6)
+    numtaps, beta = signal.kaiserord(float(stopband_attenuation_db), normalized_transition)
+    numtaps = max(int(numtaps), 31)
+    if numtaps % 2 == 0:
+        numtaps += 1
+    taps = signal.firwin(
+        numtaps,
+        cutoff_hz,
+        window=("kaiser", beta),
+        pass_zero="lowpass",
+        fs=float(sample_rate_hz),
+    )
+    filtered = signal.fftconvolve(samples.astype(np.complex64), taps.astype(np.float32), mode="same").astype(np.complex64)
+    stopband_start_hz = min(passband_edge_hz + transition_hz, nyquist_hz)
+    metadata = {
+        "enabled": True,
+        "filter_type": "fir_kaiser_complex_baseband_lowpass",
+        "reason": "USRP is tuned to marker-band center; Marker 1-2 maps to baseband low-pass.",
+        "sample_rate_hz": float(sample_rate_hz),
+        "passband_width_hz": float(selected_bandwidth_hz),
+        "passband_edge_hz": float(passband_edge_hz),
+        "cutoff_hz": float(cutoff_hz),
+        "transition_width_hz": float(transition_hz),
+        "stopband_start_hz": float(stopband_start_hz),
+        "requested_stopband_attenuation_db": float(stopband_attenuation_db),
+        "num_taps": int(numtaps),
+        "window": "kaiser",
+        "kaiser_beta": float(beta),
+        "implementation": "scipy.signal.firwin + scipy.signal.fftconvolve(mode='same')",
+    }
+    return filtered, metadata
+
+
 def find_first_burst(
     samples: np.ndarray,
     sample_rate_hz: float,
@@ -137,6 +207,10 @@ def main() -> None:
     parser.add_argument("--post-trigger-ms", type=float, default=50.0)
     parser.add_argument("--trigger-max-wait-s", type=float, default=5.0)
     parser.add_argument("--settle-ms", type=int, default=300)
+    parser.add_argument("--apply-bandpass-filter", action="store_true")
+    parser.add_argument("--filter-stopband-attenuation-db", type=float, default=60.0)
+    parser.add_argument("--filter-transition-width-hz", type=float, default=None)
+    parser.add_argument("--keep-unfiltered-copy", action="store_true")
     args = parser.parse_args()
 
     if args.stop_hz <= args.start_hz:
@@ -215,6 +289,28 @@ def main() -> None:
             }
         )
 
+    filter_metadata = {
+        "enabled": False,
+        "filter_type": None,
+        "note": "No post-capture FIR marker-band filter was applied.",
+    }
+    unfiltered_iq_path = None
+    if args.apply_bandpass_filter:
+        if args.filter_stopband_attenuation_db < 1 or args.filter_stopband_attenuation_db > 60:
+            raise ValueError("filter-stopband-attenuation-db must be between 1 and 60 dB")
+        if args.keep_unfiltered_copy:
+            unfiltered_iq_path = iq_path.with_name(f"{iq_path.stem}.unfiltered{iq_path.suffix}")
+            raw_samples.astype(np.complex64).tofile(unfiltered_iq_path)
+        raw_samples, filter_metadata = apply_marker_band_fir_filter(
+            raw_samples,
+            sample_rate_hz,
+            bandwidth_hz,
+            float(args.filter_stopband_attenuation_db),
+            args.filter_transition_width_hz,
+        )
+        raw_samples.astype(np.complex64).tofile(iq_path)
+        sample_count = int(raw_samples.size)
+
     sample_count = int(raw_samples.size)
     metadata = {
         "id": args.capture_id,
@@ -252,6 +348,8 @@ def main() -> None:
         "byte_order": "native",
         "file_size_bytes": iq_path.stat().st_size,
         "sha256": sha256_file(iq_path),
+        "marker_band_filter": filter_metadata,
+        "unfiltered_iq_file": str(unfiltered_iq_path) if unfiltered_iq_path else None,
         "replay_parameters": {
             "center_frequency_hz": center_freq_hz,
             "sample_rate_hz": sample_rate_hz,
