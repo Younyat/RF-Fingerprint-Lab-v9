@@ -89,6 +89,16 @@
     "temporal_pattern": "hop_bursts",
     "modulation": ["GFSK"]
   },
+  "cc2540_ble": {
+    "label": "TI CC2540 BLE 4.0",
+    "family": "pan_personal_area_Jesus",
+    "frequency_min_hz": 2402000000,
+    "frequency_max_hz": 2480000000,
+    "expected_bandwidth_hz": [1000000],
+    "temporal_pattern": "hop_bursts",
+    "modulation": ["GFSK"]
+  }
+  ,
   "zigbee_24g": {
     "label": "ZigBee / IEEE 802.15.4",
     "family": "zigbee_802154",

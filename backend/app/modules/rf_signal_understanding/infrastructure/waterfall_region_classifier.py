@@ -17,7 +17,13 @@ class WaterfallRegionClassifier:
         else:
             temporal_variance = float(np.var(np.mean(matrix, axis=1))) if matrix.shape[0] > 1 else 0.0
             freq_variance = float(np.var(np.mean(matrix, axis=0))) if matrix.shape[1] > 1 else 0.0
-            if bandwidth > 5_000_000:
+            center_hz = float(bbox.get("center_frequency_hz", 0.0))
+            fm_band = 87_500_000 <= center_hz <= 108_000_000
+            if fm_band and 80_000 <= bandwidth <= 350_000:
+                label, confidence = "fm_broadcast_like", 0.72
+            elif fm_band:
+                label, confidence = "fm_broadcast_like", 0.54
+            elif bandwidth > 5_000_000:
                 label, confidence = "ofdm_like", 0.62
             elif bandwidth > 1_000_000:
                 label, confidence = "spread_spectrum_like", 0.58
@@ -37,7 +43,7 @@ class WaterfallRegionClassifier:
         }
 
     def _top_k(self, label: str, confidence: float) -> list[dict[str, float | str]]:
-        alternatives = ["ook_like", "fsk_like", "psk_like", "ofdm_like", "unknown"]
+        alternatives = ["fm_broadcast_like", "ook_like", "fsk_like", "psk_like", "ofdm_like", "unknown"]
         scores = {name: 0.02 for name in alternatives}
         scores[label] = confidence
         remaining = max(0.0, 1.0 - confidence)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import json
 
 
 class ModelRegistry:
@@ -15,14 +16,22 @@ class ModelRegistry:
             model_dir = self.models_dir / model_type
             model_dir.mkdir(parents=True, exist_ok=True)
             files = [path for path in model_dir.iterdir() if path.is_file()]
+            metadata_path = model_dir / "metadata.json"
+            metadata: dict[str, Any] = {"files": [path.name for path in files]}
+            if metadata_path.exists():
+                try:
+                    with metadata_path.open("r", encoding="utf-8") as file:
+                        metadata.update(json.load(file))
+                except json.JSONDecodeError:
+                    metadata["metadata_error"] = "metadata.json could not be decoded"
             summaries.append(
                 {
                     "model_id": f"{model_type}_v1",
                     "model_type": model_type,
-                    "status": "trained" if files else "not_trained",
+                    "status": "trained" if (model_dir / "model.npz").exists() or files else "not_trained",
                     "path": str(model_dir),
-                    "trained": bool(files),
-                    "metadata": {"files": [path.name for path in files]},
+                    "trained": (model_dir / "model.npz").exists() or bool(files),
+                    "metadata": metadata,
                 }
             )
         return summaries

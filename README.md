@@ -40,6 +40,7 @@ The application is built with a FastAPI backend and a React/TypeScript frontend.
 - PNG export for the current spectrum canvas
 - Mouse-wheel zoom on spectrum span
 - Crosshair cursor readout with frequency and level
+- Frozen View mode for pausing the current spectrum/waterfall frame in memory while preserving markers, zoom, overlays, and existing detection interactions
 - Trace modes: Clear/Write, Average, Max Hold, Min Hold, and Video Average
 - Detector modes: Sample, RMS, Average, Peak, Max Hold, Min Hold, and Video
 - Display controls for reference level, dB/div, offset, and color scheme
@@ -265,6 +266,30 @@ The interface is organized as a complete RF lab: live monitoring, waterfall insp
 </details>
 
 ## RF Intelligence
+
+## Frozen View
+
+The dashboard provides a Frozen View mode that allows the operator to pause the visual update of the current spectrum and waterfall while preserving the same interaction capabilities available in Live View.
+
+Use:
+
+```text
+Freeze View
+-> inspect the frozen spectrum/waterfall
+-> move markers
+-> zoom or pan with the existing controls
+-> inspect RF Intelligence / RF Signal Understanding overlays
+-> Resume Live
+```
+
+Frozen View is not a new analysis pipeline. It is the same Live View fed by an in-memory copy of the last visible frame instead of the live stream:
+
+```text
+Live View:   source = current_live_spectrum_frame
+Frozen View: source = frozen_spectrum_frame
+```
+
+The mode does not save files, does not capture I/Q, does not create datasets, does not export evidence, and does not add new models. `Resume Live` clears the frozen frame from memory and returns the dashboard to live frame consumption.
 
 ## RF Signal Understanding Module
 

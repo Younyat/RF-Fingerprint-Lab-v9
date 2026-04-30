@@ -5,9 +5,11 @@ import { RUNTIME_CONFIG } from '../../shared/config/runtime';
 
 const apiService = new ApiService();
 
-export const useSpectrum = () => {
-  const spectrumData = useSpectrumData();
-  const settings = useAnalyzerSettings();
+export const useSpectrum = ({ enabled = true, displayData = null, displaySettings = null }: { enabled?: boolean; displayData?: ReturnType<typeof useSpectrumData>; displaySettings?: ReturnType<typeof useAnalyzerSettings> | null } = {}) => {
+  const liveSpectrumData = useSpectrumData();
+  const spectrumData = displayData ?? liveSpectrumData;
+  const liveSettings = useAnalyzerSettings();
+  const settings = displaySettings ?? liveSettings;
   const deviceStatus = useDeviceStatus();
   const setSpectrumData = useAppStore((state) => state.setSpectrumData);
   const [isLoading, setIsLoading] = useState(false);
@@ -31,7 +33,17 @@ export const useSpectrum = () => {
   };
 
   const buildDisplayTrace = (levels: number[]) => {
-    const adjusted = levels.map((level) => level + settings.noiseFloorOffset);
+    const viewStart = settings.centerFrequency - settings.span / 2;
+    const viewStop = settings.centerFrequency + settings.span / 2;
+    const sourceFrequencies = spectrumData?.frequencyArray ?? [];
+    const sourceLevels = levels;
+    const visibleLevels = sourceFrequencies.length === sourceLevels.length && sourceFrequencies.length > 1
+      ? sourceFrequencies
+          .map((frequency, index) => ({ frequency, level: sourceLevels[index] }))
+          .filter((point) => point.frequency >= viewStart && point.frequency <= viewStop)
+          .map((point) => point.level)
+      : sourceLevels;
+    const adjusted = (visibleLevels.length > 1 ? visibleLevels : sourceLevels).map((level) => level + settings.noiseFloorOffset);
     const key = `${settings.centerFrequency}:${settings.span}:${settings.traceMode}:${settings.detectorMode}:${settings.averaging}`;
     if (lastTraceKeyRef.current !== key) {
       traceRef.current = null;
@@ -169,7 +181,7 @@ export const useSpectrum = () => {
     let cancelled = false;
 
     const refresh = async () => {
-      if (!deviceStatus.isConnected) {
+      if (!enabled || !deviceStatus.isConnected) {
         return;
       }
 
@@ -198,7 +210,7 @@ export const useSpectrum = () => {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [deviceStatus.isConnected, setSpectrumData]);
+  }, [deviceStatus.isConnected, enabled, setSpectrumData]);
 
   return {
     spectrumData,

@@ -13,7 +13,11 @@ _service = RFSignalUnderstandingService(
 
 
 def _build(context):
-    return build_rf_signal_understanding_router(_service, context.container.spectrum_controller)
+    return build_rf_signal_understanding_router(
+        _service,
+        context.container.spectrum_controller,
+        context.container.modulated_signal_controller,
+    )
 
 
 rf_signal_understanding_module = BackendModuleDefinition(

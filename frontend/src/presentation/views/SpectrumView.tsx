@@ -4,12 +4,12 @@ import { useSpectrum } from '../hooks/useSpectrum';
 import { useWaterfall } from '../hooks/useWaterfall';
 import { useSpectrumController } from '../controllers/SpectrumController';
 import { getLevelAtFrequency, useMarkerController } from '../controllers/MarkerController';
-import { useAnalyzerSettings, useAppActions, useDeviceStatus, useMarkers, useSpectrumData } from '../../app/store/AppStore';
+import { useAnalyzerSettings, useAppActions, useDeviceStatus, useMarkers, useSpectrumData, useWaterfallData } from '../../app/store/AppStore';
 import { ApiService } from '../../app/services/ApiService';
 import { estimateBandQuality, formatFrequency, formatPowerLevel } from '../../shared/utils';
 import { cn } from '../../shared/utils';
 import { DETECTOR_MODES, SPECTRUM_COLOR_SCHEMES, TRACE_MODES } from '../../shared/constants';
-import type { AnalyzerSettings, RFObjectDetection, RFSceneAnalysis, RFSignalUnderstandingResult } from '../../shared/types';
+import type { AnalyzerSettings, RFObjectDetection, RFSceneAnalysis, RFSignalUnderstandingResult, SpectrumData, WaterfallData } from '../../shared/types';
 
 const hzToMhz = (hz: number) => Number.isFinite(hz) ? hz / 1e6 : 0;
 const mhzToHz = (mhz: string) => Number(mhz) * 1e6;
@@ -94,12 +94,20 @@ const rfFamilyStyle = (family: string) => {
 };
 
 export const SpectrumView: React.FC = () => {
-  const { canvasRef } = useSpectrum();
-  const [showWaterfallSplit, setShowWaterfallSplit] = useState(false);
-  const { canvasRef: waterfallCanvasRef, error: waterfallError } = useWaterfall(showWaterfallSplit);
-  const spectrumData = useSpectrumData();
+  const liveSpectrumData = useSpectrumData();
+  const liveWaterfallData = useWaterfallData();
+  const [viewMode, setViewMode] = useState<'live' | 'frozen'>('live');
+  const [frozenSpectrumData, setFrozenSpectrumData] = useState<SpectrumData | null>(null);
+  const [frozenWaterfallData, setFrozenWaterfallData] = useState<WaterfallData[]>([]);
+  const [frozenViewRange, setFrozenViewRange] = useState<{ centerFrequency: number; span: number } | null>(null);
+  const isFrozen = viewMode === 'frozen';
+  const spectrumData = isFrozen ? frozenSpectrumData : liveSpectrumData;
   const deviceStatus = useDeviceStatus();
   const settings = useAnalyzerSettings();
+  const displaySettings = isFrozen && frozenViewRange ? { ...settings, ...frozenViewRange } : settings;
+  const { canvasRef } = useSpectrum({ enabled: !isFrozen, displayData: spectrumData, displaySettings });
+  const [showWaterfallSplit, setShowWaterfallSplit] = useState(false);
+  const { canvasRef: waterfallCanvasRef, error: waterfallError } = useWaterfall(showWaterfallSplit && !isFrozen, isFrozen ? frozenWaterfallData : null, displaySettings);
   const markers = useMarkers();
   const { setGlobalActivity, clearGlobalActivity } = useAppActions();
   const spectrumController = useSpectrumController();
@@ -129,6 +137,7 @@ export const SpectrumView: React.FC = () => {
   const [showCursorBadge, setShowCursorBadge] = useState(true);
   const [showRfIntelligenceOverlay, setShowRfIntelligenceOverlay] = useState(true);
   const [showRsuOverlay, setShowRsuOverlay] = useState(false);
+  const [rsuOverlayMode, setRsuOverlayMode] = useState<'hybrid' | 'ai_only'>('hybrid');
   const [rfScene, setRfScene] = useState<RFSceneAnalysis | null>(null);
   const [rfOverlayError, setRfOverlayError] = useState<string | null>(null);
   const [rsuLive, setRsuLive] = useState<RFSignalUnderstandingResult | null>(null);
@@ -147,6 +156,7 @@ export const SpectrumView: React.FC = () => {
         showCursorBadge?: boolean;
         showRfIntelligenceOverlay?: boolean;
         showRsuOverlay?: boolean;
+        rsuOverlayMode?: 'hybrid' | 'ai_only';
         panOverlayPosition?: { x?: number; y?: number };
       };
       if (typeof parsed.showPanOverlay === 'boolean') setShowPanOverlay(parsed.showPanOverlay);
@@ -154,6 +164,7 @@ export const SpectrumView: React.FC = () => {
       if (typeof parsed.showCursorBadge === 'boolean') setShowCursorBadge(parsed.showCursorBadge);
       if (typeof parsed.showRfIntelligenceOverlay === 'boolean') setShowRfIntelligenceOverlay(parsed.showRfIntelligenceOverlay);
       if (typeof parsed.showRsuOverlay === 'boolean') setShowRsuOverlay(parsed.showRsuOverlay);
+      if (parsed.rsuOverlayMode === 'hybrid' || parsed.rsuOverlayMode === 'ai_only') setRsuOverlayMode(parsed.rsuOverlayMode);
       if (
         parsed.panOverlayPosition &&
         Number.isFinite(parsed.panOverlayPosition.x) &&
@@ -179,15 +190,17 @@ export const SpectrumView: React.FC = () => {
           showCursorBadge,
           showRfIntelligenceOverlay,
           showRsuOverlay,
+          rsuOverlayMode,
           panOverlayPosition,
         }),
       );
     } catch {
       // Ignore storage failures.
     }
-  }, [showPanOverlay, showMarkerBadges, showCursorBadge, showRfIntelligenceOverlay, showRsuOverlay, panOverlayPosition]);
+  }, [showPanOverlay, showMarkerBadges, showCursorBadge, showRfIntelligenceOverlay, showRsuOverlay, rsuOverlayMode, panOverlayPosition]);
 
   useEffect(() => {
+    if (isFrozen) return;
     setCenterMHz(formatInput(hzToMhz(settings.centerFrequency)));
     setSpanMHz(formatInput(hzToMhz(settings.span), 3));
     setStartMHz(formatInput(hzToMhz(settings.centerFrequency - settings.span / 2)));
@@ -202,6 +215,7 @@ export const SpectrumView: React.FC = () => {
     setColorScheme(settings.colorScheme);
     setAveraging(formatInput(settings.averaging, 0));
   }, [
+    isFrozen,
     settings.centerFrequency,
     settings.span,
     settings.rbw,
@@ -216,15 +230,23 @@ export const SpectrumView: React.FC = () => {
   ]);
 
   useEffect(() => {
-    setPanStepMHz(formatInput(hzToMhz(settings.span) / 10, 3));
-  }, [settings.span]);
+    if (!isFrozen) return;
+    setCenterMHz(formatInput(hzToMhz(displaySettings.centerFrequency)));
+    setSpanMHz(formatInput(hzToMhz(displaySettings.span), 3));
+    setStartMHz(formatInput(hzToMhz(displaySettings.centerFrequency - displaySettings.span / 2)));
+    setStopMHz(formatInput(hzToMhz(displaySettings.centerFrequency + displaySettings.span / 2)));
+  }, [displaySettings.centerFrequency, displaySettings.span, isFrozen]);
+
+  useEffect(() => {
+    setPanStepMHz(formatInput(hzToMhz(displaySettings.span) / 10, 3));
+  }, [displaySettings.span]);
 
   useEffect(() => {
     setGainDb(formatInput(deviceStatus.gain, 1));
   }, [deviceStatus.gain]);
 
   useEffect(() => {
-    if (!showRfIntelligenceOverlay || !deviceStatus.isConnected) {
+    if (isFrozen || !showRfIntelligenceOverlay || !deviceStatus.isConnected) {
       return;
     }
 
@@ -249,17 +271,17 @@ export const SpectrumView: React.FC = () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [deviceStatus.isConnected, showRfIntelligenceOverlay]);
+  }, [deviceStatus.isConnected, isFrozen, showRfIntelligenceOverlay]);
 
   useEffect(() => {
-    if (!showRsuOverlay || !deviceStatus.isConnected) {
+    if (isFrozen || !showRsuOverlay || !deviceStatus.isConnected) {
       return;
     }
 
     let cancelled = false;
     const refreshRsuLive = async () => {
       try {
-        const live = await apiService.getLiveRFSignalUnderstanding();
+        const live = await apiService.getLiveRFSignalUnderstanding({ decision_mode: rsuOverlayMode });
         if (!cancelled) {
           setRsuLive(live);
           setRsuOverlayError(null);
@@ -277,7 +299,7 @@ export const SpectrumView: React.FC = () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [deviceStatus.isConnected, showRsuOverlay]);
+  }, [deviceStatus.isConnected, isFrozen, showRsuOverlay, rsuOverlayMode]);
 
   const markerRows = useMemo(() => {
     return markers.map((marker) => {
@@ -314,23 +336,58 @@ export const SpectrumView: React.FC = () => {
 
   const visibleRfDetections = useMemo(() => {
     if (!showRfIntelligenceOverlay || !rfScene) return [];
-    const start = settings.centerFrequency - settings.span / 2;
-    const stop = settings.centerFrequency + settings.span / 2;
+    const start = displaySettings.centerFrequency - displaySettings.span / 2;
+    const stop = displaySettings.centerFrequency + displaySettings.span / 2;
     return rfScene.detections
       .filter((detection) => detection.stop_frequency_hz >= start && detection.start_frequency_hz <= stop)
       .sort((left, right) => right.confidence - left.confidence)
       .slice(0, 8);
-  }, [rfScene, settings.centerFrequency, settings.span, showRfIntelligenceOverlay]);
+  }, [rfScene, displaySettings.centerFrequency, displaySettings.span, showRfIntelligenceOverlay]);
 
   const visibleRsuRegions = useMemo(() => {
     if (!showRsuOverlay || !rsuLive) return [];
-    const start = settings.centerFrequency - settings.span / 2;
-    const stop = settings.centerFrequency + settings.span / 2;
+    const start = displaySettings.centerFrequency - displaySettings.span / 2;
+    const stop = displaySettings.centerFrequency + displaySettings.span / 2;
     return (rsuLive.regions ?? [])
+      .filter((region) => rsuOverlayMode === 'hybrid' || Boolean(region.classification?.trained))
       .filter((region) => Number(region.freq_end_hz) >= start && Number(region.freq_start_hz) <= stop)
       .sort((left, right) => Number(right.final_decision?.confidence ?? 0) - Number(left.final_decision?.confidence ?? 0))
       .slice(0, 8);
-  }, [rsuLive, settings.centerFrequency, settings.span, showRsuOverlay]);
+  }, [rsuLive, displaySettings.centerFrequency, displaySettings.span, showRsuOverlay, rsuOverlayMode]);
+
+  const freezeView = async () => {
+    if (!liveSpectrumData) {
+      setControlError('No live spectrum frame is available to freeze.');
+      return;
+    }
+    const frozenSpectrum = {
+      ...liveSpectrumData,
+      frequencyArray: [...liveSpectrumData.frequencyArray],
+      powerLevels: [...liveSpectrumData.powerLevels],
+    };
+    setFrozenSpectrumData(frozenSpectrum);
+    setFrozenWaterfallData(liveWaterfallData.map((row) => ({ ...row, data: row.data.map((values) => [...values]) })));
+    setFrozenViewRange({ centerFrequency: settings.centerFrequency, span: settings.span });
+    setViewMode('frozen');
+    setControlError(null);
+    if (showRfIntelligenceOverlay) {
+      try {
+        const scene = await apiService.analyzeRFScene(frozenSpectrum, { thresholdOffsetDb: 10, minSnrDb: 6 });
+        setRfScene(scene);
+        setRfOverlayError(null);
+      } catch (error) {
+        setRfOverlayError(getErrorMessage(error));
+      }
+    }
+  };
+
+  const resumeLive = () => {
+    setFrozenSpectrumData(null);
+    setFrozenWaterfallData([]);
+    setFrozenViewRange(null);
+    setViewMode('live');
+    setControlError(null);
+  };
 
   const applyCenterSpan = async () => {
     const center = mhzToHz(centerMHz);
@@ -340,6 +397,10 @@ export const SpectrumView: React.FC = () => {
       return;
     }
     setControlError(null);
+    if (isFrozen) {
+      setFrozenViewRange({ centerFrequency: center, span });
+      return;
+    }
     try {
       await spectrumController.setCenterFrequency(center);
       await spectrumController.setSpan(span);
@@ -356,6 +417,11 @@ export const SpectrumView: React.FC = () => {
       return;
     }
     setControlError(null);
+    if (isFrozen) {
+      const span = stop - start;
+      setFrozenViewRange({ centerFrequency: start + span / 2, span });
+      return;
+    }
     try {
       await spectrumController.setStartStop(start, stop);
     } catch (error) {
@@ -370,13 +436,17 @@ export const SpectrumView: React.FC = () => {
       return;
     }
 
-    const nextCenter = settings.centerFrequency + direction * step;
+    const nextCenter = displaySettings.centerFrequency + direction * step;
     if (!Number.isFinite(nextCenter) || nextCenter <= 0) {
       setControlError('Center frequency must stay above 0 Hz.');
       return;
     }
 
     setControlError(null);
+    if (isFrozen) {
+      setFrozenViewRange({ centerFrequency: nextCenter, span: displaySettings.span });
+      return;
+    }
     try {
       await spectrumController.setCenterFrequency(nextCenter);
       await spectrumController.refreshSpectrum();
@@ -491,8 +561,8 @@ export const SpectrumView: React.FC = () => {
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const relativeX = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-    const start = settings.centerFrequency - settings.span / 2;
-    const frequency = start + relativeX * settings.span;
+    const start = displaySettings.centerFrequency - displaySettings.span / 2;
+    const frequency = start + relativeX * displaySettings.span;
     const level = spectrumData
       ? getLevelAtFrequency(frequency, spectrumData.frequencyArray, spectrumData.powerLevels)
       : Number.NaN;
@@ -504,8 +574,8 @@ export const SpectrumView: React.FC = () => {
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
     const relativeX = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-    const start = settings.centerFrequency - settings.span / 2;
-    return start + relativeX * settings.span;
+    const start = displaySettings.centerFrequency - displaySettings.span / 2;
+    return start + relativeX * displaySettings.span;
   };
 
   const updateCursor = (event: React.MouseEvent<HTMLCanvasElement>) => {
@@ -548,7 +618,7 @@ export const SpectrumView: React.FC = () => {
   const startMarkerDrag = (event: React.MouseEvent<HTMLCanvasElement>) => {
     const frequency = frequencyFromPointer(event);
     if (frequency === null) return;
-    const toleranceHz = settings.span * 0.01;
+    const toleranceHz = displaySettings.span * 0.01;
     const marker = markerRows.find((item) => Math.abs(item.frequency - frequency) <= toleranceHz);
     if (marker) {
       suppressNextClickRef.current = true;
@@ -559,7 +629,11 @@ export const SpectrumView: React.FC = () => {
   const zoomFromWheel = async (event: React.WheelEvent<HTMLCanvasElement>) => {
     event.preventDefault();
     const zoomFactor = event.deltaY < 0 ? 0.8 : 1.25;
-    const nextSpan = Math.max(settings.span * zoomFactor, 1_000);
+    const nextSpan = Math.max(displaySettings.span * zoomFactor, 1_000);
+    if (isFrozen) {
+      setFrozenViewRange({ centerFrequency: displaySettings.centerFrequency, span: nextSpan });
+      return;
+    }
     try {
       await spectrumController.setSpan(nextSpan);
     } catch (error) {
@@ -587,6 +661,17 @@ export const SpectrumView: React.FC = () => {
     }
 
     setControlError(null);
+    if (isFrozen) {
+      if (markerRows.length >= 2) {
+        const first = markerRows[0];
+        const second = markerRows[1];
+        const markerBandwidth = Math.abs(second.frequency - first.frequency);
+        setFrozenViewRange({ centerFrequency: strongestPeak.frequency, span: Math.max(markerBandwidth, 1_000) });
+      } else {
+        setFrozenViewRange({ centerFrequency: strongestPeak.frequency, span: displaySettings.span });
+      }
+      return;
+    }
     try {
       if (markerRows.length >= 2) {
         const first = markerRows[0];
@@ -687,11 +772,33 @@ export const SpectrumView: React.FC = () => {
 
           <button
             onClick={() => spectrumController.refreshSpectrum()}
+            disabled={isFrozen}
             className="h-9 flex items-center px-3 rounded-md bg-blue-600 hover:bg-blue-500 text-sm font-medium"
           >
             <RotateCcw className="w-4 h-4 mr-2" />
             Refresh
           </button>
+
+          {isFrozen ? (
+            <button
+              onClick={resumeLive}
+              className="h-9 flex items-center px-3 rounded-md bg-emerald-400 text-slate-950 hover:bg-emerald-300 text-sm font-medium"
+              title="Resume live spectrum and waterfall updates"
+            >
+              <Play className="w-4 h-4 mr-2" />
+              Resume Live
+            </button>
+          ) : (
+            <button
+              onClick={freezeView}
+              disabled={!spectrumData}
+              className="h-9 flex items-center px-3 rounded-md bg-violet-300 text-slate-950 hover:bg-violet-200 text-sm font-medium disabled:opacity-50"
+              title="Freeze the current spectrum and waterfall in memory"
+            >
+              <Square className="w-4 h-4 mr-2" />
+              Freeze View
+            </button>
+          )}
 
           <button
             onClick={() => setShowWaterfallSplit((current) => !current)}
@@ -753,6 +860,21 @@ export const SpectrumView: React.FC = () => {
             <ScanSearch className="w-4 h-4 mr-2" />
             Understanding Overlay
           </button>
+
+          {showRsuOverlay && (
+            <button
+              onClick={() => setRsuOverlayMode((current) => current === 'hybrid' ? 'ai_only' : 'hybrid')}
+              aria-pressed={rsuOverlayMode === 'ai_only'}
+              title={rsuOverlayMode === 'ai_only' ? 'Solo muestra regiones clasificadas por el modelo entrenado' : 'Mezcla detector/reglas con modelo entrenado'}
+              className={cn(
+                'h-9 flex items-center px-3 rounded-md text-sm font-medium',
+                rsuOverlayMode === 'ai_only' ? 'bg-fuchsia-300 text-slate-950 hover:bg-fuchsia-200' : 'bg-slate-700 hover:bg-slate-600'
+              )}
+            >
+              <BrainCircuit className="w-4 h-4 mr-2" />
+              {rsuOverlayMode === 'ai_only' ? 'AI Only' : 'Hybrid'}
+            </button>
+          )}
 
           <div className="h-9 w-px bg-slate-700 mx-1" />
 
@@ -966,13 +1088,13 @@ export const SpectrumView: React.FC = () => {
                   <RfDetectionBand
                     key={`${detection.track_id ?? detection.id}-${detection.start_frequency_hz}-${detection.stop_frequency_hz}`}
                     detection={detection}
-                    centerFrequency={settings.centerFrequency}
-                    span={settings.span}
+                    centerFrequency={displaySettings.centerFrequency}
+                    span={displaySettings.span}
                     row={index}
                   />
                 ))}
                 <div className="absolute left-12 top-12 rounded-md border border-amber-300/30 bg-slate-950/35 px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-amber-100 shadow-lg backdrop-blur-sm">
-                  RF intelligence live
+                  RF intelligence {isFrozen ? 'frozen' : 'live'}
                 </div>
               </div>
             )}
@@ -982,13 +1104,13 @@ export const SpectrumView: React.FC = () => {
                   <RsuDetectionBand
                     key={`${region.bbox_id}-${region.freq_start_hz}-${region.freq_end_hz}`}
                     region={region}
-                    centerFrequency={settings.centerFrequency}
-                    span={settings.span}
+                    centerFrequency={displaySettings.centerFrequency}
+                    span={displaySettings.span}
                     row={index}
                   />
                 ))}
                 <div className="absolute left-12 top-24 rounded-md border border-cyan-200/35 bg-slate-950/30 px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-cyan-100 shadow-lg backdrop-blur-sm">
-                  RF signal understanding live
+                  RF signal understanding {isFrozen ? 'frozen' : 'live'}
                 </div>
               </div>
             )}
@@ -998,8 +1120,8 @@ export const SpectrumView: React.FC = () => {
               </div>
             )}
             {showMarkerBadges && markerRows.map((marker) => {
-              const start = settings.centerFrequency - settings.span / 2;
-              const position = ((marker.frequency - start) / settings.span) * 100;
+              const start = displaySettings.centerFrequency - displaySettings.span / 2;
+              const position = ((marker.frequency - start) / displaySettings.span) * 100;
               if (position < 0 || position > 100) return null;
               return (
                 <div
@@ -1018,7 +1140,7 @@ export const SpectrumView: React.FC = () => {
           {showWaterfallSplit && (
             <div className="relative min-h-[180px] flex-[2_1_0%] border-t border-slate-700 bg-black">
               <div className="absolute left-4 top-3 z-10 rounded-md border border-slate-700 bg-slate-900/95 px-3 py-2 text-xs text-slate-100 shadow-lg">
-                Waterfall | {formatFrequency(settings.centerFrequency - settings.span / 2)} - {formatFrequency(settings.centerFrequency + settings.span / 2)}
+                Waterfall | {formatFrequency(displaySettings.centerFrequency - displaySettings.span / 2)} - {formatFrequency(displaySettings.centerFrequency + displaySettings.span / 2)}
               </div>
               <canvas
                 ref={waterfallCanvasRef}
@@ -1027,9 +1149,9 @@ export const SpectrumView: React.FC = () => {
                 className="h-full w-full bg-black"
               />
               <div className="absolute bottom-2 left-10 right-10 flex justify-between text-xs text-slate-300">
-                <span>{formatFrequency(settings.centerFrequency - settings.span / 2)}</span>
-                <span>{formatFrequency(settings.centerFrequency)}</span>
-                <span>{formatFrequency(settings.centerFrequency + settings.span / 2)}</span>
+                <span>{formatFrequency(displaySettings.centerFrequency - displaySettings.span / 2)}</span>
+                <span>{formatFrequency(displaySettings.centerFrequency)}</span>
+                <span>{formatFrequency(displaySettings.centerFrequency + displaySettings.span / 2)}</span>
               </div>
               <div className="absolute right-4 top-3 bottom-8 w-4 rounded-sm bg-gradient-to-b from-red-600 via-yellow-400 via-green-500 to-blue-900" />
             </div>
@@ -1038,12 +1160,13 @@ export const SpectrumView: React.FC = () => {
 
         <aside className="border-l border-slate-800 bg-slate-900 p-3 overflow-auto">
           <div className="text-xs uppercase text-slate-400 mb-2">Device Status</div>
+          <StatusRow label="View" value={isFrozen ? 'Frozen View' : 'Live View'} tone={isFrozen ? undefined : 'ok'} />
           <StatusRow label="Status" value={deviceStatus.isConnected ? 'Connected' : 'Disconnected'} tone={deviceStatus.isConnected ? 'ok' : 'bad'} />
           <StatusRow label="Driver" value={deviceStatus.driver} />
-          <StatusRow label="Center" value={formatFrequency(settings.centerFrequency)} />
-          <StatusRow label="Span" value={formatFrequency(settings.span)} />
-          <StatusRow label="Start" value={formatFrequency(settings.centerFrequency - settings.span / 2)} />
-          <StatusRow label="Stop" value={formatFrequency(settings.centerFrequency + settings.span / 2)} />
+          <StatusRow label="Center" value={formatFrequency(displaySettings.centerFrequency)} />
+          <StatusRow label="Span" value={formatFrequency(displaySettings.span)} />
+          <StatusRow label="Start" value={formatFrequency(displaySettings.centerFrequency - displaySettings.span / 2)} />
+          <StatusRow label="Stop" value={formatFrequency(displaySettings.centerFrequency + displaySettings.span / 2)} />
           <StatusRow label="Sample Rate" value={formatFrequency(deviceStatus.sampleRate || settings.span) + '/s'} />
           <StatusRow label="RBW" value={formatFrequency(settings.rbw)} />
           <StatusRow label="VBW" value={formatFrequency(settings.vbw)} />
@@ -1100,7 +1223,7 @@ export const SpectrumView: React.FC = () => {
               <div className="mt-5 flex items-center justify-between gap-2">
                 <div className="text-xs uppercase text-slate-400">Signal Understanding</div>
                 <div className="rounded-full border border-cyan-200/30 bg-cyan-300/10 px-2 py-0.5 text-[10px] text-cyan-100">
-                  {visibleRsuRegions.length} live
+                  {visibleRsuRegions.length} live · {rsuOverlayMode === 'ai_only' ? 'AI only' : 'hybrid'}
                 </div>
               </div>
               <div className="mt-2 space-y-2">
@@ -1111,6 +1234,7 @@ export const SpectrumView: React.FC = () => {
                 ) : visibleRsuRegions.slice(0, 5).map((region) => {
                   const decision = region.final_decision ?? {};
                   const spectral = region.features?.spectral ?? {};
+                  const trained = region.classification?.trained;
                   return (
                     <div key={region.bbox_id} className="rounded-md border border-cyan-200/35 bg-cyan-300/10 px-2 py-2 text-xs">
                       <div className="flex items-start justify-between gap-2">
@@ -1121,7 +1245,7 @@ export const SpectrumView: React.FC = () => {
                         <span>{formatFrequency((Number(region.freq_start_hz) + Number(region.freq_end_hz)) / 2)}</span>
                         <span className="text-right">{formatBandwidth(Number(region.freq_end_hz) - Number(region.freq_start_hz))}</span>
                         <span>SNR {Number(spectral.snr_db ?? 0).toFixed(1)} dB</span>
-                        <span className="text-right">{decision.status ?? 'unknown'}</span>
+                        <span className="text-right">{trained ? 'AI' : decision.status ?? 'unknown'}</span>
                       </div>
                     </div>
                   );

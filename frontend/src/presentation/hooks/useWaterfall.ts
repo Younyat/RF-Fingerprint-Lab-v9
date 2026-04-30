@@ -6,9 +6,11 @@ import { turboColormap } from '../../shared/utils';
 
 const apiService = new ApiService();
 
-export const useWaterfall = (enabled = true) => {
-  const waterfallData = useWaterfallData();
-  const settings = useAnalyzerSettings();
+export const useWaterfall = (enabled = true, displayData: ReturnType<typeof useWaterfallData> | null = null, displaySettings: ReturnType<typeof useAnalyzerSettings> | null = null) => {
+  const liveWaterfallData = useWaterfallData();
+  const waterfallData = displayData ?? liveWaterfallData;
+  const liveSettings = useAnalyzerSettings();
+  const settings = displaySettings ?? liveSettings;
   const deviceStatus = useDeviceStatus();
   const addWaterfallData = useAppStore((state) => state.addWaterfallData);
   const clearWaterfallData = useAppStore((state) => state.clearWaterfallData);
@@ -62,12 +64,18 @@ export const useWaterfall = (enabled = true) => {
     if (waterfallData.length > 0) {
       const latestData = waterfallData[waterfallData.length - 1];
       const powerLevels = latestData.data[0] || []; // Assuming single row for simplicity
+      const sourceCenter = latestData.centerFrequency || settings.centerFrequency;
+      const sourceSpan = latestData.span || settings.span;
+      const sourceStart = sourceCenter - sourceSpan / 2;
+      const viewStart = settings.centerFrequency - settings.span / 2;
       const powerRange = Math.max(settings.dbPerDiv, 1) * 10;
       const powerTop = settings.referenceLevel;
       const powerBottom = powerTop - powerRange;
 
       for (let x = 0; x < width; x++) {
-        const powerIndex = Math.floor((x / width) * powerLevels.length);
+        const frequency = viewStart + (x / Math.max(width - 1, 1)) * settings.span;
+        const relativeSource = (frequency - sourceStart) / Math.max(sourceSpan, 1);
+        const powerIndex = Math.floor(relativeSource * powerLevels.length);
         const powerLevel = powerLevels[powerIndex] || -100;
 
         // Normalize power level to 0-1 range

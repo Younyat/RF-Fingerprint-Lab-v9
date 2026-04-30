@@ -221,6 +221,33 @@ export class ApiService {
     return response.data;
   }
 
+  async analyzeRFScene(frame: SpectrumData, params?: {
+    thresholdOffsetDb?: number;
+    minSnrDb?: number;
+    minBins?: number;
+    mergeGapBins?: number;
+  }): Promise<RFSceneAnalysis> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_INTELLIGENCE_ANALYZE}`, {
+      frame: {
+        timestamp_utc: new Date(frame.timestamp).toISOString(),
+        center_frequency_hz: frame.centerFrequency,
+        span_hz: frame.span,
+        start_frequency_hz: frame.centerFrequency - frame.span / 2,
+        stop_frequency_hz: frame.centerFrequency + frame.span / 2,
+        sample_rate_hz: frame.span,
+        frequencies_hz: frame.frequencyArray,
+        levels_db: frame.powerLevels,
+      },
+      settings: {
+        threshold_offset_db: params?.thresholdOffsetDb ?? 10,
+        min_snr_db: params?.minSnrDb ?? 6,
+        min_bins: params?.minBins ?? 2,
+        merge_gap_bins: params?.mergeGapBins ?? 2,
+      },
+    });
+    return response.data;
+  }
+
   async analyzeRFSignalUnderstanding(payload: {
     file_path: string;
     sample_rate_hz: number;
@@ -234,13 +261,13 @@ export class ApiService {
     return response.data;
   }
 
-  async getLiveRFSignalUnderstanding(): Promise<RFSignalUnderstandingResult> {
-    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_LIVE}`);
+  async getLiveRFSignalUnderstanding(params?: { start_frequency_hz?: number; stop_frequency_hz?: number; decision_mode?: 'hybrid' | 'ai_only' }): Promise<RFSignalUnderstandingResult> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_LIVE}`, { params });
     return response.data;
   }
 
-  async compareLiveRFSignalUnderstanding(): Promise<RFSignalUnderstandingComparison> {
-    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_COMPARE_LIVE}`);
+  async compareLiveRFSignalUnderstanding(params?: { start_frequency_hz?: number; stop_frequency_hz?: number; decision_mode?: 'hybrid' | 'ai_only' }): Promise<RFSignalUnderstandingComparison> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_COMPARE_LIVE}`, null, { params });
     return response.data;
   }
 
@@ -260,6 +287,67 @@ export class ApiService {
 
   async getRFSignalUnderstandingReferences(): Promise<Record<string, any>> {
     const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_REFERENCES}`);
+    return response.data;
+  }
+
+  async reviewRFSignalRegion(payload: {
+    analysis_id: string;
+    bbox_id: string;
+    label: string;
+    review_status: string;
+    reviewer?: string;
+    notes?: string;
+    send_to_training_buffer?: boolean;
+    legacy_label?: string | null;
+  }): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_REVIEW_REGION}`, payload);
+    return response.data;
+  }
+
+  async pseudoLabelRFSignalRegion(payload: {
+    analysis_id: string;
+    bbox_id: string;
+    legacy_label: string;
+    legacy_family?: string | null;
+    legacy_confidence: number;
+    training_weight?: number;
+    center_frequency_hz?: number;
+    occupied_bandwidth_hz?: number;
+    snr_db?: number;
+  }): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_PSEUDO_LABEL}`, payload);
+    return response.data;
+  }
+
+  async captureRFSignalForTraining(payload: {
+    start_frequency_hz: number;
+    stop_frequency_hz: number;
+    duration_seconds: number;
+    label_hint?: string;
+    session_id?: string;
+    file_format?: 'iq' | 'cfile';
+  }): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_CAPTURE_FOR_TRAINING}`, payload);
+    return response.data;
+  }
+
+  async getRFSignalCaptureRegistry(): Promise<{ captures: Array<Record<string, any>> }> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_CAPTURE_REGISTRY}`);
+    return response.data;
+  }
+
+  async analyzeRegisteredRFSignalCapture(id: string): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_ANALYZE_REGISTERED_CAPTURE(id)}`);
+    return response.data;
+  }
+
+  async getRFSignalTrainingQueue(): Promise<Record<string, any>> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_TRAINING_QUEUE}`);
+    return response.data;
+  }
+
+  async trainRFSignalClassifierIncremental(payload: Record<string, any>): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_TRAIN_INCREMENTAL}`, payload);
     return response.data;
   }
 

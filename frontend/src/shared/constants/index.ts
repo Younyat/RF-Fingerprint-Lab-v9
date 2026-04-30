@@ -166,6 +166,14 @@ export const API_ENDPOINTS = {
   RF_SIGNAL_UNDERSTANDING_RESULTS: (id: string) => `/api/rf-signal-understanding/results/${id}`,
   RF_SIGNAL_UNDERSTANDING_MODELS: '/api/rf-signal-understanding/models',
   RF_SIGNAL_UNDERSTANDING_REFERENCES: '/api/rf-signal-understanding/references',
+  RF_SIGNAL_UNDERSTANDING_REVIEW_REGION: '/api/rf-signal-understanding/regions/review',
+  RF_SIGNAL_UNDERSTANDING_PSEUDO_LABEL: '/api/rf-signal-understanding/regions/pseudo-label',
+  RF_SIGNAL_UNDERSTANDING_TRAIN_INCREMENTAL: '/api/rf-signal-understanding/train-classifier-incremental',
+  RF_SIGNAL_UNDERSTANDING_COMPARE_MODELS: '/api/rf-signal-understanding/compare-models',
+  RF_SIGNAL_UNDERSTANDING_CAPTURE_FOR_TRAINING: '/api/rf-signal-understanding/capture-for-training',
+  RF_SIGNAL_UNDERSTANDING_CAPTURE_REGISTRY: '/api/rf-signal-understanding/capture-registry',
+  RF_SIGNAL_UNDERSTANDING_ANALYZE_REGISTERED_CAPTURE: (id: string) => `/api/rf-signal-understanding/capture-registry/${id}/analyze`,
+  RF_SIGNAL_UNDERSTANDING_TRAINING_QUEUE: '/api/rf-signal-understanding/training-queue',
 
   // Markers
   MARKERS_LIST: '/api/markers/',
