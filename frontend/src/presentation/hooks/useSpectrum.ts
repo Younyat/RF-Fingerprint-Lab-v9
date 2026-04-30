@@ -5,7 +5,19 @@ import { RUNTIME_CONFIG } from '../../shared/config/runtime';
 
 const apiService = new ApiService();
 
-export const useSpectrum = ({ enabled = true, displayData = null, displaySettings = null }: { enabled?: boolean; displayData?: ReturnType<typeof useSpectrumData>; displaySettings?: ReturnType<typeof useAnalyzerSettings> | null } = {}) => {
+export const useSpectrum = ({
+  enabled = true,
+  displayData = null,
+  displaySettings = null,
+  overlayData = null,
+  overlayLabel = 'Peak Hold',
+}: {
+  enabled?: boolean;
+  displayData?: ReturnType<typeof useSpectrumData>;
+  displaySettings?: ReturnType<typeof useAnalyzerSettings> | null;
+  overlayData?: ReturnType<typeof useSpectrumData>;
+  overlayLabel?: string;
+} = {}) => {
   const liveSpectrumData = useSpectrumData();
   const spectrumData = displayData ?? liveSpectrumData;
   const liveSettings = useAnalyzerSettings();
@@ -32,10 +44,9 @@ export const useSpectrum = ({ enabled = true, displayData = null, displaySetting
     }
   };
 
-  const buildDisplayTrace = (levels: number[]) => {
+  const buildDisplayTrace = (levels: number[], sourceFrequencies = spectrumData?.frequencyArray ?? [], applyTraceProcessing = true) => {
     const viewStart = settings.centerFrequency - settings.span / 2;
     const viewStop = settings.centerFrequency + settings.span / 2;
-    const sourceFrequencies = spectrumData?.frequencyArray ?? [];
     const sourceLevels = levels;
     const visibleLevels = sourceFrequencies.length === sourceLevels.length && sourceFrequencies.length > 1
       ? sourceFrequencies
@@ -45,6 +56,10 @@ export const useSpectrum = ({ enabled = true, displayData = null, displaySetting
       : sourceLevels;
     const adjusted = (visibleLevels.length > 1 ? visibleLevels : sourceLevels).map((level) => level + settings.noiseFloorOffset);
     const key = `${settings.centerFrequency}:${settings.span}:${settings.traceMode}:${settings.detectorMode}:${settings.averaging}`;
+    if (!applyTraceProcessing) {
+      return adjusted;
+    }
+
     if (lastTraceKeyRef.current !== key) {
       traceRef.current = null;
       lastTraceKeyRef.current = key;
@@ -146,12 +161,11 @@ export const useSpectrum = ({ enabled = true, displayData = null, displaySetting
       }
 
       // Draw spectrum trace
-      if (spectrumData.powerLevels.length > 0) {
-        const displayTrace = buildDisplayTrace(spectrumData.powerLevels);
-        ctx.strokeStyle = getTraceColor();
-        ctx.lineWidth = 2;
+      const drawTrace = (levels: number[], color: string, lineWidth: number, sourceFrequencies?: number[], applyTraceProcessing = true) => {
+        const displayTrace = buildDisplayTrace(levels, sourceFrequencies, applyTraceProcessing);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = lineWidth;
         ctx.beginPath();
-
         displayTrace.forEach((level, index) => {
           const x = padding + (index / Math.max(displayTrace.length - 1, 1)) * plotWidth;
           const normalizedLevel = (level - powerBottom) / powerRange;
@@ -163,18 +177,33 @@ export const useSpectrum = ({ enabled = true, displayData = null, displaySetting
             ctx.lineTo(x, y);
           }
         });
-
         ctx.stroke();
+      };
+
+      if (spectrumData.powerLevels.length > 0) {
+        drawTrace(spectrumData.powerLevels, getTraceColor(), 2, spectrumData.frequencyArray, true);
+      }
+
+      if (overlayData?.powerLevels.length) {
+        ctx.save();
+        ctx.globalAlpha = 0.82;
+        drawTrace(overlayData.powerLevels, '#fbbf24', 1.8, overlayData.frequencyArray, false);
+        ctx.restore();
       }
 
       ctx.fillStyle = '#cbd5e1';
       ctx.font = '12px sans-serif';
       ctx.textAlign = 'left';
       ctx.fillText(`${settings.dbPerDiv} dB/div | ${settings.traceMode} | ${settings.detectorMode}`, padding, 18);
+      if (overlayData?.powerLevels.length) {
+        ctx.fillStyle = '#fbbf24';
+        ctx.textAlign = 'right';
+        ctx.fillText(overlayLabel, width - padding, 18);
+      }
     });
 
     return () => cancelAnimationFrame(animationFrame);
-  }, [spectrumData, settings]);
+  }, [spectrumData, settings, overlayData, overlayLabel]);
 
   // Auto-refresh spectrum
   useEffect(() => {

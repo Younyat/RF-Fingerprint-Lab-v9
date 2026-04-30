@@ -35,6 +35,13 @@ def build_rf_signal_understanding_router(service: RFSignalUnderstandingService, 
         raw_frame = _crop_frame_to_frequency_window(raw_frame, start_frequency_hz, stop_frequency_hz)
         return service.analyze_live_frame(raw_frame, decision_mode=decision_mode)
 
+    @router.post("/analyze-frame")
+    async def analyze_frame(request: dict[str, Any], decision_mode: str = Query(default="hybrid")):
+        frame = request.get("frame", request)
+        if not isinstance(frame, dict):
+            raise HTTPException(status_code=400, detail="Frame payload must be an object")
+        return service.analyze_live_frame(frame, decision_mode=decision_mode)
+
     @router.post("/compare-live-with-rf-intelligence")
     async def compare_live_with_rf_intelligence(
         start_frequency_hz: float | None = Query(default=None),

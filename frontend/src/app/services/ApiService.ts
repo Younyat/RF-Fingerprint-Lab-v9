@@ -266,6 +266,22 @@ export class ApiService {
     return response.data;
   }
 
+  async analyzeRFSignalUnderstandingFrame(frame: SpectrumData, params?: { decision_mode?: 'hybrid' | 'ai_only' }): Promise<RFSignalUnderstandingResult> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_ANALYZE_FRAME}`, {
+      frame: {
+        timestamp_utc: new Date(frame.timestamp).toISOString(),
+        center_frequency_hz: frame.centerFrequency,
+        span_hz: frame.span,
+        start_frequency_hz: frame.centerFrequency - frame.span / 2,
+        stop_frequency_hz: frame.centerFrequency + frame.span / 2,
+        sample_rate_hz: frame.span,
+        frequencies_hz: frame.frequencyArray,
+        levels_db: frame.powerLevels,
+      },
+    }, { params });
+    return response.data;
+  }
+
   async compareLiveRFSignalUnderstanding(params?: { start_frequency_hz?: number; stop_frequency_hz?: number; decision_mode?: 'hybrid' | 'ai_only' }): Promise<RFSignalUnderstandingComparison> {
     const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_COMPARE_LIVE}`, null, { params });
     return response.data;

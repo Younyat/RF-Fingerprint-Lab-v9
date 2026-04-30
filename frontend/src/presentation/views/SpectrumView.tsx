@@ -16,6 +16,12 @@ const mhzToHz = (mhz: string) => Number(mhz) * 1e6;
 const khzToHz = (khz: string) => Number(khz) * 1e3;
 const spectrumOverlayStorageKey = 'spectrum-view-overlay-preferences';
 const apiService = new ApiService();
+const AUTO_FREEZE_TRIGGER_SNR_DB = 15;
+const AUTO_FREEZE_MIN_ABOVE_NOISE_DB = 6;
+const AUTO_FREEZE_MIN_REGION_BINS = 3;
+const AUTO_FREEZE_MIN_RELATIVE_BW = 0.3;
+const AUTO_FREEZE_MAX_RELATIVE_BW = 0.7;
+const AUTO_FREEZE_FRAME_BUFFER_SIZE = 12;
 
 const formatInput = (value: number, digits = 6) => {
   if (!Number.isFinite(value)) return '';
@@ -83,6 +89,86 @@ const formatBandwidth = (hz: number) => {
   return `${hz.toFixed(0)} Hz`;
 };
 
+const cloneSpectrumFrame = (frame: SpectrumData): SpectrumData => ({
+  ...frame,
+  frequencyArray: [...frame.frequencyArray],
+  powerLevels: [...frame.powerLevels],
+});
+
+interface AutoFreezeCandidate {
+  peakFrequencyHz: number;
+  peakLevelDb: number;
+  noiseFloorDb: number;
+  snrDb: number;
+  bandwidthHz: number;
+  startFrequencyHz: number;
+  stopFrequencyHz: number;
+  bins: number;
+}
+
+const findAutoFreezeCandidate = (
+  frame: SpectrumData,
+  band: { start: number; stop: number; span: number },
+): AutoFreezeCandidate | null => {
+  const quality = estimateBandQuality(frame.frequencyArray, frame.powerLevels, band.start, band.stop);
+  if (!quality || quality.snrDb < AUTO_FREEZE_TRIGGER_SNR_DB) return null;
+
+  const thresholdDb = quality.noiseFloorDb + AUTO_FREEZE_MIN_ABOVE_NOISE_DB;
+  const minBandwidthHz = Math.max(1_000, band.span * AUTO_FREEZE_MIN_RELATIVE_BW);
+  const maxBandwidthHz = band.span * AUTO_FREEZE_MAX_RELATIVE_BW;
+  let best: AutoFreezeCandidate | null = null;
+  let current: Array<{ frequency: number; level: number }> = [];
+
+  const finishRun = () => {
+    if (current.length < AUTO_FREEZE_MIN_REGION_BINS) {
+      current = [];
+      return;
+    }
+    let peak = current[0];
+    current.forEach((point) => {
+      if (point.level > peak.level) peak = point;
+    });
+    const startFrequencyHz = current[0].frequency;
+    const stopFrequencyHz = current[current.length - 1].frequency;
+    const bandwidthHz = Math.max(0, stopFrequencyHz - startFrequencyHz);
+    if (bandwidthHz < minBandwidthHz || bandwidthHz > maxBandwidthHz) {
+      current = [];
+      return;
+    }
+    const candidate = {
+      peakFrequencyHz: peak.frequency,
+      peakLevelDb: peak.level,
+      noiseFloorDb: quality.noiseFloorDb,
+      snrDb: peak.level - quality.noiseFloorDb,
+      bandwidthHz,
+      startFrequencyHz,
+      stopFrequencyHz,
+      bins: current.length,
+    };
+    if (!best || candidate.snrDb > best.snrDb) best = candidate;
+    current = [];
+  };
+
+  for (let index = 0; index < frame.frequencyArray.length; index += 1) {
+    const frequency = frame.frequencyArray[index];
+    const level = frame.powerLevels[index];
+    const active = (
+      Number.isFinite(frequency) &&
+      Number.isFinite(level) &&
+      frequency >= band.start &&
+      frequency <= band.stop &&
+      level >= thresholdDb
+    );
+    if (active) {
+      current.push({ frequency, level });
+    } else {
+      finishRun();
+    }
+  }
+  finishRun();
+  return best;
+};
+
 const rfFamilyStyle = (family: string) => {
   if (family.includes('wifi')) return { border: 'rgba(56,189,248,0.82)', fill: 'rgba(14,165,233,0.13)', text: 'text-sky-100', badge: 'bg-sky-400/20 border-sky-300/40' };
   if (family.includes('fm') || family.includes('broadcast')) return { border: 'rgba(52,211,153,0.82)', fill: 'rgba(16,185,129,0.13)', text: 'text-emerald-100', badge: 'bg-emerald-400/20 border-emerald-300/40' };
@@ -105,7 +191,18 @@ export const SpectrumView: React.FC = () => {
   const deviceStatus = useDeviceStatus();
   const settings = useAnalyzerSettings();
   const displaySettings = isFrozen && frozenViewRange ? { ...settings, ...frozenViewRange } : settings;
-  const { canvasRef } = useSpectrum({ enabled: !isFrozen, displayData: spectrumData, displaySettings });
+  const [peakHoldEnabled, setPeakHoldEnabled] = useState(false);
+  const [peakHoldMode, setPeakHoldMode] = useState<'permanent' | 'decay'>('permanent');
+  const [peakHoldDecayDbPerSecond, setPeakHoldDecayDbPerSecond] = useState(3);
+  const [usePeakTraceForDetection, setUsePeakTraceForDetection] = useState(false);
+  const [peakHoldData, setPeakHoldData] = useState<SpectrumData | null>(null);
+  const { canvasRef } = useSpectrum({
+    enabled: !isFrozen,
+    displayData: spectrumData,
+    displaySettings,
+    overlayData: peakHoldEnabled ? peakHoldData : null,
+    overlayLabel: peakHoldMode === 'decay' ? `Peak Hold Decay ${peakHoldDecayDbPerSecond} dB/s` : 'Max Hold',
+  });
   const [showWaterfallSplit, setShowWaterfallSplit] = useState(false);
   const { canvasRef: waterfallCanvasRef, error: waterfallError } = useWaterfall(showWaterfallSplit && !isFrozen, isFrozen ? frozenWaterfallData : null, displaySettings);
   const markers = useMarkers();
@@ -138,6 +235,7 @@ export const SpectrumView: React.FC = () => {
   const [showRfIntelligenceOverlay, setShowRfIntelligenceOverlay] = useState(true);
   const [showRsuOverlay, setShowRsuOverlay] = useState(false);
   const [rsuOverlayMode, setRsuOverlayMode] = useState<'hybrid' | 'ai_only'>('hybrid');
+  const [autoFreezeArmed, setAutoFreezeArmed] = useState(false);
   const [rfScene, setRfScene] = useState<RFSceneAnalysis | null>(null);
   const [rfOverlayError, setRfOverlayError] = useState<string | null>(null);
   const [rsuLive, setRsuLive] = useState<RFSignalUnderstandingResult | null>(null);
@@ -145,6 +243,9 @@ export const SpectrumView: React.FC = () => {
   const [panOverlayPosition, setPanOverlayPosition] = useState({ x: 16, y: 16 });
   const dragStateRef = useRef<{ type: 'pan' | null; offsetX: number; offsetY: number }>({ type: null, offsetX: 0, offsetY: 0 });
   const suppressNextClickRef = useRef(false);
+  const autoFreezeTriggeringRef = useRef(false);
+  const autoFreezeFrameBufferRef = useRef<SpectrumData[]>([]);
+  const peakHoldTimestampRef = useRef<number | null>(null);
 
   useEffect(() => {
     try {
@@ -246,6 +347,46 @@ export const SpectrumView: React.FC = () => {
   }, [deviceStatus.gain]);
 
   useEffect(() => {
+    if (isFrozen || !peakHoldEnabled || !liveSpectrumData) return;
+    setPeakHoldData((previous) => {
+      const current = cloneSpectrumFrame(liveSpectrumData);
+      const sameShape = (
+        previous &&
+        previous.powerLevels.length === current.powerLevels.length &&
+        previous.frequencyArray.length === current.frequencyArray.length &&
+        previous.centerFrequency === current.centerFrequency &&
+        previous.span === current.span
+      );
+      const now = Number.isFinite(current.timestamp) ? current.timestamp : Date.now();
+      const previousTimestamp = peakHoldTimestampRef.current ?? now;
+      const deltaSeconds = Math.max(0, (now - previousTimestamp) / 1000);
+      peakHoldTimestampRef.current = now;
+
+      if (!sameShape) return current;
+
+      return {
+        ...current,
+        powerLevels: current.powerLevels.map((level, index) => {
+          const held = previous.powerLevels[index] ?? level;
+          if (peakHoldMode === 'decay') {
+            return Math.max(level, held - peakHoldDecayDbPerSecond * deltaSeconds);
+          }
+          return Math.max(held, level);
+        }),
+      };
+    });
+  }, [isFrozen, liveSpectrumData, peakHoldDecayDbPerSecond, peakHoldEnabled, peakHoldMode]);
+
+  useEffect(() => {
+    if (isFrozen || !liveSpectrumData) return;
+    const buffer = autoFreezeFrameBufferRef.current;
+    buffer.push(cloneSpectrumFrame(liveSpectrumData));
+    if (buffer.length > AUTO_FREEZE_FRAME_BUFFER_SIZE) {
+      buffer.splice(0, buffer.length - AUTO_FREEZE_FRAME_BUFFER_SIZE);
+    }
+  }, [isFrozen, liveSpectrumData]);
+
+  useEffect(() => {
     if (isFrozen || !showRfIntelligenceOverlay || !deviceStatus.isConnected) {
       return;
     }
@@ -253,7 +394,9 @@ export const SpectrumView: React.FC = () => {
     let cancelled = false;
     const refreshRfScene = async () => {
       try {
-        const scene = await apiService.getLiveRFScene({ thresholdOffsetDb: 10, minSnrDb: 6 });
+        const scene = usePeakTraceForDetection && peakHoldData
+          ? await apiService.analyzeRFScene(peakHoldData, { thresholdOffsetDb: 10, minSnrDb: 6 })
+          : await apiService.getLiveRFScene({ thresholdOffsetDb: 10, minSnrDb: 6 });
         if (!cancelled) {
           setRfScene(scene);
           setRfOverlayError(null);
@@ -271,7 +414,7 @@ export const SpectrumView: React.FC = () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [deviceStatus.isConnected, isFrozen, showRfIntelligenceOverlay]);
+  }, [deviceStatus.isConnected, isFrozen, peakHoldData, showRfIntelligenceOverlay, usePeakTraceForDetection]);
 
   useEffect(() => {
     if (isFrozen || !showRsuOverlay || !deviceStatus.isConnected) {
@@ -281,7 +424,9 @@ export const SpectrumView: React.FC = () => {
     let cancelled = false;
     const refreshRsuLive = async () => {
       try {
-        const live = await apiService.getLiveRFSignalUnderstanding({ decision_mode: rsuOverlayMode });
+        const live = usePeakTraceForDetection && peakHoldData
+          ? await apiService.analyzeRFSignalUnderstandingFrame(peakHoldData, { decision_mode: rsuOverlayMode })
+          : await apiService.getLiveRFSignalUnderstanding({ decision_mode: rsuOverlayMode });
         if (!cancelled) {
           setRsuLive(live);
           setRsuOverlayError(null);
@@ -299,21 +444,23 @@ export const SpectrumView: React.FC = () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [deviceStatus.isConnected, isFrozen, showRsuOverlay, rsuOverlayMode]);
+  }, [deviceStatus.isConnected, isFrozen, peakHoldData, showRsuOverlay, rsuOverlayMode, usePeakTraceForDetection]);
+
+  const analysisSpectrumData = usePeakTraceForDetection && peakHoldEnabled && peakHoldData ? peakHoldData : spectrumData;
 
   const markerRows = useMemo(() => {
     return markers.map((marker) => {
-      const liveLevel = spectrumData
-        ? getLevelAtFrequency(marker.frequency, spectrumData.frequencyArray, spectrumData.powerLevels)
+      const liveLevel = analysisSpectrumData
+        ? getLevelAtFrequency(marker.frequency, analysisSpectrumData.frequencyArray, analysisSpectrumData.powerLevels)
         : marker.level;
       return {
         ...marker,
         level: Number.isFinite(liveLevel) ? liveLevel : marker.level,
       };
     });
-  }, [markers, spectrumData]);
+  }, [analysisSpectrumData, markers]);
 
-  const traceStats = useMemo(() => computeStats(spectrumData?.powerLevels ?? []), [spectrumData]);
+  const traceStats = useMemo(() => computeStats(analysisSpectrumData?.powerLevels ?? []), [analysisSpectrumData]);
 
   const deltaMarker = useMemo(() => {
     if (markerRows.length < 2) return null;
@@ -325,14 +472,35 @@ export const SpectrumView: React.FC = () => {
     };
   }, [markerRows]);
 
-  const liveMarkerBandQuality = useMemo(() => {
-    if (!spectrumData || markerRows.length < 2) return null;
+  const markerBand = useMemo(() => {
+    if (markerRows.length < 2) return null;
     const first = markerRows[0];
     const second = markerRows[1];
     const start = Math.min(first.frequency, second.frequency);
     const stop = Math.max(first.frequency, second.frequency);
-    return estimateBandQuality(spectrumData.frequencyArray, spectrumData.powerLevels, start, stop);
-  }, [markerRows, spectrumData]);
+    const span = stop - start;
+    if (!Number.isFinite(start) || !Number.isFinite(stop) || span <= 0) return null;
+    return {
+      start,
+      stop,
+      span,
+      center: start + span / 2,
+    };
+  }, [markerRows]);
+
+  const liveMarkerBandQuality = useMemo(() => {
+    if (!analysisSpectrumData || !markerBand) return null;
+    return estimateBandQuality(analysisSpectrumData.frequencyArray, analysisSpectrumData.powerLevels, markerBand.start, markerBand.stop);
+  }, [analysisSpectrumData, markerBand]);
+
+  const markerBandIsVisible = useMemo(() => {
+    if (!markerBand) return false;
+    const visibleStart = displaySettings.centerFrequency - displaySettings.span / 2;
+    const visibleStop = displaySettings.centerFrequency + displaySettings.span / 2;
+    return markerBand.start >= visibleStart && markerBand.stop <= visibleStop;
+  }, [displaySettings.centerFrequency, displaySettings.span, markerBand]);
+
+  const canArmAutoFreeze = Boolean(markerBand && markerBandIsVisible && !isFrozen && deviceStatus.isConnected);
 
   const visibleRfDetections = useMemo(() => {
     if (!showRfIntelligenceOverlay || !rfScene) return [];
@@ -355,19 +523,18 @@ export const SpectrumView: React.FC = () => {
       .slice(0, 8);
   }, [rsuLive, displaySettings.centerFrequency, displaySettings.span, showRsuOverlay, rsuOverlayMode]);
 
-  const freezeView = async () => {
-    if (!liveSpectrumData) {
+  const freezeView = async (
+    sourceFrame: SpectrumData | null = liveSpectrumData,
+    viewRange?: { centerFrequency: number; span: number },
+  ) => {
+    if (!sourceFrame) {
       setControlError('No live spectrum frame is available to freeze.');
       return;
     }
-    const frozenSpectrum = {
-      ...liveSpectrumData,
-      frequencyArray: [...liveSpectrumData.frequencyArray],
-      powerLevels: [...liveSpectrumData.powerLevels],
-    };
+    const frozenSpectrum = cloneSpectrumFrame(sourceFrame);
     setFrozenSpectrumData(frozenSpectrum);
     setFrozenWaterfallData(liveWaterfallData.map((row) => ({ ...row, data: row.data.map((values) => [...values]) })));
-    setFrozenViewRange({ centerFrequency: settings.centerFrequency, span: settings.span });
+    setFrozenViewRange(viewRange ?? { centerFrequency: displaySettings.centerFrequency, span: displaySettings.span });
     setViewMode('frozen');
     setControlError(null);
     if (showRfIntelligenceOverlay) {
@@ -379,6 +546,15 @@ export const SpectrumView: React.FC = () => {
         setRfOverlayError(getErrorMessage(error));
       }
     }
+    if (showRsuOverlay) {
+      try {
+        const analysis = await apiService.analyzeRFSignalUnderstandingFrame(frozenSpectrum, { decision_mode: rsuOverlayMode });
+        setRsuLive(analysis);
+        setRsuOverlayError(null);
+      } catch (error) {
+        setRsuOverlayError(getErrorMessage(error));
+      }
+    }
   };
 
   const resumeLive = () => {
@@ -386,8 +562,70 @@ export const SpectrumView: React.FC = () => {
     setFrozenWaterfallData([]);
     setFrozenViewRange(null);
     setViewMode('live');
+    setAutoFreezeArmed(false);
+    autoFreezeTriggeringRef.current = false;
     setControlError(null);
   };
+
+  useEffect(() => {
+    if (!markerBand || !markerBandIsVisible || isFrozen) {
+      setAutoFreezeArmed(false);
+      autoFreezeTriggeringRef.current = false;
+    }
+  }, [isFrozen, markerBand, markerBandIsVisible]);
+
+  useEffect(() => {
+    if (!autoFreezeArmed || isFrozen || !markerBand || !liveSpectrumData || autoFreezeTriggeringRef.current) {
+      return;
+    }
+    let triggerFrame: SpectrumData | null = null;
+    let triggerCandidate: AutoFreezeCandidate | null = null;
+    const recentFrames = [...autoFreezeFrameBufferRef.current, liveSpectrumData].slice(-AUTO_FREEZE_FRAME_BUFFER_SIZE);
+    for (let index = recentFrames.length - 1; index >= 0; index -= 1) {
+      const frame = recentFrames[index];
+      const candidate = findAutoFreezeCandidate(frame, markerBand);
+      if (candidate && (!triggerCandidate || candidate.snrDb > triggerCandidate.snrDb)) {
+        triggerFrame = frame;
+        triggerCandidate = candidate;
+      }
+    }
+    if (!triggerFrame || !triggerCandidate) {
+      return;
+    }
+
+    autoFreezeTriggeringRef.current = true;
+    setAutoFreezeArmed(false);
+    const triggerSpan = Math.max(triggerCandidate.bandwidthHz * 2.5, markerBand.span * 0.15, 5_000);
+    const viewRange = {
+      centerFrequency: triggerCandidate.peakFrequencyHz,
+      span: Math.min(markerBand.span, triggerSpan),
+    };
+    void freezeView(triggerFrame, viewRange).then(() => {
+      setControlError(
+        `Auto Freeze captured ${formatFrequency(triggerCandidate.peakFrequencyHz)} inside M1-M2: ` +
+        `${triggerCandidate.snrDb.toFixed(1)} dB SNR, ${formatBandwidth(triggerCandidate.bandwidthHz)} BW.`,
+      );
+      autoFreezeTriggeringRef.current = false;
+    });
+  }, [autoFreezeArmed, isFrozen, liveSpectrumData, markerBand]);
+
+  useEffect(() => {
+    if (!isFrozen || !showRsuOverlay || !frozenSpectrumData) return;
+    let cancelled = false;
+    apiService.analyzeRFSignalUnderstandingFrame(frozenSpectrumData, { decision_mode: rsuOverlayMode })
+      .then((analysis) => {
+        if (!cancelled) {
+          setRsuLive(analysis);
+          setRsuOverlayError(null);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) setRsuOverlayError(getErrorMessage(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [frozenSpectrumData, isFrozen, rsuOverlayMode, showRsuOverlay]);
 
   const applyCenterSpan = async () => {
     const center = mhzToHz(centerMHz);
@@ -563,8 +801,8 @@ export const SpectrumView: React.FC = () => {
     const relativeX = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
     const start = displaySettings.centerFrequency - displaySettings.span / 2;
     const frequency = start + relativeX * displaySettings.span;
-    const level = spectrumData
-      ? getLevelAtFrequency(frequency, spectrumData.frequencyArray, spectrumData.powerLevels)
+    const level = analysisSpectrumData
+      ? getLevelAtFrequency(frequency, analysisSpectrumData.frequencyArray, analysisSpectrumData.powerLevels)
       : Number.NaN;
     await markerController.createMarker(frequency, undefined, level);
   };
@@ -581,8 +819,8 @@ export const SpectrumView: React.FC = () => {
   const updateCursor = (event: React.MouseEvent<HTMLCanvasElement>) => {
     const frequency = frequencyFromPointer(event);
     if (frequency === null) return;
-    const level = spectrumData
-      ? getLevelAtFrequency(frequency, spectrumData.frequencyArray, spectrumData.powerLevels)
+    const level = analysisSpectrumData
+      ? getLevelAtFrequency(frequency, analysisSpectrumData.frequencyArray, analysisSpectrumData.powerLevels)
       : Number.NaN;
     setCursor({ frequency, level });
     if (draggingMarkerId) {
@@ -642,19 +880,19 @@ export const SpectrumView: React.FC = () => {
   };
 
   const createAutoPeaks = async () => {
-    if (!spectrumData) return;
-    const peaks = findLocalPeaks(spectrumData.frequencyArray, spectrumData.powerLevels, 3);
+    if (!analysisSpectrumData) return;
+    const peaks = findLocalPeaks(analysisSpectrumData.frequencyArray, analysisSpectrumData.powerLevels, 3);
     for (const [index, peak] of peaks.entries()) {
       await markerController.createMarker(peak.frequency, `P${index + 1}`, peak.level);
     }
   };
 
   const centerOnLivePeak = async () => {
-    if (!spectrumData) {
+    if (!analysisSpectrumData) {
       setControlError('No live spectrum data available to recenter.');
       return;
     }
-    const strongestPeak = findStrongestPeak(spectrumData.frequencyArray, spectrumData.powerLevels);
+    const strongestPeak = findStrongestPeak(analysisSpectrumData.frequencyArray, analysisSpectrumData.powerLevels);
     if (!strongestPeak) {
       setControlError('No valid spectral peak available to recenter.');
       return;
@@ -687,11 +925,11 @@ export const SpectrumView: React.FC = () => {
         await spectrumController.setStartStop(nextStart, nextStop);
         markerController.updateMarker(first.id, {
           frequency: nextStart,
-          level: getLevelAtFrequency(nextStart, spectrumData.frequencyArray, spectrumData.powerLevels),
+          level: getLevelAtFrequency(nextStart, analysisSpectrumData.frequencyArray, analysisSpectrumData.powerLevels),
         });
         markerController.updateMarker(second.id, {
           frequency: nextStop,
-          level: getLevelAtFrequency(nextStop, spectrumData.frequencyArray, spectrumData.powerLevels),
+          level: getLevelAtFrequency(nextStop, analysisSpectrumData.frequencyArray, analysisSpectrumData.powerLevels),
         });
         await spectrumController.refreshSpectrum();
         return;
@@ -711,10 +949,10 @@ export const SpectrumView: React.FC = () => {
   };
 
   const exportCsv = () => {
-    if (!spectrumData) return;
+    if (!analysisSpectrumData) return;
     const rows = ['frequency_hz,level_db'];
-    spectrumData.frequencyArray.forEach((frequency, index) => {
-      rows.push(`${frequency},${spectrumData.powerLevels[index] ?? ''}`);
+    analysisSpectrumData.frequencyArray.forEach((frequency, index) => {
+      rows.push(`${frequency},${analysisSpectrumData.powerLevels[index] ?? ''}`);
     });
     const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -790,7 +1028,7 @@ export const SpectrumView: React.FC = () => {
             </button>
           ) : (
             <button
-              onClick={freezeView}
+              onClick={() => freezeView()}
               disabled={!spectrumData}
               className="h-9 flex items-center px-3 rounded-md bg-violet-300 text-slate-950 hover:bg-violet-200 text-sm font-medium disabled:opacity-50"
               title="Freeze the current spectrum and waterfall in memory"
@@ -798,6 +1036,102 @@ export const SpectrumView: React.FC = () => {
               <Square className="w-4 h-4 mr-2" />
               Freeze View
             </button>
+          )}
+
+          <button
+            onClick={() => {
+              autoFreezeTriggeringRef.current = false;
+              setAutoFreezeArmed((current) => !current);
+              setControlError(null);
+            }}
+            disabled={!canArmAutoFreeze}
+            aria-pressed={autoFreezeArmed}
+            className={cn(
+              'h-9 flex items-center px-3 rounded-md text-sm font-medium disabled:opacity-50',
+              autoFreezeArmed
+                ? 'bg-amber-300 text-slate-950 hover:bg-amber-200'
+                : 'bg-slate-700 hover:bg-slate-600',
+            )}
+            title={
+              canArmAutoFreeze && markerBand
+                ? `Auto Freeze listens only between M1 and M2, centered at ${formatFrequency(markerBand.center)}. Trigger: contiguous region, SNR >= ${AUTO_FREEZE_TRIGGER_SNR_DB} dB, BW ${Math.round(AUTO_FREEZE_MIN_RELATIVE_BW * 100)}-${Math.round(AUTO_FREEZE_MAX_RELATIVE_BW * 100)}% of M1-M2.`
+                : 'Place Marker 1 and Marker 2 inside the visible spectrum before enabling Auto Freeze'
+            }
+          >
+            <Target className="w-4 h-4 mr-2" />
+            {autoFreezeArmed
+              ? `Armed ${markerBand ? formatFrequency(markerBand.center) : 'M1-M2'}`
+              : `Auto Freeze ${markerBand ? formatFrequency(markerBand.center) : 'M1-M2'}`}
+          </button>
+
+          <button
+            onClick={() => {
+              setPeakHoldEnabled((current) => !current);
+              peakHoldTimestampRef.current = null;
+            }}
+            aria-pressed={peakHoldEnabled}
+            className={cn(
+              'h-9 flex items-center px-3 rounded-md text-sm font-medium',
+              peakHoldEnabled ? 'bg-yellow-300 text-slate-950 hover:bg-yellow-200' : 'bg-slate-700 hover:bg-slate-600',
+            )}
+            title="Visual-only Max Hold / Peak Hold overlay. Does not capture or save I/Q."
+          >
+            <BarChart3 className="w-4 h-4 mr-2" />
+            {peakHoldEnabled ? 'Peak Hold On' : 'Peak Hold Off'}
+          </button>
+
+          {peakHoldEnabled && (
+            <>
+              <label className="flex flex-col gap-1 text-[11px] text-slate-400">
+                Peak Mode
+                <select
+                  value={peakHoldMode}
+                  onChange={(event) => {
+                    setPeakHoldMode(event.target.value as 'permanent' | 'decay');
+                    peakHoldTimestampRef.current = null;
+                  }}
+                  className="h-9 w-28 rounded-md border border-slate-700 bg-slate-950 px-2 text-sm text-slate-100 outline-none focus:border-blue-400"
+                >
+                  <option value="permanent">Permanent</option>
+                  <option value="decay">Decay</option>
+                </select>
+              </label>
+              {peakHoldMode === 'decay' && (
+                <label className="flex flex-col gap-1 text-[11px] text-slate-400">
+                  Decay
+                  <select
+                    value={peakHoldDecayDbPerSecond}
+                    onChange={(event) => setPeakHoldDecayDbPerSecond(Number(event.target.value))}
+                    className="h-9 w-24 rounded-md border border-slate-700 bg-slate-950 px-2 text-sm text-slate-100 outline-none focus:border-blue-400"
+                  >
+                    <option value={1}>1 dB/s</option>
+                    <option value={3}>3 dB/s</option>
+                    <option value={6}>6 dB/s</option>
+                  </select>
+                </label>
+              )}
+              <button
+                onClick={() => {
+                  setPeakHoldData(null);
+                  peakHoldTimestampRef.current = null;
+                }}
+                className="h-9 flex items-center px-3 rounded-md bg-slate-700 hover:bg-slate-600 text-sm"
+                title="Clear the current peak trace"
+              >
+                Reset Peaks
+              </button>
+              <button
+                onClick={() => setUsePeakTraceForDetection((current) => !current)}
+                aria-pressed={usePeakTraceForDetection}
+                className={cn(
+                  'h-9 flex items-center px-3 rounded-md text-sm',
+                  usePeakTraceForDetection ? 'bg-orange-300 text-slate-950 hover:bg-orange-200' : 'bg-slate-700 hover:bg-slate-600',
+                )}
+                title="Use the Peak Hold trace for markers, measurements, local detection and overlay prediction requests"
+              >
+                Use Peak For Detection
+              </button>
+            </>
           )}
 
           <button
@@ -962,10 +1296,10 @@ export const SpectrumView: React.FC = () => {
           </button>
           <button
             onClick={centerOnLivePeak}
-            disabled={!spectrumData || spectrumData.frequencyArray.length === 0}
+            disabled={!analysisSpectrumData || analysisSpectrumData.frequencyArray.length === 0}
             className={cn(
               'h-9 flex items-center px-3 rounded-md text-sm font-medium',
-              !spectrumData || spectrumData.frequencyArray.length === 0
+              !analysisSpectrumData || analysisSpectrumData.frequencyArray.length === 0
                 ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
                 : 'bg-emerald-700 hover:bg-emerald-600 text-white'
             )}
@@ -1174,6 +1508,12 @@ export const SpectrumView: React.FC = () => {
           <StatusRow label="Offset" value={formatPowerLevel(settings.noiseFloorOffset)} />
           <StatusRow label="Detector" value={settings.detectorMode} />
           <StatusRow label="Trace" value={settings.traceMode} />
+          <StatusRow
+            label="Peak Hold"
+            value={peakHoldEnabled ? (peakHoldMode === 'decay' ? `decay ${peakHoldDecayDbPerSecond} dB/s` : 'permanent') : 'off'}
+            tone={peakHoldEnabled ? 'ok' : undefined}
+          />
+          <StatusRow label="Peak Source" value={usePeakTraceForDetection && peakHoldEnabled ? 'measure/detect' : 'visual only'} />
           <StatusRow label="Scale" value={`${settings.dbPerDiv} dB/div`} />
           <StatusRow label="Averaging" value={`${settings.averaging}x`} />
           <StatusRow label="Gain" value={formatPowerLevel(deviceStatus.gain)} />
@@ -1265,6 +1605,14 @@ export const SpectrumView: React.FC = () => {
           {liveMarkerBandQuality && (
             <>
               <div className="mt-5 text-xs uppercase text-slate-400 mb-2">Marker-Band QC</div>
+              <StatusRow label="Auto Freeze" value={autoFreezeArmed ? `armed >= ${AUTO_FREEZE_TRIGGER_SNR_DB} dB` : 'off'} />
+              {markerBand && <StatusRow label="Listen center" value={formatFrequency(markerBand.center)} />}
+              {markerBand && (
+                <StatusRow
+                  label="Signal BW gate"
+                  value={`${formatBandwidth(markerBand.span * AUTO_FREEZE_MIN_RELATIVE_BW)} - ${formatBandwidth(markerBand.span * AUTO_FREEZE_MAX_RELATIVE_BW)}`}
+                />
+              )}
               <StatusRow label="Peak" value={formatPowerLevel(liveMarkerBandQuality.peakLevelDb)} />
               <StatusRow label="Noise" value={formatPowerLevel(liveMarkerBandQuality.noiseFloorDb)} />
               <StatusRow label="SNR" value={`${liveMarkerBandQuality.snrDb.toFixed(1)} dB`} />

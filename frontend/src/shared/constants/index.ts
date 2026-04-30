@@ -160,6 +160,7 @@ export const API_ENDPOINTS = {
 
   // RF Signal Understanding
   RF_SIGNAL_UNDERSTANDING_LIVE: '/api/rf-signal-understanding/live',
+  RF_SIGNAL_UNDERSTANDING_ANALYZE_FRAME: '/api/rf-signal-understanding/analyze-frame',
   RF_SIGNAL_UNDERSTANDING_ANALYZE: '/api/rf-signal-understanding/analyze',
   RF_SIGNAL_UNDERSTANDING_COMPARE: '/api/rf-signal-understanding/compare-with-rf-intelligence',
   RF_SIGNAL_UNDERSTANDING_COMPARE_LIVE: '/api/rf-signal-understanding/compare-live-with-rf-intelligence',
