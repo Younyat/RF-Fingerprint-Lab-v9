@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import importlib
 import random
 import time
 from collections import Counter
@@ -42,6 +43,9 @@ class E3SpectrogramCNN2DService:
             "input_representation": config["input_representation"],
             "input_shape": [1, config["image_height"], config["image_width"]],
             "image_normalization_mode": config["normalization_mode"],
+            "model_type": config["model_type"],
+            "default_model_type": "simple_cnn2d",
+            "available_model_types": self._available_model_types(config),
             "torch": {"available": self._torch_available(config), "status": "available" if self._torch_available(config) else "not_available"},
             "dataset": {
                 "capture_count": len(captures),
@@ -53,13 +57,15 @@ class E3SpectrogramCNN2DService:
             },
             "split": split,
             "warnings": warnings,
-            "available_for_training": self._torch_available(config) and not labels["missing_capture_ids"] and len(labels["labels"]) >= 2,
+            "available_for_training": self._model_available(config) and not labels["missing_capture_ids"] and len(labels["labels"]) >= 2,
         }
 
     def run(self, payload: dict[str, Any]) -> dict[str, Any]:
         config = self._config(payload)
         if not self._torch_available(config):
             raise RuntimeError("PyTorch is unavailable; E3 Spectrogram/Waterfall CNN 2D training is disabled")
+        if not self._model_available(config):
+            raise RuntimeError(f"{config['model_type']} requires torchvision, but torchvision is unavailable; E3 training is disabled for this model")
         captures = self._selected_captures(config)
         labels = self._labels(captures, config["label_field"])
         if labels["missing_capture_ids"]:
@@ -110,7 +116,7 @@ class E3SpectrogramCNN2DService:
             meta = [item[2] for item in batch]
             return x, y, meta
 
-        model = SmallCNN2D(len(labels["labels"])).to(device)
+        model = self._build_model(config, len(labels["labels"])).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
         criterion = nn.CrossEntropyLoss()
         train_loader = DataLoader(ImageDataset(self, train_items), batch_size=config["batch_size"], shuffle=True, collate_fn=collate)
@@ -157,7 +163,7 @@ class E3SpectrogramCNN2DService:
         overfitting_summary = self._overfitting_summary(history, config, len(labels["labels"]))
         metrics.update(
             {
-                "primary_model": "cnn2d",
+                "primary_model": config["model_type"],
                 "train_loss": history[-1]["train_loss"] if history else None,
                 "validation_loss": history[-1]["validation_loss"] if history else None,
                 "train_accuracy": history[-1]["train_accuracy"] if history else None,
@@ -240,10 +246,48 @@ class E3SpectrogramCNN2DService:
             "seed": int(payload.get("seed", 42)),
             "device": payload.get("device", "auto"),
             "force_torch_unavailable": bool(payload.get("force_torch_unavailable", False)),
+            "force_torchvision_unavailable": bool(payload.get("force_torchvision_unavailable", False)),
+            "model_type": payload.get("model_type", "simple_cnn2d"),
         }
 
     def _torch_available(self, config: dict[str, Any]) -> bool:
         return not config.get("force_torch_unavailable") and importlib.util.find_spec("torch") is not None
+
+    def _torchvision_available(self, config: dict[str, Any]) -> bool:
+        if config.get("force_torchvision_unavailable"):
+            return False
+        if importlib.util.find_spec("torchvision") is None:
+            return False
+        try:
+            importlib.import_module("torchvision.models")
+            return True
+        except Exception:
+            return False
+
+    def _available_model_types(self, config: dict[str, Any]) -> dict[str, Any]:
+        torch_available = self._torch_available(config)
+        torchvision_available = self._torchvision_available(config)
+        return {
+            "simple_cnn2d": {"available": torch_available, "requires": "torch", "default": True},
+            "resnet18": {"available": torch_available and torchvision_available, "requires": "torchvision", "pretrained_used": False},
+            "vgg11": {"available": torch_available and torchvision_available, "requires": "torchvision", "pretrained_used": False},
+        }
+
+    def _model_available(self, config: dict[str, Any]) -> bool:
+        if config["model_type"] == "simple_cnn2d":
+            return self._torch_available(config)
+        if config["model_type"] in {"resnet18", "vgg11"}:
+            return self._torch_available(config) and self._torchvision_available(config)
+        raise ValueError(f"Unsupported E3 model_type: {config['model_type']}")
+
+    def _build_model(self, config: dict[str, Any], num_classes: int):
+        if config["model_type"] == "simple_cnn2d":
+            return SmallCNN2D(num_classes)
+        if config["model_type"] == "resnet18":
+            return TorchvisionImageClassifier("resnet18", num_classes)
+        if config["model_type"] == "vgg11":
+            return TorchvisionImageClassifier("vgg11", num_classes)
+        raise ValueError(f"Unsupported E3 model_type: {config['model_type']}")
 
     def _selected_captures(self, config: dict[str, Any]) -> list[dict[str, Any]]:
         captures = self.dataset_adapter.list_existing_captures()
@@ -414,7 +458,7 @@ class E3SpectrogramCNN2DService:
                             "predicted_label": predicted,
                             "correct": str(true_label == predicted).lower(),
                             "confidence": float(np.max(probs[i])),
-                            "model_name": "cnn2d",
+                            "model_name": item["config"]["model_type"],
                             "split": item["split"],
                             "capture_id": item["capture_id"],
                             "session_id": item.get("session_id"),
@@ -481,11 +525,13 @@ class E3SpectrogramCNN2DService:
 
     def _model_metadata(self, model, config: dict[str, Any], device, torch, split: dict[str, Any]) -> dict[str, Any]:
         return {
-            "model_type": "cnn2d",
-            "architecture_name": "SmallCNN2D",
+            "model_type": config["model_type"],
+            "architecture_name": self._architecture_name(config["model_type"]),
             "input_shape": [1, config["image_height"], config["image_width"]],
             "parameter_count": sum(int(p.numel()) for p in model.parameters()),
             "trainable_parameter_count": sum(int(p.numel()) for p in model.parameters() if p.requires_grad),
+            "torchvision_available": self._torchvision_available(config),
+            "pretrained_used": False,
             "device_used": str(device),
             "torch_version": torch.__version__,
             "cuda_available": bool(torch.cuda.is_available()),
@@ -493,6 +539,9 @@ class E3SpectrogramCNN2DService:
             "split_strategy": split.get("strategy"),
             "paper_reference": self.paper_reference,
         }
+
+    def _architecture_name(self, model_type: str) -> str:
+        return {"simple_cnn2d": "SmallCNN2D", "resnet18": "ResNet18", "vgg11": "VGG11"}.get(model_type, model_type)
 
 
 def SmallCNN2D(num_classes: int):
@@ -513,3 +562,28 @@ def SmallCNN2D(num_classes: int):
         nn.Flatten(),
         nn.Linear(64, num_classes),
     )
+
+
+def TorchvisionImageClassifier(model_type: str, num_classes: int):
+    import torch.nn as nn
+    from torchvision import models
+
+    class RepeatChannels(nn.Module):
+        def forward(self, x):
+            return x.repeat(1, 3, 1, 1)
+
+    if model_type == "resnet18":
+        try:
+            base = models.resnet18(weights=None)
+        except TypeError:
+            base = models.resnet18(pretrained=False)
+        base.fc = nn.Linear(base.fc.in_features, num_classes)
+    elif model_type == "vgg11":
+        try:
+            base = models.vgg11(weights=None)
+        except TypeError:
+            base = models.vgg11(pretrained=False)
+        base.classifier[-1] = nn.Linear(base.classifier[-1].in_features, num_classes)
+    else:
+        raise ValueError(f"Unsupported torchvision E3 model_type: {model_type}")
+    return nn.Sequential(RepeatChannels(), base)

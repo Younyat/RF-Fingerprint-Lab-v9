@@ -135,6 +135,7 @@ class E3SpectrogramCNN2DBody(BaseModel):
     capture_ids: list[str] = Field(default_factory=list)
     task: str = "device_fingerprinting"
     input_representation: str = "spectrogram"
+    model_type: str = "simple_cnn2d"
     label_field: str | None = None
     split: dict[str, Any] = Field(default_factory=lambda: {"strategy": "session_disjoint", "group_by": ["session_id"]})
     window_size_samples: int = 4096
@@ -156,6 +157,7 @@ class E3SpectrogramCNN2DBody(BaseModel):
     seed: int = 42
     device: str = "auto"
     force_torch_unavailable: bool = False
+    force_torchvision_unavailable: bool = False
 
 
 class ExperimentCompareBody(BaseModel):
@@ -360,6 +362,8 @@ def build_rf_experiment_lab_router(service) -> APIRouter:
                 service.e3_spectrogram_cnn2d_run(body.model_dump()),
                 "E3 Spectrogram/Waterfall CNN 2D run completed",
             )
+        except RuntimeError as exc:
+            return _error(exc, status="not_available", available=False)
         except Exception as exc:
             return _error(exc)
 

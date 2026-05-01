@@ -116,8 +116,8 @@ TECHNIQUES = [
         "technique_name": "Spectrogram/waterfall CNN",
         "paper_reference": "Shen et al.; Lin et al.; Liu et al.; Bremnes et al.",
         "input_representation": "spectrogram",
-        "model_types": ["cnn2d"],
-        "implementation_status": "implemented_simple_cnn2d_baseline",
+        "model_types": ["simple_cnn2d", "resnet18", "vgg11"],
+        "implementation_status": "implemented_simple_cnn2d_with_optional_torchvision_models",
     },
     {
         "id": "E5",

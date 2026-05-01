@@ -152,6 +152,37 @@ class RFExperimentLabIntegrationTest(unittest.TestCase):
         finally:
             shutil.rmtree(tmp_path, ignore_errors=True)
 
+    def test_e3_torchvision_models_write_package_when_available(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            if not service.e3_service._torchvision_available({"force_torchvision_unavailable": False}):
+                self.skipTest("torchvision unavailable")
+            for model_type in ("resnet18", "vgg11"):
+                result = service.e3_spectrogram_cnn2d_run(
+                    {
+                        "capture_ids": capture_ids,
+                        "model_type": model_type,
+                        "epochs": 1,
+                        "batch_size": 4,
+                        "window_size_samples": 512,
+                        "max_samples": 12,
+                        "n_fft": 64,
+                        "hop_length": 32,
+                        "image_height": 32,
+                        "image_width": 32,
+                        "split": {"strategy": "capture_disjoint", "group_by": ["capture_id"], "train_ratio": 0.7, "validation_ratio": 0.15, "test_ratio": 0.15},
+                    }
+                )
+                files = set(result["result_package"]["files"])
+                self.assertIn("model.pt", files)
+                self.assertIn("model_metadata.json", files)
+                metadata = json.loads((Path(result["result_package"]["result_dir"]) / "model_metadata.json").read_text(encoding="utf-8"))
+                self.assertEqual(metadata["model_type"], model_type)
+                self.assertFalse(metadata["pretrained_used"])
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
     def test_e0_preserves_morphological_heuristic_detector_type(self) -> None:
         tmp_path, metadata_path = self._make_e0_workspace()
         try:
@@ -738,6 +769,41 @@ class RFExperimentLabIntegrationTest(unittest.TestCase):
             self.assertEqual(preview["input_representation"], "spectrogram")
             self.assertEqual(preview["input_shape"], [1, 32, 32])
             self.assertEqual(preview["image_normalization_mode"], "per_sample_standardization")
+            self.assertEqual(preview["model_type"], "simple_cnn2d")
+            self.assertEqual(preview["default_model_type"], "simple_cnn2d")
+            self.assertIn("simple_cnn2d", preview["available_model_types"])
+            self.assertIn("resnet18", preview["available_model_types"])
+            self.assertIn("vgg11", preview["available_model_types"])
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e3_torchvision_models_fail_cleanly_when_unavailable(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            for model_type in ("resnet18", "vgg11"):
+                preview = service.e3_spectrogram_cnn2d_preview(
+                    {
+                        "capture_ids": capture_ids,
+                        "model_type": model_type,
+                        "force_torchvision_unavailable": True,
+                        "window_size_samples": 512,
+                        "max_samples": 12,
+                        "image_height": 32,
+                        "image_width": 32,
+                    }
+                )
+                self.assertFalse(preview["available_model_types"][model_type]["available"])
+                with self.assertRaises(RuntimeError):
+                    service.e3_spectrogram_cnn2d_run(
+                        {
+                            "capture_ids": capture_ids,
+                            "model_type": model_type,
+                            "force_torchvision_unavailable": True,
+                            "epochs": 1,
+                            "max_samples": 12,
+                        }
+                    )
         finally:
             shutil.rmtree(tmp_path, ignore_errors=True)
 
@@ -802,6 +868,10 @@ class RFExperimentLabIntegrationTest(unittest.TestCase):
                     "confidence_summary.json",
                 }.issubset(files)
             )
+            metadata = json.loads((Path(result["result_package"]["result_dir"]) / "model_metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["model_type"], "simple_cnn2d")
+            self.assertFalse(metadata["pretrained_used"])
+            self.assertIn("torchvision_available", metadata)
         finally:
             shutil.rmtree(tmp_path, ignore_errors=True)
 
@@ -917,6 +987,39 @@ class RFExperimentLabIntegrationTest(unittest.TestCase):
             self.assertIn("reproducibility_summary.json", files)
             self.assertIn("predictions_summary", report)
             self.assertIn("confusion_matrices", report)
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_benchmark_report_accepts_e3_architecture_variants(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            if not service.e3_service._torchvision_available({"force_torchvision_unavailable": False}):
+                self.skipTest("torchvision unavailable")
+            split = {"strategy": "capture_disjoint", "group_by": ["capture_id"], "train_ratio": 0.7, "validation_ratio": 0.15, "test_ratio": 0.15}
+            ids = []
+            for model_type in ("simple_cnn2d", "resnet18", "vgg11"):
+                result = service.e3_spectrogram_cnn2d_run(
+                    {
+                        "capture_ids": capture_ids,
+                        "model_type": model_type,
+                        "epochs": 1,
+                        "batch_size": 4,
+                        "window_size_samples": 512,
+                        "max_samples": 12,
+                        "n_fft": 64,
+                        "hop_length": 32,
+                        "image_height": 32,
+                        "image_width": 32,
+                        "split": split,
+                    }
+                )
+                ids.append(f"e3_spectrogram_cnn2d:{Path(result['result_package']['result_dir']).name}")
+            report = service.benchmark_report({"experiment_ids": ids})
+            model_types = {row["model_type"] for row in report["metric_comparison_table"]}
+            self.assertIn("simple_cnn2d", model_types)
+            self.assertIn("resnet18", model_types)
+            self.assertIn("vgg11", model_types)
         finally:
             shutil.rmtree(tmp_path, ignore_errors=True)
 
