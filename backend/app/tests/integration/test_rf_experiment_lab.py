@@ -573,6 +573,90 @@ class RFExperimentLabIntegrationTest(unittest.TestCase):
         finally:
             shutil.rmtree(tmp_path, ignore_errors=True)
 
+    def test_e1_preview_does_not_train_and_reports_torch(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            preview = service.e1_raw_iq_cnn1d_preview({"capture_ids": capture_ids, "window_size_samples": 512, "max_windows": 12})
+            self.assertTrue(preview["preview_only"])
+            self.assertFalse(preview["training_started"])
+            self.assertIn("available", preview["torch"])
+            self.assertEqual(preview["input_representation"], "raw_iq")
+            self.assertEqual(preview["input_shape"], [2, 512])
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e1_run_fails_cleanly_if_torch_unavailable(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            with self.assertRaises(RuntimeError):
+                service.e1_raw_iq_cnn1d_run({"capture_ids": capture_ids, "force_torch_unavailable": True})
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e1_run_fails_cleanly_if_labels_missing(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset(with_labels=False)
+        try:
+            service = RFExperimentLabService(tmp_path)
+            with self.assertRaises(ValueError):
+                service.e1_raw_iq_cnn1d_run({"capture_ids": capture_ids, "epochs": 1, "max_windows": 12})
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e1_run_writes_expected_result_package_when_torch_available(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            result = service.e1_raw_iq_cnn1d_run(
+                {
+                    "capture_ids": capture_ids,
+                    "epochs": 1,
+                    "batch_size": 4,
+                    "window_size_samples": 512,
+                    "max_windows": 12,
+                    "split": {"strategy": "capture_disjoint", "group_by": ["capture_id"], "train_ratio": 0.7, "validation_ratio": 0.15, "test_ratio": 0.15},
+                }
+            )
+            self.assertTrue(result["training_completed"])
+            files = set(result["result_package"]["files"])
+            self.assertTrue(
+                {
+                    "config.yaml",
+                    "paper_reference.txt",
+                    "model.pt",
+                    "model_summary.txt",
+                    "metrics.json",
+                    "predictions.csv",
+                    "confusion_matrix_raw.csv",
+                    "confusion_matrix_normalized.csv",
+                    "classification_report.json",
+                    "split_definition.json",
+                    "dataset_version.txt",
+                    "runtime_log.csv",
+                    "training_history.csv",
+                }.issubset(files)
+            )
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e1_uses_raw_iq_representation_layer_and_group_split(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            preview = service.e1_raw_iq_cnn1d_preview(
+                {
+                    "capture_ids": capture_ids,
+                    "window_size_samples": 512,
+                    "max_windows": 12,
+                    "split": {"strategy": "session_disjoint", "group_by": ["session_id"]},
+                }
+            )
+            self.assertEqual(preview["input_representation"], "raw_iq")
+            self.assertTrue(preview["split"]["leakage_check"]["passed"])
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
     def _make_e0_workspace(self) -> tuple[Path, Path]:
         workspace_tmp = Path("tmp_rf_tests")
         workspace_tmp.mkdir(parents=True, exist_ok=True)

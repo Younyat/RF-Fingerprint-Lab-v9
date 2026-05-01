@@ -1,0 +1,344 @@
+from __future__ import annotations
+
+import importlib.util
+import random
+import time
+from collections import Counter
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from app.modules.rf_experiment_lab.experiment_config_schema import ExperimentSplitConfig
+from app.modules.rf_experiment_lab.metrics_service import MetricsService
+
+
+class E1RawIQCNN1DService:
+    experiment_id = "e1_raw_iq_cnn1d"
+    paper_reference = "Riyaz et al.; Jian et al."
+
+    def __init__(self, representation_service, dataset_adapter, split_manager, result_store) -> None:
+        self.representation_service = representation_service
+        self.dataset_adapter = dataset_adapter
+        self.split_manager = split_manager
+        self.result_store = result_store
+        self.metrics_service = MetricsService()
+
+    def preview(self, payload: dict[str, Any]) -> dict[str, Any]:
+        config = self._config(payload)
+        captures = self._selected_captures(config)
+        labels = self._labels(captures, config["label_field"])
+        split = self._split(captures, config)
+        windows = self._build_window_index(captures, config, split["assignments"], preview=True)
+        warnings = self._warnings(windows, labels["labels"])
+        return {
+            "experiment_id": self.experiment_id,
+            "preview_only": True,
+            "training_started": False,
+            "paper_reference": self.paper_reference,
+            "stage": "stage_2",
+            "task": "device_fingerprinting_closed_set",
+            "input_representation": "raw_iq",
+            "input_shape": [2, config["window_size_samples"]],
+            "torch": {"available": self._torch_available(config), "status": "available" if self._torch_available(config) else "not_available"},
+            "dataset": {
+                "capture_count": len(captures),
+                "sample_count": len(windows),
+                "class_count": len(labels["labels"]),
+                "labels": labels["labels"],
+                "class_balance": dict(Counter(item["label"] for item in windows)),
+                "missing_label_capture_ids": labels["missing_capture_ids"],
+            },
+            "split": split,
+            "warnings": warnings,
+            "available_for_training": self._torch_available(config) and not labels["missing_capture_ids"] and len(labels["labels"]) >= 2,
+        }
+
+    def run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        config = self._config(payload)
+        if not self._torch_available(config):
+            raise RuntimeError("PyTorch is unavailable; E1 Raw IQ CNN 1D training is disabled")
+        captures = self._selected_captures(config)
+        labels = self._labels(captures, config["label_field"])
+        if labels["missing_capture_ids"]:
+            raise ValueError("E1 requires labels for every capture. Missing labels: " + ", ".join(labels["missing_capture_ids"]))
+        if len(labels["labels"]) < 2:
+            raise ValueError("E1 requires at least two device classes")
+        split = self._split(captures, config)
+        windows = self._build_window_index(captures, config, split["assignments"], preview=False)
+        train_items = [item for item in windows if item["split"] == "train"]
+        eval_items = [item for item in windows if item["split"] in {"validation", "test"}]
+        if not train_items or not eval_items:
+            raise ValueError("E1 split produced empty train or evaluation set")
+        if len({item["label"] for item in train_items}) < 2:
+            raise ValueError("E1 training split must contain at least two classes")
+
+        import torch
+        from torch import nn
+        from torch.utils.data import DataLoader, Dataset
+
+        self._set_seed(config["seed"], torch)
+        device = torch.device("cuda" if torch.cuda.is_available() and config["device"] == "auto" else "cpu")
+        label_to_idx = {label: idx for idx, label in enumerate(labels["labels"])}
+
+        class WindowDataset(Dataset):
+            def __init__(self, outer, items):
+                self.outer = outer
+                self.items = items
+
+            def __len__(self):
+                return len(self.items)
+
+            def __getitem__(self, index):
+                item = self.items[index]
+                iq = self.outer.representation_service.read_iq_window_for_features(item["context"], item["window"])
+                channels = np.stack([iq.real, iq.imag]).astype(np.float32)
+                return torch.from_numpy(channels), torch.tensor(label_to_idx[item["label"]], dtype=torch.long), item
+
+        def collate(batch):
+            x = torch.stack([item[0] for item in batch])
+            y = torch.stack([item[1] for item in batch])
+            meta = [item[2] for item in batch]
+            return x, y, meta
+
+        model = SmallCNN1D(len(labels["labels"])).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
+        criterion = nn.CrossEntropyLoss()
+        train_loader = DataLoader(WindowDataset(self, train_items), batch_size=config["batch_size"], shuffle=True, collate_fn=collate)
+        eval_loader = DataLoader(WindowDataset(self, eval_items), batch_size=config["batch_size"], shuffle=False, collate_fn=collate)
+
+        history = []
+        best_loss = float("inf")
+        stale = 0
+        started = time.perf_counter()
+        for epoch in range(1, config["epochs"] + 1):
+            model.train()
+            train_loss = self._epoch_train(model, train_loader, optimizer, criterion, device)
+            val_loss = self._epoch_loss(model, eval_loader, criterion, device)
+            history.append({"epoch": epoch, "train_loss": train_loss, "validation_loss": val_loss})
+            if val_loss < best_loss:
+                best_loss = val_loss
+                stale = 0
+            else:
+                stale += 1
+            if config["early_stopping"] and stale >= config["patience"]:
+                break
+        training_time_ms = (time.perf_counter() - started) * 1000.0
+
+        started = time.perf_counter()
+        predictions = self._predict(model, eval_loader, device, labels["labels"])
+        inference_time_ms = (time.perf_counter() - started) * 1000.0
+        truth = [item["true_label"] for item in predictions]
+        pred = [item["predicted_label"] for item in predictions]
+        metrics = self.metrics_service.classification_metrics(truth, pred)
+        metrics.update(
+            {
+                "train_loss": history[-1]["train_loss"] if history else None,
+                "validation_loss": history[-1]["validation_loss"] if history else None,
+                "training_time_ms": training_time_ms,
+                "inference_time_ms": inference_time_ms,
+                "number_of_train_samples": len(train_items),
+                "number_of_test_samples": len(eval_items),
+                "number_of_classes": len(labels["labels"]),
+            }
+        )
+        result_dir = self.result_store.root / "results" / self.experiment_id / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        result_dir.mkdir(parents=True, exist_ok=False)
+        model_path = result_dir / "model.pt"
+        torch.save({"model_state_dict": model.state_dict(), "label_to_idx": label_to_idx, "config": config}, model_path)
+        metrics["model_size_bytes"] = model_path.stat().st_size
+        package = self.result_store.write_e1_artifacts(
+            result_dir,
+            config,
+            model_path,
+            str(model),
+            metrics,
+            predictions,
+            split,
+            [{"step": "training", "status": "ok", "message": f"{len(history)} epochs", "latency_ms": training_time_ms}],
+            history,
+        )
+        return {
+            "experiment_id": self.experiment_id,
+            "preview_only": False,
+            "training_started": True,
+            "training_completed": True,
+            "paper_reference": self.paper_reference,
+            "config": config,
+            "metrics": metrics,
+            "result_package": package,
+        }
+
+    def _config(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "experiment_id": self.experiment_id,
+            "dataset_version": payload.get("dataset_version", "unversioned"),
+            "capture_ids": payload.get("capture_ids") or [],
+            "label_field": payload.get("label_field", "transmitter_id"),
+            "split": payload.get("split") or {"strategy": "session_disjoint", "group_by": ["session_id"]},
+            "window_size_samples": int(payload.get("window_size_samples", 2048)),
+            "overlap": float(payload.get("overlap", 0.0)),
+            "max_windows": int(payload.get("max_windows", 128)),
+            "epochs": int(payload.get("epochs", 30)),
+            "batch_size": int(payload.get("batch_size", 32)),
+            "learning_rate": float(payload.get("learning_rate", 0.001)),
+            "optimizer": payload.get("optimizer", "adam"),
+            "weight_decay": float(payload.get("weight_decay", 0.0)),
+            "early_stopping": bool(payload.get("early_stopping", True)),
+            "patience": int(payload.get("patience", 5)),
+            "seed": int(payload.get("seed", 42)),
+            "device": payload.get("device", "auto"),
+            "force_torch_unavailable": bool(payload.get("force_torch_unavailable", False)),
+        }
+
+    def _torch_available(self, config: dict[str, Any]) -> bool:
+        return not config.get("force_torch_unavailable") and importlib.util.find_spec("torch") is not None
+
+    def _selected_captures(self, config: dict[str, Any]) -> list[dict[str, Any]]:
+        captures = self.dataset_adapter.list_existing_captures()
+        ids = {str(item) for item in config.get("capture_ids", [])}
+        if ids:
+            captures = [item for item in captures if str(item.get("capture_id")) in ids]
+        return [item for item in captures if item.get("raw_file") and item.get("metadata_file")]
+
+    def _labels(self, captures: list[dict[str, Any]], label_field: str) -> dict[str, Any]:
+        missing = [str(item.get("capture_id")) for item in captures if item.get(label_field) in (None, "")]
+        labels = sorted({str(item.get(label_field)) for item in captures if item.get(label_field) not in (None, "")})
+        return {"missing_capture_ids": missing, "labels": labels}
+
+    def _split(self, captures: list[dict[str, Any]], config: dict[str, Any]) -> dict[str, Any]:
+        split_payload = config.get("split") or {}
+        split_config = ExperimentSplitConfig.model_validate(
+            {
+                "strategy": split_payload.get("strategy", "session_disjoint"),
+                "group_by": split_payload.get("group_by", ["session_id"]),
+                "train_ratio": split_payload.get("train_ratio", 0.7),
+                "validation_ratio": split_payload.get("validation_ratio", 0.15),
+                "test_ratio": split_payload.get("test_ratio", 0.15),
+            }
+        )
+        return self.split_manager.build_split(captures, split_config)
+
+    def _build_window_index(self, captures, config, assignments, preview: bool) -> list[dict[str, Any]]:
+        items = []
+        per_capture = max(1, config["max_windows"] // max(len(captures), 1))
+        for capture in captures:
+            payload = {
+                "metadata_path": capture["metadata_file"],
+                "iq_path": capture["raw_file"],
+                "window_size_samples": config["window_size_samples"],
+                "overlap": config["overlap"],
+                "max_preview_windows": per_capture,
+                "max_export_windows": per_capture,
+                "preview": preview,
+            }
+            context, windows = self.representation_service.spectral_feature_source_windows(payload)
+            for index, window in enumerate(windows):
+                items.append(
+                    {
+                        "sample_id": f"{capture.get('capture_id')}:w{index:04d}",
+                        "capture_id": str(capture.get("capture_id")),
+                        "session_id": capture.get("session_id"),
+                        "day_id": capture.get("day_id"),
+                        "label": str(capture.get(config["label_field"])),
+                        "split": assignments.get(str(capture.get("capture_id"))),
+                        "context": context,
+                        "window": window,
+                    }
+                )
+                if len(items) >= config["max_windows"]:
+                    return items
+        return items
+
+    def _warnings(self, windows: list[dict[str, Any]], labels: list[str]) -> list[str]:
+        warnings = []
+        counts = Counter(item["label"] for item in windows)
+        for label in labels:
+            if counts.get(label, 0) < 2:
+                warnings.append(f"class {label} has too few samples")
+        train_labels = {item["label"] for item in windows if item["split"] == "train"}
+        eval_labels = {item["label"] for item in windows if item["split"] in {"validation", "test"}}
+        for label in labels:
+            if label not in train_labels:
+                warnings.append(f"class {label} missing in train split")
+            if label not in eval_labels:
+                warnings.append(f"class {label} missing in evaluation split")
+        return warnings
+
+    def _set_seed(self, seed: int, torch) -> None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
+    def _epoch_train(self, model, loader, optimizer, criterion, device) -> float:
+        losses = []
+        for x, y, _ in loader:
+            x = x.to(device)
+            y = y.to(device)
+            optimizer.zero_grad()
+            loss = criterion(model(x), y)
+            loss.backward()
+            optimizer.step()
+            losses.append(float(loss.item()))
+        return float(np.mean(losses)) if losses else 0.0
+
+    def _epoch_loss(self, model, loader, criterion, device) -> float:
+        import torch
+
+        model.eval()
+        losses = []
+        with torch.no_grad():
+            for x, y, _ in loader:
+                losses.append(float(criterion(model(x.to(device)), y.to(device)).item()))
+        return float(np.mean(losses)) if losses else 0.0
+
+    def _predict(self, model, loader, device, labels: list[str]) -> list[dict[str, Any]]:
+        import torch
+
+        model.eval()
+        rows = []
+        with torch.no_grad():
+            for x, y, meta in loader:
+                probs = torch.softmax(model(x.to(device)), dim=1).cpu().numpy()
+                pred_idx = np.argmax(probs, axis=1)
+                for i, item in enumerate(meta):
+                    true_label = labels[int(y[i].item())]
+                    predicted = labels[int(pred_idx[i])]
+                    rows.append(
+                        {
+                            "sample_id": item["sample_id"],
+                            "true_label": true_label,
+                            "predicted_label": predicted,
+                            "correct": str(true_label == predicted).lower(),
+                            "confidence": float(np.max(probs[i])),
+                            "model_name": "cnn1d",
+                            "split": item["split"],
+                            "capture_id": item["capture_id"],
+                            "session_id": item.get("session_id"),
+                            "day_id": item.get("day_id"),
+                        }
+                    )
+        return rows
+
+
+def SmallCNN1D(num_classes: int):
+    import torch.nn as nn
+
+    return nn.Sequential(
+        nn.Conv1d(2, 16, kernel_size=7, padding=3),
+        nn.BatchNorm1d(16),
+        nn.ReLU(),
+        nn.MaxPool1d(2),
+        nn.Conv1d(16, 32, kernel_size=5, padding=2),
+        nn.BatchNorm1d(32),
+        nn.ReLU(),
+        nn.MaxPool1d(2),
+        nn.Conv1d(32, 64, kernel_size=3, padding=1),
+        nn.ReLU(),
+        nn.AdaptiveAvgPool1d(1),
+        nn.Flatten(),
+        nn.Linear(64, num_classes),
+    )

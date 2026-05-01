@@ -154,6 +154,42 @@ class ExperimentResultStore:
             "model_pkl": str(model_path) if model_path else None,
         }
 
+    def write_e1_artifacts(
+        self,
+        result_dir: Path,
+        config: dict[str, Any],
+        model_path: Path,
+        model_summary: str,
+        metrics: dict[str, Any],
+        predictions: list[dict[str, Any]],
+        split_definition: dict[str, Any],
+        runtime_log: list[dict[str, Any]],
+        training_history: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        (result_dir / "config.yaml").write_text(self._to_simple_yaml(config), encoding="utf-8")
+        (result_dir / "paper_reference.txt").write_text(
+            "Riyaz et al., Deep Learning Convolutional Neural Networks for Radio Identification\n"
+            "Jian et al., Deep Learning for RF Fingerprinting: A Massive Experimental Study\n",
+            encoding="utf-8",
+        )
+        (result_dir / "model_summary.txt").write_text(model_summary, encoding="utf-8")
+        (result_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+        (result_dir / "classification_report.json").write_text(
+            json.dumps(metrics.get("classification_report", {}), indent=2),
+            encoding="utf-8",
+        )
+        (result_dir / "split_definition.json").write_text(json.dumps(split_definition, indent=2), encoding="utf-8")
+        (result_dir / "dataset_version.txt").write_text(str(config.get("dataset_version", "unversioned")) + "\n", encoding="utf-8")
+        self._write_runtime_log(result_dir / "runtime_log.csv", runtime_log)
+        self._write_predictions_csv(result_dir / "predictions.csv", predictions)
+        self._write_confusion_matrix_csv(result_dir / "confusion_matrix_raw.csv", metrics.get("confusion_matrix", {}))
+        self._write_confusion_matrix_csv(
+            result_dir / "confusion_matrix_normalized.csv",
+            self._normalized_confusion(metrics.get("confusion_matrix", {})),
+        )
+        self._write_training_history_csv(result_dir / "training_history.csv", training_history)
+        return {"result_dir": str(result_dir), "files": sorted(path.name for path in result_dir.iterdir()), "model_pt": str(model_path)}
+
     def list_results(self) -> list[dict[str, Any]]:
         results = []
         for path in sorted(self.results_dir.glob("*/*"), key=lambda item: item.stat().st_mtime, reverse=True):
@@ -257,6 +293,14 @@ class ExperimentResultStore:
             writer.writerow(["label", *labels])
             for label, row in zip(labels, matrix):
                 writer.writerow([label, *row])
+
+    def _write_training_history_csv(self, path: Path, rows: list[dict[str, Any]]) -> None:
+        headers = ["epoch", "train_loss", "validation_loss"]
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=headers)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({header: row.get(header, "") for header in headers})
 
     def _write_feature_scores_csv(self, path: Path, scores: dict[str, Any]) -> None:
         rows = scores.get("features", []) if isinstance(scores, dict) else []

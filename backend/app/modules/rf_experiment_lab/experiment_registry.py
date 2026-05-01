@@ -99,7 +99,7 @@ TECHNIQUES = [
         "paper_reference": "Riyaz et al.; Jian et al.",
         "input_representation": "raw_iq",
         "model_types": ["cnn1d", "resnet1d"],
-        "implementation_status": "not_implemented",
+        "implementation_status": "implemented_cnn1d_baseline",
     },
     {
         "id": "E2",

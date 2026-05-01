@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 
 from app.modules.rf_experiment_lab.dataset_adapter import DatasetAdapter
+from app.modules.rf_experiment_lab.e1_raw_iq_cnn1d import E1RawIQCNN1DService
 from app.modules.rf_experiment_lab.e5_spectral_baseline import E5SpectralBaselineService
 from app.modules.rf_experiment_lab.experiment_config_schema import (
     DEFAULT_METRICS,
@@ -42,6 +43,12 @@ class RFExperimentLabService:
         self.hdf5_exporter = HDF5ExperimentExporter()
         self.representation_service = RepresentationExtractionService()
         self.e5_service = E5SpectralBaselineService(
+            self.representation_service,
+            self.dataset_adapter,
+            self.split_manager,
+            self.result_store,
+        )
+        self.e1_service = E1RawIQCNN1DService(
             self.representation_service,
             self.dataset_adapter,
             self.split_manager,
@@ -171,6 +178,12 @@ class RFExperimentLabService:
 
     def e5_spectral_baseline_run(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.e5_service.run(payload)
+
+    def e1_raw_iq_cnn1d_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.e1_service.preview(payload)
+
+    def e1_raw_iq_cnn1d_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.e1_service.run(payload)
 
     def run_experiment(self, experiment_id: str, dry_run: bool = True) -> dict[str, Any]:
         config = self.result_store.load_config(experiment_id)

@@ -110,6 +110,26 @@ class E5SpectralBaselineBody(BaseModel):
     force_sklearn_unavailable: bool = False
 
 
+class E1RawIQCNN1DBody(BaseModel):
+    dataset_version: str = "unversioned"
+    capture_ids: list[str] = Field(default_factory=list)
+    label_field: str = "transmitter_id"
+    split: dict[str, Any] = Field(default_factory=lambda: {"strategy": "session_disjoint", "group_by": ["session_id"]})
+    window_size_samples: int = 2048
+    overlap: float = 0.0
+    max_windows: int = 128
+    epochs: int = 30
+    batch_size: int = 32
+    learning_rate: float = 0.001
+    optimizer: str = "adam"
+    weight_decay: float = 0.0
+    early_stopping: bool = True
+    patience: int = 5
+    seed: int = 42
+    device: str = "auto"
+    force_torch_unavailable: bool = False
+
+
 class ExperimentCompareBody(BaseModel):
     experiment_ids: list[str] = Field(default_factory=list)
     metric: str = "macro_f1"
@@ -254,6 +274,26 @@ def build_rf_experiment_lab_router(service) -> APIRouter:
             return _ok(
                 service.e5_spectral_baseline_run(body.model_dump()),
                 "E5 spectral feature baseline run completed",
+            )
+        except Exception as exc:
+            return _error(exc)
+
+    @router.post("/experiments/e1-raw-iq-cnn1d/preview")
+    async def e1_raw_iq_cnn1d_preview(body: E1RawIQCNN1DBody) -> dict[str, Any]:
+        try:
+            return _ok(
+                service.e1_raw_iq_cnn1d_preview(body.model_dump()),
+                "E1 Raw IQ CNN 1D preview completed without training",
+            )
+        except Exception as exc:
+            return _error(exc)
+
+    @router.post("/experiments/e1-raw-iq-cnn1d/run")
+    async def e1_raw_iq_cnn1d_run(body: E1RawIQCNN1DBody) -> dict[str, Any]:
+        try:
+            return _ok(
+                service.e1_raw_iq_cnn1d_run(body.model_dump()),
+                "E1 Raw IQ CNN 1D run completed",
             )
         except Exception as exc:
             return _error(exc)
