@@ -165,6 +165,10 @@ class ExperimentResultStore:
         split_definition: dict[str, Any],
         runtime_log: list[dict[str, Any]],
         training_history: list[dict[str, Any]],
+        overfitting_summary: dict[str, Any] | None = None,
+        group_metrics: dict[str, Any] | None = None,
+        confidence_summary: dict[str, Any] | None = None,
+        model_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         (result_dir / "config.yaml").write_text(self._to_simple_yaml(config), encoding="utf-8")
         (result_dir / "paper_reference.txt").write_text(
@@ -188,6 +192,12 @@ class ExperimentResultStore:
             self._normalized_confusion(metrics.get("confusion_matrix", {})),
         )
         self._write_training_history_csv(result_dir / "training_history.csv", training_history)
+        (result_dir / "training_history.json").write_text(json.dumps(training_history, indent=2), encoding="utf-8")
+        (result_dir / "overfitting_summary.json").write_text(json.dumps(overfitting_summary or {}, indent=2), encoding="utf-8")
+        (result_dir / "group_metrics.json").write_text(json.dumps(group_metrics or {}, indent=2), encoding="utf-8")
+        self._write_group_metrics_csv(result_dir / "group_metrics.csv", group_metrics or {})
+        (result_dir / "confidence_summary.json").write_text(json.dumps(confidence_summary or {}, indent=2), encoding="utf-8")
+        (result_dir / "model_metadata.json").write_text(json.dumps(model_metadata or {}, indent=2), encoding="utf-8")
         return {"result_dir": str(result_dir), "files": sorted(path.name for path in result_dir.iterdir()), "model_pt": str(model_path)}
 
     def list_results(self) -> list[dict[str, Any]]:
@@ -295,12 +305,30 @@ class ExperimentResultStore:
                 writer.writerow([label, *row])
 
     def _write_training_history_csv(self, path: Path, rows: list[dict[str, Any]]) -> None:
-        headers = ["epoch", "train_loss", "validation_loss"]
+        headers = ["epoch", "train_loss", "validation_loss", "train_accuracy", "validation_accuracy", "learning_rate", "epoch_time_ms"]
         with path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=headers)
             writer.writeheader()
             for row in rows:
                 writer.writerow({header: row.get(header, "") for header in headers})
+
+    def _write_group_metrics_csv(self, path: Path, group_metrics: dict[str, Any]) -> None:
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["group_type", "group_value", "accuracy", "count"])
+            writer.writeheader()
+            for group_type, values in group_metrics.items():
+                if not isinstance(values, dict):
+                    continue
+                for group_value, metrics in values.items():
+                    if isinstance(metrics, dict):
+                        writer.writerow(
+                            {
+                                "group_type": group_type,
+                                "group_value": group_value,
+                                "accuracy": metrics.get("accuracy"),
+                                "count": metrics.get("count"),
+                            }
+                        )
 
     def _write_feature_scores_csv(self, path: Path, scores: dict[str, Any]) -> None:
         rows = scores.get("features", []) if isinstance(scores, dict) else []
@@ -355,6 +383,11 @@ class ExperimentResultStore:
         models = {}
         for model_path in path.glob("model*.pkl"):
             models[model_path.name] = {"size_bytes": model_path.stat().st_size}
+        for model_path in path.glob("model*.pt"):
+            models[model_path.name] = {"size_bytes": model_path.stat().st_size}
+        metadata = self._load_json(path / "model_metadata.json")
+        if metadata:
+            models["metadata"] = metadata
         return models
 
     def _comparison_row(self, detail: dict[str, Any], model_name: str, metrics: dict[str, Any], metric: str) -> dict[str, Any]:

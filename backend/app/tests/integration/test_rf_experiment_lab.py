@@ -657,6 +657,74 @@ class RFExperimentLabIntegrationTest(unittest.TestCase):
         finally:
             shutil.rmtree(tmp_path, ignore_errors=True)
 
+    def test_e1_listing_detail_metadata_and_history(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            result = service.e1_raw_iq_cnn1d_run(
+                {
+                    "capture_ids": capture_ids,
+                    "epochs": 1,
+                    "batch_size": 4,
+                    "window_size_samples": 512,
+                    "max_windows": 12,
+                    "split": {"strategy": "capture_disjoint", "group_by": ["capture_id"], "train_ratio": 0.7, "validation_ratio": 0.15, "test_ratio": 0.15},
+                }
+            )
+            listing = service.list_experiments()
+            self.assertTrue(any(item["experiment_type"] == "e1_raw_iq_cnn1d" for item in listing))
+            exp_id = f"e1_raw_iq_cnn1d:{Path(result['result_package']['result_dir']).name}"
+            detail = service.get_experiment_detail(exp_id)
+            self.assertIn("metrics", detail)
+            self.assertIn("config", detail)
+            self.assertIn("metadata", detail["model_metadata"])
+            result_dir = Path(result["result_package"]["result_dir"])
+            self.assertTrue((result_dir / "training_history.json").exists())
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e1_and_e5_compare_together(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            e5 = service.e5_spectral_baseline_run({"capture_ids": capture_ids, "models": ["logistic_regression"], "split": {"strategy": "capture_disjoint", "group_by": ["capture_id"], "train_ratio": 0.7, "validation_ratio": 0.15, "test_ratio": 0.15}})
+            e1 = service.e1_raw_iq_cnn1d_run({"capture_ids": capture_ids, "epochs": 1, "batch_size": 4, "window_size_samples": 512, "max_windows": 12, "split": {"strategy": "capture_disjoint", "group_by": ["capture_id"], "train_ratio": 0.7, "validation_ratio": 0.15, "test_ratio": 0.15}})
+            ids = [
+                f"e5_spectral_feature_baseline:{Path(e5['result_package']['result_dir']).name}",
+                f"e1_raw_iq_cnn1d:{Path(e1['result_package']['result_dir']).name}",
+            ]
+            comparison = service.compare_experiments({"experiment_ids": ids, "metric": "macro_f1"})
+            types = {row["experiment_type"] for row in comparison["rows"]}
+            self.assertIn("e5_spectral_feature_baseline", types)
+            self.assertIn("e1_raw_iq_cnn1d", types)
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e1_evaluation_artifacts_written(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            result = service.e1_raw_iq_cnn1d_run(
+                {
+                    "capture_ids": capture_ids,
+                    "epochs": 1,
+                    "batch_size": 4,
+                    "window_size_samples": 512,
+                    "max_windows": 12,
+                    "split": {"strategy": "capture_disjoint", "group_by": ["capture_id"], "train_ratio": 0.7, "validation_ratio": 0.15, "test_ratio": 0.15},
+                }
+            )
+            result_dir = Path(result["result_package"]["result_dir"])
+            self.assertTrue((result_dir / "overfitting_summary.json").exists())
+            self.assertTrue((result_dir / "group_metrics.json").exists())
+            self.assertTrue((result_dir / "group_metrics.csv").exists())
+            self.assertTrue((result_dir / "confidence_summary.json").exists())
+            metadata = json.loads((result_dir / "model_metadata.json").read_text(encoding="utf-8"))
+            self.assertIn("input_shape", metadata)
+            self.assertIn("parameter_count", metadata)
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
     def _make_e0_workspace(self) -> tuple[Path, Path]:
         workspace_tmp = Path("tmp_rf_tests")
         workspace_tmp.mkdir(parents=True, exist_ok=True)

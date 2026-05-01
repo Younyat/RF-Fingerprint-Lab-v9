@@ -113,10 +113,23 @@ class E1RawIQCNN1DService:
         stale = 0
         started = time.perf_counter()
         for epoch in range(1, config["epochs"] + 1):
+            epoch_started = time.perf_counter()
             model.train()
             train_loss = self._epoch_train(model, train_loader, optimizer, criterion, device)
             val_loss = self._epoch_loss(model, eval_loader, criterion, device)
-            history.append({"epoch": epoch, "train_loss": train_loss, "validation_loss": val_loss})
+            train_acc = self._accuracy(model, train_loader, device)
+            val_acc = self._accuracy(model, eval_loader, device)
+            history.append(
+                {
+                    "epoch": epoch,
+                    "train_loss": train_loss,
+                    "validation_loss": val_loss,
+                    "train_accuracy": train_acc,
+                    "validation_accuracy": val_acc,
+                    "learning_rate": optimizer.param_groups[0]["lr"],
+                    "epoch_time_ms": (time.perf_counter() - epoch_started) * 1000.0,
+                }
+            )
             if val_loss < best_loss:
                 best_loss = val_loss
                 stale = 0
@@ -132,6 +145,9 @@ class E1RawIQCNN1DService:
         truth = [item["true_label"] for item in predictions]
         pred = [item["predicted_label"] for item in predictions]
         metrics = self.metrics_service.classification_metrics(truth, pred)
+        group_metrics = self._group_metrics(predictions)
+        confidence_summary = self._confidence_summary(predictions)
+        overfitting_summary = self._overfitting_summary(history, config, len(labels["labels"]))
         metrics.update(
             {
                 "train_loss": history[-1]["train_loss"] if history else None,
@@ -141,6 +157,11 @@ class E1RawIQCNN1DService:
                 "number_of_train_samples": len(train_items),
                 "number_of_test_samples": len(eval_items),
                 "number_of_classes": len(labels["labels"]),
+                "accuracy_by_capture_id": group_metrics["accuracy_by_capture_id"],
+                "accuracy_by_session_id": group_metrics["accuracy_by_session_id"],
+                "accuracy_by_day_id": group_metrics["accuracy_by_day_id"],
+                "accuracy_by_snr_bin": group_metrics["accuracy_by_snr_bin"],
+                "accuracy_by_class": group_metrics["accuracy_by_class"],
             }
         )
         result_dir = self.result_store.root / "results" / self.experiment_id / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
@@ -148,6 +169,7 @@ class E1RawIQCNN1DService:
         model_path = result_dir / "model.pt"
         torch.save({"model_state_dict": model.state_dict(), "label_to_idx": label_to_idx, "config": config}, model_path)
         metrics["model_size_bytes"] = model_path.stat().st_size
+        model_metadata = self._model_metadata(model, config, device, torch, split)
         package = self.result_store.write_e1_artifacts(
             result_dir,
             config,
@@ -158,6 +180,10 @@ class E1RawIQCNN1DService:
             split,
             [{"step": "training", "status": "ok", "message": f"{len(history)} epochs", "latency_ms": training_time_ms}],
             history,
+            overfitting_summary=overfitting_summary,
+            group_metrics=group_metrics,
+            confidence_summary=confidence_summary,
+            model_metadata=model_metadata,
         )
         return {
             "experiment_id": self.experiment_id,
@@ -241,6 +267,7 @@ class E1RawIQCNN1DService:
                         "capture_id": str(capture.get("capture_id")),
                         "session_id": capture.get("session_id"),
                         "day_id": capture.get("day_id"),
+                        "snr_bin": self._snr_bin(capture.get("snr_db")),
                         "label": str(capture.get(config["label_field"])),
                         "split": assignments.get(str(capture.get("capture_id"))),
                         "context": context,
@@ -250,6 +277,21 @@ class E1RawIQCNN1DService:
                 if len(items) >= config["max_windows"]:
                     return items
         return items
+
+    def _snr_bin(self, snr_value: Any) -> str | None:
+        if snr_value is None:
+            return None
+        try:
+            snr = float(snr_value)
+        except (TypeError, ValueError):
+            return None
+        if snr < 10:
+            return "lt_10db"
+        if snr < 20:
+            return "10_20db"
+        if snr < 30:
+            return "20_30db"
+        return "gte_30db"
 
     def _warnings(self, windows: list[dict[str, Any]], labels: list[str]) -> list[str]:
         warnings = []
@@ -295,6 +337,19 @@ class E1RawIQCNN1DService:
                 losses.append(float(criterion(model(x.to(device)), y.to(device)).item()))
         return float(np.mean(losses)) if losses else 0.0
 
+    def _accuracy(self, model, loader, device) -> float:
+        import torch
+
+        model.eval()
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for x, y, _ in loader:
+                pred = torch.argmax(model(x.to(device)), dim=1).cpu()
+                correct += int(torch.sum(pred == y).item())
+                total += int(y.numel())
+        return correct / max(total, 1)
+
     def _predict(self, model, loader, device, labels: list[str]) -> list[dict[str, Any]]:
         import torch
 
@@ -319,9 +374,85 @@ class E1RawIQCNN1DService:
                             "capture_id": item["capture_id"],
                             "session_id": item.get("session_id"),
                             "day_id": item.get("day_id"),
+                            "snr_bin": item.get("snr_bin"),
                         }
                     )
         return rows
+
+    def _group_metrics(self, predictions: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "accuracy_by_capture_id": self._accuracy_by(predictions, "capture_id"),
+            "accuracy_by_session_id": self._accuracy_by(predictions, "session_id"),
+            "accuracy_by_day_id": self._accuracy_by(predictions, "day_id"),
+            "accuracy_by_snr_bin": self._accuracy_by(predictions, "snr_bin"),
+            "accuracy_by_class": self._accuracy_by(predictions, "true_label"),
+        }
+
+    def _accuracy_by(self, predictions: list[dict[str, Any]], key: str) -> dict[str, Any]:
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for row in predictions:
+            value = str(row.get(key) or "unknown")
+            groups.setdefault(value, []).append(row)
+        return {
+            group: {
+                "accuracy": sum(1 for row in rows if row.get("correct") == "true") / max(len(rows), 1),
+                "count": len(rows),
+            }
+            for group, rows in groups.items()
+        }
+
+    def _confidence_summary(self, predictions: list[dict[str, Any]]) -> dict[str, Any]:
+        correct = [float(row["confidence"]) for row in predictions if row.get("correct") == "true" and row.get("confidence") is not None]
+        incorrect = [float(row["confidence"]) for row in predictions if row.get("correct") == "false" and row.get("confidence") is not None]
+        high_errors = [row for row in predictions if row.get("correct") == "false" and float(row.get("confidence") or 0.0) >= 0.8]
+        low_correct = [row for row in predictions if row.get("correct") == "true" and float(row.get("confidence") or 0.0) <= 0.55]
+        mean_correct = float(np.mean(correct)) if correct else None
+        mean_incorrect = float(np.mean(incorrect)) if incorrect else None
+        return {
+            "mean_confidence_correct": mean_correct,
+            "mean_confidence_incorrect": mean_incorrect,
+            "high_confidence_errors": len(high_errors),
+            "low_confidence_correct": len(low_correct),
+            "calibration_warning": bool(mean_incorrect is not None and mean_correct is not None and mean_incorrect >= mean_correct),
+        }
+
+    def _overfitting_summary(self, history: list[dict[str, Any]], config: dict[str, Any], class_count: int) -> dict[str, Any]:
+        if not history:
+            return {}
+        best = min(history, key=lambda row: row["validation_loss"])
+        final = history[-1]
+        patience = max(int(config.get("patience", 5)), 1)
+        recent = history[-patience:] if len(history) >= patience else history
+        overfit = len(recent) >= patience and recent[-1]["train_loss"] <= recent[0]["train_loss"] and recent[-1]["validation_loss"] > recent[0]["validation_loss"]
+        chance = 1.0 / max(class_count, 1)
+        underfit = bool(final.get("train_accuracy", 0.0) <= chance + 0.05 and final.get("validation_accuracy", 0.0) <= chance + 0.05)
+        return {
+            "best_epoch": best["epoch"],
+            "best_validation_loss": best["validation_loss"],
+            "final_train_loss": final["train_loss"],
+            "final_validation_loss": final["validation_loss"],
+            "train_val_loss_gap": final["validation_loss"] - final["train_loss"],
+            "early_stopped": len(history) < config["epochs"],
+            "overfitting_warning": bool(overfit),
+            "underfitting_warning": bool(underfit),
+        }
+
+    def _model_metadata(self, model, config: dict[str, Any], device, torch, split: dict[str, Any]) -> dict[str, Any]:
+        parameter_count = sum(int(p.numel()) for p in model.parameters())
+        trainable = sum(int(p.numel()) for p in model.parameters() if p.requires_grad)
+        return {
+            "model_type": "cnn1d",
+            "architecture_name": "SmallCNN1D",
+            "input_shape": [2, config["window_size_samples"]],
+            "parameter_count": parameter_count,
+            "trainable_parameter_count": trainable,
+            "device_used": str(device),
+            "torch_version": torch.__version__,
+            "cuda_available": bool(torch.cuda.is_available()),
+            "dataset_version": config.get("dataset_version"),
+            "split_strategy": split.get("strategy"),
+            "paper_reference": self.paper_reference,
+        }
 
 
 def SmallCNN1D(num_classes: int):
