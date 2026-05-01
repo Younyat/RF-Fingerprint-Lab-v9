@@ -87,6 +87,20 @@ class RepresentationExtractionService:
     def fft_psd_for_features(self, iq: np.ndarray, context: dict[str, Any], payload: dict[str, Any], window: dict[str, Any]) -> dict[str, Any]:
         return self._compute_fft_psd(iq, context, payload, window)
 
+    def time_frequency_for_features(
+        self,
+        representation_type: str,
+        iq: np.ndarray,
+        context: dict[str, Any],
+        payload: dict[str, Any],
+        window: dict[str, Any],
+    ) -> dict[str, Any]:
+        if representation_type == "spectrogram":
+            return self._compute_spectrogram(iq, context, payload, window)
+        if representation_type == "waterfall":
+            return self._compute_waterfall(iq, context, payload, window)
+        raise ValueError(f"Unsupported E3 representation: {representation_type}")
+
     def _derived_preview(self, representation_type: str, payload: dict[str, Any], compute_fn) -> dict[str, Any]:
         context = self._context(payload)
         windows = self._window_plan(context, payload, preview=True)

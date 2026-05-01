@@ -114,10 +114,10 @@ TECHNIQUES = [
         "id": "E3",
         "family": "stage2_device_fingerprinting",
         "technique_name": "Spectrogram/waterfall CNN",
-        "paper_reference": "Shen et al.; Lin et al.",
+        "paper_reference": "Shen et al.; Lin et al.; Liu et al.; Bremnes et al.",
         "input_representation": "spectrogram",
-        "model_types": ["cnn2d", "resnet18", "vgg11"],
-        "implementation_status": "not_implemented",
+        "model_types": ["cnn2d"],
+        "implementation_status": "implemented_simple_cnn2d_baseline",
     },
     {
         "id": "E5",

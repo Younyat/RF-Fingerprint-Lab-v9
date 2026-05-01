@@ -8,8 +8,10 @@ from typing import Any
 
 import numpy as np
 
+from app.modules.rf_experiment_lab.benchmark_report import BenchmarkReportBuilder
 from app.modules.rf_experiment_lab.dataset_adapter import DatasetAdapter
 from app.modules.rf_experiment_lab.e1_raw_iq_cnn1d import E1RawIQCNN1DService
+from app.modules.rf_experiment_lab.e3_spectrogram_cnn2d import E3SpectrogramCNN2DService
 from app.modules.rf_experiment_lab.e5_spectral_baseline import E5SpectralBaselineService
 from app.modules.rf_experiment_lab.experiment_config_schema import (
     DEFAULT_METRICS,
@@ -39,6 +41,7 @@ class RFExperimentLabService:
         self.metrics = MetricsService()
         self.model_registry = ModelRegistryAdapter(mlops_service)
         self.report_builder = ForensicReportBuilder()
+        self.benchmark_report_builder = BenchmarkReportBuilder(self.result_store)
         self.sigmf_exporter = SigMFExporter()
         self.hdf5_exporter = HDF5ExperimentExporter()
         self.representation_service = RepresentationExtractionService()
@@ -49,6 +52,12 @@ class RFExperimentLabService:
             self.result_store,
         )
         self.e1_service = E1RawIQCNN1DService(
+            self.representation_service,
+            self.dataset_adapter,
+            self.split_manager,
+            self.result_store,
+        )
+        self.e3_service = E3SpectrogramCNN2DService(
             self.representation_service,
             self.dataset_adapter,
             self.split_manager,
@@ -79,7 +88,7 @@ class RFExperimentLabService:
                 "faster_rcnn": "not_implemented",
                 "yolo": "not_implemented",
                 "cnn1d": "not_implemented",
-                "cnn2d": "not_implemented",
+                "cnn2d": "implemented_simple_cnn2d_baseline",
                 "transformer": "not_implemented",
                 "metric_learning": "not_implemented",
                 "bispectrum": "not_implemented",
@@ -184,6 +193,12 @@ class RFExperimentLabService:
 
     def e1_raw_iq_cnn1d_run(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.e1_service.run(payload)
+
+    def e3_spectrogram_cnn2d_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.e3_service.preview(payload)
+
+    def e3_spectrogram_cnn2d_run(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.e3_service.run(payload)
 
     def run_experiment(self, experiment_id: str, dry_run: bool = True) -> dict[str, Any]:
         config = self.result_store.load_config(experiment_id)
@@ -315,6 +330,9 @@ class RFExperimentLabService:
             payload.get("experiment_ids") or [],
             payload.get("metric", "macro_f1"),
         )
+
+    def benchmark_report(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.benchmark_report_builder.build(payload)
 
     def build_forensic_report(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.report_builder.build_report(

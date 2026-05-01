@@ -200,6 +200,54 @@ class ExperimentResultStore:
         (result_dir / "model_metadata.json").write_text(json.dumps(model_metadata or {}, indent=2), encoding="utf-8")
         return {"result_dir": str(result_dir), "files": sorted(path.name for path in result_dir.iterdir()), "model_pt": str(model_path)}
 
+    def write_e3_artifacts(
+        self,
+        result_dir: Path,
+        config: dict[str, Any],
+        model_path: Path,
+        model_summary: str,
+        metrics: dict[str, Any],
+        predictions: list[dict[str, Any]],
+        split_definition: dict[str, Any],
+        runtime_log: list[dict[str, Any]],
+        training_history: list[dict[str, Any]],
+        overfitting_summary: dict[str, Any] | None = None,
+        group_metrics: dict[str, Any] | None = None,
+        confidence_summary: dict[str, Any] | None = None,
+        model_metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        (result_dir / "config.yaml").write_text(self._to_simple_yaml(config), encoding="utf-8")
+        (result_dir / "paper_reference.txt").write_text(
+            "Shen et al., Radio Frequency Fingerprint Identification for LoRa Using Deep Learning\n"
+            "Lin et al., A Radio Frequency Signal Recognition Method Based on Spectrogram\n"
+            "Liu et al., RF Fingerprint Recognition Based on Spectrum Waterfall Diagram\n"
+            "Bremnes et al., Classification of UAVs Utilizing Fixed Boundary Empirical Wavelet Sub-Bands\n",
+            encoding="utf-8",
+        )
+        (result_dir / "model_summary.txt").write_text(model_summary, encoding="utf-8")
+        (result_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+        (result_dir / "classification_report.json").write_text(
+            json.dumps(metrics.get("classification_report", {}), indent=2),
+            encoding="utf-8",
+        )
+        (result_dir / "split_definition.json").write_text(json.dumps(split_definition, indent=2), encoding="utf-8")
+        (result_dir / "dataset_version.txt").write_text(str(config.get("dataset_version", "unversioned")) + "\n", encoding="utf-8")
+        self._write_runtime_log(result_dir / "runtime_log.csv", runtime_log)
+        self._write_predictions_csv(result_dir / "predictions.csv", predictions)
+        self._write_confusion_matrix_csv(result_dir / "confusion_matrix_raw.csv", metrics.get("confusion_matrix", {}))
+        self._write_confusion_matrix_csv(
+            result_dir / "confusion_matrix_normalized.csv",
+            self._normalized_confusion(metrics.get("confusion_matrix", {})),
+        )
+        self._write_training_history_csv(result_dir / "training_history.csv", training_history)
+        (result_dir / "training_history.json").write_text(json.dumps(training_history, indent=2), encoding="utf-8")
+        (result_dir / "overfitting_summary.json").write_text(json.dumps(overfitting_summary or {}, indent=2), encoding="utf-8")
+        (result_dir / "group_metrics.json").write_text(json.dumps(group_metrics or {}, indent=2), encoding="utf-8")
+        self._write_group_metrics_csv(result_dir / "group_metrics.csv", group_metrics or {})
+        (result_dir / "confidence_summary.json").write_text(json.dumps(confidence_summary or {}, indent=2), encoding="utf-8")
+        (result_dir / "model_metadata.json").write_text(json.dumps(model_metadata or {}, indent=2), encoding="utf-8")
+        return {"result_dir": str(result_dir), "files": sorted(path.name for path in result_dir.iterdir()), "model_pt": str(model_path)}
+
     def list_results(self) -> list[dict[str, Any]]:
         results = []
         for path in sorted(self.results_dir.glob("*/*"), key=lambda item: item.stat().st_mtime, reverse=True):

@@ -725,6 +725,201 @@ class RFExperimentLabIntegrationTest(unittest.TestCase):
         finally:
             shutil.rmtree(tmp_path, ignore_errors=True)
 
+    def test_e3_preview_does_not_train_and_reports_torch(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            preview = service.e3_spectrogram_cnn2d_preview(
+                {"capture_ids": capture_ids, "window_size_samples": 512, "max_samples": 12, "image_height": 32, "image_width": 32}
+            )
+            self.assertTrue(preview["preview_only"])
+            self.assertFalse(preview["training_started"])
+            self.assertIn("available", preview["torch"])
+            self.assertEqual(preview["input_representation"], "spectrogram")
+            self.assertEqual(preview["input_shape"], [1, 32, 32])
+            self.assertEqual(preview["image_normalization_mode"], "per_sample_standardization")
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e3_run_fails_cleanly_if_torch_unavailable(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            with self.assertRaises(RuntimeError):
+                service.e3_spectrogram_cnn2d_run({"capture_ids": capture_ids, "force_torch_unavailable": True})
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e3_run_fails_cleanly_if_labels_missing(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset(with_labels=False)
+        try:
+            service = RFExperimentLabService(tmp_path)
+            with self.assertRaises(ValueError):
+                service.e3_spectrogram_cnn2d_run({"capture_ids": capture_ids, "epochs": 1, "max_samples": 12})
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e3_run_writes_expected_result_package_when_torch_available(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            result = service.e3_spectrogram_cnn2d_run(
+                {
+                    "capture_ids": capture_ids,
+                    "epochs": 1,
+                    "batch_size": 4,
+                    "window_size_samples": 512,
+                    "max_samples": 12,
+                    "n_fft": 64,
+                    "hop_length": 32,
+                    "image_height": 32,
+                    "image_width": 32,
+                    "split": {"strategy": "capture_disjoint", "group_by": ["capture_id"], "train_ratio": 0.7, "validation_ratio": 0.15, "test_ratio": 0.15},
+                }
+            )
+            self.assertTrue(result["training_completed"])
+            files = set(result["result_package"]["files"])
+            self.assertTrue(
+                {
+                    "config.yaml",
+                    "paper_reference.txt",
+                    "model.pt",
+                    "model_summary.txt",
+                    "model_metadata.json",
+                    "metrics.json",
+                    "predictions.csv",
+                    "confusion_matrix_raw.csv",
+                    "confusion_matrix_normalized.csv",
+                    "classification_report.json",
+                    "split_definition.json",
+                    "dataset_version.txt",
+                    "runtime_log.csv",
+                    "training_history.csv",
+                    "training_history.json",
+                    "overfitting_summary.json",
+                    "group_metrics.json",
+                    "group_metrics.csv",
+                    "confidence_summary.json",
+                }.issubset(files)
+            )
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e3_uses_waterfall_representation_layer_and_group_split(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            preview = service.e3_spectrogram_cnn2d_preview(
+                {
+                    "capture_ids": capture_ids,
+                    "input_representation": "waterfall",
+                    "window_size_samples": 512,
+                    "max_samples": 12,
+                    "image_height": 32,
+                    "image_width": 32,
+                    "split": {"strategy": "session_disjoint", "group_by": ["session_id"]},
+                }
+            )
+            self.assertEqual(preview["input_representation"], "waterfall")
+            self.assertTrue(preview["split"]["leakage_check"]["passed"])
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e3_listing_detail_and_comparison_with_e1_e5(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            split = {"strategy": "capture_disjoint", "group_by": ["capture_id"], "train_ratio": 0.7, "validation_ratio": 0.15, "test_ratio": 0.15}
+            e5 = service.e5_spectral_baseline_run({"capture_ids": capture_ids, "models": ["logistic_regression"], "split": split})
+            e1 = service.e1_raw_iq_cnn1d_run({"capture_ids": capture_ids, "epochs": 1, "batch_size": 4, "window_size_samples": 512, "max_windows": 12, "split": split})
+            e3 = service.e3_spectrogram_cnn2d_run(
+                {
+                    "capture_ids": capture_ids,
+                    "epochs": 1,
+                    "batch_size": 4,
+                    "window_size_samples": 512,
+                    "max_samples": 12,
+                    "n_fft": 64,
+                    "hop_length": 32,
+                    "image_height": 32,
+                    "image_width": 32,
+                    "split": split,
+                }
+            )
+            listing = service.list_experiments()
+            self.assertTrue(any(item["experiment_type"] == "e3_spectrogram_cnn2d" for item in listing))
+            e3_id = f"e3_spectrogram_cnn2d:{Path(e3['result_package']['result_dir']).name}"
+            detail = service.get_experiment_detail(e3_id)
+            self.assertIn("metadata", detail["model_metadata"])
+            ids = [
+                f"e5_spectral_feature_baseline:{Path(e5['result_package']['result_dir']).name}",
+                f"e1_raw_iq_cnn1d:{Path(e1['result_package']['result_dir']).name}",
+                e3_id,
+            ]
+            comparison = service.compare_experiments({"experiment_ids": ids, "metric": "macro_f1"})
+            types = {row["experiment_type"] for row in comparison["rows"]}
+            self.assertIn("e5_spectral_feature_baseline", types)
+            self.assertIn("e1_raw_iq_cnn1d", types)
+            self.assertIn("e3_spectrogram_cnn2d", types)
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_benchmark_report_compares_e1_e3_e5_and_sorts_macro_f1(self) -> None:
+        tmp_path, service, ids = self._make_benchmark_runs()
+        try:
+            report = service.benchmark_report({"experiment_ids": ids})
+            self.assertEqual(set(report["experiment_ids"]), set(ids))
+            types = {row["experiment_type"] for row in report["metric_comparison_table"]}
+            self.assertIn("e5_spectral_feature_baseline", types)
+            self.assertIn("e1_raw_iq_cnn1d", types)
+            self.assertIn("e3_spectrogram_cnn2d", types)
+            values = [row["macro_f1"] for row in report["metric_comparison_table"] if row["macro_f1"] is not None]
+            self.assertEqual(values, sorted(values, reverse=True))
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_benchmark_report_warnings_for_dataset_and_split_mismatch(self) -> None:
+        tmp_path, service, ids = self._make_benchmark_runs(dataset_versions=("dataset_a", "dataset_b", "dataset_c"), split_variants=True)
+        try:
+            report = service.benchmark_report({"experiment_ids": ids, "include_group_metrics": True})
+            self.assertTrue(report["warnings"]["different_dataset_versions"]["active"])
+            self.assertTrue(report["warnings"]["different_split_strategies"]["active"])
+            self.assertIn("missing_metrics", report["warnings"])
+            self.assertIn("missing_group_metrics", report["warnings"])
+            self.assertIn("incompatible_label_spaces", report["warnings"])
+            self.assertIn("debug_random_split_used", report["warnings"])
+            self.assertIn("low_sample_count", report["warnings"])
+            self.assertIn("class_missing_in_test", report["warnings"])
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_benchmark_report_identifies_best_fastest_and_exports(self) -> None:
+        tmp_path, service, ids = self._make_benchmark_runs()
+        try:
+            report = service.benchmark_report(
+                {
+                    "experiment_ids": ids,
+                    "include_predictions_summary": True,
+                    "include_group_metrics": True,
+                    "include_confusion_matrices": True,
+                    "export": True,
+                }
+            )
+            self.assertIsNotNone(report["best_model_by_macro_f1"])
+            self.assertIsNotNone(report["best_model_by_balanced_accuracy"])
+            self.assertIsNotNone(report["fastest_model_by_inference_time_ms"])
+            self.assertIn("export_package", report)
+            files = set(report["export_package"]["files"])
+            self.assertIn("benchmark_report.json", files)
+            self.assertIn("benchmark_report.md", files)
+            self.assertIn("comparison_table.csv", files)
+            self.assertIn("warnings.json", files)
+            self.assertIn("reproducibility_summary.json", files)
+            self.assertIn("predictions_summary", report)
+            self.assertIn("confusion_matrices", report)
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
     def _make_e0_workspace(self) -> tuple[Path, Path]:
         workspace_tmp = Path("tmp_rf_tests")
         workspace_tmp.mkdir(parents=True, exist_ok=True)
@@ -876,6 +1071,54 @@ class RFExperimentLabIntegrationTest(unittest.TestCase):
                 encoding="utf-8",
             )
         return tmp_path, capture_ids
+
+    def _make_benchmark_runs(
+        self,
+        dataset_versions: tuple[str, str, str] = ("bench_dataset", "bench_dataset", "bench_dataset"),
+        split_variants: bool = False,
+    ) -> tuple[Path, RFExperimentLabService, list[str]]:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        service = RFExperimentLabService(tmp_path)
+        capture_split = {"strategy": "capture_disjoint", "group_by": ["capture_id"], "train_ratio": 0.7, "validation_ratio": 0.15, "test_ratio": 0.15}
+        session_split = {"strategy": "session_disjoint", "group_by": ["session_id"], "train_ratio": 0.7, "validation_ratio": 0.15, "test_ratio": 0.15}
+        e5_split = capture_split
+        e1_split = session_split if split_variants else capture_split
+        e3_split = capture_split
+        e5 = service.e5_spectral_baseline_run(
+            {"capture_ids": capture_ids, "dataset_version": dataset_versions[0], "models": ["logistic_regression"], "split": e5_split}
+        )
+        e1 = service.e1_raw_iq_cnn1d_run(
+            {
+                "capture_ids": capture_ids,
+                "dataset_version": dataset_versions[1],
+                "epochs": 1,
+                "batch_size": 4,
+                "window_size_samples": 512,
+                "max_windows": 12,
+                "split": e1_split,
+            }
+        )
+        e3 = service.e3_spectrogram_cnn2d_run(
+            {
+                "capture_ids": capture_ids,
+                "dataset_version": dataset_versions[2],
+                "epochs": 1,
+                "batch_size": 4,
+                "window_size_samples": 512,
+                "max_samples": 12,
+                "n_fft": 64,
+                "hop_length": 32,
+                "image_height": 32,
+                "image_width": 32,
+                "split": e3_split,
+            }
+        )
+        ids = [
+            f"e5_spectral_feature_baseline:{Path(e5['result_package']['result_dir']).name}",
+            f"e1_raw_iq_cnn1d:{Path(e1['result_package']['result_dir']).name}",
+            f"e3_spectrogram_cnn2d:{Path(e3['result_package']['result_dir']).name}",
+        ]
+        return tmp_path, service, ids
 
     def _e0_payload(self, metadata_path: Path) -> dict:
         matrix = np.zeros((32, 48), dtype=np.float32)

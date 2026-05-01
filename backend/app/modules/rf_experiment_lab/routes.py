@@ -130,9 +130,47 @@ class E1RawIQCNN1DBody(BaseModel):
     force_torch_unavailable: bool = False
 
 
+class E3SpectrogramCNN2DBody(BaseModel):
+    dataset_version: str = "unversioned"
+    capture_ids: list[str] = Field(default_factory=list)
+    task: str = "device_fingerprinting"
+    input_representation: str = "spectrogram"
+    label_field: str | None = None
+    split: dict[str, Any] = Field(default_factory=lambda: {"strategy": "session_disjoint", "group_by": ["session_id"]})
+    window_size_samples: int = 4096
+    overlap: float = 0.0
+    max_samples: int = 128
+    n_fft: int = 256
+    hop_length: int = 128
+    window_type: str = "hann"
+    image_height: int = 128
+    image_width: int = 128
+    normalization_mode: str = "per_sample_standardization"
+    epochs: int = 30
+    batch_size: int = 32
+    learning_rate: float = 0.001
+    optimizer: str = "adam"
+    weight_decay: float = 0.0
+    early_stopping: bool = True
+    patience: int = 5
+    seed: int = 42
+    device: str = "auto"
+    force_torch_unavailable: bool = False
+
+
 class ExperimentCompareBody(BaseModel):
     experiment_ids: list[str] = Field(default_factory=list)
     metric: str = "macro_f1"
+
+
+class BenchmarkReportBody(BaseModel):
+    experiment_ids: list[str] = Field(default_factory=list)
+    sort_metric: str = "macro_f1"
+    include_predictions_summary: bool = False
+    include_group_metrics: bool = False
+    include_confusion_matrices: bool = False
+    output_format: str = "json"
+    export: bool = False
 
 
 def _ok(data: Any, message: str = "ok", available: bool = True, status: str = "ok") -> dict[str, Any]:
@@ -231,6 +269,13 @@ def build_rf_experiment_lab_router(service) -> APIRouter:
         except Exception as exc:
             return _error(exc)
 
+    @router.post("/benchmark/report")
+    async def benchmark_report(body: BenchmarkReportBody) -> dict[str, Any]:
+        try:
+            return _ok(service.benchmark_report(body.model_dump()), "Benchmark report generated")
+        except Exception as exc:
+            return _error(exc)
+
     @router.post("/dry-run/preview")
     async def dry_run_preview(body: DryRunPreviewBody) -> dict[str, Any]:
         try:
@@ -294,6 +339,26 @@ def build_rf_experiment_lab_router(service) -> APIRouter:
             return _ok(
                 service.e1_raw_iq_cnn1d_run(body.model_dump()),
                 "E1 Raw IQ CNN 1D run completed",
+            )
+        except Exception as exc:
+            return _error(exc)
+
+    @router.post("/experiments/e3-spectrogram-cnn2d/preview")
+    async def e3_spectrogram_cnn2d_preview(body: E3SpectrogramCNN2DBody) -> dict[str, Any]:
+        try:
+            return _ok(
+                service.e3_spectrogram_cnn2d_preview(body.model_dump()),
+                "E3 Spectrogram/Waterfall CNN 2D preview completed without training",
+            )
+        except Exception as exc:
+            return _error(exc)
+
+    @router.post("/experiments/e3-spectrogram-cnn2d/run")
+    async def e3_spectrogram_cnn2d_run(body: E3SpectrogramCNN2DBody) -> dict[str, Any]:
+        try:
+            return _ok(
+                service.e3_spectrogram_cnn2d_run(body.model_dump()),
+                "E3 Spectrogram/Waterfall CNN 2D run completed",
             )
         except Exception as exc:
             return _error(exc)
