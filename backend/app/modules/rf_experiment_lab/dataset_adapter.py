@@ -1,0 +1,131 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+
+class DatasetAdapter:
+    def __init__(self, storage_root: Path) -> None:
+        self.storage_root = storage_root
+        self.fingerprinting_capture_dir = storage_root / "fingerprinting" / "captures"
+        self.signal_understanding_registry = storage_root / "rf_signal_understanding" / "capture_registry" / "captures.json"
+
+    def list_existing_captures(self) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        records.extend(self._read_fingerprinting_captures())
+        records.extend(self._read_signal_understanding_captures())
+        return sorted(records, key=lambda item: str(item.get("capture_id", "")))
+
+    def dataset_summary(self) -> dict[str, Any]:
+        captures = self.list_existing_captures()
+        return {
+            "capture_count": len(captures),
+            "sources": {
+                "fingerprinting": str(self.fingerprinting_capture_dir),
+                "rf_signal_understanding": str(self.signal_understanding_registry),
+            },
+            "technologies": sorted({str(item.get("technology") or item.get("transmitter_class") or "unknown") for item in captures}),
+            "splits": self._count_by(captures, "dataset_split"),
+            "sessions": self._count_by(captures, "session_id"),
+            "qc_status": self._count_by(captures, "qc_status"),
+        }
+
+    def validate_required_metadata(self, record: dict[str, Any]) -> dict[str, Any]:
+        required = [
+            "capture_id",
+            "raw_file",
+            "metadata_file",
+            "datatype",
+            "sample_rate_hz",
+            "center_frequency_hz",
+            "duration_seconds",
+            "receiver_id",
+            "timestamp_utc",
+            "session_id",
+        ]
+        missing = [field for field in required if record.get(field) in (None, "")]
+        return {"valid": not missing, "missing": missing}
+
+    def _read_fingerprinting_captures(self) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        if not self.fingerprinting_capture_dir.exists():
+            return records
+        for path in sorted(self.fingerprinting_capture_dir.glob("*.json")):
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            records.append(self._normalize_fingerprinting(raw, path))
+        return records
+
+    def _read_signal_understanding_captures(self) -> list[dict[str, Any]]:
+        if not self.signal_understanding_registry.exists():
+            return []
+        try:
+            raw = json.loads(self.signal_understanding_registry.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        if not isinstance(raw, list):
+            return []
+        return [self._normalize_signal_understanding(item) for item in raw if isinstance(item, dict)]
+
+    def _normalize_fingerprinting(self, record: dict[str, Any], path: Path) -> dict[str, Any]:
+        config = record.get("capture_config", {}) if isinstance(record.get("capture_config"), dict) else {}
+        transmitter = record.get("transmitter", {}) if isinstance(record.get("transmitter"), dict) else {}
+        scenario = record.get("scenario", {}) if isinstance(record.get("scenario"), dict) else {}
+        quality = record.get("quality_metrics", {}) if isinstance(record.get("quality_metrics"), dict) else {}
+        review = record.get("quality_review", {}) if isinstance(record.get("quality_review"), dict) else {}
+        artifacts = record.get("artifacts", {}) if isinstance(record.get("artifacts"), dict) else {}
+        return {
+            "source": "fingerprinting",
+            "capture_id": record.get("capture_id") or path.stem,
+            "raw_file": artifacts.get("iq_file") or config.get("output_path"),
+            "metadata_file": artifacts.get("metadata_file") or str(path),
+            "datatype": config.get("sample_dtype", "complex64"),
+            "sample_rate_hz": config.get("sample_rate_hz"),
+            "center_frequency_hz": config.get("center_frequency_hz"),
+            "duration_seconds": config.get("capture_duration_s"),
+            "gain_db": config.get("gain_settings", {}).get("gain_db") if isinstance(config.get("gain_settings"), dict) else None,
+            "antenna": config.get("antenna_port"),
+            "sdr_device": config.get("sdr_model"),
+            "receiver_id": config.get("sdr_serial") or config.get("sdr_model"),
+            "timestamp_utc": scenario.get("timestamp_utc"),
+            "location_label": scenario.get("environment"),
+            "operator": scenario.get("operator"),
+            "technology": transmitter.get("family") or transmitter.get("transmitter_class"),
+            "transmitter_id": transmitter.get("transmitter_id"),
+            "device_model": transmitter.get("transmitter_label"),
+            "session_id": record.get("session_id"),
+            "environment_id": scenario.get("environment"),
+            "distance_m": scenario.get("distance_m"),
+            "dataset_split": record.get("dataset_split"),
+            "qc_status": review.get("status"),
+            "snr_db": quality.get("estimated_snr_db"),
+            "sha256_raw_iq": artifacts.get("sha256"),
+        }
+
+    def _normalize_signal_understanding(self, record: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "source": "rf_signal_understanding",
+            "capture_id": record.get("capture_id"),
+            "raw_file": record.get("iq_path") or record.get("raw_file"),
+            "metadata_file": record.get("metadata_path") or record.get("metadata_file"),
+            "datatype": record.get("datatype", "cf32_le"),
+            "sample_rate_hz": record.get("sample_rate_hz"),
+            "center_frequency_hz": record.get("center_frequency_hz"),
+            "duration_seconds": record.get("duration_seconds"),
+            "receiver_id": record.get("receiver_id"),
+            "timestamp_utc": record.get("timestamp_utc"),
+            "technology": record.get("technology") or record.get("signal_family"),
+            "session_id": record.get("session_id"),
+            "dataset_split": record.get("dataset_split"),
+            "qc_status": record.get("qc_status"),
+        }
+
+    def _count_by(self, captures: list[dict[str, Any]], key: str) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for capture in captures:
+            value = str(capture.get(key) or "unknown")
+            counts[value] = counts.get(value, 0) + 1
+        return counts

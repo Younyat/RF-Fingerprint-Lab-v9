@@ -1,0 +1,740 @@
+from __future__ import annotations
+
+import json
+import shutil
+import unittest
+import hashlib
+import csv
+from pathlib import Path
+from uuid import uuid4
+
+import numpy as np
+
+from app.modules.rf_experiment_lab.experiment_config_schema import ExperimentConfig
+from app.modules.rf_experiment_lab.experiment_registry import ExperimentRegistry
+from app.modules.rf_experiment_lab.experiment_runner import RFExperimentLabService
+from app.modules.rf_experiment_lab.region_detection.morphological_adapter import MorphologicalHeuristicAdapter
+from app.modules.rf_experiment_lab.split_manager import SplitManager
+
+
+class RFExperimentLabIntegrationTest(unittest.TestCase):
+    def test_config_schema_rejects_stage_1_device_fingerprinting(self) -> None:
+        with self.assertRaises(ValueError):
+            ExperimentConfig.model_validate(
+                {
+                    "experiment_id": "invalid_stage_mix",
+                    "paper_reference": "test",
+                    "task": "device_fingerprinting",
+                    "stage": "stage_1",
+                    "technology": "wifi",
+                    "input_representation": "raw_iq",
+                    "model_type": "cnn1d",
+                }
+            )
+
+    def test_experiment_registry_lists_morphological_default(self) -> None:
+        overview = ExperimentRegistry().overview()
+        self.assertEqual(overview["default_region_detector"], "morphological_heuristic")
+        self.assertTrue(
+            any(item["id"] == "morphological_heuristic" and item["default"] for item in overview["region_detectors"])
+        )
+
+    def test_split_manager_prevents_group_leakage(self) -> None:
+        captures = [
+            {"capture_id": "a", "session_id": "s1"},
+            {"capture_id": "b", "session_id": "s1"},
+            {"capture_id": "c", "session_id": "s2"},
+        ]
+        config = ExperimentConfig.model_validate(
+            {
+                "experiment_id": "split_test",
+                "paper_reference": "test",
+                "task": "signal_recognition",
+                "stage": "stage_1",
+                "input_representation": "waterfall",
+                "split": {"strategy": "session_disjoint", "group_by": ["session_id"]},
+            }
+        )
+        split = SplitManager().build_split(captures, config.split)
+        self.assertTrue(split["leakage_check"]["passed"])
+
+    def test_morphological_detector_adapter_available(self) -> None:
+        detector = MorphologicalHeuristicAdapter()
+        status = detector.status()
+        self.assertTrue(status["available"])
+        self.assertTrue(status["fallback"])
+        matrix = np.zeros((8, 8), dtype=np.float32)
+        regions = detector.detect(matrix, list(range(8)), list(range(8)))
+        self.assertIsInstance(regions, list)
+
+    def test_dry_run_response_format_with_metadata(self) -> None:
+        workspace_tmp = Path("tmp_rf_tests")
+        workspace_tmp.mkdir(parents=True, exist_ok=True)
+        tmp_path = workspace_tmp / f"rf_experiment_lab_test_{uuid4().hex}"
+        tmp_path.mkdir(parents=True, exist_ok=False)
+        try:
+            metadata_path = tmp_path / "capture_0001.json"
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "capture_id": "capture_0001",
+                        "session_id": "session_001",
+                        "dataset_split": "train",
+                        "capture_config": {
+                            "output_path": "capture_0001.cfile",
+                            "sample_dtype": "complex64",
+                            "sample_rate_hz": 20_000_000,
+                            "center_frequency_hz": 2_437_000_000,
+                            "capture_duration_s": 5.0,
+                            "sdr_model": "USRP B200",
+                            "sdr_serial": "usrp_b200_rx_01",
+                        },
+                        "scenario": {"timestamp_utc": "2026-05-01T13:00:00Z"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = RFExperimentLabService(tmp_path)
+            preview = service.dry_run_preview(
+                {
+                    "metadata_path": str(metadata_path),
+                    "template_id": "morphological_baseline",
+                    "waterfall_matrix": [[0.0, 0.0], [0.0, 1.0]],
+                    "time_axis_s": [0.0, 1.0],
+                    "freq_axis_hz": [100.0, 200.0],
+                }
+            )
+            self.assertTrue(preview["preview_only"])
+            self.assertFalse(preview["training_started"])
+            self.assertEqual(preview["metadata"]["capture_id"], "capture_0001")
+            self.assertTrue(preview["split"]["leakage_check"]["passed"])
+            self.assertEqual(preview["detector_preview"]["detector_type"], "morphological_heuristic")
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e0_preview_does_not_start_training(self) -> None:
+        tmp_path, metadata_path = self._make_e0_workspace()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            preview = service.e0_morphological_baseline_preview(self._e0_payload(metadata_path))
+            self.assertTrue(preview["preview_only"])
+            self.assertFalse(preview["training_started"])
+            self.assertEqual(preview["experiment_family"], "E0")
+            self.assertEqual(preview["detector_type"], "morphological_heuristic")
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e0_run_returns_stable_json_and_result_package(self) -> None:
+        tmp_path, metadata_path = self._make_e0_workspace()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            result = service.e0_morphological_baseline_run(self._e0_payload(metadata_path))
+            self.assertFalse(result["preview_only"])
+            self.assertFalse(result["training_started"])
+            self.assertEqual(result["detector_type"], "morphological_heuristic")
+            self.assertIn("detections", result)
+            self.assertIn("metrics", result)
+            self.assertIn("runtime_log", result)
+            package = result["result_package"]
+            self.assertIsNotNone(package)
+            files = set(package["files"])
+            self.assertTrue(
+                {
+                    "config.yaml",
+                    "paper_reference.txt",
+                    "detections.json",
+                    "metrics.json",
+                    "runtime_log.csv",
+                    "dataset_version.txt",
+                    "source_capture_metadata.json",
+                }.issubset(files)
+            )
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e0_preserves_morphological_heuristic_detector_type(self) -> None:
+        tmp_path, metadata_path = self._make_e0_workspace()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            result = service.e0_morphological_baseline_preview(self._e0_payload(metadata_path))
+            self.assertEqual(result["config"]["detector_type"], "morphological_heuristic")
+            self.assertTrue(all(item["detector_type"] == "morphological_heuristic" for item in result["detections"]))
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e0_does_not_require_learned_detector_dependencies(self) -> None:
+        tmp_path, metadata_path = self._make_e0_workspace()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            health = service.health()
+            self.assertEqual(health["future_modules"]["ssd"], "not_implemented")
+            self.assertEqual(health["future_modules"]["yolo"], "not_implemented")
+            result = service.e0_morphological_baseline_preview(self._e0_payload(metadata_path))
+            self.assertEqual(result["detector_type"], "morphological_heuristic")
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e0_reports_no_ground_truth_annotations_when_absent(self) -> None:
+        tmp_path, metadata_path = self._make_e0_workspace()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            result = service.e0_morphological_baseline_preview(self._e0_payload(metadata_path))
+            self.assertEqual(result["metrics"]["status"], "no_ground_truth_annotations")
+            self.assertIn("detected_region_count", result["metrics"])
+            self.assertIn("latency_ms", result["metrics"])
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_sigmf_preview_does_not_write_files(self) -> None:
+        tmp_path, iq_path, metadata_path = self._make_export_workspace()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            output_dir = tmp_path / "sigmf"
+            preview = service.sigmf_preview(
+                {"iq_path": str(iq_path), "metadata_path": str(metadata_path), "output_dir": str(output_dir)}
+            )
+            self.assertTrue(preview["preview_only"])
+            self.assertFalse(Path(preview["would_write"]["sigmf_data"]).exists())
+            self.assertFalse(Path(preview["would_write"]["sigmf_meta"]).exists())
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_sigmf_export_writes_files_and_preserves_original(self) -> None:
+        tmp_path, iq_path, metadata_path = self._make_export_workspace()
+        try:
+            original_hash = self._sha256(iq_path)
+            service = RFExperimentLabService(tmp_path)
+            result = service.sigmf_export(
+                {"iq_path": str(iq_path), "metadata_path": str(metadata_path), "output_dir": str(tmp_path / "sigmf")}
+            )
+            self.assertTrue(Path(result["sigmf_data"]).exists())
+            self.assertTrue(Path(result["sigmf_meta"]).exists())
+            self.assertEqual(self._sha256(iq_path), original_hash)
+            self.assertEqual(self._sha256(Path(result["sigmf_data"])), original_hash)
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_sigmf_required_metadata_validation_fails_cleanly(self) -> None:
+        tmp_path, iq_path, metadata_path = self._make_export_workspace()
+        try:
+            metadata_path.write_text(json.dumps({"capture_id": "bad"}), encoding="utf-8")
+            service = RFExperimentLabService(tmp_path)
+            preview = service.sigmf_preview({"iq_path": str(iq_path), "metadata_path": str(metadata_path)})
+            self.assertFalse(preview["validation"]["valid"])
+            self.assertIn("sample_rate_hz", preview["validation"]["missing"])
+            self.assertIn("center_frequency_hz", preview["validation"]["missing"])
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_hdf5_manifest_preview_returns_stable_json(self) -> None:
+        tmp_path, iq_path, metadata_path = self._make_export_workspace()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            self._seed_dataset_adapter_capture(service, iq_path, metadata_path)
+            preview = service.hdf5_manifest_preview({"dataset_id": "test_dataset", "dataset_version": "v1"})
+            self.assertTrue(preview["preview_only"])
+            self.assertIn("manifest", preview)
+            self.assertEqual(preview["manifest"]["dataset_id"], "test_dataset")
+            self.assertIn("raw_iq", [item["id"] for item in preview["manifest"]["representations"]])
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_hdf5_manifest_export_writes_manifest_file(self) -> None:
+        tmp_path, iq_path, metadata_path = self._make_export_workspace()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            self._seed_dataset_adapter_capture(service, iq_path, metadata_path)
+            output_path = tmp_path / "exports" / "manifest.json"
+            result = service.hdf5_manifest_export({"output_path": str(output_path), "dataset_version": "v1"})
+            self.assertTrue(output_path.exists())
+            self.assertEqual(result["path"], str(output_path))
+            written = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(written["generator_version"], "rf_experiment_lab_hdf5_manifest_v1")
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_dataset_version_includes_source_hashes(self) -> None:
+        tmp_path, iq_path, metadata_path = self._make_export_workspace()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            self._seed_dataset_adapter_capture(service, iq_path, metadata_path)
+            version = service.dataset_version_preview({"dataset_version": "v1"})
+            self.assertEqual(version["dataset_version"], "v1")
+            self.assertIn("capture_0001", version["source_capture_hashes"])
+            self.assertEqual(version["source_capture_hashes"]["capture_0001"]["raw_iq"], self._sha256(iq_path))
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_raw_iq_preview_does_not_write_files(self) -> None:
+        tmp_path, iq_path, metadata_path = self._make_export_workspace(sample_count=4096)
+        try:
+            service = RFExperimentLabService(tmp_path)
+            output_dir = tmp_path / "representations"
+            preview = service.representation_preview(
+                "raw_iq",
+                {
+                    "metadata_path": str(metadata_path),
+                    "iq_path": str(iq_path),
+                    "output_dir": str(output_dir),
+                    "window_size_samples": 1024,
+                    "max_preview_windows": 1,
+                },
+            )
+            self.assertTrue(preview["preview_only"])
+            self.assertEqual(preview["representation_type"], "raw_iq")
+            self.assertEqual(len(preview["window_plan"]), 1)
+            self.assertFalse(output_dir.exists())
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_raw_iq_export_writes_npy_and_json_segments(self) -> None:
+        tmp_path, iq_path, metadata_path = self._make_export_workspace(sample_count=4096)
+        try:
+            service = RFExperimentLabService(tmp_path)
+            result = service.representation_export(
+                "raw_iq",
+                {
+                    "metadata_path": str(metadata_path),
+                    "iq_path": str(iq_path),
+                    "output_dir": str(tmp_path / "representations"),
+                    "window_size_samples": 1024,
+                    "max_export_windows": 2,
+                },
+            )
+            self.assertFalse(result["preview_only"])
+            self.assertEqual(len(result["artifacts"]), 2)
+            for artifact in result["artifacts"]:
+                self.assertTrue(Path(artifact["data_path"]).exists())
+                self.assertTrue(Path(artifact["metadata_path"]).exists())
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_fft_psd_preview_works_on_small_capture(self) -> None:
+        tmp_path, iq_path, metadata_path = self._make_export_workspace(sample_count=4096)
+        try:
+            service = RFExperimentLabService(tmp_path)
+            preview = service.representation_preview(
+                "fft_psd",
+                {"metadata_path": str(metadata_path), "iq_path": str(iq_path), "window_size_samples": 2048, "n_fft": 512},
+            )
+            summary = preview["summary"]["windows"][0]
+            self.assertEqual(preview["representation_type"], "fft_psd")
+            self.assertIn("noise_floor_db", summary)
+            self.assertIn("occupied_bandwidth_hz", summary)
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_spectrogram_preview_returns_shape_and_parameters(self) -> None:
+        tmp_path, iq_path, metadata_path = self._make_export_workspace(sample_count=4096)
+        try:
+            service = RFExperimentLabService(tmp_path)
+            preview = service.representation_preview(
+                "spectrogram",
+                {
+                    "metadata_path": str(metadata_path),
+                    "iq_path": str(iq_path),
+                    "window_size_samples": 2048,
+                    "n_fft": 256,
+                    "hop_length": 128,
+                    "window_type": "hann",
+                },
+            )
+            summary = preview["summary"]["windows"][0]
+            self.assertEqual(preview["representation_parameters"]["n_fft"], 256)
+            self.assertIn("shape", summary)
+            self.assertEqual(summary["window_type"], "hann")
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_waterfall_preview_returns_shape_and_parameters(self) -> None:
+        tmp_path, iq_path, metadata_path = self._make_export_workspace(sample_count=4096)
+        try:
+            service = RFExperimentLabService(tmp_path)
+            preview = service.representation_preview(
+                "waterfall",
+                {
+                    "metadata_path": str(metadata_path),
+                    "iq_path": str(iq_path),
+                    "window_size_samples": 2048,
+                    "n_fft": 256,
+                    "hop_length": 128,
+                },
+            )
+            summary = preview["summary"]["windows"][0]
+            self.assertEqual(preview["representation_type"], "waterfall")
+            self.assertEqual(summary["adapter"], "rf_experiment_lab_stft_waterfall_adapter")
+            self.assertIn("shape", summary)
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_representations_manifest_export_includes_artifact_hashes(self) -> None:
+        tmp_path, iq_path, metadata_path = self._make_export_workspace(sample_count=4096)
+        try:
+            service = RFExperimentLabService(tmp_path)
+            raw = service.representation_export(
+                "raw_iq",
+                {
+                    "metadata_path": str(metadata_path),
+                    "iq_path": str(iq_path),
+                    "output_dir": str(tmp_path / "representations"),
+                    "window_size_samples": 1024,
+                    "max_export_windows": 1,
+                },
+            )
+            manifest = service.representation_manifest_export(
+                {
+                    "metadata_path": str(metadata_path),
+                    "iq_path": str(iq_path),
+                    "output_dir": str(tmp_path / "representations"),
+                    "dataset_id": "test_dataset",
+                    "dataset_version": "v2",
+                    "artifact_paths": [raw["artifacts"][0]["data_path"]],
+                }
+            )
+            self.assertTrue(Path(manifest["path"]).exists())
+            self.assertIn(raw["artifacts"][0]["data_path"], manifest["manifest"]["artifact_sha256"])
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_preview_uses_window_plan_for_large_file(self) -> None:
+        tmp_path, iq_path, metadata_path = self._make_export_workspace(sample_count=100_000)
+        try:
+            service = RFExperimentLabService(tmp_path)
+            preview = service.representation_preview(
+                "raw_iq",
+                {
+                    "metadata_path": str(metadata_path),
+                    "iq_path": str(iq_path),
+                    "window_size_samples": 1024,
+                    "max_preview_windows": 1,
+                },
+            )
+            self.assertEqual(len(preview["window_plan"]), 1)
+            self.assertEqual(preview["window_plan"][0]["num_samples"], 1024)
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e5_preview_does_not_train_and_reports_models(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            preview = service.e5_spectral_baseline_preview({"capture_ids": capture_ids})
+            self.assertTrue(preview["preview_only"])
+            self.assertFalse(preview["training_started"])
+            self.assertIn("logistic_regression", preview["models"])
+            self.assertIn("random_forest", preview["models"])
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e5_run_fails_cleanly_if_labels_missing(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset(with_labels=False)
+        try:
+            service = RFExperimentLabService(tmp_path)
+            with self.assertRaises(ValueError):
+                service.e5_spectral_baseline_run({"capture_ids": capture_ids})
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e5_run_fails_cleanly_if_sklearn_missing(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            with self.assertRaises(RuntimeError):
+                service.e5_spectral_baseline_run({"capture_ids": capture_ids, "force_sklearn_unavailable": True})
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e5_feature_extraction_stable_dimensions(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            config = service.e5_service._config({"capture_ids": capture_ids})
+            captures = service.e5_service._selected_captures(config)
+            rows, x, y, ids = service.e5_service._extract_features(captures, config)
+            self.assertEqual(x.shape[1], len(service.e5_service.feature_names))
+            self.assertEqual(len(rows), len(y))
+            self.assertEqual(len(ids), len(rows))
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e5_split_uses_group_disjoint_behavior(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            preview = service.e5_spectral_baseline_preview({"capture_ids": capture_ids})
+            self.assertTrue(preview["split"]["leakage_check"]["passed"])
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e5_result_package_written_when_training_succeeds(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            result = service.e5_spectral_baseline_run(
+                {
+                    "capture_ids": capture_ids,
+                    "models": ["logistic_regression"],
+                    "split": {"strategy": "capture_disjoint", "group_by": ["capture_id"], "train_ratio": 0.7, "validation_ratio": 0.15, "test_ratio": 0.15},
+                    "window_size_samples": 1024,
+                    "n_fft": 256,
+                }
+            )
+            self.assertTrue(result["training_completed"])
+            package = result["result_package"]
+            files = set(package["files"])
+            self.assertTrue(
+                {
+                    "config.yaml",
+                    "paper_reference.txt",
+                    "features.json",
+                    "features.npy",
+                    "model.pkl",
+                    "metrics.json",
+                    "predictions.csv",
+                    "confusion_matrix.csv",
+                    "classification_report.json",
+                    "split_definition.json",
+                    "dataset_version.txt",
+                    "runtime_log.csv",
+                }.issubset(files)
+            )
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e5_all_model_comparison_produces_metrics_per_model(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            result = service.e5_spectral_baseline_run(
+                {
+                    "capture_ids": capture_ids,
+                    "models": ["logistic_regression", "random_forest", "svm_rbf", "knn"],
+                    "split": {"strategy": "capture_disjoint", "group_by": ["capture_id"], "train_ratio": 0.7, "validation_ratio": 0.15, "test_ratio": 0.15},
+                    "window_size_samples": 1024,
+                    "n_fft": 256,
+                }
+            )
+            self.assertEqual(set(result["metrics"]["models"].keys()), {"logistic_regression", "random_forest", "svm_rbf", "knn"})
+            self.assertEqual(len(result["metrics"]["comparison"]), 4)
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_experiment_listing_and_detail_load_e5(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            service.e5_spectral_baseline_run({"capture_ids": capture_ids, "models": ["logistic_regression"], "split": {"strategy": "capture_disjoint", "group_by": ["capture_id"], "train_ratio": 0.7, "validation_ratio": 0.15, "test_ratio": 0.15}})
+            listing = service.list_experiments()
+            self.assertTrue(any(item["experiment_type"] == "e5_spectral_feature_baseline" for item in listing))
+            detail = service.get_experiment_detail(listing[0]["experiment_id"])
+            self.assertIn("metrics", detail)
+            self.assertIn("config", detail)
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_experiment_comparison_sorts_by_macro_f1(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            first = service.e5_spectral_baseline_run({"capture_ids": capture_ids, "models": ["logistic_regression"], "split": {"strategy": "capture_disjoint", "group_by": ["capture_id"], "train_ratio": 0.7, "validation_ratio": 0.15, "test_ratio": 0.15}})
+            second = service.e5_spectral_baseline_run({"capture_ids": capture_ids, "models": ["random_forest"], "split": {"strategy": "capture_disjoint", "group_by": ["capture_id"], "train_ratio": 0.7, "validation_ratio": 0.15, "test_ratio": 0.15}})
+            ids = [
+                f"e5_spectral_feature_baseline:{Path(first['result_package']['result_dir']).name}",
+                f"e5_spectral_feature_baseline:{Path(second['result_package']['result_dir']).name}",
+            ]
+            comparison = service.compare_experiments({"experiment_ids": ids, "metric": "macro_f1"})
+            values = [row["macro_f1"] for row in comparison["rows"]]
+            self.assertEqual(values, sorted(values, reverse=True))
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e5_normalized_confusion_matrix_and_predictions_columns(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            result = service.e5_spectral_baseline_run({"capture_ids": capture_ids, "models": ["logistic_regression"], "split": {"strategy": "capture_disjoint", "group_by": ["capture_id"], "train_ratio": 0.7, "validation_ratio": 0.15, "test_ratio": 0.15}})
+            result_dir = Path(result["result_package"]["result_dir"])
+            self.assertTrue((result_dir / "confusion_matrix_normalized.csv").exists())
+            with (result_dir / "predictions.csv").open("r", newline="", encoding="utf-8") as handle:
+                reader = csv.DictReader(handle)
+                self.assertIn("true_label", reader.fieldnames or [])
+                self.assertIn("predicted_label", reader.fieldnames or [])
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e5_random_forest_feature_importance_exported(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            result = service.e5_spectral_baseline_run({"capture_ids": capture_ids, "models": ["random_forest"], "split": {"strategy": "capture_disjoint", "group_by": ["capture_id"], "train_ratio": 0.7, "validation_ratio": 0.15, "test_ratio": 0.15}})
+            result_dir = Path(result["result_package"]["result_dir"])
+            self.assertTrue((result_dir / "feature_importance.json").exists())
+            self.assertTrue((result_dir / "feature_importance.csv").exists())
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def _make_e0_workspace(self) -> tuple[Path, Path]:
+        workspace_tmp = Path("tmp_rf_tests")
+        workspace_tmp.mkdir(parents=True, exist_ok=True)
+        tmp_path = workspace_tmp / f"e0_{uuid4().hex[:8]}"
+        tmp_path.mkdir(parents=True, exist_ok=False)
+        metadata_path = tmp_path / "capture_0001.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "capture_id": "capture_0001",
+                    "session_id": "session_001",
+                    "dataset_split": "train",
+                    "dataset_version": "test_dataset_v1",
+                    "capture_config": {
+                        "output_path": "capture_0001.cfile",
+                        "sample_dtype": "complex64",
+                        "sample_rate_hz": 20_000_000,
+                        "center_frequency_hz": 2_437_000_000,
+                        "capture_duration_s": 5.0,
+                        "sdr_model": "USRP B200",
+                        "sdr_serial": "usrp_b200_rx_01",
+                    },
+                    "scenario": {"timestamp_utc": "2026-05-01T13:00:00Z"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return tmp_path, metadata_path
+
+    def _make_export_workspace(self, sample_count: int = 128) -> tuple[Path, Path, Path]:
+        workspace_tmp = Path("tmp_rf_tests")
+        workspace_tmp.mkdir(parents=True, exist_ok=True)
+        tmp_path = workspace_tmp / f"export_{uuid4().hex[:8]}"
+        tmp_path.mkdir(parents=True, exist_ok=False)
+        iq_path = tmp_path / "capture_0001.cfile"
+        iq = (np.linspace(0.0, 1.0, sample_count, dtype=np.float32) + 1j * np.linspace(1.0, 0.0, sample_count, dtype=np.float32)).astype(np.complex64)
+        iq.tofile(iq_path)
+        metadata_path = tmp_path / "capture_0001.json"
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "capture_id": "capture_0001",
+                    "session_id": "session_001",
+                    "dataset_split": "train",
+                    "dataset_version": "test_dataset_v1",
+                    "capture_config": {
+                        "output_path": str(iq_path),
+                        "file_format": ".cfile",
+                        "sample_dtype": "complex64",
+                        "sample_rate_hz": 20_000_000,
+                        "center_frequency_hz": 2_437_000_000,
+                        "capture_duration_s": 5.0,
+                        "sample_count": sample_count,
+                        "sdr_model": "USRP B200",
+                        "antenna_port": "RX2",
+                        "gain_settings": {"composite_gain_db": 30.0},
+                    },
+                    "transmitter": {
+                        "transmitter_id": "router_001",
+                        "transmitter_class": "wifi",
+                        "family": "wifi",
+                    },
+                    "scenario": {
+                        "operator": "NICS Lab",
+                        "environment": "indoor_lab",
+                        "timestamp_utc": "2026-05-01T13:00:00Z",
+                    },
+                    "quality_metrics": {"estimated_snr_db": 32.4},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return tmp_path, iq_path, metadata_path
+
+    def _seed_dataset_adapter_capture(self, service: RFExperimentLabService, iq_path: Path, metadata_path: Path) -> None:
+        captures_dir = service.dataset_adapter.fingerprinting_capture_dir
+        captures_dir.mkdir(parents=True, exist_ok=True)
+        record = json.loads(metadata_path.read_text(encoding="utf-8"))
+        record["artifacts"] = {
+            "iq_file": str(iq_path),
+            "metadata_file": str(metadata_path),
+            "sha256": self._sha256(iq_path),
+        }
+        (captures_dir / "capture_0001.json").write_text(json.dumps(record), encoding="utf-8")
+
+    def _sha256(self, path: Path) -> str:
+        digest = hashlib.sha256()
+        digest.update(path.read_bytes())
+        return digest.hexdigest()
+
+    def _make_e5_dataset(self, with_labels: bool = True) -> tuple[Path, list[str]]:
+        workspace_tmp = Path("tmp_rf_tests")
+        workspace_tmp.mkdir(parents=True, exist_ok=True)
+        tmp_path = workspace_tmp / f"e5_{uuid4().hex[:8]}"
+        captures_dir = tmp_path / "fingerprinting" / "captures"
+        captures_dir.mkdir(parents=True, exist_ok=True)
+        capture_ids = []
+        for index in range(12):
+            capture_id = f"capture_{index:04d}"
+            capture_ids.append(capture_id)
+            iq_path = tmp_path / f"{capture_id}.cfile"
+            label_index = index % 2
+            base = 0.05 + label_index * 0.2
+            samples = 4096
+            t = np.arange(samples, dtype=np.float32)
+            iq = (np.exp(1j * 2.0 * np.pi * base * t).astype(np.complex64) * (1.0 + 0.05 * index)).astype(np.complex64)
+            iq.tofile(iq_path)
+            metadata_path = captures_dir / f"{capture_id}.json"
+            transmitter = (
+                {
+                    "transmitter_id": f"device_{label_index}",
+                    "transmitter_class": "wifi",
+                    "family": "wifi",
+                    "transmitter_label": f"router_{label_index}",
+                }
+                if with_labels
+                else {}
+            )
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "capture_id": capture_id,
+                        "session_id": f"session_{index:04d}",
+                        "dataset_split": "train",
+                        "capture_config": {
+                            "output_path": str(iq_path),
+                            "sample_dtype": "complex64",
+                            "sample_rate_hz": 1_000_000,
+                            "center_frequency_hz": 100_000_000,
+                            "capture_duration_s": 0.004096,
+                            "sample_count": samples,
+                            "sdr_model": "test_sdr",
+                            "sdr_serial": "rx_test",
+                        },
+                        "transmitter": transmitter,
+                        "scenario": {
+                            "operator": "test",
+                            "environment": "lab",
+                            "timestamp_utc": "2026-05-01T13:00:00Z",
+                        },
+                        "quality_metrics": {"estimated_snr_db": 30.0},
+                        "artifacts": {
+                            "iq_file": str(iq_path),
+                            "metadata_file": str(metadata_path),
+                            "sha256": self._sha256(iq_path),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+        return tmp_path, capture_ids
+
+    def _e0_payload(self, metadata_path: Path) -> dict:
+        matrix = np.zeros((32, 48), dtype=np.float32)
+        matrix[8:18, 12:28] = 4.0
+        return {
+            "metadata_path": str(metadata_path),
+            "waterfall_matrix": matrix.tolist(),
+            "time_axis_s": np.linspace(0.0, 5.0, 32).tolist(),
+            "freq_axis_hz": np.linspace(2_427_000_000, 2_447_000_000, 48).tolist(),
+        }
+
+
+if __name__ == "__main__":
+    unittest.main()
