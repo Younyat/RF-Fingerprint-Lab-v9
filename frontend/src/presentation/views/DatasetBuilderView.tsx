@@ -28,6 +28,7 @@ const formatHz = (value?: number | null) => {
 
 export const DatasetBuilderView: React.FC = () => {
   const [captures, setCaptures] = useState<FingerprintingCaptureRecord[]>([]);
+  const [rsuCaptures, setRsuCaptures] = useState<Array<Record<string, any>>>([]);
   const [selectedCaptureId, setSelectedCaptureId] = useState<string>('');
   const [splitFilter, setSplitFilter] = useState<'all' | 'train' | 'val' | 'predict'>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'valid' | 'doubtful' | 'rejected'>('all');
@@ -37,11 +38,88 @@ export const DatasetBuilderView: React.FC = () => {
   const [actionMessage, setActionMessage] = useState<string>('');
 
   const refresh = async () => {
-    const data = await api.getFingerprintingCaptures();
+    const [data, rsuRegistry] = await Promise.all([
+      api.getFingerprintingCaptures(),
+      api.getRFSignalCaptureRegistry().catch(() => ({ captures: [] })),
+    ]);
     setCaptures(data);
+    setRsuCaptures(rsuRegistry.captures ?? []);
     setLastRefresh(new Date().toISOString());
     if (!selectedCaptureId && data.length > 0) {
       setSelectedCaptureId(data[0].capture_id);
+    }
+  };
+
+  const importRsuCapture = async (capture: Record<string, any>) => {
+    setActionMessage('');
+    const captureId = String(capture.capture_id ?? '');
+    const alreadyImported = captures.some((item) => item.artifacts?.source_capture_id === captureId || item.capture_id === captureId);
+    if (alreadyImported) {
+      setActionMessage(`RF Signal Understanding capture ${captureId} is already present in Dataset Builder.`);
+      return;
+    }
+    try {
+      const filePath = String(capture.file_path ?? '');
+      await api.createFingerprintingCapture({
+        capture_id: captureId,
+        capture_mode: 'rf_signal_understanding_import',
+        session_id: capture.session_id || 'rsu_session_unassigned',
+        dataset_split: 'train',
+        capture_config: {
+          device_source: 'rf_signal_understanding',
+          sdr_model: 'unknown',
+          sdr_serial: 'unknown',
+          gain_stage: 'manual',
+          antenna_port: 'unknown',
+          capture_type: 'iq_file',
+          center_frequency_hz: Number(capture.center_frequency_hz ?? 0),
+          sample_rate_hz: Number(capture.sample_rate_hz ?? 0),
+          effective_bandwidth_hz: Number(capture.sample_rate_hz ?? 0),
+          gain_settings: { composite_gain_db: Number(capture.gain_db ?? 0) },
+          capture_duration_s: Number(capture.duration_s ?? 0),
+          file_format: String(capture.file_format ?? 'iq'),
+          sample_dtype: 'complex64',
+          output_path: filePath,
+          dataset_destination: 'fingerprinting/train',
+        },
+        transmitter: {
+          transmitter_label: String((capture.labels ?? [])[0] ?? capture.profile?.signal_type ?? 'rsu_unlabeled'),
+          transmitter_class: String(capture.profile?.family ?? capture.profile?.signal_type ?? 'unknown'),
+          transmitter_id: String((capture.labels ?? [])[0] ?? `rsu_${captureId}`),
+          family: String(capture.profile?.family ?? 'unknown'),
+          ground_truth_confidence: 'weak_from_rsu',
+        },
+        scenario: {
+          operator: 'RF Signal Understanding',
+          environment: String(capture.profile?.environment ?? 'unspecified'),
+          notes: 'Imported from RF Signal Understanding capture registry for Dataset Builder QC review.',
+          timestamp_utc: capture.created_at,
+        },
+        quality_metrics: {
+          estimated_snr_db: 0,
+          frequency_offset_hz: 0,
+          clipping_pct: 0,
+          silence_pct: 0,
+        },
+        burst_detection: {
+          method: 'rf_signal_understanding_region_capture',
+          burst_count: Number(capture.region_count ?? 1),
+          regions_of_interest: ['rf_signal_understanding'],
+        },
+        artifacts: {
+          iq_file: filePath,
+          metadata_file: '',
+          source_capture_id: captureId,
+        },
+        operator_decision: 'doubtful',
+        review_notes: 'Needs Dataset Builder review before training use.',
+      });
+      setActionMessage(`Imported RF Signal Understanding capture ${captureId}. Review it before using it for training.`);
+      await refresh();
+      setSelectedCaptureId(captureId);
+    } catch (error) {
+      console.error('Failed to import RF Signal Understanding capture', error);
+      setActionMessage(`Failed to import RF Signal Understanding capture ${captureId}.`);
     }
   };
 
@@ -194,6 +272,59 @@ export const DatasetBuilderView: React.FC = () => {
           </div>
         </div>
       </div>
+
+      <section className="mb-5 rounded-[1.75rem] border border-cyan-200 bg-cyan-50/80 p-5 shadow-[0_18px_40px_rgba(15,23,42,0.06)]">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-800">RF Signal Understanding candidates</div>
+            <h2 className="mt-2 text-xl font-semibold text-slate-900">Capturas pendientes de curacion para fingerprinting</h2>
+            <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-700">
+              Las capturas creadas desde RF Signal Understanding viven primero en su propio registro. Importalas aqui para someterlas al mismo QC,
+              decision de validez, split y trazabilidad que el resto del Dataset Builder.
+            </p>
+          </div>
+          <button className="rounded-full border border-cyan-300 bg-white px-4 py-2 text-sm font-semibold text-cyan-800" onClick={() => refresh()}>
+            Refresh candidates
+          </button>
+        </div>
+        <div className="mt-4 grid gap-3 xl:grid-cols-3">
+          {rsuCaptures.slice(0, 6).map((capture) => {
+            const captureId = String(capture.capture_id ?? '');
+            const imported = captures.some((item) => item.artifacts?.source_capture_id === captureId || item.capture_id === captureId);
+            return (
+              <article key={captureId} className="rounded-2xl border border-cyan-100 bg-white p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="font-semibold text-slate-900">{captureId}</div>
+                    <div className="mt-1 text-xs text-slate-500">{capture.source ?? 'rf_signal_understanding'} | {capture.analysis_status ?? 'pending'}</div>
+                  </div>
+                  <span className={`rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] ${imported ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                    {imported ? 'imported' : 'candidate'}
+                  </span>
+                </div>
+                <div className="mt-3 space-y-1 text-xs text-slate-600">
+                  <div>Sample rate: {formatHz(Number(capture.sample_rate_hz ?? 0))}</div>
+                  <div>Center: {formatHz(Number(capture.center_frequency_hz ?? 0))}</div>
+                  <div>Regions: {String(capture.region_count ?? 'not analyzed')}</div>
+                  <div className="truncate">Path: {String(capture.file_path ?? 'not linked')}</div>
+                </div>
+                <button
+                  className="mt-3 w-full rounded-full border border-cyan-300 px-3 py-2 text-sm font-semibold text-cyan-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => importRsuCapture(capture)}
+                  disabled={imported}
+                >
+                  {imported ? 'Already in Dataset Builder' : 'Import for QC review'}
+                </button>
+              </article>
+            );
+          })}
+          {rsuCaptures.length === 0 && (
+            <div className="rounded-2xl border border-dashed border-cyan-200 bg-white p-4 text-sm text-slate-500">
+              No RF Signal Understanding captures are registered yet.
+            </div>
+          )}
+        </div>
+      </section>
 
       <div className="grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
         <section className="rounded-[1.75rem] border border-slate-200 bg-white/90 p-5 shadow-[0_18px_40px_rgba(15,23,42,0.08)]">

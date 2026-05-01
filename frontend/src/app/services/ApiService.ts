@@ -306,6 +306,11 @@ export class ApiService {
     return response.data;
   }
 
+  async getRFSignalUnderstandingModels(): Promise<Array<Record<string, any>>> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_MODELS}`);
+    return Array.isArray(response.data) ? response.data : response.data.models ?? [];
+  }
+
   async reviewRFSignalRegion(payload: {
     analysis_id: string;
     bbox_id: string;
@@ -370,6 +375,53 @@ export class ApiService {
 
   async trainRFSignalClassifierIncremental(payload: Record<string, any>): Promise<Record<string, any>> {
     const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_TRAIN_INCREMENTAL}`, payload);
+    return response.data;
+  }
+
+  async getRFExperimentLabHealth(): Promise<Record<string, any>> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_HEALTH}`);
+    return response.data;
+  }
+
+  async getRFExperimentCaptures(): Promise<Array<Record<string, any>>> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_DATASET_CAPTURES}`);
+    return response.data?.data ?? response.data?.captures ?? [];
+  }
+
+  async listRFExperimentRuns(): Promise<Array<Record<string, any>>> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_EXPERIMENTS}`);
+    return response.data?.data ?? [];
+  }
+
+  async getRFExperimentRun(experimentId: string): Promise<Record<string, any>> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_EXPERIMENTS}/${encodeURIComponent(experimentId)}`);
+    return response.data?.data ?? response.data;
+  }
+
+  async previewRFExperiment(kind: 'e5' | 'e1' | 'e3', payload: Record<string, any>): Promise<Record<string, any>> {
+    const endpoint =
+      kind === 'e5'
+        ? API_ENDPOINTS.RF_EXPERIMENT_E5_PREVIEW
+        : kind === 'e1'
+          ? API_ENDPOINTS.RF_EXPERIMENT_E1_PREVIEW
+          : API_ENDPOINTS.RF_EXPERIMENT_E3_PREVIEW;
+    const response = await axios.post(`${this.baseURL}${endpoint}`, payload);
+    return response.data;
+  }
+
+  async runRFExperiment(kind: 'e5' | 'e1' | 'e3', payload: Record<string, any>): Promise<Record<string, any>> {
+    const endpoint =
+      kind === 'e5'
+        ? API_ENDPOINTS.RF_EXPERIMENT_E5_RUN
+        : kind === 'e1'
+          ? API_ENDPOINTS.RF_EXPERIMENT_E1_RUN
+          : API_ENDPOINTS.RF_EXPERIMENT_E3_RUN;
+    const response = await axios.post(`${this.baseURL}${endpoint}`, payload);
+    return response.data;
+  }
+
+  async createRFExperimentBenchmark(payload: Record<string, any>): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_BENCHMARK_REPORT}`, payload);
     return response.data;
   }
 

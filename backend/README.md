@@ -53,6 +53,14 @@ The active API does not generate mock spectrum data. If the device cannot be ope
   - Preserves raw I/Q files while creating ML-ready canonical I/Q copies
   - Estimates signal offset from QC metadata or Welch PSD, shifts to baseband, filters the useful band, resamples when required, normalizes RMS power, and writes segment manifests
 
+- `app/modules/rf_experiment_lab/`
+  - Adds the optional reproducible RF Experiment Lab layer
+  - Consumes existing captures and metadata without modifying the operational capture, waterfall, RF Intelligence or RF Signal Understanding paths
+  - Provides SigMF export, HDF5 experiment manifests, dataset versioning, representation extraction and experiment result packages
+  - Implements E0 Morphological Baseline, E5 Spectral Feature Baseline, E1 Raw IQ CNN 1D and E3 Spectrogram/Waterfall CNN 2D
+  - Registers experiment listing, detail, comparison and benchmark-report endpoints
+  - Reports missing optional dependencies cleanly through stable JSON instead of breaking backend startup
+
 - `app/infrastructure/sdr/real_spectrum_stream.py`
   - Manages the persistent spectrum worker process
   - Restarts the worker when tuning parameters change
@@ -114,6 +122,7 @@ backend/app/modules/
   mlops/api_module.py
   presets/module.py
   recordings/module.py
+  rf_experiment_lab/api_module.py
   sessions/module.py
   spectrum/module.py
   waterfall/module.py
@@ -169,8 +178,120 @@ To disable an API module without deleting code, set its `enabled` flag to `False
 - `GET /api/mlops/validation/reports`
 - `POST /api/mlops/inference/predict/start`
 - `GET /api/mlops/inference/predict/status`
+- `GET /api/rf-experiment-lab/health`
+- `GET /api/rf-experiment-lab/experiments`
+- `GET /api/rf-experiment-lab/experiments/{experiment_id}`
+- `POST /api/rf-experiment-lab/experiments/compare`
+- `POST /api/rf-experiment-lab/benchmark/report`
+- `POST /api/rf-experiment-lab/sigmf/preview`
+- `POST /api/rf-experiment-lab/sigmf/export`
+- `POST /api/rf-experiment-lab/hdf5-manifest/preview`
+- `POST /api/rf-experiment-lab/hdf5-manifest/export`
+- `POST /api/rf-experiment-lab/representations/raw-iq/preview`
+- `POST /api/rf-experiment-lab/representations/raw-iq/export`
+- `POST /api/rf-experiment-lab/representations/fft-psd/preview`
+- `POST /api/rf-experiment-lab/representations/fft-psd/export`
+- `POST /api/rf-experiment-lab/representations/spectrogram/preview`
+- `POST /api/rf-experiment-lab/representations/spectrogram/export`
+- `POST /api/rf-experiment-lab/representations/waterfall/preview`
+- `POST /api/rf-experiment-lab/representations/waterfall/export`
+- `POST /api/rf-experiment-lab/representations/manifest/export`
+- `POST /api/rf-experiment-lab/experiments/e0-morphological-baseline/preview`
+- `POST /api/rf-experiment-lab/experiments/e0-morphological-baseline/run`
+- `POST /api/rf-experiment-lab/experiments/e5-spectral-baseline/preview`
+- `POST /api/rf-experiment-lab/experiments/e5-spectral-baseline/run`
+- `POST /api/rf-experiment-lab/experiments/e1-raw-iq-cnn1d/preview`
+- `POST /api/rf-experiment-lab/experiments/e1-raw-iq-cnn1d/run`
+- `POST /api/rf-experiment-lab/experiments/e3-spectrogram-cnn2d/preview`
+- `POST /api/rf-experiment-lab/experiments/e3-spectrogram-cnn2d/run`
 
 OpenAPI docs are available at `http://localhost:8000/docs` when the backend is running.
+
+## RF Experiment Lab Backend Layer
+
+RF Experiment Lab is a removable backend extension. It must remain optional and must not be a dependency of the current operational SDR laboratory.
+
+The backend split is:
+
+```text
+Operational path
+  device / spectrum / waterfall / markers
+  demodulation
+  Capture Lab
+  Dataset Builder and fingerprinting registry
+  RF Intelligence
+  RF Signal Understanding
+  MLOps training, validation and inference
+
+Experimental path
+  rf_experiment_lab dataset adapter
+  exporters
+  representations
+  experiment families
+  metrics and comparison
+  benchmark report
+```
+
+Every RF Experiment Lab response uses a stable envelope:
+
+```text
+status
+module
+available
+message
+data
+errors
+```
+
+This is important because some features depend on optional packages:
+
+- `sklearn` for E5 classical model training
+- `torch` for E1 and E3 training
+- `torchvision` for E3 `resnet18` and `vgg11`
+- `scipy` for optional Welch PSD support
+- `h5py` for future binary HDF5 writing
+
+If an optional dependency is missing, the affected endpoint returns `available=false` or a clean error in the stable envelope. Backend startup must continue.
+
+### Implemented experiments
+
+| ID | Name | Task | Input | Model type | Output |
+|----|------|------|-------|------------|--------|
+| E0 | Morphological Baseline | Region detection baseline | Waterfall or spectrogram metadata | Existing `morphological_heuristic` adapter | `detections.json`, `metrics.json`, runtime log |
+| E5 | Spectral Feature Baseline | Explainable classification baseline | `fft_psd`, PSD summary, optional raw-IQ spectral features | Logistic Regression, Random Forest, SVM RBF, KNN | features, model, metrics, predictions, confusion matrices, feature importance |
+| E1 | Raw IQ CNN 1D | Closed-set device fingerprinting | `raw_iq` windows shaped `[2, N]` | Small CNN 1D | model, metrics, predictions, history, group/confidence/overfitting summaries |
+| E3 | Spectrogram/Waterfall CNN 2D | Closed-set signal recognition or fingerprinting | `spectrogram` or `waterfall` shaped `[1, H, W]` | simple CNN 2D, optional ResNet18, optional VGG11 | model, metrics, predictions, history, group/confidence/overfitting summaries |
+
+E0 is the permanent fallback and baseline. Learned detectors such as SSD, Faster R-CNN and YOLO are not implemented yet and must report `not_implemented`, not fake results.
+
+### Reproducibility services
+
+The backend now supports:
+
+- SigMF preview/export from `.cfile + .json` or `.iq + .json`
+- HDF5 experiment manifest preview/export without requiring binary HDF5 support
+- Dataset version objects with source capture hashes
+- Representation extraction for `raw_iq`, `fft_psd`, `spectrogram` and `waterfall`
+- Representation manifest export with artifact paths and SHA-256 hashes
+- Experiment registry listing and detail loading
+- Cross-experiment comparison
+- Consolidated benchmark reports across E1, E3 and E5
+
+Preview endpoints do not write files. Export/run endpoints write into controlled output directories and preserve original captures.
+
+### Scientific split discipline
+
+The experiment layer avoids random window splits as the scientific default. Supported group-disjoint strategies include:
+
+- `capture_disjoint`
+- `session_disjoint`
+- `day_disjoint`
+- `environment_disjoint`
+- `distance_disjoint`
+- `receiver_disjoint`
+- `device_holdout`
+
+The default split is `session_disjoint`. Benchmark reports warn when experiments use different dataset versions, different split strategies, missing metrics, missing group metrics, incompatible label spaces, low sample counts or debug/random splits.
 
 ## Marker-Band Demodulation
 

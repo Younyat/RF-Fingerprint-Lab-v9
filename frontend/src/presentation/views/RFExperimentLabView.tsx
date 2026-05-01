@@ -1,0 +1,473 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { BadgeCheck, BarChart3, BrainCircuit, DatabaseZap, FileJson, FlaskConical, GitCompare, Layers3, Play, RadioTower, RefreshCw, Route, Save, ScanSearch, ShieldCheck } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ApiService } from '../../app/services/ApiService';
+
+const api = new ApiService();
+
+type ExperimentKind = 'e5' | 'e1' | 'e3';
+
+const card = 'rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_18px_42px_rgba(15,23,42,0.07)]';
+
+const papers = [
+  {
+    experiment: 'E0 Morphological Baseline',
+    authors: 'RF-Fingerprint-Lab-v6 project baseline',
+    title: 'Current RF-Fingerprint-Lab-v6 morphological heuristic detector baseline',
+    adopted: 'The experiment formalizes the existing waterfall morphological detector as a reproducible baseline with detections, latency and region statistics.',
+    boundary: 'This is not a learned detector and does not claim to reproduce SSD, Faster R-CNN or YOLO.',
+  },
+  {
+    experiment: 'E5 Spectral Feature Baseline',
+    authors: 'Kilic et al.; Nie et al.; O Shea, Clancy and Ebeid',
+    title: 'Drone Classification Using RF Signal Based Spectral Features; UAV Detection and Identification Based on WiFi Signal and RF Fingerprint; Practical Signal Detection and Classification in GNU Radio',
+    adopted: 'The implementation adopts the paper-level idea of explainable spectral descriptors: PSD statistics, spectral shape, bandwidth, energy ratios and classical ML classifiers.',
+    boundary: 'It is a controlled baseline for comparison, not a claim that the exact original datasets, feature sets or hardware conditions are reproduced.',
+  },
+  {
+    experiment: 'E1 Raw IQ CNN 1D',
+    authors: 'Riyaz et al.; Jian et al.',
+    title: 'Deep Learning Convolutional Neural Networks for Radio Identification; Deep Learning for RF Fingerprinting: A Massive Experimental Study',
+    adopted: 'The implementation adopts direct supervised learning from raw I/Q windows with input shape [2, N], where the model can learn transmitter-specific distortions from I and Q channels.',
+    boundary: 'It is closed-set device identification only. It is not open-set recognition, spoofing detection or universal cross-technology fingerprinting.',
+  },
+  {
+    experiment: 'E3 Spectrogram/Waterfall CNN 2D',
+    authors: 'Shen et al.; Lin et al.; Liu et al.; Bremnes et al.',
+    title: 'Radio Frequency Fingerprint Identification for LoRa Using Deep Learning; A Radio Frequency Signal Recognition Method Based on Spectrogram; RF Fingerprint Recognition Based on Spectrum Waterfall Diagram; Classification of UAVs Utilizing Fixed Boundary Empirical Wavelet Sub-Bands of RF Fingerprints and Deep CNN',
+    adopted: 'The implementation adopts the conversion of RF captures into time-frequency images and compares simple CNN 2D, optional ResNet18 and optional VGG11 under the same split and metrics.',
+    boundary: 'It is image-based closed-set classification. It is not object detection and does not implement SSD, YOLO or Faster R-CNN.',
+  },
+  {
+    experiment: 'Reproducibility layer',
+    authors: 'SigMF community practice; ORACLE/WiSig dataset methodology; Jian et al.',
+    title: 'SigMF-style metadata discipline; ORACLE/WiSig dataset traceability; Deep Learning for RF Fingerprinting: A Massive Experimental Study',
+    adopted: 'The platform adopts traceable capture metadata, SHA-256 hashes, dataset versions, representation manifests, result packages and strict group-disjoint splits.',
+    boundary: 'This layer is methodological infrastructure. It does not train a model by itself.',
+  },
+];
+
+const flowCards = [
+  { title: 'Acquisition', text: 'Use Live Monitor and marker capture to acquire IQ with metadata.', icon: RadioTower, route: '/spectrum' },
+  { title: 'Dataset curation', text: 'Validate labels, QC status, split, hashes and transmitter identity.', icon: DatabaseZap, route: '/dataset-builder' },
+  { title: 'Experiment training', text: 'Run E5, E1 or E3 with group-disjoint split and reproducible config.', icon: BrainCircuit, route: '/rf-experiment-lab' },
+  { title: 'Validation report', text: 'Compare metrics, confusion matrices, group metrics and benchmark warnings.', icon: BarChart3, route: '/rf-experiment-lab' },
+];
+
+const techniques: Array<{
+  id: ExperimentKind | 'e0';
+  title: string;
+  stage: string;
+  input: string;
+  model: string;
+  reference: string;
+  purpose: string;
+}> = [
+  {
+    id: 'e0',
+    title: 'E0 Morphological Baseline',
+    stage: 'Stage 1 region detection',
+    input: 'waterfall',
+    model: 'morphological_heuristic',
+    reference: 'Current RF-Fingerprint-Lab-v6 morphological heuristic detector baseline',
+    purpose: 'Fast explainable detector, permanent fallback, no training.',
+  },
+  {
+    id: 'e5',
+    title: 'E5 Spectral Feature Baseline',
+    stage: 'Stage 1 or Stage 2 classical baseline',
+    input: 'fft_psd',
+    model: 'Logistic Regression, Random Forest, SVM RBF, KNN',
+    reference: 'Drone Classification Using RF Signal Based Spectral Features; UAV Detection and Identification Based on WiFi Signal and RF Fingerprint; Practical Signal Detection and Classification in GNU Radio',
+    purpose: 'Explainable PSD and spectral feature baseline before deep learning.',
+  },
+  {
+    id: 'e1',
+    title: 'E1 Raw IQ CNN 1D',
+    stage: 'Stage 2 device fingerprinting',
+    input: 'raw_iq [2, N]',
+    model: 'CNN 1D',
+    reference: 'Deep Learning Convolutional Neural Networks for Radio Identification; Deep Learning for RF Fingerprinting: A Massive Experimental Study',
+    purpose: 'Closed-set transmitter identification directly from I/Q windows.',
+  },
+  {
+    id: 'e3',
+    title: 'E3 Spectrogram/Waterfall CNN 2D',
+    stage: 'Closed-set signal recognition or fingerprinting',
+    input: 'spectrogram or waterfall [1, H, W]',
+    model: 'simple CNN 2D, optional ResNet18, optional VGG11',
+    reference: 'Radio Frequency Fingerprint Identification for LoRa Using Deep Learning; A Radio Frequency Signal Recognition Method Based on Spectrogram; RF Fingerprint Recognition Based on Spectrum Waterfall Diagram; Classification of UAVs Utilizing Fixed Boundary Empirical Wavelet Sub-Bands of RF Fingerprints and Deep CNN',
+    purpose: 'Compare time-frequency image learning against raw IQ and spectral features.',
+  },
+];
+
+const defaultSplit = { strategy: 'capture_disjoint', group_by: ['capture_id'], train_ratio: 0.7, validation_ratio: 0.15, test_ratio: 0.15 };
+
+export const RFExperimentLabView: React.FC = () => {
+  const [health, setHealth] = useState<Record<string, any> | null>(null);
+  const [captures, setCaptures] = useState<Array<Record<string, any>>>([]);
+  const [runs, setRuns] = useState<Array<Record<string, any>>>([]);
+  const [selectedTechnique, setSelectedTechnique] = useState<ExperimentKind>('e5');
+  const [selectedCaptureIds, setSelectedCaptureIds] = useState<string[]>([]);
+  const [datasetVersion, setDatasetVersion] = useState('experiment_dataset_v1');
+  const [labelField, setLabelField] = useState('transmitter_id');
+  const [e3Representation, setE3Representation] = useState<'spectrogram' | 'waterfall'>('spectrogram');
+  const [e3ModelType, setE3ModelType] = useState<'simple_cnn2d' | 'resnet18' | 'vgg11'>('simple_cnn2d');
+  const [lastResponse, setLastResponse] = useState<Record<string, any> | null>(null);
+  const [benchmark, setBenchmark] = useState<Record<string, any> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const refresh = async () => {
+    const [nextHealth, nextCaptures, nextRuns] = await Promise.all([
+      api.getRFExperimentLabHealth().catch(() => null),
+      api.getRFExperimentCaptures().catch(() => []),
+      api.listRFExperimentRuns().catch(() => []),
+    ]);
+    setHealth(nextHealth?.data ?? nextHealth);
+    setCaptures(nextCaptures);
+    setRuns(nextRuns);
+    if (selectedCaptureIds.length === 0 && nextCaptures.length > 0) {
+      setSelectedCaptureIds(nextCaptures.slice(0, 12).map((item) => String(item.capture_id)));
+    }
+  };
+
+  useEffect(() => {
+    refresh().catch((error) => {
+      console.error('Failed to load RF Experiment Lab', error);
+      setMessage('Backend RF Experiment Lab is not reachable.');
+    });
+  }, []);
+
+  const selectedTechniqueInfo = techniques.find((item) => item.id === selectedTechnique);
+  const selectedRuns = useMemo(() => runs.filter((run) => ['e5_spectral_feature_baseline', 'e1_raw_iq_cnn1d', 'e3_spectrogram_cnn2d'].includes(String(run.experiment_type))), [runs]);
+
+  const experimentPayload = () => {
+    const base = {
+      dataset_version: datasetVersion,
+      capture_ids: selectedCaptureIds,
+      label_field: labelField,
+      split: defaultSplit,
+    };
+    if (selectedTechnique === 'e5') {
+      return { ...base, models: ['logistic_regression', 'random_forest', 'svm_rbf', 'knn'], input_representation: 'fft_psd' };
+    }
+    if (selectedTechnique === 'e1') {
+      return { ...base, epochs: 1, batch_size: 8, window_size_samples: 2048, max_windows: 64 };
+    }
+    return {
+      ...base,
+      input_representation: e3Representation,
+      model_type: e3ModelType,
+      epochs: 1,
+      batch_size: 8,
+      window_size_samples: 2048,
+      max_samples: 64,
+      image_height: 128,
+      image_width: 128,
+    };
+  };
+
+  const runAction = async (mode: 'preview' | 'run') => {
+    setBusy(true);
+    setMessage('');
+    try {
+      const payload = experimentPayload();
+      const response = mode === 'preview'
+        ? await api.previewRFExperiment(selectedTechnique, payload)
+        : await api.runRFExperiment(selectedTechnique, payload);
+      setLastResponse(response);
+      setMessage(response.message ?? (mode === 'preview' ? 'Preview completed.' : 'Experiment run completed.'));
+      await refresh();
+    } catch (error: any) {
+      const detail = error?.response?.data?.message ?? error?.response?.data?.detail ?? error?.message ?? 'Request failed';
+      setMessage(String(detail));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runBenchmark = async (exportReport = false) => {
+    setBusy(true);
+    setMessage('');
+    try {
+      const ids = selectedRuns.slice(0, 12).map((run) => String(run.experiment_id));
+      const response = await api.createRFExperimentBenchmark({
+        experiment_ids: ids,
+        sort_metric: 'macro_f1',
+        include_predictions_summary: true,
+        include_group_metrics: true,
+        include_confusion_matrices: true,
+        export: exportReport,
+      });
+      setBenchmark(response.data ?? response);
+      setMessage(exportReport ? 'Benchmark exported.' : 'Benchmark generated.');
+    } catch (error: any) {
+      setMessage(String(error?.response?.data?.message ?? error?.message ?? 'Benchmark failed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleCapture = (captureId: string) => {
+    setSelectedCaptureIds((current) =>
+      current.includes(captureId) ? current.filter((item) => item !== captureId) : [...current, captureId],
+    );
+  };
+
+  return (
+    <div className="min-h-full bg-[linear-gradient(180deg,_#f8fafc,_#eef2f7)] p-6">
+      <section className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
+        <div className="rounded-2xl border border-slate-200 bg-slate-950 p-7 text-slate-50 shadow-[0_28px_70px_rgba(15,23,42,0.22)]">
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-cyan-200">
+            <FlaskConical className="h-4 w-4" />
+            RF Experiment Lab
+          </div>
+          <h1 className="mt-4 max-w-4xl text-3xl font-semibold leading-tight">
+            Flujo reproducible desde captura y dataset hasta entrenamiento, validacion y benchmark cientifico.
+          </h1>
+          <p className="mt-4 max-w-4xl text-sm leading-7 text-slate-300">
+            Esta capa no reemplaza Live Spectrum, Waterfall, Capture Lab, Dataset Builder, RF Intelligence ni RF Signal Understanding.
+            Consume sus capturas y metadatos para ejecutar experimentos trazables: E0, E5, E1 y E3.
+          </p>
+          <div className="mt-6 flex flex-wrap gap-3">
+            <Link className="rounded-full bg-cyan-300 px-4 py-2 text-sm font-semibold text-slate-950" to="/capture">1. Capturar datos</Link>
+            <Link className="rounded-full border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-100" to="/dataset-builder">2. Curar dataset</Link>
+            <button className="rounded-full border border-cyan-300/40 px-4 py-2 text-sm font-semibold text-cyan-100" onClick={() => runAction('preview')} disabled={busy}>
+              3. Preview experimental
+            </button>
+            <button className="rounded-full border border-emerald-300/40 px-4 py-2 text-sm font-semibold text-emerald-100" onClick={() => runBenchmark(false)} disabled={busy || selectedRuns.length === 0}>
+              4. Benchmark
+            </button>
+          </div>
+        </div>
+
+        <div className={card}>
+          <div className="flex items-center justify-between">
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Module health</div>
+            <button className="rounded-full border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-700" onClick={() => refresh()}>
+              <RefreshCw className="mr-1 inline h-3 w-3" />
+              Refresh
+            </button>
+          </div>
+          <div className="mt-4 grid gap-3 text-sm text-slate-700">
+            <Fact label="Module loaded" value={String(Boolean(health?.module_loaded))} />
+            <Fact label="Morphological detector" value={health?.morphological_detector_available?.status ?? 'unknown'} />
+            <Fact label="Dataset adapter" value={String(Boolean(health?.dataset_adapter_available))} />
+            <Fact label="Optional missing" value={(health?.optional_dependencies_missing ?? []).join(', ') || 'none reported'} />
+          </div>
+        </div>
+      </section>
+
+      <section className="mt-5 grid gap-4 xl:grid-cols-4">
+        {flowCards.map(({ title, text, icon: Icon, route }) => (
+          <Link key={title} to={route} className={card}>
+            <Icon className="h-5 w-5 text-slate-800" />
+            <div className="mt-3 text-sm font-semibold text-slate-900">{title}</div>
+            <p className="mt-2 text-sm leading-6 text-slate-600">{text}</p>
+          </Link>
+        ))}
+      </section>
+
+      <section className="mt-5 grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+        <div className={card}>
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+            <Layers3 className="h-4 w-4" />
+            Techniques adopted so far
+          </div>
+          <div className="mt-4 space-y-3">
+            {techniques.map((technique) => (
+              <button
+                key={technique.id}
+                onClick={() => technique.id !== 'e0' && setSelectedTechnique(technique.id)}
+                className={`w-full rounded-2xl border p-4 text-left ${selectedTechnique === technique.id ? 'border-slate-950 bg-slate-950 text-white' : 'border-slate-200 bg-slate-50 text-slate-800'}`}
+              >
+                <div className="font-semibold">{technique.title}</div>
+                <div className="mt-1 text-xs opacity-75">{technique.stage} | {technique.input}</div>
+                <div className="mt-2 text-sm opacity-90">{technique.purpose}</div>
+                <div className="mt-2 text-xs opacity-70">Reference: {technique.reference}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className={card}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Experiment control</div>
+              <h2 className="mt-2 text-xl font-semibold text-slate-900">{selectedTechniqueInfo?.title}</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-600">{selectedTechniqueInfo?.purpose}</p>
+            </div>
+            <div className="rounded-full border border-slate-300 bg-slate-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em] text-slate-600">
+              strict split
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-3 md:grid-cols-2">
+            <label className="text-sm text-slate-700">
+              Dataset version
+              <input className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" value={datasetVersion} onChange={(event) => setDatasetVersion(event.target.value)} />
+            </label>
+            <label className="text-sm text-slate-700">
+              Label field
+              <select className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" value={labelField} onChange={(event) => setLabelField(event.target.value)}>
+                <option value="transmitter_id">transmitter_id</option>
+                <option value="technology">technology</option>
+              </select>
+            </label>
+            {selectedTechnique === 'e3' && (
+              <>
+                <label className="text-sm text-slate-700">
+                  Representation
+                  <select className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" value={e3Representation} onChange={(event) => setE3Representation(event.target.value as 'spectrogram' | 'waterfall')}>
+                    <option value="spectrogram">spectrogram</option>
+                    <option value="waterfall">waterfall</option>
+                  </select>
+                </label>
+                <label className="text-sm text-slate-700">
+                  E3 model
+                  <select className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" value={e3ModelType} onChange={(event) => setE3ModelType(event.target.value as any)}>
+                    <option value="simple_cnn2d">simple_cnn2d</option>
+                    <option value="resnet18">resnet18 optional</option>
+                    <option value="vgg11">vgg11 optional</option>
+                  </select>
+                </label>
+              </>
+            )}
+          </div>
+
+          <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm font-semibold text-slate-800">Selected captures: {selectedCaptureIds.length}</div>
+              <button className="text-xs font-semibold text-slate-600 underline" onClick={() => setSelectedCaptureIds(captures.slice(0, 12).map((item) => String(item.capture_id)))}>
+                select first 12
+              </button>
+            </div>
+            <div className="mt-3 max-h-52 space-y-2 overflow-auto">
+              {captures.map((capture) => (
+                <label key={String(capture.capture_id)} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
+                  <span>
+                    <input className="mr-2" type="checkbox" checked={selectedCaptureIds.includes(String(capture.capture_id))} onChange={() => toggleCapture(String(capture.capture_id))} />
+                    {String(capture.capture_id)}
+                  </span>
+                  <span className="text-xs text-slate-500">{String(capture.transmitter_id ?? capture.technology ?? 'unlabeled')}</span>
+                </label>
+              ))}
+              {captures.length === 0 && <div className="text-sm text-slate-500">No captures visible to RF Experiment Lab yet.</div>}
+            </div>
+          </div>
+
+          <div className="mt-5 flex flex-wrap gap-3">
+            <button className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-50" onClick={() => runAction('preview')} disabled={busy || selectedCaptureIds.length === 0}>
+              <ScanSearch className="mr-2 inline h-4 w-4" />
+              Preview, no training
+            </button>
+            <button className="rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50" onClick={() => runAction('run')} disabled={busy || selectedCaptureIds.length === 0}>
+              <Play className="mr-2 inline h-4 w-4" />
+              Train and validate
+            </button>
+            <button className="rounded-full border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800 disabled:opacity-50" onClick={() => runBenchmark(true)} disabled={busy || selectedRuns.length === 0}>
+              <Save className="mr-2 inline h-4 w-4" />
+              Export benchmark
+            </button>
+          </div>
+
+          {message && <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">{message}</div>}
+        </div>
+      </section>
+
+      <section className="mt-5 grid gap-5 xl:grid-cols-[1fr_1fr]">
+        <div className={card}>
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+            <GitCompare className="h-4 w-4" />
+            Executed experiments
+          </div>
+          <div className="mt-4 overflow-auto">
+            <table className="min-w-full text-left text-sm">
+              <thead className="text-xs uppercase tracking-[0.12em] text-slate-500">
+                <tr><th className="py-2">Experiment</th><th>Split</th><th>Macro F1</th><th>Path</th></tr>
+              </thead>
+              <tbody>
+                {selectedRuns.slice(0, 10).map((run) => (
+                  <tr key={String(run.experiment_id)} className="border-t border-slate-100">
+                    <td className="py-2 font-medium text-slate-800">{String(run.experiment_type)}</td>
+                    <td>{String(run.split_strategy ?? 'unknown')}</td>
+                    <td>{String(run.metrics_summary?.macro_f1 ?? 'n/a')}</td>
+                    <td className="max-w-[220px] truncate text-xs text-slate-500">{String(run.result_path ?? '')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className={card}>
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+            <BadgeCheck className="h-4 w-4" />
+            Benchmark result
+          </div>
+          {benchmark ? (
+            <div className="mt-4 space-y-3 text-sm text-slate-700">
+              <Fact label="Benchmark" value={String(benchmark.benchmark_id)} />
+              <Fact label="Best macro F1" value={`${benchmark.best_model_by_macro_f1?.model_type ?? 'n/a'} (${benchmark.best_model_by_macro_f1?.macro_f1 ?? 'n/a'})`} />
+              <Fact label="Fastest" value={`${benchmark.fastest_model_by_inference_time_ms?.model_type ?? 'n/a'} (${benchmark.fastest_model_by_inference_time_ms?.inference_time_ms ?? 'n/a'} ms)`} />
+              <Fact label="Dataset warning" value={String(Boolean(benchmark.warnings?.different_dataset_versions?.active))} />
+              <Fact label="Split warning" value={String(Boolean(benchmark.warnings?.different_split_strategies?.active))} />
+            </div>
+          ) : (
+            <div className="mt-4 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
+              Run a benchmark after at least one E1/E3/E5 experiment has been executed.
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="mt-5 grid gap-4 xl:grid-cols-5">
+        {papers.map((paper) => (
+          <article key={paper.experiment} className={card}>
+            <FileJson className="h-5 w-5 text-slate-700" />
+            <div className="mt-3 text-sm font-semibold text-slate-900">{paper.experiment}</div>
+            <div className="mt-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">Authors</div>
+            <p className="mt-1 text-xs leading-5 text-slate-700">{paper.authors}</p>
+            <div className="mt-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">Paper / reference title</div>
+            <p className="mt-1 text-xs leading-5 text-slate-700">{paper.title}</p>
+            <div className="mt-3 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">Adopted in this implementation</div>
+            <p className="mt-1 text-xs leading-5 text-slate-600">{paper.adopted}</p>
+            <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-600">
+              {paper.boundary}
+            </div>
+          </article>
+        ))}
+      </section>
+
+      {lastResponse && (
+        <section className="mt-5 rounded-2xl border border-slate-200 bg-slate-950 p-5 text-slate-100">
+          <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-cyan-200">
+            <Route className="h-4 w-4" />
+            Last structured response
+          </div>
+          <pre className="max-h-96 overflow-auto rounded-xl bg-black/40 p-4 text-xs leading-5">{JSON.stringify(lastResponse, null, 2)}</pre>
+        </section>
+      )}
+
+      <section className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-5">
+        <div className="flex items-start gap-3">
+          <ShieldCheck className="mt-1 h-5 w-5 text-amber-700" />
+          <p className="text-sm leading-7 text-amber-950">
+            Scientific rule: E1/E3/E5 are experimental comparators. A live spectrum overlay may show experiment readiness and best validated runs,
+            but it must not claim live device identity unless a validated inference pipeline has been explicitly integrated.
+          </p>
+        </div>
+      </section>
+    </div>
+  );
+};
+
+function Fact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+      <span className="text-slate-500">{label}</span>
+      <span className="max-w-[65%] text-right font-medium text-slate-900">{value}</span>
+    </div>
+  );
+}

@@ -9,6 +9,7 @@ import { modelsModule } from './models/module';
 import { recordingsModule } from './recordings/module';
 import { retrainingModule } from './retraining/module';
 import { rfIntelligenceModule } from './rf-intelligence/module';
+import { rfExperimentLabModule } from './rf-experiment-lab/module';
 import { rfSignalUnderstandingModule } from './rf-signal-understanding/module';
 import { settingsModule } from './settings/module';
 import { trainingModule } from './training/module';
@@ -29,6 +30,7 @@ export const labModules: LabModuleDefinition[] = [
   inferenceModule,
   modelsModule,
   rfIntelligenceModule,
+  rfExperimentLabModule,
   rfSignalUnderstandingModule,
   waterfallModule,
   recordingsModule,

@@ -72,6 +72,367 @@ Main capabilities:
 - Non-blocking transparent execution messaging for long-running operations, so users can keep using the application while jobs continue.
 - Unified backend API for SDR control, capture management, demodulation, fingerprinting, MLOps, and model reporting.
 
+## RF Experiment Lab: reproducible RF fingerprinting layer
+
+RF Experiment Lab is an optional experimental layer added on top of the existing operational RF workflow. It does not replace Live Spectrum, Waterfall, Markers, Capture Lab, Dataset Builder, RF Intelligence, RF Signal Understanding, the current NumPy softmax baseline, or the current model registry.
+
+The operational path remains:
+
+```text
+Live Spectrum / Waterfall
+  -> Markers
+  -> Capture Lab
+  -> Dataset Builder and QC
+  -> Current Training / Validation / Inference
+  -> Current Model Registry
+```
+
+The experimental path is:
+
+```text
+Existing captures and metadata
+  -> RF Experiment Lab dataset adapter
+  -> SigMF export / HDF5 manifest / dataset versioning
+  -> raw_iq, fft_psd, spectrogram and waterfall representations
+  -> E0, E5, E1 and E3 experiment families
+  -> strict group-disjoint validation
+  -> benchmark report across techniques
+```
+
+The frontend now exposes this work in a dedicated `RF Experiment Lab` tab. The tab is designed as a guided workflow for non-expert users:
+
+1. Acquire signal in `Live Monitor` or `Capture Lab`.
+2. Curate labels, metadata, QC status and splits in `Dataset Builder`.
+3. Select captures in `RF Experiment Lab`.
+4. Preview an experiment without training.
+5. Train and validate E5, E1 or E3 with strict split discipline.
+6. Generate a benchmark report comparing all completed runs.
+
+The `Live Monitor` also includes an `Experiment Overlay` button next to `RF Overlay` and `Understanding Overlay`. This overlay reports the current RF Experiment Lab readiness and best validated experimental run. It intentionally does not claim live device identity unless a validated inference router is explicitly integrated. This prevents experimental models from being presented as operational forensic inference before validation.
+
+### Implemented experiment families
+
+| ID | Module | Stage | Representation | Model family | Scientific role |
+|----|--------|-------|----------------|--------------|-----------------|
+| E0 | Morphological Baseline | Stage 1 region detection | Waterfall | `morphological_heuristic` | Permanent visual baseline and fallback. No training. |
+| E5 | Spectral Feature Baseline | Stage 1 or Stage 2 baseline | `fft_psd` and PSD-derived features | Logistic Regression, Random Forest, SVM RBF, KNN | Explainable classical ML baseline before deep learning. |
+| E1 | Raw IQ CNN 1D | Stage 2 fingerprinting | `raw_iq` `[2, N]` | CNN 1D | Closed-set transmitter identification directly from IQ windows. |
+| E3 | Spectrogram/Waterfall CNN 2D | Signal recognition or fingerprinting | `spectrogram` or `waterfall` `[1, H, W]` | simple CNN 2D, optional ResNet18, optional VGG11 | Time-frequency image baseline comparable against E1 and E5. |
+
+E0 keeps the current morphological and heuristic detector as a permanent baseline. It is not replaced by learned detectors. SSD, Faster R-CNN and YOLO remain intentionally unimplemented and must report `not_implemented` until real detector training and validation exist.
+
+E5 implements PSD-oriented features such as mean power, peak power, peak frequency offset, occupied bandwidth, spectral centroid, spectral spread, spectral flatness, spectral entropy, band energy ratios, noise floor estimate and optional SNR. It supports all-model comparison under the same dataset and split.
+
+E1 implements a small supervised CNN 1D over raw IQ windows. The input shape is `[2, N]`, where channel 0 is I and channel 1 is Q. It exports training history, confusion matrices, predictions, overfitting summary, confidence summary, group metrics and model metadata.
+
+E3 implements a small supervised CNN 2D over spectrogram or waterfall images. It also supports optional `resnet18` and `vgg11` through `torchvision`, with `weights=None` / `pretrained=False` so the system works offline. If `torchvision` is unavailable, those model types report unavailable and fail cleanly without breaking the backend.
+
+### Reproducibility and export layer
+
+RF Experiment Lab adds reproducibility support without modifying original captures:
+
+- SigMF preview/export from `.cfile + .json` or `.iq + .json` to `.sigmf-data + .sigmf-meta`.
+- HDF5 experiment manifest preview/export. Binary HDF5 writing remains optional and must not block manifest export.
+- Dataset version object with source capture IDs, SHA-256 hashes, representations, split strategy, label schema and QC policy.
+- Representation extraction for:
+  - `raw_iq`
+  - `fft_psd`
+  - `spectrogram`
+  - `waterfall`
+- Representation manifest with artifact paths, SHA-256 hashes, parameters and source metadata.
+
+Preview endpoints do not write files. Export endpoints write only into controlled RF Experiment Lab output folders and do not delete or modify original IQ or metadata files.
+
+### Validation discipline
+
+Scientific results must not use random window splitting as the primary result. RF Experiment Lab supports group-disjoint split strategies including:
+
+- `capture_disjoint`
+- `session_disjoint`
+- `day_disjoint`
+- `environment_disjoint`
+- `distance_disjoint`
+- `receiver_disjoint`
+- `device_holdout`
+
+The default experiment split remains `session_disjoint` unless a controlled experiment explicitly selects another group-disjoint split. Benchmark warnings flag different dataset versions, different split strategies, missing metrics, missing group metrics, incompatible label spaces, random/debug splits, low sample count and classes missing from test.
+
+### Benchmark Report
+
+The endpoint `POST /api/rf-experiment-lab/benchmark/report` generates a consolidated comparison report across E5, E1 and E3 runs. It returns:
+
+- benchmark ID and creation time
+- dataset versions involved
+- experiment families and paper references
+- split strategies
+- metric comparison table
+- best model by macro F1
+- best model by balanced accuracy
+- fastest model by inference time
+- smallest model by model size
+- per-class comparison when label spaces align
+- optional per-session and per-SNR comparison
+- reproducibility summary
+- scientific warnings
+
+When `export=true`, it writes:
+
+- `benchmark_report.json`
+- `benchmark_report.md`
+- `comparison_table.csv`
+- `warnings.json`
+- `reproducibility_summary.json`
+
+### Scientific paper traceability
+
+The project does not claim exact reproduction of the original papers, datasets or hardware conditions. Each experiment implements the engineering idea understood from the cited work, then evaluates it under the same local dataset, representation and split discipline so the techniques can be compared reproducibly.
+
+| Module | Authors | Paper / reference title | What this project adopts | Boundary |
+|---|---|---|---|---|
+| E0 Morphological Baseline | RF-Fingerprint-Lab-v6 project baseline | `Current RF-Fingerprint-Lab-v6 morphological heuristic detector baseline` | The existing waterfall morphological detector is wrapped as a formal reproducible baseline with detections, latency and region metrics. | Not a learned detector and not a reproduction of SSD, YOLO or Faster R-CNN. |
+| E5 Spectral Feature Baseline | Kilic et al.; Nie et al.; O Shea, Clancy and Ebeid | `Drone Classification Using RF Signal Based Spectral Features`; `UAV Detection and Identification Based on WiFi Signal and RF Fingerprint`; `Practical Signal Detection and Classification in GNU Radio` | PSD statistics, spectral shape, occupied bandwidth, entropy, flatness, energy ratios and classical ML classifiers. | Explainable baseline before deep learning; not an exact reproduction of the original feature sets or datasets. |
+| E1 Raw IQ CNN 1D | Riyaz et al.; Jian et al. | `Deep Learning Convolutional Neural Networks for Radio Identification`; `Deep Learning for RF Fingerprinting: A Massive Experimental Study` | Supervised CNN 1D directly on raw I/Q windows shaped `[2, N]`, where the model can learn transmitter-specific imperfections from I and Q channels. | Closed-set device identification only; not open-set, spoofing or universal cross-technology fingerprinting. |
+| E3 Spectrogram/Waterfall CNN 2D | Shen et al.; Lin et al.; Liu et al.; Bremnes et al. | `Radio Frequency Fingerprint Identification for LoRa Using Deep Learning`; `A Radio Frequency Signal Recognition Method Based on Spectrogram`; `RF Fingerprint Recognition Based on Spectrum Waterfall Diagram`; `Classification of UAVs Utilizing Fixed Boundary Empirical Wavelet Sub-Bands of RF Fingerprints and Deep CNN` | RF captures are converted into spectrogram/waterfall images and classified with simple CNN 2D, optional ResNet18 and optional VGG11 under the same split and metrics. | Image-based closed-set classification; not object detection and not SSD/YOLO/Faster R-CNN. |
+| Reproducibility layer | SigMF community practice; ORACLE/WiSig dataset methodology; Jian et al. | SigMF-style metadata discipline; ORACLE/WiSig dataset traceability; `Deep Learning for RF Fingerprinting: A Massive Experimental Study` | Metadata validation, SHA-256 hashes, dataset versions, representation manifests, result packages and strict group-disjoint splits. | Methodological infrastructure; does not train a model by itself. |
+
+The intended scientific comparison is:
+
+```text
+E0 -> explainable visual baseline
+E5 -> PSD and spectral features + classical ML
+E1 -> raw IQ + CNN 1D
+E3 -> spectrogram/waterfall + CNN 2D / optional ResNet18 / optional VGG11
+Benchmark -> same dataset, same split, comparable metrics
+```
+
+No SSD, YOLO, Faster R-CNN, Transformer, metric learning, open-set or spoofing detector has been added yet. Those remain future modules and must not return fake results.
+
+### Current implementation status
+
+The project now has two clearly separated levels:
+
+```text
+Operational laboratory
+  Live Spectrum
+  Waterfall
+  Markers
+  Capture Lab
+  Dataset Builder
+  RF Intelligence
+  RF Signal Understanding
+  Current Training / Validation / Inference
+  Current operational model registry
+
+Optional experimental layer
+  RF Experiment Lab
+  SigMF export
+  HDF5 experiment manifest
+  Dataset versioning
+  Representation extraction
+  E0 / E5 / E1 / E3 experiments
+  Experiment listing and comparison
+  Benchmark report
+```
+
+The operational workflow is intentionally frozen as the safe path. RF Experiment Lab consumes existing captures, metadata, labels and derived representations, but does not change live acquisition, waterfall rendering, marker behavior, Capture Lab, Dataset Builder, RF Intelligence or RF Signal Understanding behavior.
+
+Every RF Experiment Lab endpoint follows a stable JSON envelope:
+
+```text
+status
+module
+available
+message
+data
+errors
+```
+
+Optional dependencies are treated as optional. Missing `torch`, `torchvision`, `sklearn`, `scipy` or `h5py` support must be reported cleanly by the affected feature instead of breaking backend startup.
+
+### RF Experiment Lab API surface
+
+Health and integration:
+
+```text
+GET  /api/rf-experiment-lab/health
+GET  /api/rf-experiment-lab/experiments
+GET  /api/rf-experiment-lab/experiments/{experiment_id}
+POST /api/rf-experiment-lab/experiments/compare
+POST /api/rf-experiment-lab/benchmark/report
+```
+
+E0 Morphological Baseline:
+
+```text
+POST /api/rf-experiment-lab/experiments/e0-morphological-baseline/preview
+POST /api/rf-experiment-lab/experiments/e0-morphological-baseline/run
+```
+
+E5 Spectral Feature Baseline:
+
+```text
+POST /api/rf-experiment-lab/experiments/e5-spectral-baseline/preview
+POST /api/rf-experiment-lab/experiments/e5-spectral-baseline/run
+```
+
+E1 Raw IQ CNN 1D:
+
+```text
+POST /api/rf-experiment-lab/experiments/e1-raw-iq-cnn1d/preview
+POST /api/rf-experiment-lab/experiments/e1-raw-iq-cnn1d/run
+```
+
+E3 Spectrogram/Waterfall CNN 2D:
+
+```text
+POST /api/rf-experiment-lab/experiments/e3-spectrogram-cnn2d/preview
+POST /api/rf-experiment-lab/experiments/e3-spectrogram-cnn2d/run
+```
+
+Reproducibility and representations:
+
+```text
+POST /api/rf-experiment-lab/sigmf/preview
+POST /api/rf-experiment-lab/sigmf/export
+POST /api/rf-experiment-lab/hdf5-manifest/preview
+POST /api/rf-experiment-lab/hdf5-manifest/export
+POST /api/rf-experiment-lab/representations/raw-iq/preview
+POST /api/rf-experiment-lab/representations/raw-iq/export
+POST /api/rf-experiment-lab/representations/fft-psd/preview
+POST /api/rf-experiment-lab/representations/fft-psd/export
+POST /api/rf-experiment-lab/representations/spectrogram/preview
+POST /api/rf-experiment-lab/representations/spectrogram/export
+POST /api/rf-experiment-lab/representations/waterfall/preview
+POST /api/rf-experiment-lab/representations/waterfall/export
+POST /api/rf-experiment-lab/representations/manifest/export
+```
+
+Preview endpoints validate and summarize the operation without writing artifacts. Export/run endpoints write result packages into controlled RF Experiment Lab output directories and preserve original `.cfile`, `.iq` and `.json` files.
+
+### Result packages
+
+E0 writes a non-trainable detector package:
+
+```text
+config.yaml
+paper_reference.txt
+detections.json
+metrics.json
+runtime_log.csv
+dataset_version.txt when available
+source_capture_metadata.json
+visual_debug_outputs/ when available
+```
+
+When no bounding-box ground truth exists, E0 reports:
+
+```text
+status = no_ground_truth_annotations
+detected_region_count
+latency_ms
+mean_region_area
+mean_bandwidth_hz
+mean_duration_s
+```
+
+E5 writes an explainable classical ML package:
+
+```text
+config.yaml
+paper_reference.txt
+features.csv or features.npy
+features.json
+model.pkl when training succeeds
+metrics.json
+predictions.csv
+confusion_matrix_raw.csv
+confusion_matrix_normalized.csv
+classification_report.json
+split_definition.json
+dataset_version.txt
+runtime_log.csv
+feature_importance.json / feature_importance.csv for Random Forest
+feature_coefficients.json for Logistic Regression when available
+error_summary.json
+```
+
+E1 and E3 write deep-learning classification packages:
+
+```text
+config.yaml
+paper_reference.txt
+model.pt
+model_summary.txt
+model_metadata.json
+metrics.json
+predictions.csv
+confusion_matrix_raw.csv
+confusion_matrix_normalized.csv
+classification_report.json
+split_definition.json
+dataset_version.txt
+runtime_log.csv
+training_history.csv
+training_history.json
+overfitting_summary.json
+group_metrics.json
+group_metrics.csv
+confidence_summary.json
+```
+
+The prediction table for trainable classification experiments includes:
+
+```text
+sample_id
+true_label
+predicted_label
+correct
+confidence
+model_name
+split
+capture_id
+session_id
+day_id
+```
+
+### Model Registry UI separation
+
+The `Models` tab now separates model families instead of mixing old operational artifacts with new experimental runs.
+
+It has a model-family menu:
+
+```text
+current_baseline
+rf_signal_understanding
+E1 Raw IQ CNN 1D
+E3 Spectrogram/Waterfall CNN 2D
+E5 Spectral Feature Baseline
+```
+
+When `current_baseline` is selected, the tab shows only the operational model card: `best_model.pt`, dataset manifest, readiness, retraining snapshots, validation evidence and registered operational versions.
+
+When `E1`, `E3` or `E5` is selected, the tab shows only RF Experiment Lab runs for that technique: experiment ID, model type, representation, dataset version, split strategy, accuracy, macro F1, inference time, model size and result package. This prevents legacy values such as the current operational model size or train records from being interpreted as E1/E3/E5 results.
+
+The UI no longer displays raw JSON blobs as the primary representation. JSON-derived metadata is rendered as professional cards, key/value fields, tables and summaries.
+
+### Dataset Builder and RF Signal Understanding captures
+
+`Dataset Builder` now also surfaces candidates generated by `RF Signal Understanding`. This closes a previous gap where captures taught or reviewed through RF Signal Understanding existed in its own registry but were not obvious in the dataset curation screen.
+
+The intended flow is:
+
+```text
+Live Spectrum
+  -> markers around signal
+  -> RF Signal Understanding teach/capture/review
+  -> RF Signal Understanding capture registry
+  -> Dataset Builder candidate list
+  -> import/review as fingerprinting dataset record
+  -> RF Experiment Lab representation/experiment
+```
+
+This keeps RF Signal Understanding as a signal analysis and labelling layer while Dataset Builder remains the point where the operator decides whether a capture is valid, doubtful or rejected for downstream training.
+
 The execution overlay is intentionally global: if a training, retraining, validation, or prediction job is running, the message remains visible when moving from one page to another, survives refresh through the stored job id, and disappears automatically only when the backend reports that the job has finished. The same transparent non-blocking pattern is used for capture, SDR operations, and MLOps executions so long-running work never traps the operator on one tab.
 
 
@@ -144,7 +505,8 @@ Ese comando levanta en una sola orden:
 - Retraining,
 - Validation,
 - Inference,
-- Models.
+- Models,
+- RF Experiment Lab.
 
 Polling frontend-backend por defecto:
 
@@ -190,6 +552,8 @@ Then open:
 11. Open `Capture Lab` to capture IQ for `train`, `val`, or `predict`.
 12. Use `Dataset Builder` to accept, reject, or mark the imported capture as doubtful before using it in ML workflows.
 13. Continue in `Training`, `Validation`, or `Inference` according to the split assigned during capture.
+14. Use `RF Experiment Lab` for reproducible E0/E5/E1/E3 experiment previews, training runs and benchmark reports.
+15. Use `Models` to inspect the operational model separately from RF Signal Understanding and RF Experiment Lab experiment runs.
 
 ## Application Screenshots
 

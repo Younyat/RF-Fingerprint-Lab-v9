@@ -27,6 +27,9 @@ The frontend controls the FastAPI backend and displays live RF spectrum frames c
 - `Capture Lab` for controlled `train` / `val` / `predict` IQ acquisition, intelligent RF pre/post-capture guidance, download, and safe deletion
 - `Dataset Builder` for capture review and QC-driven acceptance/rejection
 - `Training`, `Retraining`, `Validation`, `Inference`, and `Models` tabs for the unified RF fingerprinting flow
+- `RF Experiment Lab` tab for reproducible E0, E5, E1 and E3 experiment workflows
+- `Models` tab separated by model family so operational artifacts are not mixed with experimental E1/E3/E5 runs
+- Dataset Builder visibility for RF Signal Understanding capture candidates before they are promoted into fingerprinting datasets
 - RF canonicalization-aware validation that allows different original SDR center frequencies when canonical preprocessing is compatible
 - Persistent transparent global operation overlay for capture, training, retraining, validation, and prediction jobs
 - Persistent `.cfile` and `.iq` metadata capture list with separate downloads
@@ -134,6 +137,51 @@ Disabling a module should be done by setting `enabled: false` in its own folder.
 10. Use `Dataset Builder` to review QC and mark the imported record as `valid`, `doubtful`, or `rejected`.
 11. Continue in `Training`, `Validation`, or `Inference` depending on the assigned split.
 
+## Guided RF Experiment Lab Flow
+
+The frontend now includes a dedicated `RF Experiment Lab` tab. It is designed so an operator can move from acquisition to reproducible evaluation without manually opening result JSON files.
+
+Recommended workflow:
+
+1. Use `Live Monitor` to find a signal and place markers around it.
+2. Use `Capture Lab` to record `.cfile` or `.iq` with metadata and a clear label.
+3. Use `Dataset Builder` to review QC, assign split policy and decide whether the capture is `valid`, `doubtful` or `rejected`.
+4. If the capture was produced through `RF Signal Understanding`, import it from the Dataset Builder candidate area before training.
+5. Open `RF Experiment Lab`.
+6. Check health and dependency availability.
+7. Preview export or representation steps before writing files.
+8. Generate reusable representations: `raw_iq`, `fft_psd`, `spectrogram` or `waterfall`.
+9. Preview the experiment to validate labels, split strategy, sample count and model availability.
+10. Run E0, E5, E1 or E3 only after preview is coherent.
+11. Use experiment comparison or benchmark report to compare results under the same dataset and split.
+
+Current experiments visible from the UI:
+
+| ID | Purpose | Input | Models |
+|----|---------|-------|--------|
+| E0 | Permanent morphological detector baseline | Waterfall/spectrogram metadata | `morphological_heuristic`, no training |
+| E5 | Explainable spectral baseline | `fft_psd` / PSD features | Logistic Regression, Random Forest, SVM RBF, KNN |
+| E1 | Closed-set raw-IQ fingerprinting | `raw_iq` `[2, N]` | CNN 1D |
+| E3 | Closed-set RF-image classification | `spectrogram` or `waterfall` `[1, H, W]` | simple CNN 2D, optional ResNet18, optional VGG11 |
+
+Scientific context shown in the UI:
+
+- E0 is the RF-Fingerprint-Lab-v6 project baseline: `Current RF-Fingerprint-Lab-v6 morphological heuristic detector baseline`. The UI explains that this is the permanent explainable fallback, not a learned detector.
+- E5 cites Kilic et al., Nie et al., and O Shea, Clancy and Ebeid by title: `Drone Classification Using RF Signal Based Spectral Features`, `UAV Detection and Identification Based on WiFi Signal and RF Fingerprint`, and `Practical Signal Detection and Classification in GNU Radio`. The UI explains that the adopted idea is PSD/spectral descriptors plus classical ML.
+- E1 cites Riyaz et al. and Jian et al. by title: `Deep Learning Convolutional Neural Networks for Radio Identification` and `Deep Learning for RF Fingerprinting: A Massive Experimental Study`. The UI explains that the adopted idea is supervised CNN 1D over raw I/Q windows shaped `[2, N]`.
+- E3 cites Shen et al., Lin et al., Liu et al., and Bremnes et al. by title: `Radio Frequency Fingerprint Identification for LoRa Using Deep Learning`, `A Radio Frequency Signal Recognition Method Based on Spectrogram`, `RF Fingerprint Recognition Based on Spectrum Waterfall Diagram`, and `Classification of UAVs Utilizing Fixed Boundary Empirical Wavelet Sub-Bands of RF Fingerprints and Deep CNN`. The UI explains that the adopted idea is time-frequency RF image classification.
+- The reproducibility layer is presented as SigMF-style metadata discipline, ORACLE/WiSig dataset traceability and Jian-style experimental traceability: hashes, dataset versions, representation manifests and strict group-disjoint splits.
+
+The wording intentionally says "adopted idea" or "paper-inspired implementation" because the project does not claim exact reproduction of the original datasets, devices, hyperparameters or full paper protocols.
+
+The tab does not add SSD, YOLO, Faster R-CNN, Transformer, metric learning, open-set or spoofing workflows. Those model families remain future work and must not be shown as trained or available unless implemented and validated.
+
+## Live Experiment Overlay
+
+`Live Monitor` includes an `Experiment Overlay` next to `RF Overlay` and `Understanding Overlay`.
+
+The overlay is a readiness and traceability overlay, not a claim of live forensic identity. It shows RF Experiment Lab status and validated experiment context when available. Experimental models are intentionally not treated as operational live inference until an explicit validated inference router exists.
+
 ## UI Screens
 
 <table>
@@ -232,6 +280,56 @@ The ML tabs operate on curated registry captures rather than directly on arbitra
 8. Inspect `Models` for current model card, provenance, validation evidence, retraining history, and artifact readiness.
 
 The UI no longer treats different original SDR `center_frequency_hz` values as an automatic validation blocker. It surfaces them as context while the backend enforces the scientifically relevant constraints: canonical preprocessing profile, canonical sample rate, canonical bandwidth, segment length, and train/validation session separation.
+
+## Models Tab Organization
+
+The `Models` tab now separates model information by family:
+
+```text
+current_baseline
+rf_signal_understanding
+E1 Raw IQ CNN 1D
+E3 Spectrogram/Waterfall CNN 2D
+E5 Spectral Feature Baseline
+```
+
+This separation avoids mixing legacy operational model values with new experimental runs. For example, the current `best_model.pt` size, current training records and current operational readiness are shown only when `current_baseline` is selected.
+
+When E1, E3 or E5 is selected, the tab shows RF Experiment Lab run records only:
+
+- experiment ID
+- technique name
+- model type
+- input representation
+- dataset version
+- split strategy
+- accuracy
+- macro F1
+- balanced accuracy when available
+- inference time
+- model size
+- result package path
+
+JSON files are not shown as raw dumps in the primary UI. Configs, manifests, metadata and metrics are rendered as cards, fields, tables and compact summaries so the operator can understand the model without reading raw result files.
+
+## Dataset Builder And RF Signal Understanding Captures
+
+`Dataset Builder` now also surfaces capture candidates generated by `RF Signal Understanding`.
+
+This matters because RF Signal Understanding can create training examples through marker-driven teaching, region review and live/offline analysis. Those captures must still pass dataset curation before they are used by fingerprinting or RF Experiment Lab experiments.
+
+Expected bridge:
+
+```text
+RF Signal Understanding teach/review/capture
+  -> RF Signal Understanding capture registry
+  -> Dataset Builder candidate list
+  -> import into fingerprinting registry
+  -> review QC and split
+  -> RF Experiment Lab representations and experiments
+```
+
+This keeps RF Signal Understanding as the signal-analysis and labelling layer, while Dataset Builder remains the quality gate for training data.
 
 ## Validation And Inference Python Default
 

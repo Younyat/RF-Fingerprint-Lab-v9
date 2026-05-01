@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, RadioTower, Microscope, DatabaseZap, ShieldCheck, BrainCircuit, BadgeCheck, ScanSearch, Boxes, RefreshCcw } from 'lucide-react';
+import { ArrowRight, RadioTower, Microscope, DatabaseZap, ShieldCheck, BrainCircuit, BadgeCheck, ScanSearch, Boxes, RefreshCcw, FlaskConical } from 'lucide-react';
 import { ApiService } from '../../app/services/ApiService';
 import { FingerprintingDashboardSummary } from '../../shared/types';
 
@@ -33,34 +33,41 @@ const workflow = [
   },
   {
     step: '04',
+    title: 'RF Experiment Lab',
+    route: '/rf-experiment-lab',
+    icon: FlaskConical,
+    reason: 'Ejecuta E5, E1 y E3 con splits disjuntos, trazabilidad de papers, artefactos reproducibles y benchmark cientifico.',
+  },
+  {
+    step: '05',
     title: 'Training',
     route: '/training',
     icon: BrainCircuit,
     reason: 'Usa automáticamente las capturas marcadas como train para construir el modelo inicial.',
   },
   {
-    step: '05',
+    step: '06',
     title: 'Retraining',
     route: '/retraining',
     icon: RefreshCcw,
     reason: 'Reentrena cuando han entrado nuevas capturas train o hay drift temporal, de hardware o de escenario.',
   },
   {
-    step: '06',
+    step: '07',
     title: 'Validation',
     route: '/validation',
     icon: BadgeCheck,
     reason: 'Mide rendimiento con muestras reservadas como val. No deben haber participado en entrenamiento.',
   },
   {
-    step: '07',
+    step: '08',
     title: 'Inference',
     route: '/inference',
     icon: ScanSearch,
     reason: 'Ejecuta predicción solo sobre capturas nuevas marcadas como predict.',
   },
   {
-    step: '08',
+    step: '09',
     title: 'Models',
     route: '/models',
     icon: Boxes,

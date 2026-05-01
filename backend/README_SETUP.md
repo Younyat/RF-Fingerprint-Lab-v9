@@ -11,6 +11,11 @@ There is no mock signal in the active development flow. The UI and API are expec
 - Python virtual environment for the FastAPI backend
 - Backend Python dependencies from `backend/requirements.txt`, including `numpy` and `scipy` for RF canonicalization
 - RadioConda Python with GNU Radio and UHD installed
+- Optional experiment dependencies as needed:
+  - `scikit-learn` for E5 classical ML training
+  - `torch` for E1/E3 deep-learning training
+  - `torchvision` for optional E3 ResNet18/VGG11
+  - `h5py` for future binary HDF5 writing
 - Ettus UHD runtime/USB driver installed for Windows:
   - Windows 11: `https://files.ettus.com/binaries/uhd/latest_release/Windows11/VS2026/`
   - All latest UHD release builds: `https://files.ettus.com/binaries/uhd/latest_release/`
@@ -67,7 +72,9 @@ URLs:
 6. Click the spectrum trace to add a marker.
 7. Use `Peak` to place a marker at the strongest current bin.
 8. Open `Demodulation` to process the RF band between M1 and M2.
-9. Open `Signal Analysis` to capture the RF band between M1 and M2 as IQ plus metadata.
+9. Open `Capture Lab` or `Signal Analysis` to capture the RF band between M1 and M2 as IQ plus metadata.
+10. Use `Dataset Builder` to curate the capture and decide whether it is valid for training.
+11. Use `RF Experiment Lab` for reproducible E0/E5/E1/E3 previews, exports, training runs and benchmark reports.
 
 ## RF Fingerprinting Dataset Rules
 
@@ -84,6 +91,43 @@ Required scientific compatibility after export:
 - validation sessions do not overlap training sessions for the same device
 
 Recommended capture design: record each transmitter across several sessions and, when possible, across controlled frequency placements. The model should learn transmitter impairments, not the operator's SDR tuning center.
+
+## RF Experiment Lab Setup Notes
+
+RF Experiment Lab is optional and must not block the operational SDR lab. The backend should start even if optional ML dependencies are unavailable.
+
+Check integration health:
+
+```text
+GET /api/rf-experiment-lab/health
+```
+
+The health response reports:
+
+- whether the module loaded
+- required and optional dependency availability
+- missing optional dependencies
+- morphological detector availability
+- learned detector availability
+- dataset adapter availability
+
+Recommended validation command in this workspace:
+
+```powershell
+$env:PYTHONPATH="backend"
+& "C:\Users\Usuario\radioconda\python.exe" -m unittest backend.app.tests.integration.test_rf_experiment_lab -v
+```
+
+Current experiment families:
+
+| ID | Name | Dependency level |
+|----|------|------------------|
+| E0 | Morphological Baseline | No deep-learning dependency |
+| E5 | Spectral Feature Baseline | Feature extraction works without training; training needs `scikit-learn` |
+| E1 | Raw IQ CNN 1D | Needs `torch` for training |
+| E3 | Spectrogram/Waterfall CNN 2D | Needs `torch`; ResNet18/VGG11 also need `torchvision` |
+
+Preview endpoints do not write files. Export and run endpoints write only to controlled RF Experiment Lab output directories and preserve original capture files.
 
 ## Backend Configuration
 

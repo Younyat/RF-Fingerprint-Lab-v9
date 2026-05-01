@@ -176,6 +176,19 @@ export const API_ENDPOINTS = {
   RF_SIGNAL_UNDERSTANDING_ANALYZE_REGISTERED_CAPTURE: (id: string) => `/api/rf-signal-understanding/capture-registry/${id}/analyze`,
   RF_SIGNAL_UNDERSTANDING_TRAINING_QUEUE: '/api/rf-signal-understanding/training-queue',
 
+  // RF Experiment Lab
+  RF_EXPERIMENT_HEALTH: '/api/rf-experiment-lab/health',
+  RF_EXPERIMENT_DATASET_CAPTURES: '/api/rf-experiment-lab/dataset/captures',
+  RF_EXPERIMENT_EXPERIMENTS: '/api/rf-experiment-lab/experiments',
+  RF_EXPERIMENT_COMPARE: '/api/rf-experiment-lab/experiments/compare',
+  RF_EXPERIMENT_BENCHMARK_REPORT: '/api/rf-experiment-lab/benchmark/report',
+  RF_EXPERIMENT_E5_PREVIEW: '/api/rf-experiment-lab/experiments/e5-spectral-baseline/preview',
+  RF_EXPERIMENT_E5_RUN: '/api/rf-experiment-lab/experiments/e5-spectral-baseline/run',
+  RF_EXPERIMENT_E1_PREVIEW: '/api/rf-experiment-lab/experiments/e1-raw-iq-cnn1d/preview',
+  RF_EXPERIMENT_E1_RUN: '/api/rf-experiment-lab/experiments/e1-raw-iq-cnn1d/run',
+  RF_EXPERIMENT_E3_PREVIEW: '/api/rf-experiment-lab/experiments/e3-spectrogram-cnn2d/preview',
+  RF_EXPERIMENT_E3_RUN: '/api/rf-experiment-lab/experiments/e3-spectrogram-cnn2d/run',
+
   // Markers
   MARKERS_LIST: '/api/markers/',
   MARKERS_CREATE: '/api/markers/',

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { BarChart3, BrainCircuit, ChevronLeft, ChevronRight, Download, Eye, EyeOff, Image, Move, Play, Square, RotateCcw, ScanSearch, Target, Usb, Unplug, Radio, Trash2, SlidersHorizontal, X } from 'lucide-react';
+import { BarChart3, BrainCircuit, ChevronLeft, ChevronRight, Download, Eye, EyeOff, FlaskConical, Image, Move, Play, Square, RotateCcw, ScanSearch, Target, Usb, Unplug, Radio, Trash2, SlidersHorizontal, X } from 'lucide-react';
 import { useSpectrum } from '../hooks/useSpectrum';
 import { useWaterfall } from '../hooks/useWaterfall';
 import { useSpectrumController } from '../controllers/SpectrumController';
@@ -295,12 +295,15 @@ export const SpectrumView: React.FC = () => {
   const [showCursorBadge, setShowCursorBadge] = useState(true);
   const [showRfIntelligenceOverlay, setShowRfIntelligenceOverlay] = useState(true);
   const [showRsuOverlay, setShowRsuOverlay] = useState(false);
+  const [showRfExperimentOverlay, setShowRfExperimentOverlay] = useState(false);
   const [rsuOverlayMode, setRsuOverlayMode] = useState<'hybrid' | 'ai_only'>('hybrid');
   const [autoFreezeArmed, setAutoFreezeArmed] = useState(false);
   const [rfScene, setRfScene] = useState<RFSceneAnalysis | null>(null);
   const [rfOverlayError, setRfOverlayError] = useState<string | null>(null);
   const [rsuLive, setRsuLive] = useState<RFSignalUnderstandingResult | null>(null);
   const [rsuOverlayError, setRsuOverlayError] = useState<string | null>(null);
+  const [rfExperimentOverlay, setRfExperimentOverlay] = useState<Record<string, any> | null>(null);
+  const [rfExperimentOverlayError, setRfExperimentOverlayError] = useState<string | null>(null);
   const [panOverlayPosition, setPanOverlayPosition] = useState({ x: 16, y: 16 });
   const dragStateRef = useRef<{ type: 'pan' | null; offsetX: number; offsetY: number }>({ type: null, offsetX: 0, offsetY: 0 });
   const suppressNextClickRef = useRef(false);
@@ -319,6 +322,7 @@ export const SpectrumView: React.FC = () => {
         showCursorBadge?: boolean;
         showRfIntelligenceOverlay?: boolean;
         showRsuOverlay?: boolean;
+        showRfExperimentOverlay?: boolean;
         rsuOverlayMode?: 'hybrid' | 'ai_only';
         panOverlayPosition?: { x?: number; y?: number };
       };
@@ -327,6 +331,7 @@ export const SpectrumView: React.FC = () => {
       if (typeof parsed.showCursorBadge === 'boolean') setShowCursorBadge(parsed.showCursorBadge);
       if (typeof parsed.showRfIntelligenceOverlay === 'boolean') setShowRfIntelligenceOverlay(parsed.showRfIntelligenceOverlay);
       if (typeof parsed.showRsuOverlay === 'boolean') setShowRsuOverlay(parsed.showRsuOverlay);
+      if (typeof parsed.showRfExperimentOverlay === 'boolean') setShowRfExperimentOverlay(parsed.showRfExperimentOverlay);
       if (parsed.rsuOverlayMode === 'hybrid' || parsed.rsuOverlayMode === 'ai_only') setRsuOverlayMode(parsed.rsuOverlayMode);
       if (
         parsed.panOverlayPosition &&
@@ -353,6 +358,7 @@ export const SpectrumView: React.FC = () => {
           showCursorBadge,
           showRfIntelligenceOverlay,
           showRsuOverlay,
+          showRfExperimentOverlay,
           rsuOverlayMode,
           panOverlayPosition,
         }),
@@ -360,7 +366,7 @@ export const SpectrumView: React.FC = () => {
     } catch {
       // Ignore storage failures.
     }
-  }, [showPanOverlay, showMarkerBadges, showCursorBadge, showRfIntelligenceOverlay, showRsuOverlay, rsuOverlayMode, panOverlayPosition]);
+  }, [showPanOverlay, showMarkerBadges, showCursorBadge, showRfIntelligenceOverlay, showRsuOverlay, showRfExperimentOverlay, rsuOverlayMode, panOverlayPosition]);
 
   useEffect(() => {
     try {
@@ -549,6 +555,42 @@ export const SpectrumView: React.FC = () => {
       window.clearInterval(interval);
     };
   }, [analysisSpectrumData, deviceStatus.isConnected, isFrozen, markerBandpassEnabled, showRsuOverlay, rsuOverlayMode, usePeakTraceForDetection]);
+
+  useEffect(() => {
+    if (!showRfExperimentOverlay) {
+      return;
+    }
+
+    let cancelled = false;
+    const refreshExperimentOverlay = async () => {
+      try {
+        const [healthResponse, runs] = await Promise.all([
+          apiService.getRFExperimentLabHealth(),
+          apiService.listRFExperimentRuns(),
+        ]);
+        if (cancelled) return;
+        const health = healthResponse?.data ?? healthResponse;
+        const candidates = runs.filter((run) => ['e5_spectral_feature_baseline', 'e1_raw_iq_cnn1d', 'e3_spectrogram_cnn2d'].includes(String(run.experiment_type)));
+        setRfExperimentOverlay({
+          health,
+          runs: candidates,
+          best: [...candidates].sort((left, right) => Number(right.metrics_summary?.macro_f1 ?? -1) - Number(left.metrics_summary?.macro_f1 ?? -1))[0] ?? null,
+        });
+        setRfExperimentOverlayError(null);
+      } catch (error) {
+        if (!cancelled) {
+          setRfExperimentOverlayError(getErrorMessage(error));
+        }
+      }
+    };
+
+    refreshExperimentOverlay();
+    const interval = window.setInterval(refreshExperimentOverlay, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [showRfExperimentOverlay]);
 
   const markerRows = useMemo(() => {
     return markers.map((marker) => {
@@ -1377,6 +1419,19 @@ export const SpectrumView: React.FC = () => {
             </button>
           )}
 
+          <button
+            onClick={() => setShowRfExperimentOverlay((current) => !current)}
+            aria-pressed={showRfExperimentOverlay}
+            title="Muestra estado de modelos experimentales E1/E3/E5. No inventa inferencia live si no hay pipeline validado."
+            className={cn(
+              'h-9 flex items-center px-3 rounded-md text-sm font-medium',
+              showRfExperimentOverlay ? 'bg-emerald-300 text-slate-950 hover:bg-emerald-200' : 'bg-slate-700 hover:bg-slate-600'
+            )}
+          >
+            <FlaskConical className="w-4 h-4 mr-2" />
+            Experiment Overlay
+          </button>
+
           <div className="h-9 w-px bg-slate-700 mx-1" />
 
           <label className="flex flex-col gap-1 text-[11px] text-slate-400">
@@ -1530,6 +1585,7 @@ export const SpectrumView: React.FC = () => {
         {showWaterfallSplit && waterfallError && <div className="mt-2 text-sm text-red-300">{waterfallError}</div>}
         {showRfIntelligenceOverlay && rfOverlayError && <div className="mt-2 text-sm text-amber-200">RF Intelligence overlay: {rfOverlayError}</div>}
         {showRsuOverlay && rsuOverlayError && <div className="mt-2 text-sm text-cyan-200">RF Signal Understanding overlay: {rsuOverlayError}</div>}
+        {showRfExperimentOverlay && rfExperimentOverlayError && <div className="mt-2 text-sm text-emerald-200">RF Experiment overlay: {rfExperimentOverlayError}</div>}
       </div>
 
       <div className="flex-1 grid grid-cols-[minmax(0,1fr)_320px] min-h-0">
@@ -1628,6 +1684,19 @@ export const SpectrumView: React.FC = () => {
                 ))}
                 <div className="absolute left-12 top-24 rounded-md border border-cyan-200/35 bg-slate-950/30 px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-cyan-100 shadow-lg backdrop-blur-sm">
                   RF signal understanding {isFrozen ? 'frozen' : 'live'}
+                </div>
+              </div>
+            )}
+            {showRfExperimentOverlay && (
+              <div className="pointer-events-none absolute inset-0 z-[10]">
+                <div className="absolute left-12 top-36 max-w-md rounded-md border border-emerald-200/35 bg-slate-950/35 px-3 py-2 text-[10px] text-emerald-100 shadow-lg backdrop-blur-sm">
+                  <div className="uppercase tracking-[0.16em]">RF Experiment Lab</div>
+                  <div className="mt-1 text-[11px] normal-case text-slate-100">
+                    Best validated run: {rfExperimentOverlay?.best?.experiment_type ?? 'none yet'} | macro F1 {String(rfExperimentOverlay?.best?.metrics_summary?.macro_f1 ?? 'n/a')}
+                  </div>
+                  <div className="mt-1 text-[10px] text-emerald-100/80">
+                    Live identity is not asserted until a validated inference route is explicitly enabled.
+                  </div>
                 </div>
               </div>
             )}
@@ -1802,6 +1871,42 @@ export const SpectrumView: React.FC = () => {
                     </div>
                   );
                 })}
+              </div>
+            </>
+          )}
+
+          {showRfExperimentOverlay && (
+            <>
+              <div className="mt-5 flex items-center justify-between gap-2">
+                <div className="text-xs uppercase text-slate-400">Experiment Lab</div>
+                <div className="rounded-full border border-emerald-200/30 bg-emerald-300/10 px-2 py-0.5 text-[10px] text-emerald-100">
+                  {(rfExperimentOverlay?.runs ?? []).length} runs
+                </div>
+              </div>
+              <div className="mt-2 space-y-2">
+                <div className="rounded-md border border-emerald-200/30 bg-emerald-300/10 px-2 py-2 text-xs text-slate-200">
+                  <div className="font-semibold text-emerald-100">Prediction visibility</div>
+                  <div className="mt-1 text-slate-300">
+                    Shows validated E1/E3/E5 candidates. It does not assert live RF identity until a production inference router is enabled.
+                  </div>
+                </div>
+                {rfExperimentOverlay?.best ? (
+                  <div className="rounded-md border border-slate-800 bg-slate-950/50 px-2 py-2 text-xs">
+                    <div className="font-semibold text-slate-100">{rfExperimentOverlay.best.experiment_type}</div>
+                    <div className="mt-1 grid grid-cols-2 gap-x-2 gap-y-1 text-slate-300">
+                      <span>Macro F1</span>
+                      <span className="text-right">{String(rfExperimentOverlay.best.metrics_summary?.macro_f1 ?? 'n/a')}</span>
+                      <span>Accuracy</span>
+                      <span className="text-right">{String(rfExperimentOverlay.best.metrics_summary?.accuracy ?? 'n/a')}</span>
+                      <span>Split</span>
+                      <span className="text-right">{String(rfExperimentOverlay.best.split_strategy ?? 'unknown')}</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-slate-800 bg-slate-950/50 px-2 py-2 text-xs text-slate-400">
+                    No E1/E3/E5 experiment results have been validated yet.
+                  </div>
+                )}
               </div>
             </>
           )}
