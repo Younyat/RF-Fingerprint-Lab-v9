@@ -4,6 +4,12 @@ SpectraEase is a web-based RF spectrum analyzer for real SDR hardware. The curre
 
 The application is built with a FastAPI backend and a React/TypeScript frontend. It visualizes live RF spectrum data captured from the device, exposes analyzer-style controls, and supports real capture workflows.
 
+## Recent updates
+
+- Fixed RF Experiment Lab metadata validation so representation entries with missing or unknown `datatype` values now default to `complex64` instead of failing validation.
+- Improved Spectrum Live Monitor `Experiment Overlay` behavior with explicit model selection for `Best`, `E1`, `E3`, and `E5` models.
+- When the `Experiment Overlay` is deselected, any active experiment model selection is now cleared to avoid stale UI state.
+
 ## Current Hardware Path
 
 - Device: **USRP-B200 from Ettus Research**
