@@ -388,6 +388,46 @@ export class ApiService {
     return response.data?.data ?? response.data?.captures ?? [];
   }
 
+  async getRFExperimentDatasetSources(): Promise<Record<string, any>> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_DATASET_SOURCES}`);
+    return response.data?.data ?? response.data;
+  }
+
+  async getRFExperimentInternalSamples(): Promise<Array<Record<string, any>>> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_INTERNAL_SAMPLES}`);
+    return response.data?.data ?? [];
+  }
+
+  async createRFExperimentInternalSample(payload: Record<string, any>): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_INTERNAL_SAMPLES}`, payload);
+    return response.data;
+  }
+
+  async reviewRFExperimentInternalSample(sampleId: string, payload: Record<string, any>): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_INTERNAL_SAMPLE_REVIEW(sampleId)}`, payload);
+    return response.data;
+  }
+
+  async previewRFExperimentDatasetV1(payload: Record<string, any>): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_DATASET_V1_PREVIEW}`, payload);
+    return response.data;
+  }
+
+  async exportRFExperimentDatasetV1(payload: Record<string, any>): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_DATASET_V1_EXPORT}`, payload);
+    return response.data;
+  }
+
+  async previewExternalRFExperimentDataset(payload: Record<string, any>): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_EXTERNAL_DATASET_PREVIEW}`, payload);
+    return response.data;
+  }
+
+  async importExternalRFExperimentDataset(payload: Record<string, any>): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_EXTERNAL_DATASET_IMPORT}`, payload);
+    return response.data;
+  }
+
   async listRFExperimentRuns(): Promise<Array<Record<string, any>>> {
     const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_EXPERIMENTS}`);
     return response.data?.data ?? [];
@@ -422,6 +462,16 @@ export class ApiService {
 
   async createRFExperimentBenchmark(payload: Record<string, any>): Promise<Record<string, any>> {
     const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_BENCHMARK_REPORT}`, payload);
+    return response.data;
+  }
+
+  async predictRFExperiment(payload: Record<string, any>): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_INFERENCE_PREDICT}`, payload);
+    return response.data;
+  }
+
+  async compareRFExperimentRegion(payload: Record<string, any>): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_INFERENCE_COMPARE_REGION}`, payload);
     return response.data;
   }
 

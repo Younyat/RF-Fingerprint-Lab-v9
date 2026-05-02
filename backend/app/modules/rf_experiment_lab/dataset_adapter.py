@@ -4,15 +4,21 @@ import json
 from pathlib import Path
 from typing import Any
 
+from app.modules.rf_experiment_lab.unified_dataset import RFExperimentDatasetV1Builder
+from app.modules.rf_experiment_lab.internal_dataset_lab import RFExperimentInternalDatasetLab
+
 
 class DatasetAdapter:
     def __init__(self, storage_root: Path) -> None:
         self.storage_root = storage_root
         self.fingerprinting_capture_dir = storage_root / "fingerprinting" / "captures"
         self.signal_understanding_registry = storage_root / "rf_signal_understanding" / "capture_registry" / "captures.json"
+        self.unified_dataset = RFExperimentDatasetV1Builder(storage_root)
+        self.internal_dataset_lab = RFExperimentInternalDatasetLab(storage_root)
 
     def list_existing_captures(self) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
+        records.extend(self.internal_dataset_lab.as_capture_records())
         records.extend(self._read_fingerprinting_captures())
         records.extend(self._read_signal_understanding_captures())
         return sorted(records, key=lambda item: str(item.get("capture_id", "")))
@@ -24,12 +30,36 @@ class DatasetAdapter:
             "sources": {
                 "fingerprinting": str(self.fingerprinting_capture_dir),
                 "rf_signal_understanding": str(self.signal_understanding_registry),
+                "rf_experiment_lab_internal": str(self.internal_dataset_lab.registry_path),
             },
             "technologies": sorted({str(item.get("technology") or item.get("transmitter_class") or "unknown") for item in captures}),
             "splits": self._count_by(captures, "dataset_split"),
             "sessions": self._count_by(captures, "session_id"),
             "qc_status": self._count_by(captures, "qc_status"),
+            "unified_dataset_schema": "RFExperimentDatasetV1",
+            "supported_external_sources": self.unified_dataset.describe_supported_sources(),
         }
+
+    def list_training_records(self, config: dict[str, Any]) -> list[dict[str, Any]]:
+        manifest_path = config.get("dataset_manifest_path") or config.get("rf_experiment_dataset_path")
+        if manifest_path:
+            return self.unified_dataset.records_for_training(str(manifest_path))
+        return self.list_existing_captures()
+
+    def rf_experiment_dataset_v1_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.unified_dataset.preview_from_internal(self.list_existing_captures(), payload)
+
+    def rf_experiment_dataset_v1_export(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.unified_dataset.export_from_internal(self.list_existing_captures(), payload)
+
+    def external_dataset_import_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.unified_dataset.preview_import(payload)
+
+    def external_dataset_import_export(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.unified_dataset.export_import(payload)
+
+    def supported_dataset_sources(self) -> dict[str, Any]:
+        return self.unified_dataset.describe_supported_sources()
 
     def validate_required_metadata(self, record: dict[str, Any]) -> dict[str, Any]:
         required = [

@@ -1023,6 +1023,207 @@ class RFExperimentLabIntegrationTest(unittest.TestCase):
         finally:
             shutil.rmtree(tmp_path, ignore_errors=True)
 
+    def test_rf_experiment_dataset_v1_internal_export_and_e1_preview(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            exported = service.rf_experiment_dataset_v1_export(
+                {
+                    "dataset_id": "internal_unified_test",
+                    "dataset_version": "v1",
+                    "task": "device_fingerprinting",
+                    "label_field": "transmitter_id",
+                    "capture_ids": capture_ids,
+                    "split_strategy": "session_disjoint",
+                    "split_group_fields": ["session_id"],
+                }
+            )
+            manifest_path = Path(exported["manifest_path"])
+            self.assertTrue(manifest_path.exists())
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["schema_version"], "RFExperimentDatasetV1")
+            self.assertEqual(len(manifest["samples"]), len(capture_ids))
+            self.assertTrue(all("sample_id" in sample and "sha256" in sample for sample in manifest["samples"]))
+
+            preview = service.e1_raw_iq_cnn1d_preview(
+                {
+                    "dataset_manifest_path": str(manifest_path),
+                    "label_field": "transmitter_id",
+                    "window_size_samples": 512,
+                    "max_windows": 12,
+                    "split": {"strategy": "session_disjoint", "group_by": ["session_id"]},
+                    "force_torch_unavailable": True,
+                }
+            )
+            self.assertEqual(preview["dataset"]["capture_count"], len(capture_ids))
+            self.assertEqual(preview["input_shape"], [2, 512])
+            self.assertFalse(preview["training_started"])
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_external_dataset_import_warns_for_radioml_fingerprinting(self) -> None:
+        workspace_tmp = Path("tmp_rf_tests")
+        workspace_tmp.mkdir(parents=True, exist_ok=True)
+        tmp_path = workspace_tmp / f"external_{uuid4().hex[:8]}"
+        try:
+            class_dir = tmp_path / "bpsk"
+            class_dir.mkdir(parents=True, exist_ok=False)
+            iq_path = class_dir / "sample_0001.iq"
+            np.ones(64, dtype=np.complex64).tofile(iq_path)
+            service = RFExperimentLabService(tmp_path)
+            preview = service.external_dataset_import_preview(
+                {
+                    "dataset_id": "radioml_debug",
+                    "dataset_source": "radioml",
+                    "source_path": str(tmp_path),
+                    "source_format": "iq",
+                    "task": "device_fingerprinting",
+                    "label_field": "transmitter_id",
+                    "sample_rate_hz": 1_000_000,
+                    "center_frequency_hz": 100_000_000,
+                }
+            )
+            warning_types = {item["type"] for item in preview["warnings"]}
+            self.assertIn("dataset_task_mismatch", warning_types)
+            self.assertEqual(preview["schema_version"], "RFExperimentDatasetV1")
+            self.assertEqual(preview["sample_count"], 1)
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e5_preview_accepts_rf_experiment_dataset_manifest(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            exported = service.rf_experiment_dataset_v1_export(
+                {
+                    "dataset_id": "e5_manifest_test",
+                    "dataset_version": "v1",
+                    "task": "device_fingerprinting",
+                    "label_field": "transmitter_id",
+                    "capture_ids": capture_ids,
+                }
+            )
+            preview = service.e5_spectral_baseline_preview(
+                {
+                    "dataset_manifest_path": exported["manifest_path"],
+                    "label_field": "transmitter_id",
+                    "models": ["logistic_regression"],
+                    "split": {"strategy": "session_disjoint", "group_by": ["session_id"]},
+                }
+            )
+            self.assertEqual(preview["dataset"]["capture_count"], len(capture_ids))
+            self.assertIn("device_0", preview["dataset"]["labels"])
+            self.assertIn("device_1", preview["dataset"]["labels"])
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_internal_dataset_sample_review_export_and_random_debug_warning(self) -> None:
+        tmp_path, iq_path, _metadata_path = self._make_export_workspace(sample_count=256)
+        try:
+            service = RFExperimentLabService(tmp_path)
+            created = service.create_internal_dataset_sample(
+                {
+                    "iq_path": str(iq_path),
+                    "sample_id": "lab_sample_001",
+                    "task": "device_fingerprinting",
+                    "label": "device_a",
+                    "transmitter_id": "device_a",
+                    "sample_rate_hz": 1_000_000,
+                    "center_frequency_hz": 100_000_000,
+                    "session_id": "session_a",
+                    "receiver_id": "rx_1",
+                    "environment_id": "lab",
+                    "distance_m": 1.5,
+                    "qc_summary": {"qc_status": "accepted"},
+                }
+            )
+            self.assertEqual(created["sample"]["sample_id"], "lab_sample_001")
+            reviewed = service.review_internal_dataset_sample("lab_sample_001", {"review_status": "accepted", "notes": "ok"})
+            self.assertEqual(reviewed["review_status"], "accepted")
+            exported = service.rf_experiment_dataset_v1_export(
+                {
+                    "dataset_id": "internal_lab",
+                    "dataset_version": "v1",
+                    "task": "device_fingerprinting",
+                    "label_field": "transmitter_id",
+                    "split_strategy": "random",
+                }
+            )
+            warning_types = {item["type"] for item in exported["warnings"]}
+            self.assertIn("debug_split", warning_types)
+            manifest = json.loads(Path(exported["manifest_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(manifest["samples"][0]["sample_id"], "lab_sample_001")
+            self.assertEqual(manifest["samples"][0]["rf_metadata"]["sample_rate_hz"], 1_000_000)
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_e5_result_package_records_manifest_reproducibility_and_inference_persistence(self) -> None:
+        tmp_path, capture_ids = self._make_e5_dataset()
+        try:
+            service = RFExperimentLabService(tmp_path)
+            exported = service.rf_experiment_dataset_v1_export(
+                {
+                    "dataset_id": "repro_e5",
+                    "dataset_version": "v1",
+                    "task": "device_fingerprinting",
+                    "label_field": "transmitter_id",
+                    "capture_ids": capture_ids,
+                }
+            )
+            result = service.e5_spectral_baseline_run(
+                {
+                    "dataset_manifest_path": exported["manifest_path"],
+                    "dataset_version": "v1",
+                    "label_field": "transmitter_id",
+                    "models": ["logistic_regression"],
+                    "split": {"strategy": "session_disjoint", "group_by": ["session_id"]},
+                }
+            )
+            result_dir = Path(result["result_package"]["result_dir"])
+            for filename in ("dataset_manifest_path.txt", "training_config.json", "label_schema.json", "normalization_params.json", "confusion_matrix_raw.csv"):
+                self.assertTrue((result_dir / filename).exists(), filename)
+            self.assertEqual((result_dir / "dataset_manifest_path.txt").read_text(encoding="utf-8").strip(), exported["manifest_path"])
+
+            experiment_id = f"e5_spectral_feature_baseline:{result_dir.name}"
+            prediction = service.predict(
+                {
+                    "experiment_ids": [experiment_id],
+                    "source_type": "saved_capture",
+                    "input_sample_id": "capture_0001",
+                    "persist": True,
+                }
+            )
+            self.assertIn("prediction_result", prediction)
+            self.assertIn("confidence", prediction["prediction_result"])
+            self.assertTrue(Path(prediction["result_path"]).exists())
+            persisted = json.loads(Path(prediction["result_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(persisted["input_sample_id"], "capture_0001")
+            self.assertIn("model_id", persisted)
+            self.assertIn("timestamp", persisted)
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_region_comparison_returns_agreement_disagreement_fields(self) -> None:
+        tmp_path, service, ids = self._make_benchmark_runs()
+        try:
+            result = service.compare_models_on_region(
+                {
+                    "experiment_ids": ids,
+                    "source_type": "marker_region",
+                    "input_sample_id": "marker_m1_m2",
+                    "marker_region": {"marker_1_hz": 100_000_000, "marker_2_hz": 101_000_000},
+                    "persist": True,
+                }
+            )
+            summary = result["prediction_result"]
+            self.assertIn("predictions", summary)
+            self.assertIn("latency_ms", summary)
+            self.assertIn("agreement", summary["agreement"])
+            self.assertIn("disagreement", summary["agreement"])
+            self.assertTrue(Path(result["result_path"]).exists())
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
     def _make_e0_workspace(self) -> tuple[Path, Path]:
         workspace_tmp = Path("tmp_rf_tests")
         workspace_tmp.mkdir(parents=True, exist_ok=True)

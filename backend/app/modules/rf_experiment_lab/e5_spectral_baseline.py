@@ -142,6 +142,7 @@ class E5SpectralBaselineService:
         return {
             "experiment_id": self.experiment_id,
             "dataset_version": payload.get("dataset_version", "unversioned"),
+            "dataset_manifest_path": payload.get("dataset_manifest_path") or payload.get("rf_experiment_dataset_path"),
             "capture_ids": payload.get("capture_ids") or [],
             "input_representation": payload.get("input_representation", "fft_psd"),
             "feature_set": payload.get("feature_set", "psd_basic"),
@@ -156,7 +157,7 @@ class E5SpectralBaselineService:
         }
 
     def _selected_captures(self, config: dict[str, Any]) -> list[dict[str, Any]]:
-        captures = self.dataset_adapter.list_existing_captures()
+        captures = self.dataset_adapter.list_training_records(config)
         ids = {str(item) for item in config.get("capture_ids", [])}
         if ids:
             captures = [item for item in captures if str(item.get("capture_id")) in ids]

@@ -148,12 +148,38 @@ Recommended workflow:
 3. Use `Dataset Builder` to review QC, assign split policy and decide whether the capture is `valid`, `doubtful` or `rejected`.
 4. If the capture was produced through `RF Signal Understanding`, import it from the Dataset Builder candidate area before training.
 5. Open `RF Experiment Lab`.
-6. Check health and dependency availability.
-7. Preview export or representation steps before writing files.
-8. Generate reusable representations: `raw_iq`, `fft_psd`, `spectrogram` or `waterfall`.
-9. Preview the experiment to validate labels, split strategy, sample count and model availability.
-10. Run E0, E5, E1 or E3 only after preview is coherent.
-11. Use experiment comparison or benchmark report to compare results under the same dataset and split.
+6. Use the guided phases: Capture Dataset, Review Samples, Export Dataset, Train Models, Validate, Retrain, Live Prediction and Model Comparison.
+7. Check health and dependency availability.
+8. Preview export or representation steps before writing files.
+9. Generate reusable representations: `raw_iq`, `fft_psd`, `spectrogram` or `waterfall`.
+10. Preview the experiment to validate labels, split strategy, sample count and model availability.
+11. Run E0, E5, E1 or E3 only after preview is coherent.
+12. Use experiment comparison or benchmark report to compare results under the same dataset and split.
+
+The tab also exposes a unified dataset section. Before training, the operator can normalize internal or external data into:
+
+```text
+RFExperimentDatasetV1
+```
+
+Available UI controls:
+
+- dataset source: internal, ORACLE, WiSig, RadioML, Sig53 or custom external source;
+- scientific task: device fingerprinting, signal recognition or modulation classification;
+- representation: raw IQ, FFT/PSD, spectrogram or waterfall;
+- label field: transmitter ID, signal type, modulation class or technology;
+- split strategy: session, day, receiver, environment, device holdout or random debug;
+- external path and format for imported datasets.
+
+After export, the generated manifest path is reused by E1, E3 or E5 through `dataset_manifest_path`, so the model training code does not depend on the original source format.
+
+The tab also surfaces RF Experiment Lab internal samples. These are experimental dataset records created inside the RF Experiment Lab workflow and expected to carry raw IQ, RF metadata, label, task, transmitter ID, signal type, modulation class, session, receiver, environment, distance, SHA-256, QC summary and split group before export.
+
+Scientific source policy shown by the UI/backend:
+
+- ORACLE and WiSig are primarily for physical RF fingerprinting.
+- RadioML and Sig53 are primarily for modulation or signal-type classification.
+- Random split is allowed only as a quick debug mode, not as the main scientific result.
 
 Current experiments visible from the UI:
 
@@ -180,7 +206,7 @@ The tab does not add SSD, YOLO, Faster R-CNN, Transformer, metric learning, open
 
 `Live Monitor` includes an `Experiment Overlay` next to `RF Overlay` and `Understanding Overlay`.
 
-The overlay is a readiness and traceability overlay, not a claim of live forensic identity. It shows RF Experiment Lab status and validated experiment context when available. Experimental models are intentionally not treated as operational live inference until an explicit validated inference router exists.
+The overlay is a readiness and traceability overlay, not a claim of operational forensic identity. RF Experiment Lab also includes an experimental prediction panel that can persist reports for saved captures, Marker 1 / Marker 2 regions, frozen windows and live context. The report displays prediction, confidence, top-k, latency, model used, representation used and agreement/disagreement between selected E1/E3/E5 result packages.
 
 ## UI Screens
 
@@ -330,6 +356,41 @@ RF Signal Understanding teach/review/capture
 ```
 
 This keeps RF Signal Understanding as the signal-analysis and labelling layer, while Dataset Builder remains the quality gate for training data.
+
+## RF Signal Understanding AI Status
+
+The `RF Signal Understanding` tab currently uses a hybrid signal-understanding pipeline:
+
+- `morphological_region_detector`: non-trainable waterfall/STFT region detector based on thresholding, morphology and connected components.
+- `waterfall_classifier_heuristic_v1`: non-trainable visual classifier using region bandwidth, duration and time/frequency variation.
+- `numpy_softmax_regression`: trainable signal-type classifier stored as `mlp_spectral_classifier/model.npz`.
+- `waterfall_visual_mlp_bispectral_fusion`: decision fusion layer combining detector output, visual classification, softmax classification, spectral features, optional bispectral hints and RF Intelligence context.
+
+The trainable model is not a CNN, YOLO, SSD, Faster R-CNN, Transformer or metric-learning model. It is a lightweight multiclass softmax classifier for signal-type hypotheses over already detected regions.
+
+Its dataset is the RF Signal Understanding learning buffer:
+
+```text
+backend/app/infrastructure/persistence/storage/rf_signal_understanding/learning_buffer/
+```
+
+Samples can include reviewed region images, I/Q segments, labels, label strength, training weight, frequency bounds, bandwidth, SNR, session ID and capture ID.
+
+The model answers:
+
+```text
+Which signal-type label does this detected RF region resemble?
+```
+
+It does not answer:
+
+```text
+Which physical transmitter generated the signal?
+Was the protocol decoded?
+Is this open-set spoofing?
+```
+
+Those are separate RF Experiment Lab or future inference tasks.
 
 ## Validation And Inference Python Default
 

@@ -268,6 +268,8 @@ E0 is the permanent fallback and baseline. Learned detectors such as SSD, Faster
 
 The backend now supports:
 
+- `RFExperimentDatasetV1`, a unified internal dataset manifest consumed by E1, E3 and E5
+- RF Experiment Lab internal dataset samples with raw IQ, RF metadata, task, label, transmitter ID, signal type, modulation class, session, receiver, environment, distance, QC summary, SHA-256 and split group
 - SigMF preview/export from `.cfile + .json` or `.iq + .json`
 - HDF5 experiment manifest preview/export without requiring binary HDF5 support
 - Dataset version objects with source capture hashes
@@ -276,8 +278,47 @@ The backend now supports:
 - Experiment registry listing and detail loading
 - Cross-experiment comparison
 - Consolidated benchmark reports across E1, E3 and E5
+- Experimental inference-report persistence for saved captures, Marker 1 / Marker 2 regions, frozen windows and live context
 
 Preview endpoints do not write files. Export/run endpoints write into controlled output directories and preserve original captures.
+
+### Unified dataset import
+
+All dataset sources are normalized before training:
+
+```text
+Capture Lab / RF Signal Understanding / public dataset / custom folder
+  -> RFExperimentDatasetV1
+  -> E1, E3 or E5
+  -> result package and optional inference report
+```
+
+The training services accept `dataset_manifest_path`. When set, records are read from the unified manifest instead of directly from the original capture registry. This keeps training code independent from dataset origin.
+
+Trainable result packages also write `dataset_manifest_path.txt`, `training_config.json`, `label_schema.json`, `normalization_params.json` and `split_strategy.txt` so validation and retraining can be audited from the result folder.
+
+Supported source profiles:
+
+- `oracle`: primarily RF fingerprinting
+- `wisig`: primarily RF fingerprinting and receiver/domain-shift studies
+- `radioml`: primarily modulation or signal-type classification
+- `sig53`: primarily modulation or signal-type classification
+- `external_custom`: I/Q, SigMF, HDF5, NumPy, MATLAB, Pickle, CSV features, spectrogram images or waterfall images
+
+Dataset endpoints:
+
+```text
+GET  /api/rf-experiment-lab/dataset/sources
+GET  /api/rf-experiment-lab/dataset/internal-samples
+POST /api/rf-experiment-lab/dataset/internal-samples
+POST /api/rf-experiment-lab/dataset/internal-samples/{sample_id}/review
+POST /api/rf-experiment-lab/datasets/rf-experiment-dataset-v1/preview
+POST /api/rf-experiment-lab/datasets/rf-experiment-dataset-v1/export
+POST /api/rf-experiment-lab/datasets/external/preview
+POST /api/rf-experiment-lab/datasets/external/import
+POST /api/rf-experiment-lab/inference/predict
+POST /api/rf-experiment-lab/inference/compare-region
+```
 
 ### Scientific split discipline
 

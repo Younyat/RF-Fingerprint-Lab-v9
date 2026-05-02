@@ -15,6 +15,7 @@ SplitStrategy = Literal[
     "distance_disjoint",
     "receiver_disjoint",
     "device_holdout",
+    "random",
 ]
 
 

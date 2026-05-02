@@ -48,10 +48,14 @@ const papers = [
 ];
 
 const flowCards = [
-  { title: 'Acquisition', text: 'Use Live Monitor and marker capture to acquire IQ with metadata.', icon: RadioTower, route: '/spectrum' },
-  { title: 'Dataset curation', text: 'Validate labels, QC status, split, hashes and transmitter identity.', icon: DatabaseZap, route: '/dataset-builder' },
-  { title: 'Experiment training', text: 'Run E5, E1 or E3 with group-disjoint split and reproducible config.', icon: BrainCircuit, route: '/rf-experiment-lab' },
-  { title: 'Validation report', text: 'Compare metrics, confusion matrices, group metrics and benchmark warnings.', icon: BarChart3, route: '/rf-experiment-lab' },
+  { title: 'Capture Dataset', text: 'Acquire IQ from Capture Lab, RF Signal Understanding or the internal experimental sample registry.', icon: RadioTower, route: '/capture' },
+  { title: 'Review Samples', text: 'Check labels, transmitter identity, QC status, hashes, metadata and split groups before training.', icon: DatabaseZap, route: '/dataset-builder' },
+  { title: 'Export Dataset', text: 'Convert internal or external sources into RFExperimentDatasetV1 so E1, E3 and E5 consume the same contract.', icon: FileJson, route: '/rf-experiment-lab' },
+  { title: 'Train Models', text: 'Run E5 spectral ML, E1 raw IQ CNN 1D or E3 spectrogram/waterfall CNN 2D with strict group-disjoint splits.', icon: BrainCircuit, route: '/rf-experiment-lab' },
+  { title: 'Validate', text: 'Inspect confusion matrices, group metrics, confidence summaries and scientific warnings.', icon: ShieldCheck, route: '/rf-experiment-lab' },
+  { title: 'Retrain', text: 'Launch a new version with the same manifest or a curated manifest and preserve every result package.', icon: RefreshCw, route: '/rf-experiment-lab' },
+  { title: 'Live Prediction', text: 'Apply selected trained experiment results to saved captures, marker regions, frozen windows or live context.', icon: ScanSearch, route: '/spectrum' },
+  { title: 'Model Comparison', text: 'Compare E1, E3 and E5 under the same dataset, split and metric table.', icon: BarChart3, route: '/rf-experiment-lab' },
 ];
 
 const techniques: Array<{
@@ -103,30 +107,51 @@ const techniques: Array<{
 
 const defaultSplit = { strategy: 'capture_disjoint', group_by: ['capture_id'], train_ratio: 0.7, validation_ratio: 0.15, test_ratio: 0.15 };
 
+const splitGroupFields = (strategy: string) => {
+  if (strategy === 'session_disjoint') return ['session_id'];
+  if (strategy === 'day_disjoint') return ['day_id'];
+  if (strategy === 'receiver_disjoint') return ['receiver_id'];
+  if (strategy === 'environment_disjoint') return ['environment_id'];
+  if (strategy === 'device_holdout') return ['transmitter_id'];
+  return ['capture_id'];
+};
+
 export const RFExperimentLabView: React.FC = () => {
   const [health, setHealth] = useState<Record<string, any> | null>(null);
   const [captures, setCaptures] = useState<Array<Record<string, any>>>([]);
+  const [internalSamples, setInternalSamples] = useState<Array<Record<string, any>>>([]);
   const [runs, setRuns] = useState<Array<Record<string, any>>>([]);
   const [selectedTechnique, setSelectedTechnique] = useState<ExperimentKind>('e5');
   const [selectedCaptureIds, setSelectedCaptureIds] = useState<string[]>([]);
   const [datasetVersion, setDatasetVersion] = useState('experiment_dataset_v1');
+  const [datasetSource, setDatasetSource] = useState<'internal' | 'external_custom' | 'oracle' | 'wisig' | 'radioml' | 'sig53'>('internal');
+  const [datasetTask, setDatasetTask] = useState<'device_fingerprinting' | 'signal_recognition' | 'modulation_classification'>('device_fingerprinting');
+  const [datasetRepresentation, setDatasetRepresentation] = useState<'raw_iq' | 'fft_psd' | 'spectrogram' | 'waterfall'>('raw_iq');
+  const [splitStrategy, setSplitStrategy] = useState('session_disjoint');
+  const [externalDatasetPath, setExternalDatasetPath] = useState('');
+  const [externalSourceFormat, setExternalSourceFormat] = useState('auto');
+  const [datasetManifestPath, setDatasetManifestPath] = useState('');
+  const [datasetPreview, setDatasetPreview] = useState<Record<string, any> | null>(null);
   const [labelField, setLabelField] = useState('transmitter_id');
   const [e3Representation, setE3Representation] = useState<'spectrogram' | 'waterfall'>('spectrogram');
   const [e3ModelType, setE3ModelType] = useState<'simple_cnn2d' | 'resnet18' | 'vgg11'>('simple_cnn2d');
   const [lastResponse, setLastResponse] = useState<Record<string, any> | null>(null);
   const [benchmark, setBenchmark] = useState<Record<string, any> | null>(null);
+  const [prediction, setPrediction] = useState<Record<string, any> | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
 
   const refresh = async () => {
-    const [nextHealth, nextCaptures, nextRuns] = await Promise.all([
+    const [nextHealth, nextCaptures, nextRuns, nextInternalSamples] = await Promise.all([
       api.getRFExperimentLabHealth().catch(() => null),
       api.getRFExperimentCaptures().catch(() => []),
       api.listRFExperimentRuns().catch(() => []),
+      api.getRFExperimentInternalSamples().catch(() => []),
     ]);
     setHealth(nextHealth?.data ?? nextHealth);
     setCaptures(nextCaptures);
     setRuns(nextRuns);
+    setInternalSamples(nextInternalSamples);
     if (selectedCaptureIds.length === 0 && nextCaptures.length > 0) {
       setSelectedCaptureIds(nextCaptures.slice(0, 12).map((item) => String(item.capture_id)));
     }
@@ -145,9 +170,10 @@ export const RFExperimentLabView: React.FC = () => {
   const experimentPayload = () => {
     const base = {
       dataset_version: datasetVersion,
+      dataset_manifest_path: datasetManifestPath || undefined,
       capture_ids: selectedCaptureIds,
       label_field: labelField,
-      split: defaultSplit,
+      split: { ...defaultSplit, strategy: splitStrategy, group_by: splitGroupFields(splitStrategy) },
     };
     if (selectedTechnique === 'e5') {
       return { ...base, models: ['logistic_regression', 'random_forest', 'svm_rbf', 'knn'], input_representation: 'fft_psd' };
@@ -166,6 +192,45 @@ export const RFExperimentLabView: React.FC = () => {
       image_height: 128,
       image_width: 128,
     };
+  };
+
+  const datasetPayload = () => ({
+    dataset_id: 'rf_experiment_dataset',
+    dataset_version: datasetVersion,
+    dataset_source: datasetSource,
+    task: datasetTask,
+    representation: datasetRepresentation,
+    experiment_id: selectedTechnique,
+    capture_ids: selectedCaptureIds,
+    label_field: labelField,
+    split_strategy: splitStrategy,
+    split_group_fields: splitGroupFields(splitStrategy),
+    source_path: externalDatasetPath || undefined,
+    source_format: externalSourceFormat,
+  });
+
+  const runDatasetAction = async (mode: 'preview' | 'export') => {
+    setBusy(true);
+    setMessage('');
+    try {
+      const payload = datasetPayload();
+      const response = datasetSource === 'internal'
+        ? mode === 'preview'
+          ? await api.previewRFExperimentDatasetV1(payload)
+          : await api.exportRFExperimentDatasetV1(payload)
+        : mode === 'preview'
+          ? await api.previewExternalRFExperimentDataset(payload)
+          : await api.importExternalRFExperimentDataset(payload);
+      const data = response.data ?? response;
+      setDatasetPreview(data);
+      if (data.manifest_path) setDatasetManifestPath(String(data.manifest_path));
+      setLastResponse(response);
+      setMessage(mode === 'preview' ? 'RFExperimentDatasetV1 preview completed.' : 'RFExperimentDatasetV1 manifest exported.');
+    } catch (error: any) {
+      setMessage(String(error?.response?.data?.message ?? error?.message ?? 'Dataset action failed'));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const runAction = async (mode: 'preview' | 'run') => {
@@ -204,6 +269,34 @@ export const RFExperimentLabView: React.FC = () => {
       setMessage(exportReport ? 'Benchmark exported.' : 'Benchmark generated.');
     } catch (error: any) {
       setMessage(String(error?.response?.data?.message ?? error?.message ?? 'Benchmark failed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runPrediction = async (sourceType: 'saved_capture' | 'marker_region' | 'frozen_window' | 'live_context') => {
+    setBusy(true);
+    setMessage('');
+    try {
+      const ids = selectedRuns.slice(0, 3).map((run) => String(run.experiment_id));
+      const payload = {
+        experiment_ids: ids,
+        source_type: sourceType,
+        input_sample_id: selectedCaptureIds[0] ?? 'live_or_region_input',
+        capture_id: selectedCaptureIds[0],
+        marker_region: sourceType === 'marker_region' ? { marker_1: 'Marker 1', marker_2: 'Marker 2' } : undefined,
+        live_context: sourceType === 'live_context' ? { panel: 'live_spectrum', overlay: 'rf_experiment_prediction' } : undefined,
+        persist: true,
+      };
+      const response = sourceType === 'marker_region'
+        ? await api.compareRFExperimentRegion(payload)
+        : await api.predictRFExperiment(payload);
+      const data = response.data ?? response;
+      setPrediction(data);
+      setLastResponse(response);
+      setMessage('RF Experiment Lab prediction contract persisted.');
+    } catch (error: any) {
+      setMessage(String(error?.response?.data?.message ?? error?.message ?? 'Prediction failed'));
     } finally {
       setBusy(false);
     }
@@ -312,6 +405,8 @@ export const RFExperimentLabView: React.FC = () => {
               Label field
               <select className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" value={labelField} onChange={(event) => setLabelField(event.target.value)}>
                 <option value="transmitter_id">transmitter_id</option>
+                <option value="signal_type">signal_type</option>
+                <option value="modulation_class">modulation_class</option>
                 <option value="technology">technology</option>
               </select>
             </label>
@@ -336,6 +431,146 @@ export const RFExperimentLabView: React.FC = () => {
             )}
           </div>
 
+          <div className="mt-5 rounded-2xl border border-cyan-200 bg-cyan-50 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-800">Unified dataset contract</div>
+                <div className="mt-1 text-sm font-semibold text-slate-900">RFExperimentDatasetV1</div>
+                <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-700">
+                  All internal and external sources are first normalized to the same manifest before E1, E3 or E5 sees them.
+                </p>
+              </div>
+              {datasetManifestPath && (
+                <div className="max-w-sm truncate rounded-full border border-cyan-300 bg-white px-3 py-1 text-xs text-cyan-900">
+                  {datasetManifestPath}
+                </div>
+              )}
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              <label className="text-sm text-slate-700">
+                Dataset source
+                <select className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" value={datasetSource} onChange={(event) => setDatasetSource(event.target.value as any)}>
+                  <option value="internal">internal: Capture Lab / RF Signal Understanding</option>
+                  <option value="oracle">ORACLE public dataset</option>
+                  <option value="wisig">WiSig public dataset</option>
+                  <option value="radioml">RadioML public dataset</option>
+                  <option value="sig53">Sig53 public dataset</option>
+                  <option value="external_custom">custom folder / manifest</option>
+                </select>
+              </label>
+              <label className="text-sm text-slate-700">
+                Scientific task
+                <select className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" value={datasetTask} onChange={(event) => {
+                  const next = event.target.value as any;
+                  setDatasetTask(next);
+                  setLabelField(next === 'device_fingerprinting' ? 'transmitter_id' : 'modulation_class');
+                }}>
+                  <option value="device_fingerprinting">device_fingerprinting</option>
+                  <option value="signal_recognition">signal_recognition</option>
+                  <option value="modulation_classification">modulation_classification</option>
+                </select>
+              </label>
+              <label className="text-sm text-slate-700">
+                Representation
+                <select className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" value={datasetRepresentation} onChange={(event) => setDatasetRepresentation(event.target.value as any)}>
+                  <option value="raw_iq">raw_iq</option>
+                  <option value="fft_psd">fft_psd</option>
+                  <option value="spectrogram">spectrogram</option>
+                  <option value="waterfall">waterfall</option>
+                </select>
+              </label>
+              <label className="text-sm text-slate-700">
+                Split strategy
+                <select className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" value={splitStrategy} onChange={(event) => setSplitStrategy(event.target.value)}>
+                  <option value="session_disjoint">session_disjoint</option>
+                  <option value="day_disjoint">day_disjoint</option>
+                  <option value="receiver_disjoint">receiver_disjoint</option>
+                  <option value="environment_disjoint">environment_disjoint</option>
+                  <option value="device_holdout">device_holdout</option>
+                  <option value="random">random debug only</option>
+                </select>
+              </label>
+              {datasetSource !== 'internal' && (
+                <>
+                  <label className="text-sm text-slate-700 md:col-span-2">
+                    External dataset path
+                    <input className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" value={externalDatasetPath} onChange={(event) => setExternalDatasetPath(event.target.value)} placeholder="Folder, JSON/CSV manifest, SigMF/HDF5/NumPy/MAT/Pickle/features/images root" />
+                  </label>
+                  <label className="text-sm text-slate-700">
+                    Source format
+                    <select className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" value={externalSourceFormat} onChange={(event) => setExternalSourceFormat(event.target.value)}>
+                      <option value="auto">auto</option>
+                      <option value="iq">iq</option>
+                      <option value="cfile">cfile</option>
+                      <option value="sigmf">sigmf</option>
+                      <option value="hdf5">hdf5</option>
+                      <option value="numpy">numpy</option>
+                      <option value="matlab">matlab</option>
+                      <option value="pickle">pickle</option>
+                      <option value="csv_features">csv_features</option>
+                      <option value="spectrogram_images">spectrogram_images</option>
+                      <option value="waterfall_images">waterfall_images</option>
+                    </select>
+                  </label>
+                </>
+              )}
+            </div>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <button className="rounded-full border border-cyan-400 bg-white px-4 py-2 text-sm font-semibold text-cyan-900 disabled:opacity-50" onClick={() => runDatasetAction('preview')} disabled={busy || (datasetSource === 'internal' && selectedCaptureIds.length === 0)}>
+                Preview unified dataset
+              </button>
+              <button className="rounded-full bg-cyan-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50" onClick={() => runDatasetAction('export')} disabled={busy || (datasetSource === 'internal' && selectedCaptureIds.length === 0)}>
+                Export RFExperimentDatasetV1
+              </button>
+              {datasetPreview && (
+                <div className="rounded-full border border-cyan-300 bg-white px-3 py-2 text-xs text-cyan-900">
+                  samples: {String(datasetPreview.sample_count ?? 'n/a')} | schema: {String(datasetPreview.schema_version ?? 'n/a')}
+                </div>
+              )}
+            </div>
+            {datasetPreview?.warnings?.length > 0 && (
+              <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-900">
+                {datasetPreview?.warnings?.map((warning: any) => String(warning.message)).join(' ')}
+              </div>
+            )}
+          </div>
+
+          <div className="mt-5 rounded-2xl border border-indigo-200 bg-indigo-50 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-800">Internal dataset capture</div>
+                <div className="mt-1 text-sm font-semibold text-slate-900">Experimental samples created inside RF Experiment Lab</div>
+                <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-700">
+                  Each sample is expected to carry raw IQ, RF metadata, label semantics, transmitter or signal class, QC summary, SHA-256 and split_group before it is exported as RFExperimentDatasetV1.
+                </p>
+              </div>
+              <button className="rounded-full border border-indigo-300 bg-white px-3 py-1 text-xs font-semibold text-indigo-900" onClick={() => refresh()}>
+                Refresh samples
+              </button>
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-4">
+              <Fact label="Internal samples" value={String(internalSamples.length)} />
+              <Fact label="Accepted" value={String(internalSamples.filter((item) => item.review_status === 'accepted').length)} />
+              <Fact label="Pending review" value={String(internalSamples.filter((item) => item.review_status === 'unreviewed').length)} />
+              <Fact label="Rejected" value={String(internalSamples.filter((item) => item.review_status === 'rejected').length)} />
+            </div>
+            <div className="mt-4 max-h-48 space-y-2 overflow-auto">
+              {internalSamples.slice(0, 12).map((sample) => (
+                <div key={String(sample.sample_id)} className="grid gap-2 rounded-xl border border-indigo-100 bg-white px-3 py-2 text-sm md:grid-cols-[1fr_1fr_1fr_0.8fr]">
+                  <span className="font-medium text-slate-800">{String(sample.sample_id)}</span>
+                  <span className="text-slate-600">{String(sample.label ?? sample.transmitter_id ?? sample.signal_type ?? 'unlabeled')}</span>
+                  <span className="text-slate-500">{String(sample.session_id ?? sample.split_group ?? 'no group')}</span>
+                  <span className="text-right text-xs font-semibold uppercase tracking-[0.12em] text-indigo-800">{String(sample.review_status ?? 'unreviewed')}</span>
+                </div>
+              ))}
+              {internalSamples.length === 0 && (
+                <div className="rounded-xl border border-dashed border-indigo-200 bg-white p-3 text-sm text-slate-500">
+                  No internal RF Experiment Lab samples yet. Captures from Capture Lab and RF Signal Understanding can still be exported through the unified dataset contract above.
+                </div>
+              )}
+            </div>
+          </div>
+
           <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <div className="flex items-center justify-between gap-3">
               <div className="text-sm font-semibold text-slate-800">Selected captures: {selectedCaptureIds.length}</div>
@@ -358,11 +593,11 @@ export const RFExperimentLabView: React.FC = () => {
           </div>
 
           <div className="mt-5 flex flex-wrap gap-3">
-            <button className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-50" onClick={() => runAction('preview')} disabled={busy || selectedCaptureIds.length === 0}>
+            <button className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 disabled:opacity-50" onClick={() => runAction('preview')} disabled={busy || (!datasetManifestPath && selectedCaptureIds.length === 0)}>
               <ScanSearch className="mr-2 inline h-4 w-4" />
               Preview, no training
             </button>
-            <button className="rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50" onClick={() => runAction('run')} disabled={busy || selectedCaptureIds.length === 0}>
+            <button className="rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50" onClick={() => runAction('run')} disabled={busy || (!datasetManifestPath && selectedCaptureIds.length === 0)}>
               <Play className="mr-2 inline h-4 w-4" />
               Train and validate
             </button>
@@ -370,6 +605,43 @@ export const RFExperimentLabView: React.FC = () => {
               <Save className="mr-2 inline h-4 w-4" />
               Export benchmark
             </button>
+          </div>
+
+          <div className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-800">Live and saved-capture prediction</div>
+                <div className="mt-1 text-sm font-semibold text-slate-900">Prediction visibility for trained E1, E3 and E5 experiment results</div>
+                <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-700">
+                  Use selected executed experiments as candidate models and persist the inference report with model_id, dataset_version, input_sample_id, timestamp, top-k, confidence, latency and agreement/disagreement.
+                </p>
+              </div>
+              <div className="rounded-full border border-emerald-300 bg-white px-3 py-1 text-xs font-semibold text-emerald-900">
+                models: {selectedRuns.length}
+              </div>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <button className="rounded-full border border-emerald-300 bg-white px-4 py-2 text-sm font-semibold text-emerald-900 disabled:opacity-50" onClick={() => runPrediction('saved_capture')} disabled={busy || selectedRuns.length === 0}>
+                Saved capture
+              </button>
+              <button className="rounded-full border border-emerald-300 bg-white px-4 py-2 text-sm font-semibold text-emerald-900 disabled:opacity-50" onClick={() => runPrediction('marker_region')} disabled={busy || selectedRuns.length === 0}>
+                Marker 1 / Marker 2 region
+              </button>
+              <button className="rounded-full border border-emerald-300 bg-white px-4 py-2 text-sm font-semibold text-emerald-900 disabled:opacity-50" onClick={() => runPrediction('frozen_window')} disabled={busy || selectedRuns.length === 0}>
+                Frozen window
+              </button>
+              <button className="rounded-full bg-emerald-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50" onClick={() => runPrediction('live_context')} disabled={busy || selectedRuns.length === 0}>
+                Live prediction overlay
+              </button>
+            </div>
+            {prediction && (
+              <div className="mt-4 grid gap-3 md:grid-cols-4">
+                <Fact label="Top prediction" value={String(prediction.prediction_result?.top_prediction ?? 'unknown')} />
+                <Fact label="Confidence" value={String(prediction.prediction_result?.confidence ?? 'n/a')} />
+                <Fact label="Latency ms" value={String(prediction.prediction_result?.latency_ms ?? 'n/a')} />
+                <Fact label="Agreement" value={prediction.prediction_result?.agreement?.disagreement ? 'disagreement' : 'agreement or single model'} />
+              </div>
+            )}
           </div>
 
           {message && <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">{message}</div>}

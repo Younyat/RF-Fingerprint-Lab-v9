@@ -97,6 +97,7 @@ class RepresentationManifestBody(BaseModel):
 
 class E5SpectralBaselineBody(BaseModel):
     dataset_version: str = "unversioned"
+    dataset_manifest_path: str | None = None
     capture_ids: list[str] = Field(default_factory=list)
     input_representation: str = "fft_psd"
     feature_set: str = "psd_basic"
@@ -112,6 +113,7 @@ class E5SpectralBaselineBody(BaseModel):
 
 class E1RawIQCNN1DBody(BaseModel):
     dataset_version: str = "unversioned"
+    dataset_manifest_path: str | None = None
     capture_ids: list[str] = Field(default_factory=list)
     label_field: str = "transmitter_id"
     split: dict[str, Any] = Field(default_factory=lambda: {"strategy": "session_disjoint", "group_by": ["session_id"]})
@@ -132,6 +134,7 @@ class E1RawIQCNN1DBody(BaseModel):
 
 class E3SpectrogramCNN2DBody(BaseModel):
     dataset_version: str = "unversioned"
+    dataset_manifest_path: str | None = None
     capture_ids: list[str] = Field(default_factory=list)
     task: str = "device_fingerprinting"
     input_representation: str = "spectrogram"
@@ -175,6 +178,83 @@ class BenchmarkReportBody(BaseModel):
     export: bool = False
 
 
+class RFExperimentDatasetV1Body(BaseModel):
+    dataset_id: str = "rf_experiment_dataset"
+    dataset_version: str = "unversioned"
+    dataset_source: str = "internal"
+    task: str = "device_fingerprinting"
+    representation: str = "raw_iq"
+    experiment_id: str | None = None
+    capture_ids: list[str] = Field(default_factory=list)
+    label_field: str | None = None
+    split_strategy: str = "session_disjoint"
+    split_group_fields: list[str] = Field(default_factory=lambda: ["session_id"])
+    output_dir: str | None = None
+    notes: str = ""
+
+
+class ExternalDatasetImportBody(RFExperimentDatasetV1Body):
+    dataset_source: str = "external_custom"
+    source_path: str | None = None
+    root_path: str | None = None
+    source_manifest_path: str | None = None
+    source_format: str = "auto"
+    sample_rate_hz: float | None = None
+    center_frequency_hz: float | None = None
+    default_label: str | None = None
+    default_split_group: str | None = None
+    sample_id_prefix: str = "external_sample"
+    normalization_policy: str = "experiment_specific_logged_in_training_config"
+
+
+class InternalDatasetSampleBody(BaseModel):
+    iq_path: str
+    sample_id: str | None = None
+    task: str = "device_fingerprinting"
+    label: str | None = None
+    label_type: str | None = None
+    transmitter_id: str | None = None
+    signal_type: str | None = None
+    modulation_class: str | None = None
+    sample_rate_hz: float
+    center_frequency_hz: float
+    start_frequency_hz: float | None = None
+    stop_frequency_hz: float | None = None
+    duration_seconds: float | None = None
+    datatype: str = "complex64"
+    session_id: str | None = None
+    receiver_id: str | None = None
+    environment_id: str | None = None
+    distance_m: float | None = None
+    split_group: str | None = None
+    qc_summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class InternalDatasetReviewBody(BaseModel):
+    review_status: str = "accepted"
+    label: str | None = None
+    transmitter_id: str | None = None
+    signal_type: str | None = None
+    modulation_class: str | None = None
+    task: str | None = None
+    split_group: str | None = None
+    notes: str = ""
+
+
+class RFExperimentPredictionBody(BaseModel):
+    experiment_ids: list[str] = Field(default_factory=list)
+    source_type: str = "saved_capture"
+    input_sample_id: str | None = None
+    capture_id: str | None = None
+    sample_id: str | None = None
+    iq_path: str | None = None
+    metadata_path: str | None = None
+    marker_region: dict[str, Any] = Field(default_factory=dict)
+    frozen_frame: dict[str, Any] = Field(default_factory=dict)
+    live_context: dict[str, Any] = Field(default_factory=dict)
+    persist: bool = True
+
+
 def _ok(data: Any, message: str = "ok", available: bool = True, status: str = "ok") -> dict[str, Any]:
     return {
         "status": status,
@@ -215,6 +295,62 @@ def build_rf_experiment_lab_router(service) -> APIRouter:
     @router.get("/dataset/captures")
     async def dataset_captures() -> list[dict[str, Any]]:
         return _ok(service.dataset_adapter.list_existing_captures(), "Existing captures visible to RF Experiment Lab")
+
+    @router.get("/dataset/sources")
+    async def dataset_sources() -> dict[str, Any]:
+        return _ok(service.supported_dataset_sources(), "Supported RFExperimentDatasetV1 sources")
+
+    @router.get("/dataset/internal-samples")
+    async def internal_dataset_samples() -> dict[str, Any]:
+        return _ok(service.internal_dataset_samples(), "RF Experiment Lab internal dataset samples")
+
+    @router.post("/dataset/internal-samples")
+    async def create_internal_dataset_sample(body: InternalDatasetSampleBody) -> dict[str, Any]:
+        try:
+            return _ok(service.create_internal_dataset_sample(body.model_dump()), "RF Experiment Lab internal dataset sample created")
+        except Exception as exc:
+            return _error(exc)
+
+    @router.post("/dataset/internal-samples/{sample_id}/review")
+    async def review_internal_dataset_sample(sample_id: str, body: InternalDatasetReviewBody) -> dict[str, Any]:
+        try:
+            return _ok(service.review_internal_dataset_sample(sample_id, body.model_dump()), "RF Experiment Lab sample review saved")
+        except Exception as exc:
+            return _error(exc)
+
+    @router.post("/datasets/rf-experiment-dataset-v1/preview")
+    async def rf_experiment_dataset_v1_preview(body: RFExperimentDatasetV1Body) -> dict[str, Any]:
+        try:
+            return _ok(
+                service.rf_experiment_dataset_v1_preview(body.model_dump()),
+                "RFExperimentDatasetV1 preview completed without writing files",
+            )
+        except Exception as exc:
+            return _error(exc)
+
+    @router.post("/datasets/rf-experiment-dataset-v1/export")
+    async def rf_experiment_dataset_v1_export(body: RFExperimentDatasetV1Body) -> dict[str, Any]:
+        try:
+            return _ok(service.rf_experiment_dataset_v1_export(body.model_dump()), "RFExperimentDatasetV1 manifest exported")
+        except Exception as exc:
+            return _error(exc)
+
+    @router.post("/datasets/external/preview")
+    async def external_dataset_preview(body: ExternalDatasetImportBody) -> dict[str, Any]:
+        try:
+            return _ok(
+                service.external_dataset_import_preview(body.model_dump()),
+                "External dataset import preview completed without writing files",
+            )
+        except Exception as exc:
+            return _error(exc)
+
+    @router.post("/datasets/external/import")
+    async def external_dataset_import(body: ExternalDatasetImportBody) -> dict[str, Any]:
+        try:
+            return _ok(service.external_dataset_import_export(body.model_dump()), "External dataset imported as RFExperimentDatasetV1")
+        except Exception as exc:
+            return _error(exc)
 
     @router.get("/techniques")
     async def techniques() -> list[dict[str, Any]]:
@@ -275,6 +411,20 @@ def build_rf_experiment_lab_router(service) -> APIRouter:
     async def benchmark_report(body: BenchmarkReportBody) -> dict[str, Any]:
         try:
             return _ok(service.benchmark_report(body.model_dump()), "Benchmark report generated")
+        except Exception as exc:
+            return _error(exc)
+
+    @router.post("/inference/predict")
+    async def rf_experiment_predict(body: RFExperimentPredictionBody) -> dict[str, Any]:
+        try:
+            return _ok(service.predict(body.model_dump()), "RF Experiment Lab prediction completed")
+        except Exception as exc:
+            return _error(exc)
+
+    @router.post("/inference/compare-region")
+    async def rf_experiment_compare_region(body: RFExperimentPredictionBody) -> dict[str, Any]:
+        try:
+            return _ok(service.compare_models_on_region(body.model_dump()), "RF Experiment Lab model comparison on region completed")
         except Exception as exc:
             return _error(exc)
 

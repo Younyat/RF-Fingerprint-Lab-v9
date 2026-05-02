@@ -126,6 +126,7 @@ class ExperimentResultStore:
             encoding="utf-8",
         )
         (result_dir / "features.json").write_text(json.dumps(features, indent=2), encoding="utf-8")
+        self._write_reproducibility_contract(result_dir, config, split_definition, features)
         (result_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
         (result_dir / "classification_report.json").write_text(
             json.dumps(metrics.get("classification_report", {}), indent=2),
@@ -177,6 +178,7 @@ class ExperimentResultStore:
             encoding="utf-8",
         )
         (result_dir / "model_summary.txt").write_text(model_summary, encoding="utf-8")
+        self._write_reproducibility_contract(result_dir, config, split_definition, predictions)
         (result_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
         (result_dir / "classification_report.json").write_text(
             json.dumps(metrics.get("classification_report", {}), indent=2),
@@ -225,6 +227,7 @@ class ExperimentResultStore:
             encoding="utf-8",
         )
         (result_dir / "model_summary.txt").write_text(model_summary, encoding="utf-8")
+        self._write_reproducibility_contract(result_dir, config, split_definition, predictions)
         (result_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
         (result_dir / "classification_report.json").write_text(
             json.dumps(metrics.get("classification_report", {}), indent=2),
@@ -247,6 +250,31 @@ class ExperimentResultStore:
         (result_dir / "confidence_summary.json").write_text(json.dumps(confidence_summary or {}, indent=2), encoding="utf-8")
         (result_dir / "model_metadata.json").write_text(json.dumps(model_metadata or {}, indent=2), encoding="utf-8")
         return {"result_dir": str(result_dir), "files": sorted(path.name for path in result_dir.iterdir()), "model_pt": str(model_path)}
+
+    def _write_reproducibility_contract(
+        self,
+        result_dir: Path,
+        config: dict[str, Any],
+        split_definition: dict[str, Any],
+        rows: list[dict[str, Any]],
+    ) -> None:
+        label_values = sorted({str(row.get("true_label") or row.get("label")) for row in rows if row.get("true_label") or row.get("label")})
+        label_schema = {
+            "label_field": config.get("label_field"),
+            "labels": label_values,
+            "class_count": len(label_values),
+        }
+        normalization = {
+            "raw_iq_normalization": config.get("normalization", "none"),
+            "image_normalization_mode": config.get("normalization_mode"),
+            "feature_set": config.get("feature_set"),
+            "input_representation": config.get("input_representation", "raw_iq"),
+        }
+        (result_dir / "dataset_manifest_path.txt").write_text(str(config.get("dataset_manifest_path") or "") + "\n", encoding="utf-8")
+        (result_dir / "training_config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
+        (result_dir / "label_schema.json").write_text(json.dumps(label_schema, indent=2), encoding="utf-8")
+        (result_dir / "normalization_params.json").write_text(json.dumps(normalization, indent=2), encoding="utf-8")
+        (result_dir / "split_strategy.txt").write_text(str(split_definition.get("strategy", "")) + "\n", encoding="utf-8")
 
     def list_results(self) -> list[dict[str, Any]]:
         results = []

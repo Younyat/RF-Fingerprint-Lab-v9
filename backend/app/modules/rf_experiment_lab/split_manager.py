@@ -35,6 +35,9 @@ class SplitManager:
         return {
             "strategy": config.strategy,
             "group_by": config.group_by,
+            "debug_only": config.strategy == "random",
+            "scientific_result_allowed": config.strategy != "random",
+            "warning": "random split is debug_only and must not be used as the primary scientific result." if config.strategy == "random" else None,
             "group_count": group_count,
             "capture_count": len(captures),
             "counts": {

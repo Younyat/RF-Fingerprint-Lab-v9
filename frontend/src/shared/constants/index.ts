@@ -179,6 +179,13 @@ export const API_ENDPOINTS = {
   // RF Experiment Lab
   RF_EXPERIMENT_HEALTH: '/api/rf-experiment-lab/health',
   RF_EXPERIMENT_DATASET_CAPTURES: '/api/rf-experiment-lab/dataset/captures',
+  RF_EXPERIMENT_DATASET_SOURCES: '/api/rf-experiment-lab/dataset/sources',
+  RF_EXPERIMENT_INTERNAL_SAMPLES: '/api/rf-experiment-lab/dataset/internal-samples',
+  RF_EXPERIMENT_INTERNAL_SAMPLE_REVIEW: (id: string) => `/api/rf-experiment-lab/dataset/internal-samples/${id}/review`,
+  RF_EXPERIMENT_DATASET_V1_PREVIEW: '/api/rf-experiment-lab/datasets/rf-experiment-dataset-v1/preview',
+  RF_EXPERIMENT_DATASET_V1_EXPORT: '/api/rf-experiment-lab/datasets/rf-experiment-dataset-v1/export',
+  RF_EXPERIMENT_EXTERNAL_DATASET_PREVIEW: '/api/rf-experiment-lab/datasets/external/preview',
+  RF_EXPERIMENT_EXTERNAL_DATASET_IMPORT: '/api/rf-experiment-lab/datasets/external/import',
   RF_EXPERIMENT_EXPERIMENTS: '/api/rf-experiment-lab/experiments',
   RF_EXPERIMENT_COMPARE: '/api/rf-experiment-lab/experiments/compare',
   RF_EXPERIMENT_BENCHMARK_REPORT: '/api/rf-experiment-lab/benchmark/report',
@@ -188,6 +195,8 @@ export const API_ENDPOINTS = {
   RF_EXPERIMENT_E1_RUN: '/api/rf-experiment-lab/experiments/e1-raw-iq-cnn1d/run',
   RF_EXPERIMENT_E3_PREVIEW: '/api/rf-experiment-lab/experiments/e3-spectrogram-cnn2d/preview',
   RF_EXPERIMENT_E3_RUN: '/api/rf-experiment-lab/experiments/e3-spectrogram-cnn2d/run',
+  RF_EXPERIMENT_INFERENCE_PREDICT: '/api/rf-experiment-lab/inference/predict',
+  RF_EXPERIMENT_INFERENCE_COMPARE_REGION: '/api/rf-experiment-lab/inference/compare-region',
 
   // Markers
   MARKERS_LIST: '/api/markers/',

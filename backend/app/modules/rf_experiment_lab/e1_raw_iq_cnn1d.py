@@ -200,6 +200,7 @@ class E1RawIQCNN1DService:
         return {
             "experiment_id": self.experiment_id,
             "dataset_version": payload.get("dataset_version", "unversioned"),
+            "dataset_manifest_path": payload.get("dataset_manifest_path") or payload.get("rf_experiment_dataset_path"),
             "capture_ids": payload.get("capture_ids") or [],
             "label_field": payload.get("label_field", "transmitter_id"),
             "split": payload.get("split") or {"strategy": "session_disjoint", "group_by": ["session_id"]},
@@ -222,7 +223,7 @@ class E1RawIQCNN1DService:
         return not config.get("force_torch_unavailable") and importlib.util.find_spec("torch") is not None
 
     def _selected_captures(self, config: dict[str, Any]) -> list[dict[str, Any]]:
-        captures = self.dataset_adapter.list_existing_captures()
+        captures = self.dataset_adapter.list_training_records(config)
         ids = {str(item) for item in config.get("capture_ids", [])}
         if ids:
             captures = [item for item in captures if str(item.get("capture_id")) in ids]

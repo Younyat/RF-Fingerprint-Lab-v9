@@ -22,6 +22,7 @@ from app.modules.rf_experiment_lab.experiment_config_schema import (
 from app.modules.rf_experiment_lab.experiment_registry import ExperimentRegistry
 from app.modules.rf_experiment_lab.experiment_result_store import ExperimentResultStore
 from app.modules.rf_experiment_lab.hdf5_experiment_exporter import HDF5ExperimentExporter
+from app.modules.rf_experiment_lab.inference_service import RFExperimentInferenceService
 from app.modules.rf_experiment_lab.metrics_service import MetricsService
 from app.modules.rf_experiment_lab.model_registry_adapter import ModelRegistryAdapter
 from app.modules.rf_experiment_lab.region_detection.learned_detector_interface import OptionalLearnedDetectorStub
@@ -42,6 +43,7 @@ class RFExperimentLabService:
         self.model_registry = ModelRegistryAdapter(mlops_service)
         self.report_builder = ForensicReportBuilder()
         self.benchmark_report_builder = BenchmarkReportBuilder(self.result_store)
+        self.inference_service = RFExperimentInferenceService(storage_root, self.result_store)
         self.sigmf_exporter = SigMFExporter()
         self.hdf5_exporter = HDF5ExperimentExporter()
         self.representation_service = RepresentationExtractionService()
@@ -108,6 +110,36 @@ class RFExperimentLabService:
                 "integration_policy": self.model_registry.describe_integration_policy(),
             },
         }
+
+    def supported_dataset_sources(self) -> dict[str, Any]:
+        return self.dataset_adapter.supported_dataset_sources()
+
+    def rf_experiment_dataset_v1_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.dataset_adapter.rf_experiment_dataset_v1_preview(payload)
+
+    def rf_experiment_dataset_v1_export(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.dataset_adapter.rf_experiment_dataset_v1_export(payload)
+
+    def external_dataset_import_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.dataset_adapter.external_dataset_import_preview(payload)
+
+    def external_dataset_import_export(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.dataset_adapter.external_dataset_import_export(payload)
+
+    def internal_dataset_samples(self) -> list[dict[str, Any]]:
+        return self.dataset_adapter.internal_dataset_lab.list_samples()
+
+    def create_internal_dataset_sample(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.dataset_adapter.internal_dataset_lab.create_sample(payload)
+
+    def review_internal_dataset_sample(self, sample_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.dataset_adapter.internal_dataset_lab.review_sample(sample_id, payload)
+
+    def predict(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.inference_service.predict(payload)
+
+    def compare_models_on_region(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.inference_service.compare_on_region(payload)
 
     def list_configs(self) -> list[dict[str, Any]]:
         return self.result_store.list_configs()
