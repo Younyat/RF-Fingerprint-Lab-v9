@@ -157,6 +157,7 @@ export const API_ENDPOINTS = {
   // RF Intelligence
   RF_INTELLIGENCE_LIVE: '/api/rf-intelligence/live',
   RF_INTELLIGENCE_ANALYZE: '/api/rf-intelligence/analyze',
+  RF_INTELLIGENCE_BAND_PROFILE_RESOLVE: '/api/rf-intelligence/band-profile/resolve',
 
   // RF Signal Understanding
   RF_SIGNAL_UNDERSTANDING_LIVE: '/api/rf-signal-understanding/live',
@@ -237,6 +238,7 @@ export const API_ENDPOINTS = {
   FINGERPRINTING_CAPTURE_DELETE: (id: string) => `/api/fingerprinting/captures/${id}`,
   FINGERPRINTING_CAPTURE_REVIEW: (id: string) => `/api/fingerprinting/captures/${id}/review`,
   FINGERPRINTING_CAPTURE_RECOMPUTE_QC: (id: string) => `/api/fingerprinting/captures/${id}/recompute-qc`,
+  FINGERPRINTING_CAPTURE_APPLY_BAND_PROFILE: (id: string) => `/api/fingerprinting/captures/${id}/apply-band-profile`,
   FINGERPRINTING_IMPORT_MODULATED: (id: string) => `/api/fingerprinting/imports/modulated-signals/${id}`,
 
   // MLOps

@@ -29,10 +29,11 @@ class E3SpectrogramCNN2DService:
     def preview(self, payload: dict[str, Any]) -> dict[str, Any]:
         config = self._config(payload)
         captures = self._selected_captures(config)
-        labels = self._labels(captures, config["label_field"])
+        labels = self._labels(captures, config)
         split = self._split(captures, config)
         samples = self._build_sample_index(captures, config, split["assignments"], preview=True)
         warnings = self._warnings(samples, labels["labels"])
+        eligibility = self.dataset_adapter.training_eligibility_summary(config)
         return {
             "experiment_id": self.experiment_id,
             "preview_only": True,
@@ -54,10 +55,14 @@ class E3SpectrogramCNN2DService:
                 "labels": labels["labels"],
                 "class_balance": dict(Counter(item["label"] for item in samples)),
                 "missing_label_capture_ids": labels["missing_capture_ids"],
+                "weak_label_capture_ids": labels["weak_label_capture_ids"],
+                "label_field": config["label_field"],
+                "training_readiness_policy": config["training_readiness_policy"],
+                "training_eligibility": eligibility,
             },
             "split": split,
             "warnings": warnings,
-            "available_for_training": self._model_available(config) and not labels["missing_capture_ids"] and len(labels["labels"]) >= 2,
+            "available_for_training": self._model_available(config) and not labels["missing_capture_ids"] and not labels["weak_label_capture_ids"] and len(labels["labels"]) >= 2,
         }
 
     def run(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -67,11 +72,28 @@ class E3SpectrogramCNN2DService:
         if not self._model_available(config):
             raise RuntimeError(f"{config['model_type']} requires torchvision, but torchvision is unavailable; E3 training is disabled for this model")
         captures = self._selected_captures(config)
-        labels = self._labels(captures, config["label_field"])
-        if labels["missing_capture_ids"]:
-            raise ValueError("E3 requires labels for every capture. Missing labels: " + ", ".join(labels["missing_capture_ids"]))
+        eligibility = self.dataset_adapter.training_eligibility_summary(config)
+        if not captures:
+            raise ValueError(
+                "E3 found no eligible captures under "
+                f"{config['training_readiness_policy']}. "
+                f"Eligibility summary: {eligibility}. "
+                "Use reviewed ready_for_training captures for scientific runs or training_draft for exploratory image baselines."
+            )
+        labels = self._labels(captures, config)
+        if labels["missing_capture_ids"] or labels["weak_label_capture_ids"]:
+            raise ValueError(
+                "E3 scientific training requires reviewed labels. "
+                f"Missing: {', '.join(labels['missing_capture_ids']) or 'none'}. "
+                f"Weak/unconfirmed: {', '.join(labels['weak_label_capture_ids']) or 'none'}. "
+                "Confirm labels in Dataset Builder, or set allow_weak_labels_debug=true only for debug runs."
+            )
         if len(labels["labels"]) < 2:
-            raise ValueError("E3 requires at least two classes")
+            raise ValueError(
+                "E3 requires at least two classes after readiness filtering. "
+                f"Label field: {config['label_field']}. Labels found: {labels['labels']}. "
+                f"Eligibility summary: {eligibility}."
+            )
         split = self._split(captures, config)
         samples = self._build_sample_index(captures, config, split["assignments"], preview=False)
         train_items = [item for item in samples if item["split"] == "train"]
@@ -80,6 +102,9 @@ class E3SpectrogramCNN2DService:
             raise ValueError("E3 split produced empty train or evaluation set")
         if len({item["label"] for item in train_items}) < 2:
             raise ValueError("E3 training split must contain at least two classes")
+        missing_from_train = sorted({item["label"] for item in eval_items} - {item["label"] for item in train_items})
+        if missing_from_train:
+            raise ValueError("E3 closed-set evaluation has classes missing from train split: " + ", ".join(missing_from_train))
 
         import torch
         from torch import nn
@@ -226,7 +251,7 @@ class E3SpectrogramCNN2DService:
             "capture_ids": payload.get("capture_ids") or [],
             "task": task,
             "input_representation": representation,
-            "label_field": payload.get("label_field") or ("transmitter_id" if task == "device_fingerprinting" else "technology"),
+            "label_field": payload.get("label_field") or ("transmitter_id" if task == "device_fingerprinting" else "signal_type"),
             "split": payload.get("split") or {"strategy": "session_disjoint", "group_by": ["session_id"]},
             "window_size_samples": int(payload.get("window_size_samples", 4096)),
             "overlap": float(payload.get("overlap", 0.0)),
@@ -249,6 +274,8 @@ class E3SpectrogramCNN2DService:
             "force_torch_unavailable": bool(payload.get("force_torch_unavailable", False)),
             "force_torchvision_unavailable": bool(payload.get("force_torchvision_unavailable", False)),
             "model_type": payload.get("model_type", "simple_cnn2d"),
+            "training_readiness_policy": payload.get("training_readiness_policy", "scientific_strict"),
+            "allow_weak_labels_debug": bool(payload.get("allow_weak_labels_debug", False)),
         }
 
     def _torch_available(self, config: dict[str, Any]) -> bool:
@@ -297,10 +324,12 @@ class E3SpectrogramCNN2DService:
             captures = [item for item in captures if str(item.get("capture_id")) in ids]
         return [item for item in captures if item.get("raw_file") and item.get("metadata_file")]
 
-    def _labels(self, captures: list[dict[str, Any]], label_field: str) -> dict[str, Any]:
-        missing = [str(item.get("capture_id")) for item in captures if item.get(label_field) in (None, "")]
-        labels = sorted({str(item.get(label_field)) for item in captures if item.get(label_field) not in (None, "")})
-        return {"missing_capture_ids": missing, "labels": labels}
+    def _labels(self, captures: list[dict[str, Any]], config: dict[str, Any]) -> dict[str, Any]:
+        return self.dataset_adapter.validate_training_label_policy(
+            captures,
+            config["label_field"],
+            allow_weak_labels=bool(config.get("allow_weak_labels_debug")),
+        )
 
     def _split(self, captures: list[dict[str, Any]], config: dict[str, Any]) -> dict[str, Any]:
         split_payload = config.get("split") or {}
@@ -340,7 +369,7 @@ class E3SpectrogramCNN2DService:
                         "session_id": capture.get("session_id"),
                         "day_id": capture.get("day_id"),
                         "snr_bin": self._snr_bin(capture.get("snr_db")),
-                        "label": str(capture.get(config["label_field"])),
+                        "label": self._label_value(capture, config["label_field"]),
                         "split": assignments.get(str(capture.get("capture_id"))),
                         "context": context,
                         "window": window,
@@ -352,6 +381,13 @@ class E3SpectrogramCNN2DService:
                 if len(items) >= config["max_samples"]:
                     return items
         return items
+
+    @staticmethod
+    def _label_value(capture: dict[str, Any], label_field: str) -> str:
+        value = capture.get(label_field)
+        if value in (None, "") and capture.get("label_type") == label_field:
+            value = capture.get("label")
+        return str(value)
 
     def _prepare_image(self, data: np.ndarray, config: dict[str, Any]) -> np.ndarray:
         image = np.asarray(data, dtype=np.float32)

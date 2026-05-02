@@ -252,6 +252,11 @@ export interface FingerprintingCaptureRecord {
     transmitter_class: string;
     transmitter_id: string;
     family: string;
+    signal_type?: string;
+    modulation_class?: string;
+    protocol_family?: string;
+    band_label?: string;
+    profile_key?: string | null;
     ground_truth_confidence: string;
   };
   scenario: {
@@ -330,6 +335,7 @@ export interface FingerprintingCaptureRecord {
     qc_policy_profile?: string;
     qc_thresholds?: Record<string, unknown>;
     metadata_check?: Record<string, unknown>;
+    band_profile_resolution?: Record<string, any>;
     manual_override_reason?: string;
     reasons: string[];
     quality_flags: string[];

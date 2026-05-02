@@ -28,10 +28,11 @@ class E1RawIQCNN1DService:
     def preview(self, payload: dict[str, Any]) -> dict[str, Any]:
         config = self._config(payload)
         captures = self._selected_captures(config)
-        labels = self._labels(captures, config["label_field"])
+        labels = self._labels(captures, config)
         split = self._split(captures, config)
         windows = self._build_window_index(captures, config, split["assignments"], preview=True)
         warnings = self._warnings(windows, labels["labels"])
+        eligibility = self.dataset_adapter.training_eligibility_summary(config)
         return {
             "experiment_id": self.experiment_id,
             "preview_only": True,
@@ -49,10 +50,14 @@ class E1RawIQCNN1DService:
                 "labels": labels["labels"],
                 "class_balance": dict(Counter(item["label"] for item in windows)),
                 "missing_label_capture_ids": labels["missing_capture_ids"],
+                "weak_label_capture_ids": labels["weak_label_capture_ids"],
+                "label_field": config["label_field"],
+                "training_readiness_policy": config["training_readiness_policy"],
+                "training_eligibility": eligibility,
             },
             "split": split,
             "warnings": warnings,
-            "available_for_training": self._torch_available(config) and not labels["missing_capture_ids"] and len(labels["labels"]) >= 2,
+            "available_for_training": self._torch_available(config) and not labels["missing_capture_ids"] and not labels["weak_label_capture_ids"] and len(labels["labels"]) >= 2,
         }
 
     def run(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -60,11 +65,28 @@ class E1RawIQCNN1DService:
         if not self._torch_available(config):
             raise RuntimeError("PyTorch is unavailable; E1 Raw IQ CNN 1D training is disabled")
         captures = self._selected_captures(config)
-        labels = self._labels(captures, config["label_field"])
-        if labels["missing_capture_ids"]:
-            raise ValueError("E1 requires labels for every capture. Missing labels: " + ", ".join(labels["missing_capture_ids"]))
+        eligibility = self.dataset_adapter.training_eligibility_summary(config)
+        if not captures:
+            raise ValueError(
+                "E1 found no eligible captures for closed-set fingerprinting under "
+                f"{config['training_readiness_policy']}. "
+                f"Eligibility summary: {eligibility}. "
+                "E1 requires reviewed physical transmitter_id labels, not only band-profile weak labels."
+            )
+        labels = self._labels(captures, config)
+        if labels["missing_capture_ids"] or labels["weak_label_capture_ids"]:
+            raise ValueError(
+                "E1 is closed-set physical fingerprinting and requires strong transmitter labels. "
+                f"Missing: {', '.join(labels['missing_capture_ids']) or 'none'}. "
+                f"Weak/unconfirmed: {', '.join(labels['weak_label_capture_ids']) or 'none'}. "
+                "Do not train E1 from band-profile weak labels; confirm physical transmitter_id in Dataset Builder first."
+            )
         if len(labels["labels"]) < 2:
-            raise ValueError("E1 requires at least two device classes")
+            raise ValueError(
+                "E1 requires at least two physical device classes after readiness filtering. "
+                f"Label field: {config['label_field']}. Labels found: {labels['labels']}. "
+                f"Eligibility summary: {eligibility}."
+            )
         split = self._split(captures, config)
         windows = self._build_window_index(captures, config, split["assignments"], preview=False)
         train_items = [item for item in windows if item["split"] == "train"]
@@ -73,6 +95,9 @@ class E1RawIQCNN1DService:
             raise ValueError("E1 split produced empty train or evaluation set")
         if len({item["label"] for item in train_items}) < 2:
             raise ValueError("E1 training split must contain at least two classes")
+        missing_from_train = sorted({item["label"] for item in eval_items} - {item["label"] for item in train_items})
+        if missing_from_train:
+            raise ValueError("E1 closed-set evaluation has transmitter classes missing from train split: " + ", ".join(missing_from_train))
 
         import torch
         from torch import nn
@@ -217,6 +242,8 @@ class E1RawIQCNN1DService:
             "seed": int(payload.get("seed", 42)),
             "device": payload.get("device", "auto"),
             "force_torch_unavailable": bool(payload.get("force_torch_unavailable", False)),
+            "training_readiness_policy": payload.get("training_readiness_policy", "scientific_strict"),
+            "allow_weak_labels_debug": bool(payload.get("allow_weak_labels_debug", False)),
         }
 
     def _torch_available(self, config: dict[str, Any]) -> bool:
@@ -229,10 +256,12 @@ class E1RawIQCNN1DService:
             captures = [item for item in captures if str(item.get("capture_id")) in ids]
         return [item for item in captures if item.get("raw_file") and item.get("metadata_file")]
 
-    def _labels(self, captures: list[dict[str, Any]], label_field: str) -> dict[str, Any]:
-        missing = [str(item.get("capture_id")) for item in captures if item.get(label_field) in (None, "")]
-        labels = sorted({str(item.get(label_field)) for item in captures if item.get(label_field) not in (None, "")})
-        return {"missing_capture_ids": missing, "labels": labels}
+    def _labels(self, captures: list[dict[str, Any]], config: dict[str, Any]) -> dict[str, Any]:
+        return self.dataset_adapter.validate_training_label_policy(
+            captures,
+            config["label_field"],
+            allow_weak_labels=bool(config.get("allow_weak_labels_debug")),
+        )
 
     def _split(self, captures: list[dict[str, Any]], config: dict[str, Any]) -> dict[str, Any]:
         split_payload = config.get("split") or {}
@@ -269,7 +298,7 @@ class E1RawIQCNN1DService:
                         "session_id": capture.get("session_id"),
                         "day_id": capture.get("day_id"),
                         "snr_bin": self._snr_bin(capture.get("snr_db")),
-                        "label": str(capture.get(config["label_field"])),
+                        "label": self._label_value(capture, config["label_field"]),
                         "split": assignments.get(str(capture.get("capture_id"))),
                         "context": context,
                         "window": window,
@@ -278,6 +307,13 @@ class E1RawIQCNN1DService:
                 if len(items) >= config["max_windows"]:
                     return items
         return items
+
+    @staticmethod
+    def _label_value(capture: dict[str, Any], label_field: str) -> str:
+        value = capture.get(label_field)
+        if value in (None, "") and capture.get("label_type") == label_field:
+            value = capture.get("label")
+        return str(value)
 
     def _snr_bin(self, snr_value: Any) -> str | None:
         if snr_value is None:

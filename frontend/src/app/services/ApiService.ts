@@ -248,6 +248,17 @@ export class ApiService {
     return response.data;
   }
 
+  async resolveRFIntelligenceBandProfile(payload: {
+    start_frequency_hz?: number;
+    stop_frequency_hz?: number;
+    center_frequency_hz?: number;
+    bandwidth_hz?: number;
+    occupied_bandwidth_hz?: number;
+  }): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_INTELLIGENCE_BAND_PROFILE_RESOLVE}`, payload);
+    return response.data;
+  }
+
   async analyzeRFSignalUnderstanding(payload: {
     file_path: string;
     sample_rate_hz: number;
@@ -708,6 +719,17 @@ export class ApiService {
     return response.data;
   }
 
+  async applyBandProfileToFingerprintingCapture(
+    captureId: string,
+    payload: { confirm_as_strong_label?: boolean; overwrite_existing?: boolean } = {},
+  ): Promise<FingerprintingCaptureRecord> {
+    const response = await axios.post(
+      `${this.baseURL}${API_ENDPOINTS.FINGERPRINTING_CAPTURE_APPLY_BAND_PROFILE(captureId)}`,
+      payload,
+    );
+    return response.data;
+  }
+
   async deleteFingerprintingCapture(
     captureId: string,
     payload: { delete_artifacts?: boolean } = {},
@@ -731,6 +753,14 @@ export class ApiService {
       environment: string;
       notes: string;
       ground_truth_confidence: string;
+      family?: string;
+      signal_family?: string;
+      signal_type?: string;
+      modulation_class?: string;
+      protocol_family?: string;
+      band_label?: string;
+      profile_key?: string | null;
+      label_status?: string | null;
     },
   ): Promise<FingerprintingCaptureRecord> {
     const response = await axios.post(
@@ -818,8 +848,9 @@ export class ApiService {
     return response.data;
   }
 
-  async getCurrentModel(): Promise<ModelArtifactSummary> {
+  async getCurrentModel(): Promise<ModelArtifactSummary | null> {
     const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.MODELS_CURRENT}`);
+    if (response.data?.available === false) return null;
     return response.data;
   }
 

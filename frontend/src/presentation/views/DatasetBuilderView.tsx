@@ -34,6 +34,7 @@ export const DatasetBuilderView: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<'all' | 'valid' | 'doubtful' | 'rejected'>('all');
   const [lastRefresh, setLastRefresh] = useState<string>('');
   const [isRecomputingQc, setIsRecomputingQc] = useState(false);
+  const [isApplyingBandProfile, setIsApplyingBandProfile] = useState(false);
   const [isDeletingCapture, setIsDeletingCapture] = useState(false);
   const [actionMessage, setActionMessage] = useState<string>('');
 
@@ -197,6 +198,11 @@ export const DatasetBuilderView: React.FC = () => {
         liveOffsetHz: selectedCapture.quality_metrics.live_offset_hz,
       })
     : null;
+  const selectedLabelIsWeakOrMissing = selectedCapture
+    ? ['unknown', 'tx_unknown', 'unlabeled_transmitter', 'rsu_unlabeled', 'profile_pending', 'band_profile_pending', ''].includes(
+        String(selectedCapture.transmitter.transmitter_id || selectedCapture.transmitter.transmitter_label || '').trim().toLowerCase(),
+      ) || selectedCapture.quality_review.label_status !== 'strong_label'
+    : false;
 
   const reviewCapture = async (status: 'valid' | 'doubtful' | 'rejected') => {
     if (!selectedCapture) {
@@ -221,7 +227,11 @@ export const DatasetBuilderView: React.FC = () => {
     setActionMessage('');
     try {
       const updated = await api.recomputeFingerprintingCaptureQc(selectedCapture.capture_id);
-      setActionMessage(`QC recomputed for ${updated.capture_id}. New status: ${updated.quality_review.status}.`);
+      setActionMessage(
+        `QC recomputed for ${updated.capture_id}. Automatic status: ${updated.quality_review.status}. ` +
+          `Capture quality: ${updated.quality_review.capture_quality ?? 'unknown'}. ` +
+          `Training readiness: ${updated.quality_review.training_readiness ?? 'unknown'}.`,
+      );
       await refresh();
       setSelectedCaptureId(updated.capture_id);
     } catch (error) {
@@ -229,6 +239,31 @@ export const DatasetBuilderView: React.FC = () => {
       setActionMessage('Failed to recompute QC for this capture.');
     } finally {
       setIsRecomputingQc(false);
+    }
+  };
+
+  const applyBandProfile = async (confirmAsStrongLabel = false) => {
+    if (!selectedCapture) return;
+    setIsApplyingBandProfile(true);
+    setActionMessage('');
+    try {
+      const updated = await api.applyBandProfileToFingerprintingCapture(selectedCapture.capture_id, {
+        confirm_as_strong_label: confirmAsStrongLabel,
+        overwrite_existing: false,
+      });
+      const profile = updated.quality_review?.band_profile_resolution?.profile_key ?? updated.transmitter.profile_key ?? 'band_profiles.json';
+      setActionMessage(
+        confirmAsStrongLabel
+          ? `Applied ${profile} and marked the label as strong. Run Recompute QC before scientific export.`
+          : `Applied weak label defaults from ${profile}. Review and confirm before scientific training.`,
+      );
+      await refresh();
+      setSelectedCaptureId(updated.capture_id);
+    } catch (error) {
+      console.error('Failed to apply band profile label', error);
+      setActionMessage('Failed to apply band-profile defaults. Check center frequency and bandwidth metadata.');
+    } finally {
+      setIsApplyingBandProfile(false);
     }
   };
 
@@ -460,6 +495,14 @@ export const DatasetBuilderView: React.FC = () => {
                   >
                     {isRecomputingQc ? 'Recomputing QC...' : 'Recompute QC'}
                   </button>
+                  <button
+                    className="rounded-full border border-teal-300 bg-teal-50 px-4 py-2 text-sm font-semibold text-teal-800 disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => applyBandProfile(false)}
+                    disabled={isApplyingBandProfile}
+                    title="Fill missing or weak label/class fields from backend/app/modules/rf_intelligence/band_profiles.json"
+                  >
+                    {isApplyingBandProfile ? 'Applying profile...' : 'Fill label from band profile'}
+                  </button>
                   <button className="rounded-full bg-emerald-600 px-4 py-2 text-sm font-semibold text-white" onClick={() => reviewCapture('valid')}>
                     Accept
                   </button>
@@ -484,6 +527,46 @@ export const DatasetBuilderView: React.FC = () => {
                   {actionMessage}
                 </div>
               )}
+
+              <div className={`mt-4 rounded-2xl border p-4 ${selectedLabelIsWeakOrMissing ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50'}`}>
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <div className={`text-xs font-semibold uppercase tracking-[0.18em] ${selectedLabelIsWeakOrMissing ? 'text-amber-800' : 'text-emerald-800'}`}>
+                      Label and class audit
+                    </div>
+                    <h3 className="mt-2 text-lg font-semibold text-slate-900">
+                      {selectedLabelIsWeakOrMissing ? 'Needs label confirmation before scientific training' : 'Strong label available'}
+                    </h3>
+                    <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-700">
+                      Dataset Builder can fill missing class metadata from <span className="font-mono">band_profiles.json</span> using
+                      center frequency and occupied bandwidth. This produces a weak technical label; use strong confirmation only when
+                      the operator has verified the class/transmitter identity.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      className="rounded-full border border-amber-300 bg-white px-4 py-2 text-sm font-semibold text-amber-900 disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={() => applyBandProfile(false)}
+                      disabled={isApplyingBandProfile}
+                    >
+                      Fill missing fields
+                    </button>
+                    <button
+                      className="rounded-full border border-slate-900 bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={() => applyBandProfile(true)}
+                      disabled={isApplyingBandProfile}
+                    >
+                      Confirm as strong label
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-3 grid gap-2 text-xs text-slate-700 md:grid-cols-4">
+                  <div className="rounded-xl bg-white px-3 py-2">Label: {selectedCapture.transmitter.transmitter_label || 'missing'}</div>
+                  <div className="rounded-xl bg-white px-3 py-2">Class: {selectedCapture.transmitter.transmitter_class || 'missing'}</div>
+                  <div className="rounded-xl bg-white px-3 py-2">Modulation: {selectedCapture.transmitter.modulation_class || 'missing'}</div>
+                  <div className="rounded-xl bg-white px-3 py-2">Profile: {selectedCapture.transmitter.profile_key || 'not assigned'}</div>
+                </div>
+              </div>
 
               <div className="mt-4 rounded-2xl border border-indigo-200 bg-indigo-50 p-4">
                 <div className="flex flex-wrap items-start justify-between gap-4">

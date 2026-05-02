@@ -99,16 +99,19 @@ class E5SpectralBaselineBody(BaseModel):
     dataset_version: str = "unversioned"
     dataset_manifest_path: str | None = None
     capture_ids: list[str] = Field(default_factory=list)
+    task: str = "signal_recognition"
     input_representation: str = "fft_psd"
     feature_set: str = "psd_basic"
     models: list[str] = Field(default_factory=lambda: ["logistic_regression", "random_forest", "svm_rbf", "knn"])
-    label_field: str = "transmitter_id"
+    label_field: str | None = None
     split: dict[str, Any] = Field(default_factory=lambda: {"strategy": "session_disjoint", "group_by": ["session_id"]})
     window_size_samples: int = 4096
     overlap: float = 0.0
     n_fft: int = 1024
     welch_nperseg: int = 1024
     force_sklearn_unavailable: bool = False
+    training_readiness_policy: str = "scientific_strict"
+    allow_weak_labels_debug: bool = False
 
 
 class E1RawIQCNN1DBody(BaseModel):
@@ -130,6 +133,8 @@ class E1RawIQCNN1DBody(BaseModel):
     seed: int = 42
     device: str = "auto"
     force_torch_unavailable: bool = False
+    training_readiness_policy: str = "scientific_strict"
+    allow_weak_labels_debug: bool = False
 
 
 class E3SpectrogramCNN2DBody(BaseModel):
@@ -161,6 +166,8 @@ class E3SpectrogramCNN2DBody(BaseModel):
     device: str = "auto"
     force_torch_unavailable: bool = False
     force_torchvision_unavailable: bool = False
+    training_readiness_policy: str = "scientific_strict"
+    allow_weak_labels_debug: bool = False
 
 
 class ExperimentCompareBody(BaseModel):

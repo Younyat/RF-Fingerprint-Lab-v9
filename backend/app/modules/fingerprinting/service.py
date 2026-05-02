@@ -10,6 +10,8 @@ from uuid import uuid4
 
 import numpy as np
 
+from app.modules.rf_intelligence.knowledge_base import resolve_band_profile
+
 
 DEFAULT_THRESHOLDS = {
     "min_valid_snr_db": 12.0,
@@ -201,16 +203,48 @@ class FingerprintingService:
         quality_review["review_notes"] = payload.get("review_notes", quality_review.get("review_notes", ""))
         quality_review["export_windows"] = payload.get("export_windows", quality_review.get("export_windows", []))
         quality_review["updated_at_utc"] = _utc_now()
-        evaluated = self._evaluate_quality(record["quality_metrics"], quality_review["operator_decision"])
+        transmitter = record.get("transmitter", {}) if isinstance(record.get("transmitter"), dict) else {}
+        capture_config = record.get("capture_config", {}) if isinstance(record.get("capture_config"), dict) else {}
+        scenario = record.get("scenario", {}) if isinstance(record.get("scenario"), dict) else {}
+        artifacts = record.get("artifacts", {}) if isinstance(record.get("artifacts"), dict) else {}
+        metrics = record.get("quality_metrics", {}) if isinstance(record.get("quality_metrics"), dict) else {}
+        metrics["signal_family"] = record.get("signal_family", metrics.get("signal_family", "unknown"))
+        metrics["qc_profile_id"] = record.get("qc_profile_id", metrics.get("qc_profile_id"))
+        metrics["effective_bandwidth_hz"] = capture_config.get("effective_bandwidth_hz", metrics.get("effective_bandwidth_hz", 0.0))
+        qc_policy = self._qc_policy(
+            {
+                "qc_policy_profile": quality_review.get("qc_policy_profile", "scientific"),
+                "qc_thresholds": quality_review.get("qc_thresholds", {}),
+            }
+        )
+        label_status = quality_review.get("label_status") or self._label_status({}, transmitter)
+        metadata_check = self._metadata_check(capture_config, transmitter, scenario, artifacts)
+        evaluated = self._evaluate_quality(
+            metrics,
+            quality_review["operator_decision"],
+            qc_policy,
+            label_status,
+            metadata_check,
+            str(quality_review.get("manual_override_reason", "") or ""),
+        )
         quality_review["status"] = evaluated["status"]
+        quality_review["capture_quality"] = evaluated["capture_quality"]
+        quality_review["label_status"] = label_status
+        quality_review["qc_policy_profile"] = evaluated["qc_policy_profile"]
+        quality_review["qc_thresholds"] = qc_policy
+        quality_review["metadata_check"] = metadata_check
         if quality_review["operator_decision"] == "valid":
-            quality_review["review_status"] = "accepted"
-            quality_review["training_readiness"] = "ready_for_training" if quality_review.get("label_status") == "strong_label" and quality_review.get("capture_quality") == "valid" else "candidate"
+            quality_review["review_status"] = "accepted" if evaluated["capture_quality"] == "valid" else "needs_review"
+            quality_review["training_readiness"] = "ready_for_training" if label_status == "strong_label" and evaluated["capture_quality"] == "valid" and metadata_check.get("valid", False) else "candidate"
         elif quality_review["operator_decision"] == "rejected":
             quality_review["review_status"] = "rejected"
             quality_review["training_readiness"] = "not_ready"
+        else:
+            quality_review["review_status"] = evaluated["review_status"]
+            quality_review["training_readiness"] = evaluated["training_readiness"]
         quality_review["reasons"] = evaluated["reasons"]
         quality_review["quality_flags"] = evaluated["flags"]
+        quality_review["qc_profile_id"] = evaluated["qc_profile_id"]
         self._save_record(record)
         return record
 
@@ -234,6 +268,10 @@ class FingerprintingService:
         explicit = str(defaults.get("signal_family") or capture.get("signal_family") or "").strip().lower()
         if explicit in {"continuous_fm", "burst_rf", "packet_rf", "unknown"}:
             return explicit
+        if explicit in {"broadcast_fm", "weather_broadcast", "digital_broadcast", "digital_tv", "cellular_lte", "cellular_5g"}:
+            return "continuous_fm"
+        if explicit and explicit != "unknown":
+            return "burst_rf"
         hint = str(capture.get("modulation_hint") or capture.get("transmitter_class") or "").strip().lower()
         if hint in {"fm", "wfm", "broadcast_fm", "continuous_fm"}:
             return "continuous_fm"
@@ -422,15 +460,98 @@ class FingerprintingService:
             analysis.get("burst_duration_ms", burst_detection.get("max_burst_duration_ms", quality_metrics.get("burst_duration_ms", 0.0)) or 0.0)
         ) or burst_detection.get("max_burst_duration_ms")
 
+        record["quality_metrics"] = quality_metrics
+        record["burst_detection"] = burst_detection
         quality_review = record.get("quality_review", {})
         quality_metrics["signal_family"] = record.get("signal_family", "unknown")
         quality_metrics["qc_profile_id"] = record.get("qc_profile_id")
         quality_metrics["effective_bandwidth_hz"] = (record.get("capture_config") or {}).get("effective_bandwidth_hz", 0.0)
-        evaluated = self._evaluate_quality(quality_metrics, quality_review.get("operator_decision"))
+        transmitter = record.get("transmitter", {}) if isinstance(record.get("transmitter"), dict) else {}
+        capture_config = record.get("capture_config", {}) if isinstance(record.get("capture_config"), dict) else {}
+        scenario = record.get("scenario", {}) if isinstance(record.get("scenario"), dict) else {}
+        artifacts = record.get("artifacts", {}) if isinstance(record.get("artifacts"), dict) else {}
+        qc_policy = self._qc_policy(
+            {
+                "qc_policy_profile": quality_review.get("qc_policy_profile", "scientific"),
+                "qc_thresholds": quality_review.get("qc_thresholds", {}),
+            }
+        )
+        label_status = quality_review.get("label_status") or self._label_status({}, transmitter)
+        metadata_check = self._metadata_check(capture_config, transmitter, scenario, artifacts)
+        evaluated = self._evaluate_quality(
+            quality_metrics,
+            None,
+            qc_policy,
+            label_status,
+            metadata_check,
+            str(quality_review.get("manual_override_reason", "") or ""),
+        )
+        quality_review["automatic_status"] = evaluated["status"]
         quality_review["status"] = evaluated["status"]
+        quality_review["capture_quality"] = evaluated["capture_quality"]
+        quality_review["label_status"] = label_status
+        quality_review["review_status"] = evaluated["review_status"]
+        quality_review["training_readiness"] = evaluated["training_readiness"]
+        quality_review["qc_policy_profile"] = evaluated["qc_policy_profile"]
+        quality_review["qc_thresholds"] = qc_policy
+        quality_review["metadata_check"] = metadata_check
         quality_review["reasons"] = evaluated["reasons"]
         quality_review["quality_flags"] = evaluated["flags"]
+        quality_review["qc_profile_id"] = evaluated["qc_profile_id"]
+        quality_review["recomputed_at_utc"] = _utc_now()
         quality_review["updated_at_utc"] = _utc_now()
+        record["quality_review"] = quality_review
+
+        self._save_record(record)
+        return record
+
+    def apply_band_profile_to_capture(self, capture_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload or {}
+        path = self._capture_path(capture_id)
+        if not path.exists():
+            raise ValueError(f"Capture not found: {capture_id}")
+        record = self._load_record(path)
+        capture_config = record.get("capture_config", {}) if isinstance(record.get("capture_config"), dict) else {}
+        quality_metrics = record.get("quality_metrics", {}) if isinstance(record.get("quality_metrics"), dict) else {}
+        center = _safe_float(capture_config.get("center_frequency_hz"))
+        bandwidth = _safe_float(quality_metrics.get("occupied_bandwidth_hz")) or _safe_float(capture_config.get("effective_bandwidth_hz"))
+        if not center or not bandwidth:
+            raise ValueError("Capture needs center_frequency_hz and bandwidth/occupied_bandwidth_hz to resolve a band profile")
+
+        resolved = resolve_band_profile(center_frequency_hz=center, bandwidth_hz=bandwidth)
+        defaults = resolved.get("defaults") if isinstance(resolved.get("defaults"), dict) else {}
+        if not defaults:
+            raise ValueError("No band-profile defaults were produced")
+
+        transmitter = record.get("transmitter", {}) if isinstance(record.get("transmitter"), dict) else {}
+        overwrite = bool(payload.get("overwrite_existing", False))
+        unknown_values = {"", "unknown", "tx_unknown", "unlabeled_transmitter", "rsu_unlabeled", "profile_pending", "band_profile_pending"}
+
+        def should_set(value: Any) -> bool:
+            return overwrite or str(value or "").strip().lower() in unknown_values
+
+        for field in ("transmitter_label", "transmitter_class", "transmitter_id", "family", "signal_type", "modulation_class", "protocol_family", "band_label", "profile_key"):
+            if should_set(transmitter.get(field)):
+                transmitter[field] = defaults.get(field) or transmitter.get(field)
+
+        confirm = bool(payload.get("confirm_as_strong_label", False))
+        transmitter["ground_truth_confidence"] = "operator_confirmed" if confirm else defaults.get("ground_truth_confidence", "weak_from_band_profile")
+        record["transmitter"] = transmitter
+        if defaults.get("family"):
+            record["signal_family"] = self._infer_signal_family({}, {"signal_family": defaults.get("family")})
+
+        quality_review = record.get("quality_review", {}) if isinstance(record.get("quality_review"), dict) else {}
+        quality_review["label_status"] = "strong_label" if confirm else defaults.get("label_status", "weak_label")
+        quality_review["review_status"] = "accepted" if confirm and quality_review.get("capture_quality") == "valid" else "needs_review"
+        quality_review["training_readiness"] = "ready_for_training" if confirm and quality_review.get("capture_quality") == "valid" else "candidate"
+        quality_review["band_profile_resolution"] = resolved
+        quality_review["updated_at_utc"] = _utc_now()
+        record["quality_review"] = quality_review
+        scenario = record.get("scenario", {}) if isinstance(record.get("scenario"), dict) else {}
+        note = f"Band-profile defaults applied from {defaults.get('profile_key') or 'band_profiles.json'}."
+        if note not in str(scenario.get("notes", "")):
+            scenario["notes"] = (str(scenario.get("notes", "") or "").strip() + "\n" + note).strip()
+        record["scenario"] = scenario
 
         self._save_record(record)
         return record
@@ -488,7 +609,12 @@ class FingerprintingService:
                 "transmitter_label": defaults.get("transmitter_label", capture.get("label", "unlabeled_transmitter")),
                 "transmitter_class": defaults.get("transmitter_class", capture.get("modulation_hint", "unknown")),
                 "transmitter_id": defaults.get("transmitter_id", capture.get("label", "tx_unknown")),
-                "family": defaults.get("family", "unknown"),
+                "family": defaults.get("family") or defaults.get("signal_type") or "unknown",
+                "signal_type": defaults.get("signal_type") or defaults.get("transmitter_class", capture.get("modulation_hint", "unknown")),
+                "modulation_class": defaults.get("modulation_class", capture.get("modulation_hint", "")),
+                "protocol_family": defaults.get("protocol_family", defaults.get("family", "")),
+                "band_label": defaults.get("band_label", ""),
+                "profile_key": defaults.get("profile_key"),
                 "ground_truth_confidence": defaults.get("ground_truth_confidence", "unknown"),
             },
             "scenario": {
@@ -552,6 +678,7 @@ class FingerprintingService:
                 "live_preview_peak_level_db": _safe_float((capture.get("preview_metrics") or {}).get("live_preview_peak_level_db")),
                 "live_preview_peak_frequency_hz": _safe_float((capture.get("preview_metrics") or {}).get("live_preview_peak_frequency_hz")),
             },
+            "label_status": defaults.get("label_status"),
         }
         return self.create_capture_record(payload)
 
@@ -952,6 +1079,11 @@ class FingerprintingService:
                 "transmitter_class": transmitter.get("transmitter_class", ""),
                 "transmitter_id": transmitter.get("transmitter_id", ""),
                 "family": transmitter.get("family", ""),
+                "signal_type": transmitter.get("signal_type", transmitter.get("transmitter_class", "")),
+                "modulation_class": transmitter.get("modulation_class", ""),
+                "protocol_family": transmitter.get("protocol_family", ""),
+                "band_label": transmitter.get("band_label", ""),
+                "profile_key": transmitter.get("profile_key"),
                 "ground_truth_confidence": transmitter.get("ground_truth_confidence", "unknown"),
             },
             "scenario": {

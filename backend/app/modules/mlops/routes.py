@@ -126,7 +126,12 @@ def build_mlops_router(service) -> APIRouter:
     async def models_current() -> dict[str, Any]:
         data = service.current_model()
         if data is None:
-            raise HTTPException(status_code=404, detail="No current model")
+            return {
+                "available": False,
+                "status": "not_found",
+                "message": "No current operational model is registered yet.",
+                "data": None,
+            }
         return data
 
     @router.get("/models/{version}")

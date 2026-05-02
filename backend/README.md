@@ -42,8 +42,16 @@ The active API does not generate mock spectrum data. If the device cannot be ope
   - Computes offline QC from stored IQ data
   - Estimates SNR, occupied bandwidth, peak frequency/offset, burst bounds, silence, and clipping
   - Applies automatic review flags before dataset curation
+  - Recomputes QC with the stored QC policy, metadata completeness and label status instead of relying on a previous manual decision
+  - Applies weak label/class defaults from `app/modules/rf_intelligence/band_profiles.json` when a capture lacks usable labels
   - Preserves burst RF samples as valid when the sample is usable but the capture window is tight
   - Recent update: for `burst_rf_v1`, conditions such as `occupied_bandwidth_near_capture_limit`, `peak_not_ideally_centered` and `low_margin_to_nearest_edge` are now warnings, not automatic reject/doubtful triggers, cuando el SNR es bueno y no hay clipping u otros fallos graves.
+
+- `app/modules/rf_intelligence/knowledge_base.py`
+  - Loads the RF band profile knowledge base from `band_profiles.json`
+  - Resolves marker/capture frequency windows to editable technical labels
+  - Produces weak defaults for `transmitter_label`, `transmitter_class`, `signal_type`, `modulation_class`, `protocol_family`, `band_label` and `profile_key`
+  - Does not claim physical transmitter identity; operator confirmation is still required for `strong_label`
 
 - `app/modules/mlops/service.py`
   - Starts training, retraining, validation, and inference jobs
@@ -60,6 +68,8 @@ The active API does not generate mock spectrum data. If the device cannot be ope
   - Implements E0 Morphological Baseline, E5 Spectral Feature Baseline, E1 Raw IQ CNN 1D and E3 Spectrogram/Waterfall CNN 2D
   - Registers experiment listing, detail, comparison and benchmark-report endpoints
   - Reports missing optional dependencies cleanly through stable JSON instead of breaking backend startup
+  - Enforces the Dataset Builder scientific gate for E1, E3 and E5 by default: weak labels and not-ready samples are excluded unless an explicit debug policy is selected
+  - Rejects closed-set runs when evaluation contains classes that are absent from the training split
 
 - `app/infrastructure/sdr/real_spectrum_stream.py`
   - Manages the persistent spectrum worker process
@@ -158,6 +168,32 @@ To disable an API module without deleting code, set its `enabled` flag to `False
 - `GET /api/demodulation/results`
 - `GET /api/demodulation/results/{id}`
 - `GET /api/demodulation/audio/{id}`
+- `POST /api/rf-intelligence/band-profile/resolve`
+- `POST /api/fingerprinting/captures/{capture_id}/recompute-qc`
+- `POST /api/fingerprinting/captures/{capture_id}/apply-band-profile`
+
+`GET /api/models/current` returns an explicit `{available: false, status: "not_found"}` payload when there is no current operational model. This avoids frontend polling noise while preserving the fact that no production model is registered.
+
+## Dataset QC and label policy
+
+Backend QC distinguishes signal quality from label authority:
+
+- `capture_quality`: RF/file quality after offline analysis.
+- `label_status`: `unlabeled`, `weak_label` or `strong_label`.
+- `review_status`: human review state.
+- `training_readiness`: whether the sample can enter training.
+
+`Recompute QC` reads the stored IQ file and updates offline diagnostics, SNR estimates, burst bounds, occupied bandwidth, spectral peak, frequency offset, clipping, silence and profile-specific warnings. The recomputation evaluates the current QC profile and metadata completeness. This makes the result reproducible and prevents a manual UI decision from masking missing labels or poor RF quality.
+
+`apply-band-profile` is a controlled label-repair endpoint. It resolves the capture frequency window against `band_profiles.json` and fills missing label/class fields only when they are absent or placeholder values, unless `overwrite_existing=true` is requested. By default it writes a `weak_label`. `confirm_as_strong_label=true` should be used only after operator review.
+
+RF Experiment Lab training endpoints apply this label policy:
+
+- E1 Raw IQ CNN 1D requires strong physical `transmitter_id` labels.
+- E3 Spectrogram/Waterfall CNN 2D requires strong labels for the selected task and label field.
+- E5 Spectral Feature Baseline defaults to `signal_type` for signal-recognition baselines and `transmitter_id` only when the task is explicitly `device_fingerprinting`.
+
+The default `training_readiness_policy` is `scientific_strict`: only `strong_label`, `accepted`, `ready_for_training` captures with valid quality are eligible. `training_draft` admits `candidate` captures when they have `strong_label` and non-invalid QC, which is useful for exploratory E5/E1/E3 baselines while a dataset is still being curated. `all_debug` bypasses readiness gates and can include weak/not-ready records; those runs should not be reported as primary scientific results.
 - `POST /api/modulated-signals/captures`
 - `GET /api/modulated-signals/captures`
 - `GET /api/modulated-signals/captures/{id}`

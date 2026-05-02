@@ -11,6 +11,7 @@ import numpy as np
 
 from app.modules.rf_intelligence.schemas import RFIntelligenceSettings, SpectrumFrameInput
 from app.modules.rf_intelligence.service import RFIntelligenceService
+from app.modules.rf_intelligence.knowledge_base import resolve_band_profile
 from app.modules.rf_signal_understanding.application.bispectral_verification_pipeline import BispectralVerificationPipeline
 from app.modules.rf_signal_understanding.application.comparative_evaluation_pipeline import ComparativeEvaluationPipeline
 from app.modules.rf_signal_understanding.application.decision_fusion_pipeline import DecisionFusionPipeline
@@ -716,12 +717,20 @@ class RFSignalUnderstandingService:
         return {"capture": capture, "analysis": analysis, "comparison": comparison}
 
     def capture_for_training(self, request: CaptureForTrainingRequest, modulated_signal_controller: Any) -> dict[str, Any]:
+        resolved_profile = resolve_band_profile(
+            start_frequency_hz=request.start_frequency_hz,
+            stop_frequency_hz=request.stop_frequency_hz,
+        )
+        default_label = str((resolved_profile.get("defaults") or {}).get("transmitter_label") or "")
+        label_hint = request.label_hint
+        if not label_hint or label_hint.strip().lower() in {"unknown", "unlabeled", "profile_pending", "band_profile_pending"}:
+            label_hint = default_label or "unresolved_rf_signal"
         capture = modulated_signal_controller.capture_marker_band(
             start_frequency_hz=request.start_frequency_hz,
             stop_frequency_hz=request.stop_frequency_hz,
             duration_seconds=request.duration_seconds,
-            label=request.label_hint,
-            modulation_hint=request.label_hint or "unknown",
+            label=label_hint,
+            modulation_hint=label_hint or "unknown",
             session_id=request.session_id,
             file_format=request.file_format,
             apply_bandpass_filter=bool(request.apply_bandpass_filter),
@@ -742,8 +751,8 @@ class RFSignalUnderstandingService:
                 duration_s=float(capture.get("duration_seconds") or request.duration_seconds),
                 source="capture_lab",
                 session_id=request.session_id,
-                profile_key=request.profile_key,
-                profile=request.profile,
+                profile_key=request.profile_key or resolved_profile.get("profile_key"),
+                profile=request.profile or resolved_profile,
             )
         )
         analyzed = self.analyze_registered_capture(registered["capture_id"])

@@ -36,6 +36,11 @@ class TransmitterBody(BaseModel):
     transmitter_class: str
     transmitter_id: str
     family: str = ""
+    signal_type: str = ""
+    modulation_class: str = ""
+    protocol_family: str = ""
+    band_label: str = ""
+    profile_key: str | None = None
     ground_truth_confidence: str = "unknown"
 
 
@@ -99,6 +104,7 @@ class FingerprintingCaptureBody(BaseModel):
     capture_mode: str = "guided_capture"
     session_id: str
     dataset_split: Literal["train", "val", "predict"] = "train"
+    signal_family: str = "unknown"
     capture_config: CaptureConfigBody
     transmitter: TransmitterBody
     scenario: ScenarioBody = Field(default_factory=ScenarioBody)
@@ -121,6 +127,11 @@ class ReviewCaptureBody(BaseModel):
     export_windows: list[str] = Field(default_factory=list)
 
 
+class ApplyBandProfileBody(BaseModel):
+    confirm_as_strong_label: bool = False
+    overwrite_existing: bool = False
+
+
 class DeleteCaptureBody(BaseModel):
     delete_artifacts: bool = True
 
@@ -135,6 +146,14 @@ class ImportModulatedCaptureBody(BaseModel):
     environment: str = "unspecified"
     notes: str = ""
     ground_truth_confidence: str = "unknown"
+    family: str = ""
+    signal_family: str = ""
+    signal_type: str = ""
+    modulation_class: str = ""
+    protocol_family: str = ""
+    band_label: str = ""
+    profile_key: str | None = None
+    label_status: str | None = None
 
 
 def build_fingerprinting_router(service, modulated_signal_controller) -> APIRouter:
@@ -179,6 +198,13 @@ def build_fingerprinting_router(service, modulated_signal_controller) -> APIRout
     async def recompute_capture_qc(capture_id: str) -> dict[str, Any]:
         try:
             return service.recompute_capture_record_qc(capture_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.post("/captures/{capture_id}/apply-band-profile")
+    async def apply_band_profile(capture_id: str, body: ApplyBandProfileBody) -> dict[str, Any]:
+        try:
+            return service.apply_band_profile_to_capture(capture_id, body.model_dump())
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

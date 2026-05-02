@@ -8,6 +8,7 @@ const api = new ApiService();
 type ExperimentKind = 'e5' | 'e1' | 'e3';
 type CaptureSortKey = 'time' | 'modulation' | 'label' | 'qc' | 'source' | 'frequency';
 type SortDirection = 'asc' | 'desc';
+type TrainingReadinessPolicy = 'scientific_strict' | 'training_draft' | 'all_debug';
 
 const card = 'rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_18px_42px_rgba(15,23,42,0.07)]';
 
@@ -167,6 +168,8 @@ export const RFExperimentLabView: React.FC = () => {
   const [pendingCaptureSortKey, setPendingCaptureSortKey] = useState<CaptureSortKey>('time');
   const [pendingCaptureSortDirection, setPendingCaptureSortDirection] = useState<SortDirection>('desc');
   const [labelField, setLabelField] = useState('transmitter_id');
+  const [trainingReadinessPolicy, setTrainingReadinessPolicy] = useState<TrainingReadinessPolicy>('scientific_strict');
+  const [allowWeakLabelsDebug, setAllowWeakLabelsDebug] = useState(false);
   const [e3Representation, setE3Representation] = useState<'spectrogram' | 'waterfall'>('spectrogram');
   const [e3ModelType, setE3ModelType] = useState<'simple_cnn2d' | 'resnet18' | 'vgg11'>('simple_cnn2d');
   const [lastResponse, setLastResponse] = useState<Record<string, any> | null>(null);
@@ -198,8 +201,30 @@ export const RFExperimentLabView: React.FC = () => {
     });
   }, []);
 
+  useEffect(() => {
+    if (selectedTechnique === 'e5') {
+      setDatasetTask('signal_recognition');
+      setLabelField('signal_type');
+      return;
+    }
+    if (selectedTechnique === 'e1') {
+      setDatasetTask('device_fingerprinting');
+      setLabelField('transmitter_id');
+      return;
+    }
+    setLabelField(datasetTask === 'signal_recognition' ? 'signal_type' : 'transmitter_id');
+  }, [selectedTechnique]);
+
+  useEffect(() => {
+    setAllowWeakLabelsDebug(trainingReadinessPolicy === 'all_debug');
+  }, [trainingReadinessPolicy]);
+
   const selectedTechniqueInfo = techniques.find((item) => item.id === selectedTechnique);
   const selectedRuns = useMemo(() => runs.filter((run) => ['e5_spectral_feature_baseline', 'e1_raw_iq_cnn1d', 'e3_spectrogram_cnn2d'].includes(String(run.experiment_type))), [runs]);
+  const selectedCaptureObjects = useMemo(
+    () => captures.filter((item) => selectedCaptureIds.includes(String(item.capture_id))),
+    [captures, selectedCaptureIds],
+  );
   const captureDiagnostics = useMemo(() => {
     const countBy = (key: string) =>
       captures.reduce<Record<string, number>>((acc, item) => {
@@ -215,6 +240,25 @@ export const RFExperimentLabView: React.FC = () => {
       byQc: countBy('qc_status'),
     };
   }, [captures]);
+  const selectedEligibility = useMemo(() => {
+    const counts = (key: string) =>
+      selectedCaptureObjects.reduce<Record<string, number>>((acc, item) => {
+        const value = String(item[key] ?? 'unknown');
+        acc[value] = (acc[value] ?? 0) + 1;
+        return acc;
+      }, {});
+    const labelCounts = selectedCaptureObjects.reduce<Record<string, number>>((acc, item) => {
+      const value = String(item[labelField] ?? item.label ?? 'unknown');
+      acc[value] = (acc[value] ?? 0) + 1;
+      return acc;
+    }, {});
+    return {
+      labelCounts,
+      readiness: counts('training_readiness'),
+      captureQuality: counts('capture_quality'),
+      labelStatus: counts('label_status'),
+    };
+  }, [labelField, selectedCaptureObjects]);
   const sortedCaptures = useMemo(() => {
     const valueFor = (capture: Record<string, any>) => {
       if (captureSortKey === 'time') return captureTimeValue(capture);
@@ -240,6 +284,8 @@ export const RFExperimentLabView: React.FC = () => {
       dataset_manifest_path: datasetManifestPath || undefined,
       capture_ids: selectedCaptureIds,
       label_field: labelField,
+      training_readiness_policy: trainingReadinessPolicy,
+      allow_weak_labels_debug: allowWeakLabelsDebug,
       split: { ...defaultSplit, strategy: splitStrategy, group_by: splitGroupFields(splitStrategy) },
     };
     if (selectedTechnique === 'e5') {
@@ -252,6 +298,7 @@ export const RFExperimentLabView: React.FC = () => {
       ...base,
       input_representation: e3Representation,
       model_type: e3ModelType,
+      task: datasetTask,
       epochs: 1,
       batch_size: 8,
       window_size_samples: 2048,
@@ -270,6 +317,8 @@ export const RFExperimentLabView: React.FC = () => {
     experiment_id: selectedTechnique,
     capture_ids: selectedCaptureIds,
     label_field: labelField,
+    training_readiness_policy: trainingReadinessPolicy,
+    allow_weak_labels_debug: allowWeakLabelsDebug,
     split_strategy: splitStrategy,
     split_group_fields: splitGroupFields(splitStrategy),
     inclusion_mode: splitStrategy === 'random' ? 'debug_include_candidates' : 'scientific_strict',
@@ -487,6 +536,23 @@ export const RFExperimentLabView: React.FC = () => {
                 <option value="technology">technology</option>
               </select>
             </label>
+            <label className="text-sm text-slate-700">
+              Dataset eligibility
+              <select className="mt-1 w-full rounded-xl border border-slate-300 px-3 py-2" value={trainingReadinessPolicy} onChange={(event) => setTrainingReadinessPolicy(event.target.value as TrainingReadinessPolicy)}>
+                <option value="scientific_strict">scientific_strict: ready_for_training only</option>
+                <option value="training_draft">training_draft: candidate strong labels</option>
+                <option value="all_debug">all_debug: bypass gates</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={allowWeakLabelsDebug}
+                disabled={trainingReadinessPolicy !== 'all_debug'}
+                onChange={(event) => setAllowWeakLabelsDebug(event.target.checked)}
+              />
+              Allow weak labels only in debug
+            </label>
             {selectedTechnique === 'e3' && (
               <>
                 <label className="text-sm text-slate-700">
@@ -506,6 +572,19 @@ export const RFExperimentLabView: React.FC = () => {
                 </label>
               </>
             )}
+          </div>
+          <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900">
+            {trainingReadinessPolicy === 'scientific_strict' && (
+              <span>Scientific strict excludes `candidate`, `doubtful`, weak-label and manual-override captures. Use this for benchmarkable results.</span>
+            )}
+            {trainingReadinessPolicy === 'training_draft' && (
+              <span>Training draft includes `candidate` captures only when the label is strong and QC is not invalid. Use it to debug E5/E1/E3 before curating final data.</span>
+            )}
+            {trainingReadinessPolicy === 'all_debug' && (
+              <span>Debug mode can include weak or not-ready data. It is useful for plumbing tests, not for scientific reporting.</span>
+            )}
+            {selectedTechnique === 'e5' && <span> For E5 signal recognition, prefer `signal_type` or `modulation_class`; use `transmitter_id` only for confirmed physical-device labels.</span>}
+            {selectedTechnique === 'e1' && <span> E1 requires confirmed physical `transmitter_id` classes and should not be trained from automatic weak band-profile labels.</span>}
           </div>
 
           <div className="mt-5 rounded-2xl border border-cyan-200 bg-cyan-50 p-4">
@@ -704,6 +783,24 @@ export const RFExperimentLabView: React.FC = () => {
               <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
                 <div className="font-semibold uppercase tracking-[0.14em] text-slate-500">QC</div>
                 <div className="mt-2">{Object.entries(captureDiagnostics.byQc).map(([key, value]) => `${key}: ${value}`).join(' | ') || 'none'}</div>
+              </div>
+            </div>
+            <div className="mt-3 grid gap-2 md:grid-cols-4">
+              <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 text-xs text-indigo-950">
+                <div className="font-semibold uppercase tracking-[0.14em] text-indigo-700">Selected labels</div>
+                <div className="mt-2 max-h-16 overflow-auto">{Object.entries(selectedEligibility.labelCounts).map(([key, value]) => `${key}: ${value}`).join(' | ') || 'none'}</div>
+              </div>
+              <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 text-xs text-indigo-950">
+                <div className="font-semibold uppercase tracking-[0.14em] text-indigo-700">Readiness</div>
+                <div className="mt-2">{Object.entries(selectedEligibility.readiness).map(([key, value]) => `${key}: ${value}`).join(' | ') || 'none'}</div>
+              </div>
+              <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 text-xs text-indigo-950">
+                <div className="font-semibold uppercase tracking-[0.14em] text-indigo-700">Capture quality</div>
+                <div className="mt-2">{Object.entries(selectedEligibility.captureQuality).map(([key, value]) => `${key}: ${value}`).join(' | ') || 'none'}</div>
+              </div>
+              <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 text-xs text-indigo-950">
+                <div className="font-semibold uppercase tracking-[0.14em] text-indigo-700">Label status</div>
+                <div className="mt-2">{Object.entries(selectedEligibility.labelStatus).map(([key, value]) => `${key}: ${value}`).join(' | ') || 'none'}</div>
               </div>
             </div>
             <div className="mt-3 max-h-52 space-y-2 overflow-auto">

@@ -25,7 +25,7 @@ The frontend controls the FastAPI backend and displays live RF spectrum frames c
 - WAV export for analog demodulation results
 - ASK/FSK/PSK/OOK marker-band capture controls
 - `Capture Lab` for controlled `train` / `val` / `predict` IQ acquisition, intelligent RF pre/post-capture guidance, download, and safe deletion
-- `Dataset Builder` for capture review and QC-driven acceptance/rejection
+- `Dataset Builder` for capture review, rigorous offline QC recomputation, weak-label repair from RF band profiles, and QC-driven acceptance/rejection
 - `Training`, `Retraining`, `Validation`, `Inference`, and `Models` tabs for the unified RF fingerprinting flow
 - `RF Experiment Lab` tab for reproducible E0, E5, E1 and E3 experiment workflows
 - `Models` tab separated by model family so operational artifacts are not mixed with experimental E1/E3/E5 runs
@@ -134,8 +134,45 @@ Disabling a module should be done by setting `enabled: false` in its own folder.
 7. Create M1 and M2 around the signal of interest.
 8. Open `Demodulation`, select the mode, and click `Apply Demodulation`.
 9. Open `Capture Lab` to record the selected band as `.cfile` or `.iq` and assign it to `train`, `val`, or `predict`.
-10. Use `Dataset Builder` to review QC and mark the imported record as `valid`, `doubtful`, or `rejected`.
+10. Use `Dataset Builder` to run `Recompute QC`, repair missing labels from `band_profiles.json` when needed, and mark the imported record as `valid`, `doubtful`, or `rejected`.
 11. Continue in `Training`, `Validation`, or `Inference` depending on the assigned split.
+
+## Dataset Builder scientific review
+
+Dataset Builder now exposes two separate actions:
+
+- `Recompute QC`: recalculates offline quality from the stored IQ file and applies the backend QC policy, label status and metadata checks.
+- `Fill label from band profile`: uses the backend RF band knowledge base to fill missing or placeholder class fields from the capture frequency window.
+
+The band-profile action is deliberately conservative. It creates an editable `weak_label`, not scientific ground truth. The UI shows a separate `Confirm as strong label` action for cases where the operator has verified the class or transmitter identity. This matters because E5, E1 and E3 must not train on datasets dominated by `unknown` labels or by unreviewed weak labels.
+
+Recommended rule for scientific experiments:
+
+```text
+capture_quality == valid
+label_status == strong_label
+review_status == accepted
+training_readiness == ready_for_training
+```
+
+Samples with `weak_label`, `candidate`, `needs_review`, `manual_override` or `debug_only` status should be used only for exploration, training draft, robustness checks or explicit debug runs.
+
+The RF Experiment Lab training forms now follow the same rule. If E1, E3 or E5 refuses to train, the usual causes are:
+
+- the selected captures are still weak labels from `band_profiles.json`;
+- the captures were not accepted in Dataset Builder;
+- the split strategy places a class in validation/test that is absent from train;
+- the selected label field is scientifically wrong for the task, for example using a band-profile `transmitter_id` for E1 physical fingerprinting.
+
+For E5 signal-recognition baselines, prefer `signal_type` or `modulation_class`. For E1 physical fingerprinting, use operator-confirmed `transmitter_id`. For E3, choose `transmitter_id` only for device fingerprinting and `signal_type`/`modulation_class` for signal recognition.
+
+The RF Experiment Lab tab now makes this explicit with a `Dataset eligibility` selector:
+
+- `scientific_strict`: only reviewed `ready_for_training` captures enter E1/E3/E5.
+- `training_draft`: includes `candidate` captures with `strong_label` and non-invalid QC for controlled exploratory baselines.
+- `all_debug`: bypasses gates and allows weak labels only when explicitly enabled; this is not a scientific result mode.
+
+The selected capture panel summarizes label counts, readiness, capture quality and label status so the user can see why E5 may report fewer than two trainable classes after filtering.
 
 ## Guided RF Experiment Lab Flow
 

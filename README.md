@@ -6,6 +6,11 @@ The application is built with a FastAPI backend and a React/TypeScript frontend.
 
 ## Recent updates
 
+- Dataset Builder `Recompute QC` now runs as an automatic offline QC pass using the stored IQ file, the capture QC policy, metadata completeness, label status and signal-family profile. It no longer treats a previous manual `valid` decision as a substitute for scientific QC.
+- Dataset Builder can now fill missing or weak labels/classes from `backend/app/modules/rf_intelligence/band_profiles.json`. The generated label is intentionally stored as `weak_label` until an operator confirms it as `strong_label`.
+- Capture Lab and marker-band capture now resolve Marker 1 / Marker 2 against the RF band profile knowledge base so new captures are no longer silently dominated by `unknown` labels.
+- E1, E3 and E5 now enforce the same scientific dataset gate by default. They train only on reviewed records that are `strong_label`, `accepted` and `ready_for_training`, and they fail clearly when a closed-set split leaves evaluation classes absent from the train split.
+- `/api/models/current` now returns an explicit unavailable model payload when no operational model exists, instead of producing a noisy 404 in the frontend polling loop.
 - Fixed RF Experiment Lab metadata validation so representation entries with missing or unknown `datatype` values now default to `complex64` instead of failing validation.
 - Improved Spectrum Live Monitor `Experiment Overlay` behavior with explicit model selection for `Best`, `E1`, `E3`, and `E5` models.
 - When the `Experiment Overlay` is deselected, any active experiment model selection is now cleared to avoid stale UI state.
@@ -132,6 +137,42 @@ Capture Lab remains the acquisition-oriented entry point for internal datasets. 
 
 Supported dataset artifacts are documented directly in the UI: `.cfile + .json`, `.iq + .json`, SigMF, HDF5 manifest/export, NumPy, MATLAB, Pickle, CSV features and spectrogram/waterfall image datasets. Dataset Builder can now register a QC-valid capture into RF Signal Understanding so reviewed internal datasets can be reused for signal understanding without bypassing quality review.
 
+### Dataset Builder QC and automatic weak labeling
+
+Dataset Builder is the scientific gate between raw acquisition and model training. It now separates four concepts that must not be confused:
+
+| Field | Meaning |
+|---|---|
+| `capture_quality` | Signal and file quality: `valid`, `warning`, `doubtful` or `invalid`. |
+| `label_status` | Label evidence: `unlabeled`, `weak_label` or `strong_label`. |
+| `review_status` | Human review state: `needs_review`, `accepted`, `rejected` or `manual_override`. |
+| `training_readiness` | Dataset eligibility: `not_ready`, `candidate`, `ready_for_training` or `debug_only`. |
+
+`Recompute QC` is an offline, reproducible check over the stored IQ file. It recomputes SNR, burst activity, occupied bandwidth, peak frequency, frequency offset, clipping, silence, IQ diagnostics and profile-specific flags. The recomputation uses the stored QC profile and metadata completeness. A prior manual accept/reject decision is preserved as provenance, but the automatic QC result is recalculated independently.
+
+If a capture lacks class metadata, Dataset Builder can apply the backend RF band knowledge base from `backend/app/modules/rf_intelligence/band_profiles.json`. The resolver uses center frequency and occupied/capture bandwidth to assign fields such as:
+
+- `transmitter_label`
+- `transmitter_class`
+- `transmitter_id`
+- `signal_type`
+- `modulation_class`
+- `protocol_family`
+- `band_label`
+- `profile_key`
+
+This is a technical hypothesis, not ground truth. The default result is `weak_label`, `needs_review` and `candidate`. It becomes `strong_label` only when the operator explicitly confirms it. Scientific datasets should include only samples that are `strong_label`, `accepted` and `ready_for_training`. This prevents the E5/E1/E3 training sets from being dominated by `unknown` labels while still preserving scientific caution.
+
+RF Experiment Lab exposes this as an explicit dataset eligibility selector:
+
+| Eligibility mode | What it includes | Scientific use |
+|---|---|---|
+| `scientific_strict` | Only `strong_label`, `accepted`, `ready_for_training` captures with valid quality. | Primary benchmark and reportable results. |
+| `training_draft` | `candidate` or `ready_for_training` captures with `strong_label` and non-invalid QC. | Controlled exploratory runs while the operator is still curating labels and QC. |
+| `all_debug` | Bypasses readiness gates and can include weak/not-ready records. | Plumbing tests only; not valid scientific evidence. |
+
+When E5 reports that it needs at least two classes, that count is computed after the eligibility gate and after the selected `label_field` is applied. For E5 signal-recognition baselines, prefer `signal_type` or `modulation_class`. Use `transmitter_id` only when the goal is physical-device fingerprinting and the operator has confirmed real transmitter identities. If selected captures are still `candidate`, use `training_draft` for a draft baseline or promote reviewed captures to `ready_for_training` in Dataset Builder for scientific results.
+
 ### Implemented experiment families
 
 | ID | Module | Stage | Representation | Model family | Scientific role |
@@ -190,6 +231,16 @@ Scientific results must not use random window splitting as the primary result. R
 - `device_holdout`
 
 The default experiment split remains `session_disjoint` unless a controlled experiment explicitly selects another group-disjoint split. Benchmark warnings flag different dataset versions, different split strategies, missing metrics, missing group metrics, incompatible label spaces, random/debug splits, low sample count and classes missing from test.
+
+E1, E3 and E5 use the Dataset Builder scientific gate by default. Direct training from Capture Lab or RF Signal Understanding registry records is allowed only after QC and label review have promoted the samples to:
+
+```text
+label_status == strong_label
+review_status == accepted
+training_readiness == ready_for_training
+```
+
+Weak labels generated from `band_profiles.json` are useful for discovery and dataset repair, but they are not accepted for scientific training unless the run is explicitly marked as debug with `allow_weak_labels_debug=true` or `training_readiness_policy=all_debug`. E1 is especially strict because it is a physical transmitter fingerprinting experiment; a band-profile class such as Wi-Fi, BLE or FM is not a physical `transmitter_id`.
 
 ### Benchmark Report
 

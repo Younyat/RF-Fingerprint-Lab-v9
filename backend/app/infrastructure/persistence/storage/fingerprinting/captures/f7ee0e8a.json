@@ -37,8 +37,13 @@
     "transmitter_label": "remote_002",
     "transmitter_class": "garage_remote",
     "transmitter_id": "tx_remote_001",
-    "family": "unknown",
-    "ground_truth_confidence": "confirmed"
+    "family": "broadcast_fm",
+    "ground_truth_confidence": "operator_confirmed",
+    "signal_type": "broadcast_fm",
+    "modulation_class": "WFM",
+    "protocol_family": "broadcast_fm",
+    "band_label": "Commercial FM Broadcast",
+    "profile_key": "fm_broadcast_vhf"
   },
   "scenario": {
     "operator": "operator_a",
@@ -46,7 +51,7 @@
     "distance_m": null,
     "line_of_sight": null,
     "indoor": null,
-    "notes": "",
+    "notes": "Band-profile defaults applied from fm_broadcast_vhf.",
     "session_number": 1,
     "timestamp_utc": "2026-04-28T14:49:13.561156+00:00"
   },
@@ -116,9 +121,123 @@
       "transient_start",
       "whole_burst"
     ],
-    "updated_at_utc": "2026-05-02T14:07:34.290263+00:00",
-    "review_status": "accepted",
-    "training_readiness": "candidate"
+    "updated_at_utc": "2026-05-02T23:04:11.207892+00:00",
+    "review_status": "needs_review",
+    "training_readiness": "candidate",
+    "label_status": "strong_label",
+    "band_profile_resolution": {
+      "matched": true,
+      "profile_key": "fm_broadcast_vhf",
+      "score": 0.9,
+      "message": "Band profile resolved from Marker 1/Marker 2 frequency window. Review and confirm before scientific training.",
+      "defaults": {
+        "transmitter_label": "Commercial FM Broadcast",
+        "transmitter_class": "broadcast_fm",
+        "transmitter_id": "weak_fm_broadcast_vhf",
+        "family": "broadcast_fm",
+        "signal_type": "broadcast_fm",
+        "modulation_class": "WFM",
+        "protocol_family": "broadcast_fm",
+        "band_label": "Commercial FM Broadcast",
+        "profile_key": "fm_broadcast_vhf",
+        "ground_truth_confidence": "weak_from_band_profile",
+        "label_status": "weak_label",
+        "review_status": "needs_review",
+        "training_readiness": "candidate"
+      },
+      "candidates": [
+        {
+          "profile_key": "fm_broadcast_vhf",
+          "label": "Commercial FM Broadcast",
+          "family": "broadcast_fm",
+          "modulation": [
+            "WFM",
+            "Stereo_Pilot",
+            "RDS"
+          ],
+          "temporal_pattern": "continuous",
+          "frequency_min_hz": 87500000.0,
+          "frequency_max_hz": 108000000.0,
+          "expected_bandwidth_hz": [
+            150000,
+            200000,
+            250000
+          ],
+          "score": 0.9
+        },
+        {
+          "profile_key": "fm_broadcast_mono",
+          "label": "FM Broadcast Mono",
+          "family": "broadcast_fm",
+          "modulation": [
+            "WFM"
+          ],
+          "temporal_pattern": "continuous",
+          "frequency_min_hz": 87500000.0,
+          "frequency_max_hz": 108000000.0,
+          "expected_bandwidth_hz": [
+            120000,
+            150000,
+            180000
+          ],
+          "score": 0.9
+        },
+        {
+          "profile_key": "fm_broadcast_stereo",
+          "label": "FM Broadcast Stereo Multiplex",
+          "family": "broadcast_fm",
+          "modulation": [
+            "WFM",
+            "Stereo_Pilot"
+          ],
+          "temporal_pattern": "continuous",
+          "frequency_min_hz": 87500000.0,
+          "frequency_max_hz": 108000000.0,
+          "expected_bandwidth_hz": [
+            150000,
+            200000,
+            250000
+          ],
+          "score": 0.9
+        },
+        {
+          "profile_key": "fm_broadcast_stereo_rds",
+          "label": "FM Broadcast Stereo with RDS",
+          "family": "broadcast_fm",
+          "modulation": [
+            "WFM",
+            "Stereo_Pilot",
+            "RDS"
+          ],
+          "temporal_pattern": "continuous",
+          "frequency_min_hz": 87500000.0,
+          "frequency_max_hz": 108000000.0,
+          "expected_bandwidth_hz": [
+            150000,
+            200000,
+            250000
+          ],
+          "score": 0.9
+        },
+        {
+          "profile_key": "ism_868",
+          "label": "IoT/LPWAN Europe 868 MHz",
+          "family": "ism_iot",
+          "modulation": [
+            "FSK",
+            "LoRa"
+          ],
+          "temporal_pattern": "bursty",
+          "frequency_min_hz": 863000000.0,
+          "frequency_max_hz": 870000000.0,
+          "expected_bandwidth_hz": [
+            125000,
+            500000
+          ],
+          "score": 0.4
+        }
+      ]
+    }
   },
   "artifacts": {
     "iq_file": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\modulated_signal_captures\\cfile_f7ee0e8a_89.461517MHz_473.9kHz.cfile",
@@ -132,7 +251,7 @@
     "live_preview_peak_level_db": -58.19457244873047,
     "live_preview_peak_frequency_hz": 89372656.25
   },
-  "updated_at_utc": "2026-05-02T14:07:34.290263+00:00",
+  "updated_at_utc": "2026-05-02T23:04:11.207892+00:00",
   "signal_family": "continuous_fm",
   "qc_profile_id": "continuous_fm_v1",
   "qc_profile": {

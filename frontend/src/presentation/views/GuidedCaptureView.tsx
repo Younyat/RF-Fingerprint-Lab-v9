@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ApiService } from '../../app/services/ApiService';
+import { useAnalyzerSettings, useMarkers } from '../../app/store/AppStore';
 import { FingerprintingCaptureRecord, ModulatedSignalCapture } from '../../shared/types';
 
 const api = new ApiService();
@@ -125,11 +126,16 @@ const defaultForm = {
     dataset_destination: splitHelp.train.destination as string,
   },
   transmitter: {
-    transmitter_label: 'remote_001',
-    transmitter_class: 'garage_remote',
-    transmitter_id: 'tx_remote_001',
-    family: 'subghz_remote',
-    ground_truth_confidence: 'confirmed',
+    transmitter_label: 'band_profile_pending',
+    transmitter_class: 'profile_pending',
+    transmitter_id: 'weak_profile_pending',
+    family: 'profile_pending',
+    signal_type: 'profile_pending',
+    modulation_class: 'profile_pending',
+    protocol_family: 'profile_pending',
+    band_label: '',
+    profile_key: '',
+    ground_truth_confidence: 'weak_from_band_profile',
   },
   scenario: {
     operator: 'operator_a',
@@ -191,7 +197,7 @@ const defaultForm = {
     allow_unlabeled: false,
     allow_manual_override: false,
   },
-  label_status: 'strong_label' as 'unlabeled' | 'weak_label' | 'strong_label',
+  label_status: 'weak_label' as 'unlabeled' | 'weak_label' | 'strong_label',
   manual_override_reason: '',
 };
 
@@ -202,15 +208,33 @@ const inputClass =
   'mt-2 w-full rounded-2xl border border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-teal-500 focus:bg-white';
 
 export const GuidedCaptureView: React.FC = () => {
+  const markers = useMarkers();
+  const analyzerSettings = useAnalyzerSettings();
   const [form, setForm] = useState(defaultForm);
   const [experimentTarget, setExperimentTarget] = useState<keyof typeof experimentGuidance>('e1');
   const [captures, setCaptures] = useState<FingerprintingCaptureRecord[]>([]);
   const [modulatedCaptures, setModulatedCaptures] = useState<ModulatedSignalCapture[]>([]);
   const [message, setMessage] = useState<string>('');
   const [postCaptureExport, setPostCaptureExport] = useState<Record<string, any> | null>(null);
+  const [bandProfileSuggestion, setBandProfileSuggestion] = useState<Record<string, any> | null>(null);
+  const [autoApplyBandProfile, setAutoApplyBandProfile] = useState(true);
 
   const activeSplit = splitHelp[form.dataset_split as keyof typeof splitHelp];
   const activeExperiment = experimentGuidance[experimentTarget];
+  const markerBand = useMemo(() => {
+    if (markers.length < 2) return null;
+    const first = markers[0];
+    const second = markers[1];
+    const start = Math.min(first.frequency, second.frequency);
+    const stop = Math.max(first.frequency, second.frequency);
+    if (!Number.isFinite(start) || !Number.isFinite(stop) || stop <= start) return null;
+    return {
+      start,
+      stop,
+      center: (start + stop) / 2,
+      bandwidth: stop - start,
+    };
+  }, [markers]);
 
   const refresh = async () => {
     const [fingerprintingCaptures, modulated] = await Promise.all([
@@ -224,6 +248,76 @@ export const GuidedCaptureView: React.FC = () => {
   useEffect(() => {
     refresh().catch((error) => console.error('Failed to load guided capture data', error));
   }, []);
+
+  const applyBandProfileDefaults = (suggestion: Record<string, any> | null = bandProfileSuggestion) => {
+    const defaults = suggestion?.data?.defaults ?? suggestion?.defaults;
+    if (!defaults) return;
+    setForm((current) => ({
+      ...current,
+      label_status: 'weak_label',
+      capture_config: {
+        ...current.capture_config,
+        center_frequency_hz: markerBand?.center ?? current.capture_config.center_frequency_hz,
+        effective_bandwidth_hz: markerBand?.bandwidth ?? current.capture_config.effective_bandwidth_hz,
+        frontend_bandwidth_hz: markerBand?.bandwidth ?? current.capture_config.frontend_bandwidth_hz,
+      },
+      quality_metrics: {
+        ...current.quality_metrics,
+        occupied_bandwidth_hz: markerBand?.bandwidth ?? current.quality_metrics.occupied_bandwidth_hz,
+        peak_frequency_hz: markerBand?.center ?? current.quality_metrics.peak_frequency_hz,
+      },
+      transmitter: {
+        ...current.transmitter,
+        transmitter_label: defaults.transmitter_label || current.transmitter.transmitter_label,
+        transmitter_class: defaults.transmitter_class || current.transmitter.transmitter_class,
+        transmitter_id: defaults.transmitter_id || current.transmitter.transmitter_id,
+        family: defaults.family || current.transmitter.family,
+        signal_type: defaults.signal_type || defaults.transmitter_class || current.transmitter.signal_type,
+        modulation_class: defaults.modulation_class || current.transmitter.modulation_class,
+        protocol_family: defaults.protocol_family || current.transmitter.protocol_family,
+        band_label: defaults.band_label || current.transmitter.band_label,
+        profile_key: defaults.profile_key || current.transmitter.profile_key,
+        ground_truth_confidence: defaults.ground_truth_confidence || 'weak_from_band_profile',
+      },
+      scenario: {
+        ...current.scenario,
+        notes: current.scenario.notes || `Weak band-profile label from ${defaults.profile_key || 'band_profiles.json'}. Confirm manually before scientific training.`,
+      },
+    }));
+  };
+
+  useEffect(() => {
+    const payload = markerBand
+      ? {
+          start_frequency_hz: markerBand.start,
+          stop_frequency_hz: markerBand.stop,
+          center_frequency_hz: markerBand.center,
+          bandwidth_hz: markerBand.bandwidth,
+        }
+      : {
+          center_frequency_hz: form.capture_config.center_frequency_hz || analyzerSettings.centerFrequency,
+          bandwidth_hz: form.capture_config.effective_bandwidth_hz || analyzerSettings.span,
+        };
+    let cancelled = false;
+    api.resolveRFIntelligenceBandProfile(payload)
+      .then((response) => {
+        if (cancelled) return;
+        setBandProfileSuggestion(response.data ?? response);
+        if (autoApplyBandProfile) applyBandProfileDefaults(response.data ?? response);
+      })
+      .catch((error) => console.error('Failed to resolve RF band profile', error));
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    markerBand?.start,
+    markerBand?.stop,
+    form.capture_config.center_frequency_hz,
+    form.capture_config.effective_bandwidth_hz,
+    analyzerSettings.centerFrequency,
+    analyzerSettings.span,
+    autoApplyBandProfile,
+  ]);
 
   const setNested = (section: keyof typeof form, field: string, value: unknown) => {
     setForm((current) => ({
@@ -300,7 +394,10 @@ export const GuidedCaptureView: React.FC = () => {
 
   const submit = async () => {
     try {
-      await api.createFingerprintingCapture(form);
+      await api.createFingerprintingCapture({
+        ...form,
+        signal_family: form.transmitter.family,
+      });
       setMessage(`Scientific capture manifest stored as ${form.dataset_split}.`);
       await refresh();
     } catch (error) {
@@ -419,6 +516,14 @@ export const GuidedCaptureView: React.FC = () => {
         environment: form.scenario.environment,
         notes: form.scenario.notes,
         ground_truth_confidence: form.transmitter.ground_truth_confidence,
+        family: form.transmitter.family,
+        signal_family: form.transmitter.family,
+        signal_type: form.transmitter.signal_type || form.transmitter.transmitter_class,
+        modulation_class: form.transmitter.modulation_class,
+        protocol_family: form.transmitter.protocol_family,
+        band_label: form.transmitter.band_label,
+        profile_key: form.transmitter.profile_key || null,
+        label_status: form.label_status,
       });
       setMessage(`Imported modulated capture ${capture.id} as ${form.dataset_split}.`);
       await refresh();
@@ -702,18 +807,84 @@ export const GuidedCaptureView: React.FC = () => {
           </section>
 
           <section className={sectionClass}>
+            <div className="mb-5 rounded-2xl border border-teal-200 bg-teal-50 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <div className={labelClass}>Automatic band-profile label</div>
+                  <h2 className="mt-2 text-lg font-semibold text-slate-900">
+                    {bandProfileSuggestion?.matched ? bandProfileSuggestion.defaults?.transmitter_label : 'Awaiting a confident profile match'}
+                  </h2>
+                  <p className="mt-2 max-w-3xl text-sm leading-6 text-teal-950">
+                    Marker 1 y Marker 2 se comparan con <span className="font-mono">band_profiles.json</span>. El resultado se guarda como
+                    etiqueta debil editable; para entrenamiento cientifico debes confirmarla como strong_label.
+                  </p>
+                </div>
+                <div className="min-w-64 rounded-xl border border-teal-200 bg-white px-3 py-2 text-xs text-slate-700">
+                  <div>Source: {markerBand ? 'Marker 1 / Marker 2' : 'current capture frequency'}</div>
+                  <div>Profile: {bandProfileSuggestion?.profile_key ?? 'none'}</div>
+                  <div>Score: {Number(bandProfileSuggestion?.score ?? 0).toFixed(3)}</div>
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-2 rounded-xl border border-teal-200 bg-white px-3 py-2 text-sm text-slate-700">
+                  <input type="checkbox" checked={autoApplyBandProfile} onChange={(event) => setAutoApplyBandProfile(event.target.checked)} />
+                  Auto-apply marker band defaults
+                </label>
+                <button type="button" className="rounded-xl border border-teal-300 bg-white px-3 py-2 text-sm font-semibold text-teal-900" onClick={() => applyBandProfileDefaults()}>
+                  Apply detected defaults
+                </button>
+                <button
+                  type="button"
+                  className="rounded-xl border border-slate-300 bg-slate-950 px-3 py-2 text-sm font-semibold text-white"
+                  onClick={() =>
+                    setForm((current) => ({
+                      ...current,
+                      label_status: 'strong_label',
+                      transmitter: {
+                        ...current.transmitter,
+                        ground_truth_confidence: 'operator_confirmed',
+                      },
+                    }))
+                  }
+                >
+                  Confirm label as strong
+                </button>
+              </div>
+              {(bandProfileSuggestion?.candidates?.length ?? 0) > 0 && (
+                <div className="mt-4 grid gap-2 md:grid-cols-2">
+                  {(bandProfileSuggestion?.candidates ?? []).slice(0, 4).map((candidate: Record<string, any>) => (
+                    <div key={candidate.profile_key} className="rounded-xl border border-teal-100 bg-white px-3 py-2 text-xs text-slate-700">
+                      <div className="font-semibold text-slate-900">{candidate.label}</div>
+                      <div>{candidate.profile_key} · {candidate.family} · score {Number(candidate.score ?? 0).toFixed(3)}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
             <div className="grid gap-4 md:grid-cols-3">
               <label>
                 <div className={labelClass}>Transmitter label</div>
-                <input className={inputClass} value={form.transmitter.transmitter_label} onChange={(e) => setNested('transmitter', 'transmitter_label', e.target.value)} />
+                <input className={inputClass} value={form.transmitter.transmitter_label} onChange={(e) => { setAutoApplyBandProfile(false); setNested('transmitter', 'transmitter_label', e.target.value); }} />
               </label>
               <label>
                 <div className={labelClass}>Class / family</div>
-                <input className={inputClass} value={form.transmitter.transmitter_class} onChange={(e) => setNested('transmitter', 'transmitter_class', e.target.value)} />
+                <input className={inputClass} value={form.transmitter.transmitter_class} onChange={(e) => { setAutoApplyBandProfile(false); setNested('transmitter', 'transmitter_class', e.target.value); }} />
               </label>
               <label>
                 <div className={labelClass}>Unique transmitter ID</div>
-                <input className={inputClass} value={form.transmitter.transmitter_id} onChange={(e) => setNested('transmitter', 'transmitter_id', e.target.value)} />
+                <input className={inputClass} value={form.transmitter.transmitter_id} onChange={(e) => { setAutoApplyBandProfile(false); setNested('transmitter', 'transmitter_id', e.target.value); }} />
+              </label>
+              <label>
+                <div className={labelClass}>Signal type</div>
+                <input className={inputClass} value={form.transmitter.signal_type} onChange={(e) => { setAutoApplyBandProfile(false); setNested('transmitter', 'signal_type', e.target.value); }} />
+              </label>
+              <label>
+                <div className={labelClass}>Modulation class</div>
+                <input className={inputClass} value={form.transmitter.modulation_class} onChange={(e) => { setAutoApplyBandProfile(false); setNested('transmitter', 'modulation_class', e.target.value); }} />
+              </label>
+              <label>
+                <div className={labelClass}>Band profile key</div>
+                <input className={inputClass} value={form.transmitter.profile_key} onChange={(e) => { setAutoApplyBandProfile(false); setNested('transmitter', 'profile_key', e.target.value); }} />
               </label>
               <label>
                 <div className={labelClass}>Session ID</div>

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.modules.rf_intelligence.knowledge_base import resolve_band_profile
 from app.modules.rf_intelligence.schemas import RFAnalyzeRequest, RFIntelligenceSettings, SpectrumFrameInput
 from app.modules.rf_intelligence.service import RFIntelligenceService
 
@@ -12,6 +13,33 @@ def build_rf_intelligence_router(service: RFIntelligenceService, spectrum_contro
     @router.post("/analyze")
     async def analyze_frame(request: RFAnalyzeRequest):
         return service.analyze_frame(request.frame, request.settings)
+
+    @router.post("/band-profile/resolve")
+    async def resolve_capture_band_profile(request: dict):
+        try:
+            resolved = resolve_band_profile(
+                start_frequency_hz=request.get("start_frequency_hz"),
+                stop_frequency_hz=request.get("stop_frequency_hz"),
+                center_frequency_hz=request.get("center_frequency_hz"),
+                bandwidth_hz=request.get("bandwidth_hz") or request.get("occupied_bandwidth_hz"),
+            )
+            return {
+                "status": "ok" if resolved.get("matched") else "needs_review",
+                "module": "rf_intelligence.band_profile_resolver",
+                "available": True,
+                "message": resolved.get("message"),
+                "data": resolved,
+                "errors": [],
+            }
+        except Exception as exc:
+            return {
+                "status": "error",
+                "module": "rf_intelligence.band_profile_resolver",
+                "available": False,
+                "message": "Band profile resolution failed.",
+                "data": {},
+                "errors": [str(exc)],
+            }
 
     @router.get("/live")
     async def analyze_live_spectrum(

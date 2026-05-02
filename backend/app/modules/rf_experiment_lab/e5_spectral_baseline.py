@@ -42,8 +42,9 @@ class E5SpectralBaselineService:
     def preview(self, payload: dict[str, Any]) -> dict[str, Any]:
         config = self._config(payload)
         captures = self._selected_captures(config)
-        label_status = self._label_status(captures, config["label_field"])
+        label_status = self._label_status(captures, config)
         split = self._split(captures, config)
+        eligibility = self.dataset_adapter.training_eligibility_summary(config)
         return {
             "experiment_id": self.experiment_id,
             "preview_only": True,
@@ -60,9 +61,13 @@ class E5SpectralBaselineService:
                 "class_count": len(label_status["labels"]),
                 "labels": label_status["labels"],
                 "missing_label_capture_ids": label_status["missing_capture_ids"],
+                "weak_label_capture_ids": label_status["weak_label_capture_ids"],
+                "label_field": config["label_field"],
+                "training_readiness_policy": config["training_readiness_policy"],
+                "training_eligibility": eligibility,
             },
             "split": split,
-            "available_for_training": bool(captures) and not label_status["missing_capture_ids"] and self._sklearn_available(config),
+            "available_for_training": bool(captures) and not label_status["missing_capture_ids"] and not label_status["weak_label_capture_ids"] and self._sklearn_available(config),
         }
 
     def run(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -70,11 +75,33 @@ class E5SpectralBaselineService:
         if not self._sklearn_available(config):
             raise RuntimeError("scikit-learn is unavailable; E5 training is disabled but feature extraction remains available")
         captures = self._selected_captures(config)
-        label_status = self._label_status(captures, config["label_field"])
-        if label_status["missing_capture_ids"]:
-            raise ValueError("E5 requires labels for every capture. Missing labels: " + ", ".join(label_status["missing_capture_ids"]))
+        eligibility = self.dataset_adapter.training_eligibility_summary(config)
+        if not captures:
+            raise ValueError(
+                "E5 found no eligible captures for training under "
+                f"{config['training_readiness_policy']}. "
+                f"Considered {eligibility['total_considered']} records, excluded {eligibility['excluded_count']}. "
+                f"Reasons: {eligibility['exclusion_reasons']}. "
+                "Use Dataset Builder to mark reviewed samples as ready_for_training for scientific runs, "
+                "or select training_draft for exploratory baselines with candidate captures."
+            )
+        label_status = self._label_status(captures, config)
+        if label_status["missing_capture_ids"] or label_status["weak_label_capture_ids"]:
+            raise ValueError(
+                "E5 scientific training requires reviewed labels. "
+                f"Missing: {', '.join(label_status['missing_capture_ids']) or 'none'}. "
+                f"Weak/unconfirmed: {', '.join(label_status['weak_label_capture_ids']) or 'none'}. "
+                "Use Dataset Builder to confirm labels, or set allow_weak_labels_debug=true only for debug runs."
+            )
         if len(label_status["labels"]) < 2:
-            raise ValueError("E5 requires at least two classes for training")
+            raise ValueError(
+                "E5 requires at least two classes for training after readiness filtering. "
+                f"Label field: {config['label_field']}. Labels found: {label_status['labels']}. "
+                f"Training readiness policy: {config['training_readiness_policy']}. "
+                f"Eligibility summary: {eligibility}. "
+                "For E5 signal recognition, use label_field=signal_type or modulation_class. "
+                "For transmitter fingerprinting, use transmitter_id only after physical device labels are confirmed."
+            )
 
         runtime_log: list[dict[str, Any]] = []
         started = time.perf_counter()
@@ -89,8 +116,12 @@ class E5SpectralBaselineService:
         if not train_idx or not eval_idx:
             raise ValueError("E5 split produced empty train or evaluation set; add more disjoint groups")
         train_labels = {y[idx] for idx in train_idx}
+        eval_labels = {y[idx] for idx in eval_idx}
         if len(train_labels) < 2:
             raise ValueError("E5 training split must contain at least two classes")
+        missing_from_train = sorted(eval_labels - train_labels)
+        if missing_from_train:
+            raise ValueError("E5 closed-set evaluation has classes missing from train split: " + ", ".join(missing_from_train))
 
         result_dir = self.result_store.root / "results" / self.experiment_id / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         result_dir.mkdir(parents=True, exist_ok=False)
@@ -142,18 +173,21 @@ class E5SpectralBaselineService:
         return {
             "experiment_id": self.experiment_id,
             "dataset_version": payload.get("dataset_version", "unversioned"),
+            "task": payload.get("task", "signal_recognition"),
             "dataset_manifest_path": payload.get("dataset_manifest_path") or payload.get("rf_experiment_dataset_path"),
             "capture_ids": payload.get("capture_ids") or [],
             "input_representation": payload.get("input_representation", "fft_psd"),
             "feature_set": payload.get("feature_set", "psd_basic"),
             "models": payload.get("models") or self.default_models,
-            "label_field": payload.get("label_field", "transmitter_id"),
+            "label_field": payload.get("label_field") or ("transmitter_id" if payload.get("task") == "device_fingerprinting" else "signal_type"),
             "split": payload.get("split") or {"strategy": "session_disjoint", "group_by": ["session_id"]},
             "window_size_samples": int(payload.get("window_size_samples", 4096)),
             "overlap": float(payload.get("overlap", 0.0)),
             "n_fft": int(payload.get("n_fft", 1024)),
             "welch_nperseg": int(payload.get("welch_nperseg", 1024)),
             "force_sklearn_unavailable": bool(payload.get("force_sklearn_unavailable", False)),
+            "training_readiness_policy": payload.get("training_readiness_policy", "scientific_strict"),
+            "allow_weak_labels_debug": bool(payload.get("allow_weak_labels_debug", False)),
         }
 
     def _selected_captures(self, config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -163,10 +197,12 @@ class E5SpectralBaselineService:
             captures = [item for item in captures if str(item.get("capture_id")) in ids]
         return [item for item in captures if item.get("raw_file") and item.get("metadata_file")]
 
-    def _label_status(self, captures: list[dict[str, Any]], label_field: str) -> dict[str, Any]:
-        missing = [str(item.get("capture_id")) for item in captures if item.get(label_field) in (None, "")]
-        labels = sorted({str(item.get(label_field)) for item in captures if item.get(label_field) not in (None, "")})
-        return {"missing_capture_ids": missing, "labels": labels}
+    def _label_status(self, captures: list[dict[str, Any]], config: dict[str, Any]) -> dict[str, Any]:
+        return self.dataset_adapter.validate_training_label_policy(
+            captures,
+            config["label_field"],
+            allow_weak_labels=bool(config.get("allow_weak_labels_debug")),
+        )
 
     def _split(self, captures: list[dict[str, Any]], config: dict[str, Any]) -> dict[str, Any]:
         split_payload = config.get("split") or {}
@@ -214,13 +250,21 @@ class E5SpectralBaselineService:
             iq = self.representation_service.read_iq_window_for_features(context, windows[0])
             computed = self.representation_service.fft_psd_for_features(iq, context, payload, windows[0])
             vector = self._psd_features(computed, capture)
-            rows.append({"capture_id": str(capture.get("capture_id")), "label": str(capture.get(config["label_field"])), "features": dict(zip(self.feature_names, vector))})
+            label = self._label_value(capture, config["label_field"])
+            rows.append({"capture_id": str(capture.get("capture_id")), "label": label, "features": dict(zip(self.feature_names, vector))})
             vectors.append(vector)
-            labels.append(str(capture.get(config["label_field"])))
+            labels.append(label)
             capture_ids.append(str(capture.get("capture_id")))
         if not vectors:
             raise ValueError("No usable spectral features could be extracted")
         return rows, np.asarray(vectors, dtype=np.float32), labels, capture_ids
+
+    @staticmethod
+    def _label_value(capture: dict[str, Any], label_field: str) -> str:
+        value = capture.get(label_field)
+        if value in (None, "") and capture.get("label_type") == label_field:
+            value = capture.get("label")
+        return str(value)
 
     def _psd_features(self, computed: dict[str, Any], capture: dict[str, Any]) -> list[float]:
         data = np.asarray(computed["data"], dtype=np.float32)

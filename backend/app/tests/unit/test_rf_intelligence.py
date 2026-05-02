@@ -1,5 +1,6 @@
 from app.modules.rf_intelligence.schemas import RFIntelligenceSettings, SpectrumFrameInput
 from app.modules.rf_intelligence.service import RFIntelligenceService
+from app.modules.rf_intelligence.knowledge_base import resolve_band_profile
 
 
 def test_rf_intelligence_detects_fm_broadcast_candidate():
@@ -46,3 +47,16 @@ def test_rf_intelligence_returns_empty_scene_for_noise_only():
 
     assert scene.detections == []
     assert scene.noise_floor_db is not None
+
+
+def test_band_profile_resolver_assigns_weak_wifi_label_from_marker_band():
+    resolved = resolve_band_profile(
+        start_frequency_hz=2_427_000_000,
+        stop_frequency_hz=2_447_000_000,
+    )
+
+    assert resolved["matched"] is True
+    assert resolved["profile_key"] == "wifi_24g_channel_6"
+    assert resolved["defaults"]["transmitter_class"] == "wifi"
+    assert resolved["defaults"]["label_status"] == "weak_label"
+    assert resolved["defaults"]["transmitter_id"] == "weak_wifi_24g_channel_6"

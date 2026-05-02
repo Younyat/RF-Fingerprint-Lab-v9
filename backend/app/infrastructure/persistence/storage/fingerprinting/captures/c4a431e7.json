@@ -37,8 +37,13 @@
     "transmitter_label": "remote_001",
     "transmitter_class": "garage_remote",
     "transmitter_id": "tx_remote_001",
-    "family": "unknown",
-    "ground_truth_confidence": "confirmed"
+    "family": "uav_control",
+    "ground_truth_confidence": "operator_confirmed",
+    "signal_type": "uav_control",
+    "modulation_class": "GFSK",
+    "protocol_family": "uav_control",
+    "band_label": "Drone Control 2.4 GHz",
+    "profile_key": "drone_control_24g"
   },
   "scenario": {
     "operator": "operator_a",
@@ -46,7 +51,7 @@
     "distance_m": null,
     "line_of_sight": null,
     "indoor": null,
-    "notes": "",
+    "notes": "Band-profile defaults applied from drone_control_24g.",
     "session_number": 1,
     "timestamp_utc": "2026-04-27T11:37:03.590809+00:00"
   },
@@ -121,7 +126,114 @@
       "transient_start",
       "whole_burst"
     ],
-    "updated_at_utc": "2026-05-02T14:11:52.271595+00:00"
+    "updated_at_utc": "2026-05-02T23:02:41.393057+00:00",
+    "label_status": "strong_label",
+    "review_status": "needs_review",
+    "training_readiness": "candidate",
+    "band_profile_resolution": {
+      "matched": true,
+      "profile_key": "drone_control_24g",
+      "score": 0.9599,
+      "message": "Band profile resolved from Marker 1/Marker 2 frequency window. Review and confirm before scientific training.",
+      "defaults": {
+        "transmitter_label": "Drone Control 2.4 GHz",
+        "transmitter_class": "uav_control",
+        "transmitter_id": "weak_drone_control_24g",
+        "family": "uav_control",
+        "signal_type": "uav_control",
+        "modulation_class": "GFSK",
+        "protocol_family": "uav_control",
+        "band_label": "Drone Control 2.4 GHz",
+        "profile_key": "drone_control_24g",
+        "ground_truth_confidence": "weak_from_band_profile",
+        "label_status": "weak_label",
+        "review_status": "needs_review",
+        "training_readiness": "candidate"
+      },
+      "candidates": [
+        {
+          "profile_key": "drone_control_24g",
+          "label": "Drone Control 2.4 GHz",
+          "family": "uav_control",
+          "modulation": [
+            "GFSK",
+            "OFDM",
+            "DSSS"
+          ],
+          "temporal_pattern": "frequency_hopping_or_bursty",
+          "frequency_min_hz": 2400000000.0,
+          "frequency_max_hz": 2483500000.0,
+          "expected_bandwidth_hz": [
+            1000000,
+            20000000
+          ],
+          "score": 0.9599
+        },
+        {
+          "profile_key": "wifi_24g_channel_1",
+          "label": "Wi-Fi 2.4 GHz Channel 1",
+          "family": "wifi",
+          "modulation": [
+            "DSSS",
+            "OFDM"
+          ],
+          "temporal_pattern": "bursty_ofdm",
+          "frequency_min_hz": 2402000000.0,
+          "frequency_max_hz": 2422000000.0,
+          "expected_bandwidth_hz": [
+            20000000
+          ],
+          "score": 0.9
+        },
+        {
+          "profile_key": "ble_data_channel_low",
+          "label": "BLE Data Channels Low 2.4 GHz",
+          "family": "bluetooth_low_energy",
+          "modulation": [
+            "GFSK"
+          ],
+          "temporal_pattern": "frequency_hopping_data_bursts",
+          "frequency_min_hz": 2404000000.0,
+          "frequency_max_hz": 2424000000.0,
+          "expected_bandwidth_hz": [
+            1000000,
+            2000000
+          ],
+          "score": 0.9
+        },
+        {
+          "profile_key": "zigbee_24g",
+          "label": "ZigBee / IEEE 802.15.4",
+          "family": "zigbee_802154",
+          "modulation": [
+            "O-QPSK"
+          ],
+          "temporal_pattern": "short_packet_bursts",
+          "frequency_min_hz": 2405000000.0,
+          "frequency_max_hz": 2480000000.0,
+          "expected_bandwidth_hz": [
+            2000000,
+            3000000
+          ],
+          "score": 0.7667
+        },
+        {
+          "profile_key": "thread_802154_24g",
+          "label": "Thread 802.15.4 2.4 GHz",
+          "family": "thread_iot",
+          "modulation": [
+            "O-QPSK"
+          ],
+          "temporal_pattern": "short_packet_bursts",
+          "frequency_min_hz": 2405000000.0,
+          "frequency_max_hz": 2480000000.0,
+          "expected_bandwidth_hz": [
+            2000000
+          ],
+          "score": 0.7667
+        }
+      ]
+    }
   },
   "artifacts": {
     "iq_file": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\modulated_signal_captures\\cfile_c4a431e7_2411.898008MHz_9159.0kHz.cfile",
@@ -135,8 +247,8 @@
     "live_preview_peak_level_db": -84.26300811767578,
     "live_preview_peak_frequency_hz": 2411925293.1875
   },
-  "updated_at_utc": "2026-05-02T14:11:52.271595+00:00",
-  "signal_family": "unknown",
+  "updated_at_utc": "2026-05-02T23:02:41.393057+00:00",
+  "signal_family": "burst_rf",
   "qc_profile_id": "burst_rf_v1",
   "qc_profile": {
     "qc_profile_id": "burst_rf_v1",

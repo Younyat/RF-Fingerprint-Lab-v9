@@ -49,9 +49,11 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
   const [customCenterMHz, setCustomCenterMHz] = useState('');
   const [customBandwidthMHz, setCustomBandwidthMHz] = useState('');
   const [datasetSplit, setDatasetSplit] = useState<'train' | 'val' | 'predict'>('train');
-  const [label, setLabel] = useState('remote_001');
-  const [transmitterId, setTransmitterId] = useState('tx_remote_001');
-  const [transmitterClass, setTransmitterClass] = useState('garage_remote');
+  const [label, setLabel] = useState('band_profile_pending');
+  const [transmitterId, setTransmitterId] = useState('weak_profile_pending');
+  const [transmitterClass, setTransmitterClass] = useState('profile_pending');
+  const [bandProfileSuggestion, setBandProfileSuggestion] = useState<Record<string, any> | null>(null);
+  const [autoApplyBandProfile, setAutoApplyBandProfile] = useState(true);
   const [sessionId, setSessionId] = useState('session_001');
   const [operator, setOperator] = useState('operator_a');
   const [environment, setEnvironment] = useState('indoor_lab_los');
@@ -187,6 +189,36 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
       setCaptureBandMode('markers');
     }
   }, [selectedBand, bandSourcePinned]);
+
+  useEffect(() => {
+    if (!activeBand) return;
+    let cancelled = false;
+    apiService.resolveRFIntelligenceBandProfile({
+      start_frequency_hz: activeBand.start,
+      stop_frequency_hz: activeBand.stop,
+      center_frequency_hz: activeBand.center,
+      bandwidth_hz: activeBand.bandwidth,
+    })
+      .then((response) => {
+        const resolved = response.data ?? response;
+        if (cancelled) return;
+        setBandProfileSuggestion(resolved);
+        const defaults = resolved.defaults;
+        if (autoApplyBandProfile && defaults) {
+          setLabel(defaults.transmitter_label || label);
+          setTransmitterClass(defaults.transmitter_class || transmitterClass);
+          setTransmitterId(defaults.transmitter_id || transmitterId);
+          setModulationHint(defaults.modulation_class || defaults.transmitter_class || modulationHint);
+          if (!notes) {
+            setNotes(`Weak band-profile label from ${defaults.profile_key || 'band_profiles.json'}. Confirm manually before scientific training.`);
+          }
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeBand?.start, activeBand?.stop, autoApplyBandProfile]);
 
   const useAnalyzerWindow = () => {
     const startHz = analyzerSettings.centerFrequency - analyzerSettings.span / 2;
@@ -345,7 +377,15 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
           operator,
           environment,
           notes,
-          ground_truth_confidence: 'confirmed',
+          ground_truth_confidence: autoApplyBandProfile ? 'weak_from_band_profile' : 'confirmed',
+          family: bandProfileSuggestion?.defaults?.family || transmitterClass,
+          signal_family: bandProfileSuggestion?.defaults?.family || transmitterClass,
+          signal_type: bandProfileSuggestion?.defaults?.signal_type || transmitterClass,
+          modulation_class: bandProfileSuggestion?.defaults?.modulation_class || modulationHint,
+          protocol_family: bandProfileSuggestion?.defaults?.protocol_family || transmitterClass,
+          band_label: bandProfileSuggestion?.defaults?.band_label || label,
+          profile_key: bandProfileSuggestion?.defaults?.profile_key || null,
+          label_status: autoApplyBandProfile ? 'weak_label' : 'strong_label',
         });
       }
 
@@ -405,6 +445,25 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
                     ? 'La captura usará exactamente M1 y M2.'
                     : 'La captura usará la ventana custom actual, aunque existan markers visibles.'}
                 </span>
+              </div>
+            </div>
+
+            <div className="rounded-md border border-teal-800 bg-teal-950/30 p-4 text-sm text-teal-50">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="text-xs uppercase text-teal-300">Automatic label from band_profiles.json</div>
+                  <div className="mt-2 font-semibold">{bandProfileSuggestion?.defaults?.transmitter_label ?? 'No resolved profile yet'}</div>
+                  <div className="mt-1 text-xs text-teal-100/80">
+                    {bandProfileSuggestion?.profile_key ?? 'none'} · {bandProfileSuggestion?.defaults?.transmitter_class ?? 'unresolved'} · score {Number(bandProfileSuggestion?.score ?? 0).toFixed(3)}
+                  </div>
+                </div>
+                <label className="flex items-center gap-2 rounded-full border border-teal-700 bg-black/20 px-3 py-2 text-xs">
+                  <input type="checkbox" checked={autoApplyBandProfile} onChange={(event) => setAutoApplyBandProfile(event.target.checked)} />
+                  Auto-apply weak label
+                </label>
+              </div>
+              <div className="mt-2 text-xs text-teal-100/75">
+                Esta etiqueta evita capturas sin clase, pero queda como weak_label hasta que el usuario la confirme para entrenamiento cientifico.
               </div>
             </div>
 
@@ -613,15 +672,15 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
             <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
               <label className="flex flex-col gap-1 text-xs text-slate-400">
                 Label
-                <input value={label} onChange={(event) => setLabel(event.target.value)} className={inputClass} />
+                <input value={label} onChange={(event) => { setAutoApplyBandProfile(false); setLabel(event.target.value); }} className={inputClass} />
               </label>
               <label className="flex flex-col gap-1 text-xs text-slate-400">
                 Transmitter ID
-                <input value={transmitterId} onChange={(event) => setTransmitterId(event.target.value)} className={inputClass} />
+                <input value={transmitterId} onChange={(event) => { setAutoApplyBandProfile(false); setTransmitterId(event.target.value); }} className={inputClass} />
               </label>
               <label className="flex flex-col gap-1 text-xs text-slate-400">
                 Transmitter class
-                <input value={transmitterClass} onChange={(event) => setTransmitterClass(event.target.value)} className={inputClass} />
+                <input value={transmitterClass} onChange={(event) => { setAutoApplyBandProfile(false); setTransmitterClass(event.target.value); }} className={inputClass} />
               </label>
               <label className="flex flex-col gap-1 text-xs text-slate-400">
                 Session ID
@@ -640,7 +699,7 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
             <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
               <label className="flex flex-col gap-1 text-xs text-slate-400">
                 Modulation hint
-                <select value={modulationHint} onChange={(event) => setModulationHint(event.target.value)} className={inputClass}>
+                <select value={modulationHint} onChange={(event) => { setAutoApplyBandProfile(false); setModulationHint(event.target.value); }} className={inputClass}>
                   {MODULATION_HINTS.map((item) => (
                     <option key={item.value} value={item.value}>{item.label}</option>
                   ))}
