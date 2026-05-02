@@ -131,25 +131,32 @@ class DatasetAdapter:
             "distance_m": scenario.get("distance_m"),
             "dataset_split": record.get("dataset_split"),
             "qc_status": review.get("status"),
+            "capture_quality": review.get("capture_quality"),
+            "label_status": review.get("label_status"),
+            "review_status": review.get("review_status"),
+            "training_readiness": review.get("training_readiness"),
             "snr_db": quality.get("estimated_snr_db"),
             "sha256_raw_iq": artifacts.get("sha256"),
         }
 
     def _normalize_signal_understanding(self, record: dict[str, Any]) -> dict[str, Any]:
+        profile = record.get("profile") if isinstance(record.get("profile"), dict) else {}
         return {
             "source": "rf_signal_understanding",
             "capture_id": record.get("capture_id"),
-            "raw_file": record.get("iq_path") or record.get("raw_file"),
+            "raw_file": record.get("iq_path") or record.get("raw_file") or record.get("file_path"),
             "metadata_file": record.get("metadata_path") or record.get("metadata_file"),
-            "datatype": record.get("datatype", "cf32_le"),
+            "datatype": record.get("datatype") or record.get("file_format") or "complex64",
             "sample_rate_hz": record.get("sample_rate_hz"),
             "center_frequency_hz": record.get("center_frequency_hz"),
-            "duration_seconds": record.get("duration_seconds"),
-            "receiver_id": record.get("receiver_id"),
-            "timestamp_utc": record.get("timestamp_utc"),
-            "technology": record.get("technology") or record.get("signal_family"),
+            "duration_seconds": record.get("duration_seconds") or record.get("duration_s"),
+            "receiver_id": record.get("receiver_id") or record.get("source"),
+            "timestamp_utc": record.get("timestamp_utc") or record.get("created_at"),
+            "technology": record.get("technology") or record.get("signal_family") or profile.get("family"),
             "session_id": record.get("session_id"),
-            "dataset_split": record.get("dataset_split"),
+            "signal_type": profile.get("signal_type"),
+            "modulation_class": profile.get("modulation_class"),
+            "dataset_split": record.get("dataset_split") or profile.get("dataset_split"),
             "qc_status": record.get("qc_status"),
         }
 

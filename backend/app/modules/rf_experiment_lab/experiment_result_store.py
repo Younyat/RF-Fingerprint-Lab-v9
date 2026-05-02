@@ -126,6 +126,7 @@ class ExperimentResultStore:
             encoding="utf-8",
         )
         (result_dir / "features.json").write_text(json.dumps(features, indent=2), encoding="utf-8")
+        self._write_features_csv(result_dir / "features.csv", features)
         self._write_reproducibility_contract(result_dir, config, split_definition, features)
         (result_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
         (result_dir / "classification_report.json").write_text(
@@ -152,6 +153,7 @@ class ExperimentResultStore:
             "result_dir": str(result_dir),
             "files": sorted(path.name for path in result_dir.iterdir()),
             "features_npy": str(feature_matrix_path),
+            "features_csv": str(result_dir / "features.csv"),
             "model_pkl": str(model_path) if model_path else None,
         }
 
@@ -413,6 +415,19 @@ class ExperimentResultStore:
             writer.writeheader()
             for row in rows:
                 writer.writerow({"feature": row.get("feature"), "score": row.get("score")})
+
+    def _write_features_csv(self, path: Path, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            self._write_empty_csv(path, ["sample_id", "label"])
+            return
+        fields = sorted({key for row in rows for key in row.keys()})
+        preferred = [key for key in ["sample_id", "capture_id", "session_id", "label", "true_label"] if key in fields]
+        ordered = preferred + [key for key in fields if key not in preferred]
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=ordered, extrasaction="ignore")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
 
     def _normalized_confusion(self, confusion: dict[str, Any]) -> dict[str, Any]:
         labels = confusion.get("labels", []) if isinstance(confusion, dict) else []

@@ -363,6 +363,11 @@ export class ApiService {
     return response.data;
   }
 
+  async registerRFSignalUnderstandingCapture(payload: Record<string, any>): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_REGISTER_CAPTURE}`, payload);
+    return response.data;
+  }
+
   async analyzeRegisteredRFSignalCapture(id: string): Promise<Record<string, any>> {
     const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_ANALYZE_REGISTERED_CAPTURE(id)}`);
     return response.data;
@@ -472,6 +477,36 @@ export class ApiService {
 
   async compareRFExperimentRegion(payload: Record<string, any>): Promise<Record<string, any>> {
     const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_INFERENCE_COMPARE_REGION}`, payload);
+    return response.data;
+  }
+
+  async previewRFExperimentSigMF(payload: Record<string, any>): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_SIGMF_PREVIEW}`, payload);
+    return response.data;
+  }
+
+  async exportRFExperimentSigMF(payload: Record<string, any>): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_SIGMF_EXPORT}`, payload);
+    return response.data;
+  }
+
+  async previewRFExperimentHDF5Manifest(payload: Record<string, any>): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_HDF5_MANIFEST_PREVIEW}`, payload);
+    return response.data;
+  }
+
+  async exportRFExperimentHDF5Manifest(payload: Record<string, any>): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_HDF5_MANIFEST_EXPORT}`, payload);
+    return response.data;
+  }
+
+  async exportRFExperimentRepresentation(kind: 'raw-iq' | 'fft-psd' | 'spectrogram' | 'waterfall', payload: Record<string, any>): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_REPRESENTATION_EXPORT(kind)}`, payload);
+    return response.data;
+  }
+
+  async exportRFExperimentRepresentationManifest(payload: Record<string, any>): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_REPRESENTATION_MANIFEST_EXPORT}`, payload);
     return response.data;
   }
 

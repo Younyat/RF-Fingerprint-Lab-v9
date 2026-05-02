@@ -215,13 +215,14 @@ class RepresentationExtractionService:
 
     def _normalize_metadata(self, metadata: dict[str, Any], metadata_path: Path, raw_path: Path) -> dict[str, Any]:
         config = metadata.get("capture_config", {}) if isinstance(metadata.get("capture_config"), dict) else {}
-        dtype = self._dtype(metadata.get("datatype") or config.get("sample_dtype") or config.get("file_format"))
+        datatype_raw = metadata.get("datatype") or config.get("sample_dtype") or config.get("file_format") or "complex64"
+        dtype = self._dtype(datatype_raw)
         return {
             "capture_id": metadata.get("capture_id") or metadata_path.stem,
             "raw_file": str(raw_path),
             "sample_rate_hz": float(metadata.get("sample_rate_hz") or config.get("sample_rate_hz") or 0.0),
             "center_frequency_hz": float(metadata.get("center_frequency_hz") or config.get("center_frequency_hz") or 0.0),
-            "datatype": metadata.get("datatype") or config.get("sample_dtype") or config.get("file_format"),
+            "datatype": datatype_raw,
             "dtype": dtype,
         }
 
@@ -402,11 +403,13 @@ class RepresentationExtractionService:
 
     def _dtype(self, datatype: Any) -> np.dtype | None:
         if datatype is None:
-            return None
-        value = str(datatype).lower()
-        if value in {"complex64", "cf32_le", "cfile", ".cfile", "iq", ".iq"}:
             return np.dtype(np.complex64)
-        return None
+        value = str(datatype).lower().strip()
+        # Recognize complex64 variants
+        if value in {"complex64", "cf32_le", "cfile", ".cfile", "iq", ".iq", "complex", "cf32", "float32"}:
+            return np.dtype(np.complex64)
+        # Default to complex64 if unrecognized
+        return np.dtype(np.complex64)
 
     def _sha256_file(self, path: Path, chunk_size: int = 1024 * 1024) -> str:
         digest = hashlib.sha256()

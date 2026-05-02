@@ -123,6 +123,46 @@ export const DatasetBuilderView: React.FC = () => {
     }
   };
 
+  const registerSelectedForRFSignalUnderstanding = async () => {
+    if (!selectedCapture) return;
+    setActionMessage('');
+    if (selectedCapture.quality_review.status !== 'valid') {
+      setActionMessage('Only valid captures should be registered into RF Signal Understanding. Mark this capture valid after QC first.');
+      return;
+    }
+    const iqPath = selectedCapture.artifacts.iq_file || selectedCapture.capture_config.output_path;
+    if (!iqPath) {
+      setActionMessage('This capture has no linked IQ file, so it cannot be registered into RF Signal Understanding.');
+      return;
+    }
+    try {
+      await api.registerRFSignalUnderstandingCapture({
+        capture_id: selectedCapture.capture_id,
+        file_path: iqPath,
+        file_format: selectedCapture.capture_config.file_format === 'iq' ? 'iq' : 'cfile',
+        sample_rate_hz: selectedCapture.capture_config.sample_rate_hz,
+        center_frequency_hz: selectedCapture.capture_config.center_frequency_hz,
+        gain_db: Number(selectedCapture.capture_config.gain_settings?.['composite_gain_db'] ?? 0),
+        duration_s: selectedCapture.capture_config.capture_duration_s,
+        source: 'dataset_builder_validated',
+        session_id: selectedCapture.session_id,
+        profile_key: selectedCapture.transmitter.family || selectedCapture.transmitter.transmitter_class,
+        profile: {
+          signal_type: selectedCapture.transmitter.transmitter_class,
+          family: selectedCapture.transmitter.family,
+          environment: selectedCapture.scenario.environment,
+          dataset_split: selectedCapture.dataset_split,
+          quality_review_status: selectedCapture.quality_review.status,
+          transmitter_id: selectedCapture.transmitter.transmitter_id,
+        },
+      });
+      setActionMessage(`Registered ${selectedCapture.capture_id} in RF Signal Understanding. Open that tab and refresh Captured RF files.`);
+    } catch (error) {
+      console.error('Failed to register capture in RF Signal Understanding', error);
+      setActionMessage('Failed to register this capture in RF Signal Understanding.');
+    }
+  };
+
   useEffect(() => {
     refresh().catch((error) => console.error('Failed to load dataset builder data', error));
   }, []);
@@ -445,6 +485,31 @@ export const DatasetBuilderView: React.FC = () => {
                 </div>
               )}
 
+              <div className="mt-4 rounded-2xl border border-indigo-200 bg-indigo-50 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-indigo-800">Validated dataset routing</div>
+                    <h3 className="mt-2 text-lg font-semibold text-slate-900">Send this validated capture to RF Signal Understanding</h3>
+                    <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-700">
+                      Use this only after QC has accepted the capture. RF Signal Understanding learns signal family, modulation-like or
+                      protocol-like labels; RF Experiment Lab E1/E3/E5 can still use the same capture later through RFExperimentDatasetV1.
+                    </p>
+                  </div>
+                  <button
+                    className="rounded-full border border-indigo-300 bg-white px-4 py-2 text-sm font-semibold text-indigo-900 disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => registerSelectedForRFSignalUnderstanding()}
+                    disabled={selectedCapture.quality_review.status !== 'valid'}
+                  >
+                    Register in RF Signal Understanding
+                  </button>
+                </div>
+                <div className="mt-3 grid gap-2 text-xs text-indigo-950 md:grid-cols-3">
+                  <div className="rounded-xl border border-indigo-100 bg-white px-3 py-2">E1 needs `transmitter_id` and raw IQ.</div>
+                  <div className="rounded-xl border border-indigo-100 bg-white px-3 py-2">E3 needs raw IQ or derived spectrogram/waterfall.</div>
+                  <div className="rounded-xl border border-indigo-100 bg-white px-3 py-2">RF Signal Understanding needs `signal_type` or modulation-like labels.</div>
+                </div>
+              </div>
+
               <div className="mt-4 grid gap-3 md:grid-cols-2">
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
                   <div>Created: {formatTimestamp(selectedCapture.created_at_utc)}</div>
@@ -454,7 +519,12 @@ export const DatasetBuilderView: React.FC = () => {
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
                   <div>Split: {selectedCapture.dataset_split}</div>
                   <div className="mt-2">Dataset destination: {selectedCapture.capture_config.dataset_destination}</div>
-                  <div className="mt-2">Review status: {selectedCapture.quality_review.status}</div>
+                  <div className="mt-2">Legacy QC status: {selectedCapture.quality_review.status}</div>
+                  <div className="mt-2">Capture quality: {selectedCapture.quality_review.capture_quality ?? 'unknown'}</div>
+                  <div className="mt-2">Label status: {selectedCapture.quality_review.label_status ?? 'unknown'}</div>
+                  <div className="mt-2">Review status: {selectedCapture.quality_review.review_status ?? 'unknown'}</div>
+                  <div className="mt-2">Training readiness: {selectedCapture.quality_review.training_readiness ?? 'unknown'}</div>
+                  <div className="mt-2">QC profile: {selectedCapture.quality_review.qc_policy_profile ?? 'legacy'}</div>
                 </div>
               </div>
 

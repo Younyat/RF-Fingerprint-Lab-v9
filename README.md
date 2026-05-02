@@ -112,6 +112,20 @@ The frontend now exposes this work in a dedicated `RF Experiment Lab` tab. The t
 
 The `Live Monitor` also includes an `Experiment Overlay` button next to `RF Overlay` and `Understanding Overlay`. RF Experiment Lab now also exposes an inference-report contract for saved captures, marker-limited regions, frozen windows and live context. The current inference layer persists traceable prediction reports with model ID, dataset version, input sample ID, timestamp, top-k, confidence, latency and agreement/disagreement between selected experiment results. It remains an experimental RF Experiment Lab function and must not be confused with the older operational model registry.
 
+### Capture Lab and Dataset Routing
+
+Capture Lab remains the acquisition-oriented entry point for internal datasets. Its UI now explains which capture choices fit each downstream experiment:
+
+| Destination | What the user should capture | Main label | Why |
+|---|---|---|---|
+| Operational fingerprinting baseline | `.cfile` or `.iq` plus metadata reviewed in Dataset Builder | `transmitter_id` | Keeps the existing operational train/validation/prediction workflow intact. |
+| E1 Raw IQ CNN 1D | raw complex IQ, preferably `.cfile` or `.iq`, enough duration for many `[2, N]` windows | `transmitter_id` | E1 learns directly from I/Q samples and needs physical transmitter labels. |
+| E3 Spectrogram/Waterfall CNN 2D | raw IQ preferred; spectrogram/waterfall is generated reproducibly later | `transmitter_id`, `signal_type` or `modulation_class` | E3 compares time-frequency image learning under the same dataset and split. |
+| E5 Spectral Feature Baseline | raw IQ preferred; PSD/features are extracted later | `transmitter_id`, `signal_type` or `modulation_class` | E5 is the explainable spectral feature baseline. |
+| RF Signal Understanding | `.iq`/`.cfile` with signal-type or modulation-like labels | `signal_type` or `modulation_class` | RF Signal Understanding answers what kind of signal it is, not which physical transmitter emitted it. |
+
+Supported dataset artifacts are documented directly in the UI: `.cfile + .json`, `.iq + .json`, SigMF, HDF5 manifest/export, NumPy, MATLAB, Pickle, CSV features and spectrogram/waterfall image datasets. Dataset Builder can now register a QC-valid capture into RF Signal Understanding so reviewed internal datasets can be reused for signal understanding without bypassing quality review.
+
 ### Implemented experiment families
 
 | ID | Module | Stage | Representation | Model family | Scientific role |

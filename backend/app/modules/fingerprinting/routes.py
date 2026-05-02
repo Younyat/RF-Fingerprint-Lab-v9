@@ -106,6 +106,10 @@ class FingerprintingCaptureBody(BaseModel):
     burst_detection: BurstDetectionBody = Field(default_factory=BurstDetectionBody)
     artifacts: ArtifactsBody = Field(default_factory=ArtifactsBody)
     preview_metrics: PreviewMetricsBody = Field(default_factory=PreviewMetricsBody)
+    qc_policy_profile: str = "scientific"
+    qc_thresholds: dict[str, Any] = Field(default_factory=dict)
+    label_status: str | None = None
+    manual_override_reason: str = ""
     operator_decision: str | None = None
     review_notes: str = ""
     export_windows: list[str] = Field(default_factory=list)

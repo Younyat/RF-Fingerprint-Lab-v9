@@ -175,6 +175,15 @@ After export, the generated manifest path is reused by E1, E3 or E5 through `dat
 
 The tab also surfaces RF Experiment Lab internal samples. These are experimental dataset records created inside the RF Experiment Lab workflow and expected to carry raw IQ, RF metadata, label, task, transmitter ID, signal type, modulation class, session, receiver, environment, distance, SHA-256, QC summary and split group before export.
 
+`Capture Lab` now includes an experiment target guide. The operator can choose whether the capture is intended for the operational fingerprinting baseline, E1, E3, E5 or RF Signal Understanding. The guide explains the expected raw data, label field and scientific reason:
+
+- E1 needs raw IQ and `transmitter_id` because it learns directly from `[2, N]` I/Q windows.
+- E3 should start from raw IQ when possible so spectrogram/waterfall images are generated reproducibly.
+- E5 should start from raw IQ when possible so PSD and spectral features are extracted with logged parameters.
+- RF Signal Understanding should use `signal_type` or `modulation_class` style labels because it is signal recognition, not physical device fingerprinting.
+
+`Dataset Builder` now includes a validated routing action for RF Signal Understanding. Only QC-valid captures should be registered there; doubtful or rejected samples remain blocked by the UI.
+
 Scientific source policy shown by the UI/backend:
 
 - ORACLE and WiSig are primarily for physical RF fingerprinting.

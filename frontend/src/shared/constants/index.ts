@@ -173,6 +173,7 @@ export const API_ENDPOINTS = {
   RF_SIGNAL_UNDERSTANDING_COMPARE_MODELS: '/api/rf-signal-understanding/compare-models',
   RF_SIGNAL_UNDERSTANDING_CAPTURE_FOR_TRAINING: '/api/rf-signal-understanding/capture-for-training',
   RF_SIGNAL_UNDERSTANDING_CAPTURE_REGISTRY: '/api/rf-signal-understanding/capture-registry',
+  RF_SIGNAL_UNDERSTANDING_REGISTER_CAPTURE: '/api/rf-signal-understanding/capture-registry/register',
   RF_SIGNAL_UNDERSTANDING_ANALYZE_REGISTERED_CAPTURE: (id: string) => `/api/rf-signal-understanding/capture-registry/${id}/analyze`,
   RF_SIGNAL_UNDERSTANDING_TRAINING_QUEUE: '/api/rf-signal-understanding/training-queue',
 
@@ -197,6 +198,12 @@ export const API_ENDPOINTS = {
   RF_EXPERIMENT_E3_RUN: '/api/rf-experiment-lab/experiments/e3-spectrogram-cnn2d/run',
   RF_EXPERIMENT_INFERENCE_PREDICT: '/api/rf-experiment-lab/inference/predict',
   RF_EXPERIMENT_INFERENCE_COMPARE_REGION: '/api/rf-experiment-lab/inference/compare-region',
+  RF_EXPERIMENT_SIGMF_PREVIEW: '/api/rf-experiment-lab/sigmf/preview',
+  RF_EXPERIMENT_SIGMF_EXPORT: '/api/rf-experiment-lab/sigmf/export',
+  RF_EXPERIMENT_HDF5_MANIFEST_PREVIEW: '/api/rf-experiment-lab/hdf5-manifest/preview',
+  RF_EXPERIMENT_HDF5_MANIFEST_EXPORT: '/api/rf-experiment-lab/hdf5-manifest/export',
+  RF_EXPERIMENT_REPRESENTATION_EXPORT: (kind: string) => `/api/rf-experiment-lab/representations/${kind}/export`,
+  RF_EXPERIMENT_REPRESENTATION_MANIFEST_EXPORT: '/api/rf-experiment-lab/representations/manifest/export',
 
   // Markers
   MARKERS_LIST: '/api/markers/',

@@ -297,6 +297,17 @@ The training services accept `dataset_manifest_path`. When set, records are read
 
 Trainable result packages also write `dataset_manifest_path.txt`, `training_config.json`, `label_schema.json`, `normalization_params.json` and `split_strategy.txt` so validation and retraining can be audited from the result folder.
 
+Validated Capture Lab / Dataset Builder captures can also be registered into RF Signal Understanding through its existing capture registry endpoint. This supports the path:
+
+```text
+Capture Lab
+  -> Dataset Builder QC
+  -> valid capture only
+  -> RF Signal Understanding capture registry
+```
+
+That route is for signal-type/modulation/protocol understanding. Device fingerprinting experiments still use RF Experiment Lab and `RFExperimentDatasetV1`.
+
 Supported source profiles:
 
 - `oracle`: primarily RF fingerprinting

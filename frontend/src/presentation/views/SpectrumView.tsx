@@ -26,6 +26,19 @@ const AUTO_FREEZE_FRAME_BUFFER_SIZE = 12;
 const MARKER_BANDPASS_ATTENUATION_DB = 60;
 const markerBandpassStorageKey = 'spectrum-view-marker-bandpass-settings';
 
+const RF_EXPERIMENT_TYPE_LABELS = {
+  best: 'Best validated model',
+  e5: 'E5 Spectral Feature',
+  e1: 'E1 Raw IQ CNN 1D',
+  e3: 'E3 Spectrogram CNN 2D',
+} as const;
+
+const RF_EXPERIMENT_TYPE_NAMES = {
+  e5: 'e5_spectral_feature_baseline',
+  e1: 'e1_raw_iq_cnn1d',
+  e3: 'e3_spectrogram_cnn2d',
+} as const;
+
 const formatInput = (value: number, digits = 6) => {
   if (!Number.isFinite(value)) return '';
   return Number(value.toFixed(digits)).toString();
@@ -296,6 +309,7 @@ export const SpectrumView: React.FC = () => {
   const [showRfIntelligenceOverlay, setShowRfIntelligenceOverlay] = useState(true);
   const [showRsuOverlay, setShowRsuOverlay] = useState(false);
   const [showRfExperimentOverlay, setShowRfExperimentOverlay] = useState(false);
+  const [selectedRfExperimentType, setSelectedRfExperimentType] = useState<'best' | 'e5' | 'e1' | 'e3' | null>('best');
   const [rsuOverlayMode, setRsuOverlayMode] = useState<'hybrid' | 'ai_only'>('hybrid');
   const [autoFreezeArmed, setAutoFreezeArmed] = useState(false);
   const [rfScene, setRfScene] = useState<RFSceneAnalysis | null>(null);
@@ -305,6 +319,24 @@ export const SpectrumView: React.FC = () => {
   const [rfExperimentOverlay, setRfExperimentOverlay] = useState<Record<string, any> | null>(null);
   const [rfExperimentOverlayError, setRfExperimentOverlayError] = useState<string | null>(null);
   const [panOverlayPosition, setPanOverlayPosition] = useState({ x: 16, y: 16 });
+
+  const selectedRfExperimentRun = useMemo(() => {
+    if (!rfExperimentOverlay || !selectedRfExperimentType) return null;
+    if (selectedRfExperimentType === 'best') return rfExperimentOverlay.best ?? null;
+    const typeName = RF_EXPERIMENT_TYPE_NAMES[selectedRfExperimentType];
+    const candidates = (rfExperimentOverlay.runs ?? []).filter((run: Record<string, any>) => String(run.experiment_type) === typeName);
+    return candidates
+      .sort((left: Record<string, any>, right: Record<string, any>) =>
+        Number(right.metrics_summary?.macro_f1 ?? -1) - Number(left.metrics_summary?.macro_f1 ?? -1),
+      )[0] ?? null;
+  }, [rfExperimentOverlay, selectedRfExperimentType]);
+
+  useEffect(() => {
+    if (!showRfExperimentOverlay) {
+      setSelectedRfExperimentType(null);
+    }
+  }, [showRfExperimentOverlay]);
+
   const dragStateRef = useRef<{ type: 'pan' | null; offsetX: number; offsetY: number }>({ type: null, offsetX: 0, offsetY: 0 });
   const suppressNextClickRef = useRef(false);
   const autoFreezeTriggeringRef = useRef(false);
@@ -1429,8 +1461,28 @@ export const SpectrumView: React.FC = () => {
             )}
           >
             <FlaskConical className="w-4 h-4 mr-2" />
-            Experiment Overlay
+            Experiment Overlay{selectedRfExperimentType ? ` (${selectedRfExperimentType === 'best' ? 'Best' : selectedRfExperimentType.toUpperCase()})` : ''}
           </button>
+
+          <div className="flex items-center gap-1">
+            {(['best', 'e5', 'e1', 'e3'] as const).map((type) => (
+              <button
+                key={type}
+                type="button"
+                disabled={!showRfExperimentOverlay}
+                onClick={() => setSelectedRfExperimentType(type)}
+                className={cn(
+                  'h-9 rounded-md px-3 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed',
+                  selectedRfExperimentType === type
+                    ? 'bg-slate-200 text-slate-950 border border-slate-300'
+                    : 'bg-slate-700 hover:bg-slate-600 text-slate-100',
+                )}
+                title={showRfExperimentOverlay ? `Select ${RF_EXPERIMENT_TYPE_LABELS[type]}` : 'Enable Experiment Overlay first'}
+              >
+                {type === 'best' ? 'Best' : type.toUpperCase()}
+              </button>
+            ))}
+          </div>
 
           <div className="h-9 w-px bg-slate-700 mx-1" />
 
@@ -1692,7 +1744,15 @@ export const SpectrumView: React.FC = () => {
                 <div className="absolute left-12 top-36 max-w-md rounded-md border border-emerald-200/35 bg-slate-950/35 px-3 py-2 text-[10px] text-emerald-100 shadow-lg backdrop-blur-sm">
                   <div className="uppercase tracking-[0.16em]">RF Experiment Lab</div>
                   <div className="mt-1 text-[11px] normal-case text-slate-100">
-                    Best validated run: {rfExperimentOverlay?.best?.experiment_type ?? 'none yet'} | macro F1 {String(rfExperimentOverlay?.best?.metrics_summary?.macro_f1 ?? 'n/a')}
+                    Selected model: {selectedRfExperimentType ? RF_EXPERIMENT_TYPE_LABELS[selectedRfExperimentType] : 'none'}{selectedRfExperimentType === 'best' ? ' (best candidate)' : ''}
+                  </div>
+                  <div className="mt-1 text-[11px] normal-case text-slate-100">
+                    {selectedRfExperimentRun
+                      ? `Run: ${String(selectedRfExperimentRun.experiment_id ?? selectedRfExperimentRun.run_id ?? 'unknown')} / ${String(selectedRfExperimentRun.experiment_type ?? 'unknown')}`
+                      : 'No validated run available for this model.'}
+                  </div>
+                  <div className="mt-1 text-[11px] normal-case text-slate-100">
+                    Macro F1: {String(selectedRfExperimentRun?.metrics_summary?.macro_f1 ?? 'n/a')} | Accuracy: {String(selectedRfExperimentRun?.metrics_summary?.accuracy ?? 'n/a')}
                   </div>
                   <div className="mt-1 text-[10px] text-emerald-100/80">
                     Live identity is not asserted until a validated inference route is explicitly enabled.
@@ -1750,6 +1810,11 @@ export const SpectrumView: React.FC = () => {
           <StatusRow label="Status" value={deviceStatus.isConnected ? 'Connected' : 'Disconnected'} tone={deviceStatus.isConnected ? 'ok' : 'bad'} />
           <StatusRow label="Driver" value={deviceStatus.driver} />
           <StatusRow label="RF Profile" value={selectedProfile?.label ?? 'manual'} tone={selectedProfile ? 'ok' : undefined} />
+          <StatusRow
+            label="Experiment Model"
+            value={selectedRfExperimentType ? RF_EXPERIMENT_TYPE_LABELS[selectedRfExperimentType] : 'none'}
+            tone={selectedRfExperimentType ? 'ok' : undefined}
+          />
           <StatusRow label="Center" value={formatFrequency(displaySettings.centerFrequency)} />
           <StatusRow label="Span" value={formatFrequency(displaySettings.span)} />
           <StatusRow label="Start" value={formatFrequency(displaySettings.centerFrequency - displaySettings.span / 2)} />

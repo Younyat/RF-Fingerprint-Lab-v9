@@ -6,6 +6,8 @@ import { ApiService } from '../../app/services/ApiService';
 const api = new ApiService();
 
 type ExperimentKind = 'e5' | 'e1' | 'e3';
+type CaptureSortKey = 'time' | 'modulation' | 'label' | 'qc' | 'source' | 'frequency';
+type SortDirection = 'asc' | 'desc';
 
 const card = 'rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_18px_42px_rgba(15,23,42,0.07)]';
 
@@ -116,6 +118,34 @@ const splitGroupFields = (strategy: string) => {
   return ['capture_id'];
 };
 
+const formatDateTime = (value: unknown) => {
+  if (!value) return 'time n/a';
+  const date = new Date(String(value));
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+};
+
+const formatHzShort = (value: unknown) => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric === 0) return 'freq n/a';
+  const abs = Math.abs(numeric);
+  if (abs >= 1e9) return `${(numeric / 1e9).toFixed(4)} GHz`;
+  if (abs >= 1e6) return `${(numeric / 1e6).toFixed(3)} MHz`;
+  if (abs >= 1e3) return `${(numeric / 1e3).toFixed(1)} kHz`;
+  return `${numeric.toFixed(0)} Hz`;
+};
+
+const captureLabel = (capture: Record<string, any>) =>
+  String(capture.transmitter_id ?? capture.label ?? capture.device_model ?? capture.capture_id ?? 'unknown capture');
+
+const modulationLabel = (capture: Record<string, any>) =>
+  String(capture.modulation_class ?? capture.modulation_family ?? capture.signal_type ?? capture.technology ?? capture.transmitter_class ?? 'modulation n/a');
+
+const captureTimeValue = (capture: Record<string, any>) => {
+  const value = capture.timestamp_utc ?? capture.created_at ?? capture.created_at_utc;
+  const millis = value ? new Date(String(value)).getTime() : 0;
+  return Number.isFinite(millis) ? millis : 0;
+};
+
 export const RFExperimentLabView: React.FC = () => {
   const [health, setHealth] = useState<Record<string, any> | null>(null);
   const [captures, setCaptures] = useState<Array<Record<string, any>>>([]);
@@ -132,6 +162,10 @@ export const RFExperimentLabView: React.FC = () => {
   const [externalSourceFormat, setExternalSourceFormat] = useState('auto');
   const [datasetManifestPath, setDatasetManifestPath] = useState('');
   const [datasetPreview, setDatasetPreview] = useState<Record<string, any> | null>(null);
+  const [captureSortKey, setCaptureSortKey] = useState<CaptureSortKey>('time');
+  const [captureSortDirection, setCaptureSortDirection] = useState<SortDirection>('desc');
+  const [pendingCaptureSortKey, setPendingCaptureSortKey] = useState<CaptureSortKey>('time');
+  const [pendingCaptureSortDirection, setPendingCaptureSortDirection] = useState<SortDirection>('desc');
   const [labelField, setLabelField] = useState('transmitter_id');
   const [e3Representation, setE3Representation] = useState<'spectrogram' | 'waterfall'>('spectrogram');
   const [e3ModelType, setE3ModelType] = useState<'simple_cnn2d' | 'resnet18' | 'vgg11'>('simple_cnn2d');
@@ -166,6 +200,39 @@ export const RFExperimentLabView: React.FC = () => {
 
   const selectedTechniqueInfo = techniques.find((item) => item.id === selectedTechnique);
   const selectedRuns = useMemo(() => runs.filter((run) => ['e5_spectral_feature_baseline', 'e1_raw_iq_cnn1d', 'e3_spectrogram_cnn2d'].includes(String(run.experiment_type))), [runs]);
+  const captureDiagnostics = useMemo(() => {
+    const countBy = (key: string) =>
+      captures.reduce<Record<string, number>>((acc, item) => {
+        const value = String(item[key] ?? 'unknown');
+        acc[value] = (acc[value] ?? 0) + 1;
+        return acc;
+      }, {});
+    return {
+      total: captures.length,
+      withRaw: captures.filter((item) => item.raw_file).length,
+      bySource: countBy('source'),
+      bySplit: countBy('dataset_split'),
+      byQc: countBy('qc_status'),
+    };
+  }, [captures]);
+  const sortedCaptures = useMemo(() => {
+    const valueFor = (capture: Record<string, any>) => {
+      if (captureSortKey === 'time') return captureTimeValue(capture);
+      if (captureSortKey === 'modulation') return modulationLabel(capture).toLowerCase();
+      if (captureSortKey === 'label') return captureLabel(capture).toLowerCase();
+      if (captureSortKey === 'qc') return String(capture.qc_status ?? '').toLowerCase();
+      if (captureSortKey === 'source') return String(capture.source ?? '').toLowerCase();
+      return Number(capture.center_frequency_hz ?? 0);
+    };
+    return [...captures].sort((left, right) => {
+      const a = valueFor(left);
+      const b = valueFor(right);
+      let result = 0;
+      if (typeof a === 'number' && typeof b === 'number') result = a - b;
+      else result = String(a).localeCompare(String(b));
+      return captureSortDirection === 'asc' ? result : -result;
+    });
+  }, [captures, captureSortDirection, captureSortKey]);
 
   const experimentPayload = () => {
     const base = {
@@ -205,6 +272,7 @@ export const RFExperimentLabView: React.FC = () => {
     label_field: labelField,
     split_strategy: splitStrategy,
     split_group_fields: splitGroupFields(splitStrategy),
+    inclusion_mode: splitStrategy === 'random' ? 'debug_include_candidates' : 'scientific_strict',
     source_path: externalDatasetPath || undefined,
     source_format: externalSourceFormat,
   });
@@ -308,6 +376,14 @@ export const RFExperimentLabView: React.FC = () => {
     );
   };
 
+  const selectAllSortedCaptures = () => {
+    setSelectedCaptureIds(Array.from(new Set(sortedCaptures.map((item) => String(item.capture_id)).filter(Boolean))));
+  };
+
+  const clearSelectedCaptures = () => {
+    setSelectedCaptureIds([]);
+  };
+
   return (
     <div className="min-h-full bg-[linear-gradient(180deg,_#f8fafc,_#eef2f7)] p-6">
       <section className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
@@ -348,6 +424,7 @@ export const RFExperimentLabView: React.FC = () => {
             <Fact label="Morphological detector" value={health?.morphological_detector_available?.status ?? 'unknown'} />
             <Fact label="Dataset adapter" value={String(Boolean(health?.dataset_adapter_available))} />
             <Fact label="Optional missing" value={(health?.optional_dependencies_missing ?? []).join(', ') || 'none reported'} />
+            <Fact label="Visible captures" value={`${captureDiagnostics.total} (${captureDiagnostics.withRaw} with raw IQ)`} />
           </div>
         </div>
       </section>
@@ -574,19 +651,88 @@ export const RFExperimentLabView: React.FC = () => {
           <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <div className="flex items-center justify-between gap-3">
               <div className="text-sm font-semibold text-slate-800">Selected captures: {selectedCaptureIds.length}</div>
-              <button className="text-xs font-semibold text-slate-600 underline" onClick={() => setSelectedCaptureIds(captures.slice(0, 12).map((item) => String(item.capture_id)))}>
-                select first 12
+              <div className="flex flex-wrap gap-2">
+                <button className="text-xs font-semibold text-slate-600 underline" onClick={() => setSelectedCaptureIds(sortedCaptures.slice(0, 12).map((item) => String(item.capture_id)))}>
+                  select first 12
+                </button>
+                <button className="text-xs font-semibold text-slate-600 underline" onClick={selectAllSortedCaptures}>
+                  seleccionar todo
+                </button>
+                <button className="text-xs font-semibold text-slate-600 underline" onClick={clearSelectedCaptures}>
+                  deseleccionar todo
+                </button>
+              </div>
+            </div>
+            <div className="mt-3 grid gap-3 md:grid-cols-[1fr_0.7fr_auto]">
+              <label className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+                Sort by
+                <select className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-800" value={pendingCaptureSortKey} onChange={(event) => setPendingCaptureSortKey(event.target.value as CaptureSortKey)}>
+                  <option value="time">capture time</option>
+                  <option value="modulation">modulation / signal type</option>
+                  <option value="label">label / transmitter</option>
+                  <option value="qc">QC status</option>
+                  <option value="source">source</option>
+                  <option value="frequency">center frequency</option>
+                </select>
+              </label>
+              <label className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+                Direction
+                <select className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-normal normal-case tracking-normal text-slate-800" value={pendingCaptureSortDirection} onChange={(event) => setPendingCaptureSortDirection(event.target.value as SortDirection)}>
+                  <option value="desc">newest / Z-A / high first</option>
+                  <option value="asc">oldest / A-Z / low first</option>
+                </select>
+              </label>
+              <button className="self-end rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700" onClick={() => {
+                setCaptureSortKey(pendingCaptureSortKey);
+                setCaptureSortDirection(pendingCaptureSortDirection);
+              }}>
+                Ordenar
               </button>
             </div>
+            <div className="mt-2 text-xs text-slate-500">
+              Orden aplicado: {captureSortKey} / {captureSortDirection}. La ordenacion se aplica a toda la lista visible, no solo a las capturas seleccionadas.
+            </div>
+            <div className="mt-3 grid gap-2 md:grid-cols-3">
+              <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
+                <div className="font-semibold uppercase tracking-[0.14em] text-slate-500">Sources</div>
+                <div className="mt-2">{Object.entries(captureDiagnostics.bySource).map(([key, value]) => `${key}: ${value}`).join(' | ') || 'none'}</div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
+                <div className="font-semibold uppercase tracking-[0.14em] text-slate-500">Splits</div>
+                <div className="mt-2">{Object.entries(captureDiagnostics.bySplit).map(([key, value]) => `${key}: ${value}`).join(' | ') || 'none'}</div>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
+                <div className="font-semibold uppercase tracking-[0.14em] text-slate-500">QC</div>
+                <div className="mt-2">{Object.entries(captureDiagnostics.byQc).map(([key, value]) => `${key}: ${value}`).join(' | ') || 'none'}</div>
+              </div>
+            </div>
             <div className="mt-3 max-h-52 space-y-2 overflow-auto">
-              {captures.map((capture) => (
-                <label key={String(capture.capture_id)} className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
-                  <span>
-                    <input className="mr-2" type="checkbox" checked={selectedCaptureIds.includes(String(capture.capture_id))} onChange={() => toggleCapture(String(capture.capture_id))} />
-                    {String(capture.capture_id)}
+              {sortedCaptures.map((capture, index) => (
+                <div key={`${String(capture.source ?? 'source')}:${String(capture.capture_id)}:${index}`} className="grid gap-3 rounded-xl border border-slate-200 bg-white px-3 py-3 text-sm md:grid-cols-[1.1fr_1fr_0.9fr]">
+                  <span className="flex items-start gap-2">
+                    <input
+                      className="mt-1"
+                      type="checkbox"
+                      checked={selectedCaptureIds.includes(String(capture.capture_id))}
+                      onChange={() => toggleCapture(String(capture.capture_id))}
+                      aria-label={`Select capture ${String(capture.capture_id)}`}
+                    />
+                    <span>
+                      <span className="block font-semibold text-slate-900">{String(capture.capture_id)}</span>
+                      <span className="mt-1 block text-xs text-slate-500">{captureLabel(capture)}</span>
+                    </span>
                   </span>
-                  <span className="text-xs text-slate-500">{String(capture.transmitter_id ?? capture.technology ?? 'unlabeled')}</span>
-                </label>
+                  <span className="text-xs leading-5 text-slate-600">
+                    <span className="block font-medium text-slate-800">{formatDateTime(capture.timestamp_utc ?? capture.created_at ?? capture.created_at_utc)}</span>
+                    <span className="block">{Number(capture.duration_seconds ?? capture.duration_s ?? 0).toFixed(2)} s | {String(capture.session_id ?? 'session n/a')}</span>
+                  </span>
+                  <span className="text-xs leading-5 text-slate-600 md:text-right">
+                    <span className="block font-medium text-slate-800">{modulationLabel(capture)}</span>
+                    <span className="block">{formatHzShort(capture.center_frequency_hz)} | SR {formatHzShort(capture.sample_rate_hz)}</span>
+                    <span className="block">QC {String(capture.capture_quality ?? capture.qc_status ?? 'unknown')} | {String(capture.training_readiness ?? 'readiness n/a')}</span>
+                    <span className="block">{String(capture.label_status ?? 'label n/a')} | {String(capture.source ?? 'source n/a')}</span>
+                  </span>
+                </div>
               ))}
               {captures.length === 0 && <div className="text-sm text-slate-500">No captures visible to RF Experiment Lab yet.</div>}
             </div>

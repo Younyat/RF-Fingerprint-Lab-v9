@@ -100,12 +100,20 @@
   "quality_review": {
     "status": "valid",
     "reasons": [
-      "borderline_snr"
+      "borderline_snr",
+      "profile_frequency_offset_limit_exceeded",
+      "profile_min_snr_not_met",
+      "strong_label_required",
+      "unlabeled_not_allowed"
     ],
     "quality_flags": [
-      "snr_borderline",
+      "label_not_strong",
       "occupied_bandwidth_near_capture_limit",
-      "pre_post_qc_mismatch"
+      "pre_post_qc_mismatch",
+      "profile_frequency_offset_warning",
+      "profile_snr_warning",
+      "snr_borderline",
+      "unlabeled"
     ],
     "operator_decision": "valid",
     "review_notes": "Accepted for dataset export.",
@@ -113,7 +121,7 @@
       "transient_start",
       "whole_burst"
     ],
-    "updated_at_utc": "2026-04-27T11:47:08.150806+00:00"
+    "updated_at_utc": "2026-05-02T14:11:52.271595+00:00"
   },
   "artifacts": {
     "iq_file": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\modulated_signal_captures\\cfile_c4a431e7_2411.898008MHz_9159.0kHz.cfile",
@@ -127,7 +135,7 @@
     "live_preview_peak_level_db": -84.26300811767578,
     "live_preview_peak_frequency_hz": 2411925293.1875
   },
-  "updated_at_utc": "2026-04-27T11:47:08.150806+00:00",
+  "updated_at_utc": "2026-05-02T14:11:52.271595+00:00",
   "signal_family": "unknown",
   "qc_profile_id": "burst_rf_v1",
   "qc_profile": {

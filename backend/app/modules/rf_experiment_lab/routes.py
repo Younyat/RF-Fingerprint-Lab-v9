@@ -293,7 +293,7 @@ def build_rf_experiment_lab_router(service) -> APIRouter:
         return _ok(service.dataset_adapter.dataset_summary(), "Dataset adapter summary")
 
     @router.get("/dataset/captures")
-    async def dataset_captures() -> list[dict[str, Any]]:
+    async def dataset_captures() -> dict[str, Any]:
         return _ok(service.dataset_adapter.list_existing_captures(), "Existing captures visible to RF Experiment Lab")
 
     @router.get("/dataset/sources")
@@ -353,15 +353,15 @@ def build_rf_experiment_lab_router(service) -> APIRouter:
             return _error(exc)
 
     @router.get("/techniques")
-    async def techniques() -> list[dict[str, Any]]:
+    async def techniques() -> dict[str, Any]:
         return _ok(service.registry.list_techniques(), "Registered paper-inspired techniques")
 
     @router.get("/region-detectors")
-    async def region_detectors() -> list[dict[str, Any]]:
+    async def region_detectors() -> dict[str, Any]:
         return _ok(service.registry.list_region_detectors(), "Registered region detectors")
 
     @router.get("/configs")
-    async def list_configs() -> list[dict[str, Any]]:
+    async def list_configs() -> dict[str, Any]:
         return _ok(service.list_configs(), "Experiment configs")
 
     @router.get("/configs/template/{template_id}")
@@ -386,7 +386,7 @@ def build_rf_experiment_lab_router(service) -> APIRouter:
             return _error(exc, status="not_found")
 
     @router.get("/results")
-    async def results() -> list[dict[str, Any]]:
+    async def results() -> dict[str, Any]:
         return _ok(service.list_results(), "Experiment results")
 
     @router.get("/experiments")

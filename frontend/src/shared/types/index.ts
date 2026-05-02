@@ -323,6 +323,14 @@ export interface FingerprintingCaptureRecord {
   };
   quality_review: {
     status: 'valid' | 'doubtful' | 'rejected';
+    capture_quality?: 'valid' | 'warning' | 'doubtful' | 'invalid';
+    label_status?: 'unlabeled' | 'weak_label' | 'strong_label';
+    review_status?: 'needs_review' | 'accepted' | 'rejected' | 'manual_override';
+    training_readiness?: 'not_ready' | 'candidate' | 'ready_for_training' | 'debug_only';
+    qc_policy_profile?: string;
+    qc_thresholds?: Record<string, unknown>;
+    metadata_check?: Record<string, unknown>;
+    manual_override_reason?: string;
     reasons: string[];
     quality_flags: string[];
     operator_decision?: 'valid' | 'doubtful' | 'rejected' | null;

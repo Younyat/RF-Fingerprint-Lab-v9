@@ -23,6 +23,66 @@ DEFAULT_THRESHOLDS = {
 }
 
 
+QC_POLICY_PROFILES: dict[str, dict[str, Any]] = {
+    "exploratory": {
+        "min_snr_db": 3.0,
+        "max_clipping_percentage": 5.0,
+        "min_occupied_bandwidth_hz": 0.0,
+        "max_occupied_bandwidth_hz": 0.0,
+        "max_frequency_offset_hz": 100_000.0,
+        "min_signal_duration_ms": 0.0,
+        "max_silence_percentage": 95.0,
+        "require_label": False,
+        "require_metadata": False,
+        "allow_weak_label": True,
+        "allow_unlabeled": True,
+        "allow_manual_override": False,
+    },
+    "training_draft": {
+        "min_snr_db": 6.0,
+        "max_clipping_percentage": 2.0,
+        "min_occupied_bandwidth_hz": 0.0,
+        "max_occupied_bandwidth_hz": 0.0,
+        "max_frequency_offset_hz": 50_000.0,
+        "min_signal_duration_ms": 1.0,
+        "max_silence_percentage": 90.0,
+        "require_label": False,
+        "require_metadata": True,
+        "allow_weak_label": True,
+        "allow_unlabeled": True,
+        "allow_manual_override": False,
+    },
+    "scientific": {
+        "min_snr_db": 12.0,
+        "max_clipping_percentage": 0.5,
+        "min_occupied_bandwidth_hz": 1.0,
+        "max_occupied_bandwidth_hz": 0.0,
+        "max_frequency_offset_hz": 5_000.0,
+        "min_signal_duration_ms": 1.0,
+        "max_silence_percentage": 85.0,
+        "require_label": True,
+        "require_metadata": True,
+        "allow_weak_label": False,
+        "allow_unlabeled": False,
+        "allow_manual_override": False,
+    },
+    "manual_override": {
+        "min_snr_db": 0.0,
+        "max_clipping_percentage": 100.0,
+        "min_occupied_bandwidth_hz": 0.0,
+        "max_occupied_bandwidth_hz": 0.0,
+        "max_frequency_offset_hz": 0.0,
+        "min_signal_duration_ms": 0.0,
+        "max_silence_percentage": 100.0,
+        "require_label": False,
+        "require_metadata": False,
+        "allow_weak_label": True,
+        "allow_unlabeled": True,
+        "allow_manual_override": True,
+    },
+}
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -143,6 +203,12 @@ class FingerprintingService:
         quality_review["updated_at_utc"] = _utc_now()
         evaluated = self._evaluate_quality(record["quality_metrics"], quality_review["operator_decision"])
         quality_review["status"] = evaluated["status"]
+        if quality_review["operator_decision"] == "valid":
+            quality_review["review_status"] = "accepted"
+            quality_review["training_readiness"] = "ready_for_training" if quality_review.get("label_status") == "strong_label" and quality_review.get("capture_quality") == "valid" else "candidate"
+        elif quality_review["operator_decision"] == "rejected":
+            quality_review["review_status"] = "rejected"
+            quality_review["training_readiness"] = "not_ready"
         quality_review["reasons"] = evaluated["reasons"]
         quality_review["quality_flags"] = evaluated["flags"]
         self._save_record(record)
@@ -817,6 +883,9 @@ class FingerprintingService:
             if iq_file.exists():
                 artifacts["sha256"] = _sha256_file(iq_file)
 
+        qc_policy = self._qc_policy(payload)
+        label_status = self._label_status(payload, transmitter)
+        metadata_check = self._metadata_check(capture_config, transmitter, scenario, artifacts)
         quality = self._evaluate_quality(
             {
                 "estimated_snr_db": float(quality_metrics.get("estimated_snr_db", 0.0) or 0.0),
@@ -837,6 +906,10 @@ class FingerprintingService:
                 "live_offset_hz": live_offset_hz,
             },
             payload.get("operator_decision"),
+            qc_policy,
+            label_status,
+            metadata_check,
+            str(payload.get("manual_override_reason", "") or ""),
         )
 
         timestamp_utc = scenario.get("timestamp_utc") or _utc_now()
@@ -906,6 +979,14 @@ class FingerprintingService:
             },
             "quality_review": {
                 "status": quality["status"],
+                "capture_quality": quality["capture_quality"],
+                "label_status": label_status,
+                "review_status": quality["review_status"],
+                "training_readiness": quality["training_readiness"],
+                "qc_policy_profile": quality["qc_policy_profile"],
+                "qc_thresholds": qc_policy,
+                "metadata_check": metadata_check,
+                "manual_override_reason": payload.get("manual_override_reason", ""),
                 "reasons": quality["reasons"],
                 "quality_flags": quality["flags"],
                 "operator_decision": payload.get("operator_decision"),
@@ -929,9 +1010,53 @@ class FingerprintingService:
             raise ValueError("dataset_split must be one of: train, val, predict")
         return normalized
 
-    def _evaluate_quality(self, metrics: dict[str, Any], operator_decision: str | None) -> dict[str, Any]:
+    def _qc_policy(self, payload: dict[str, Any]) -> dict[str, Any]:
+        requested = str(payload.get("qc_policy_profile") or "scientific").strip().lower().replace(" ", "_").replace("-", "_")
+        profile = deepcopy(QC_POLICY_PROFILES.get(requested, QC_POLICY_PROFILES["scientific"]))
+        overrides = payload.get("qc_thresholds") if isinstance(payload.get("qc_thresholds"), dict) else {}
+        for key in list(profile.keys()):
+            if key in overrides and overrides[key] not in (None, ""):
+                profile[key] = overrides[key]
+        profile["profile"] = requested if requested in QC_POLICY_PROFILES else "scientific"
+        return profile
+
+    def _label_status(self, payload: dict[str, Any], transmitter: dict[str, Any]) -> str:
+        explicit = str(payload.get("label_status") or "").strip().lower()
+        if explicit in {"unlabeled", "weak_label", "strong_label"}:
+            return explicit
+        label = str(transmitter.get("transmitter_id") or transmitter.get("transmitter_label") or "").strip().lower()
+        confidence = str(transmitter.get("ground_truth_confidence") or "").strip().lower()
+        if not label or label in {"unknown", "tx_unknown", "unlabeled_transmitter", "rsu_unlabeled"}:
+            return "unlabeled"
+        if confidence in {"confirmed", "strong", "operator_confirmed", "manual_confirmed"}:
+            return "strong_label"
+        return "weak_label"
+
+    def _metadata_check(self, capture_config: dict[str, Any], transmitter: dict[str, Any], scenario: dict[str, Any], artifacts: dict[str, Any]) -> dict[str, Any]:
+        required = {
+            "center_frequency_hz": capture_config.get("center_frequency_hz"),
+            "sample_rate_hz": capture_config.get("sample_rate_hz"),
+            "capture_duration_s": capture_config.get("capture_duration_s"),
+            "raw_iq_path": artifacts.get("iq_file") or capture_config.get("output_path"),
+            "session_or_timestamp": scenario.get("timestamp_utc") or scenario.get("session_id"),
+        }
+        missing = [key for key, value in required.items() if value in (None, "", 0)]
+        return {"valid": not missing, "missing": missing}
+
+    def _evaluate_quality(
+        self,
+        metrics: dict[str, Any],
+        operator_decision: str | None,
+        qc_policy: dict[str, Any] | None = None,
+        label_status: str = "unlabeled",
+        metadata_check: dict[str, Any] | None = None,
+        manual_override_reason: str = "",
+    ) -> dict[str, Any]:
         reasons: list[str] = []
         flags: list[str] = []
+        qc_policy = qc_policy or deepcopy(QC_POLICY_PROFILES["scientific"])
+        metadata_check = metadata_check or {"valid": True, "missing": []}
+        policy_profile = str(qc_policy.get("profile", "scientific"))
 
         signal_family = str(metrics.get("signal_family") or "burst_rf").strip().lower()
         qc_profile_id = str(metrics.get("qc_profile_id") or ("continuous_fm_v1" if signal_family == "continuous_fm" else "burst_rf_v1"))
@@ -944,6 +1069,15 @@ class FingerprintingService:
         occupied_bw = float(metrics.get("occupied_bandwidth_hz", 0.0) or 0.0)
         effective_bw = float(metrics.get("effective_bandwidth_hz", 0.0) or 0.0)
         occupied_ratio = occupied_bw / effective_bw if effective_bw > 0 else 0.0
+        frequency_offset_hz = abs(float(metrics.get("frequency_offset_hz", 0.0) or 0.0))
+
+        min_snr = float(qc_policy.get("min_snr_db", DEFAULT_THRESHOLDS["min_valid_snr_db"]) or 0.0)
+        max_clipping = float(qc_policy.get("max_clipping_percentage", DEFAULT_THRESHOLDS["max_valid_clipping_pct"]) or 0.0)
+        min_occupied = float(qc_policy.get("min_occupied_bandwidth_hz", 0.0) or 0.0)
+        max_occupied = float(qc_policy.get("max_occupied_bandwidth_hz", 0.0) or 0.0)
+        max_offset = float(qc_policy.get("max_frequency_offset_hz", DEFAULT_THRESHOLDS["max_valid_frequency_offset_hz"]) or 0.0)
+        min_duration = float(qc_policy.get("min_signal_duration_ms", DEFAULT_THRESHOLDS["min_valid_burst_duration_ms"]) or 0.0)
+        max_silence = float(qc_policy.get("max_silence_percentage", DEFAULT_THRESHOLDS["max_silence_pct"]) or 0.0)
 
         if snr < DEFAULT_THRESHOLDS["min_doubtful_snr_db"]:
             reasons.append("insufficient_snr")
@@ -951,6 +1085,9 @@ class FingerprintingService:
         elif snr < DEFAULT_THRESHOLDS["min_valid_snr_db"]:
             reasons.append("borderline_snr")
             flags.append("snr_borderline")
+        if snr < min_snr:
+            reasons.append("profile_min_snr_not_met")
+            flags.append("profile_snr_warning")
 
         if clipping_pct > DEFAULT_THRESHOLDS["max_doubtful_clipping_pct"]:
             reasons.append("adc_clipping")
@@ -958,6 +1095,9 @@ class FingerprintingService:
         elif clipping_pct > DEFAULT_THRESHOLDS["max_valid_clipping_pct"]:
             reasons.append("moderate_clipping")
             flags.append("clipping_present")
+        if clipping_pct > max_clipping:
+            reasons.append("profile_clipping_limit_exceeded")
+            flags.append("profile_clipping_warning")
 
         signal_within_capture_band = bool(metrics.get("signal_within_capture_band", True))
         offset_ratio = float(metrics.get("frequency_offset_ratio_of_capture_band", 0.0) or 0.0)
@@ -1005,6 +1145,33 @@ class FingerprintingService:
             if burst_duration_ms and burst_duration_ms < DEFAULT_THRESHOLDS["min_valid_burst_duration_ms"]:
                 reasons.append("duration_insufficient")
                 flags.append("burst_too_short")
+        if silence_pct > max_silence:
+            reasons.append("profile_silence_limit_exceeded")
+            flags.append("profile_silence_warning")
+        if burst_duration_ms < min_duration:
+            reasons.append("profile_signal_duration_too_short")
+            flags.append("profile_duration_warning")
+        if min_occupied > 0 and occupied_bw < min_occupied:
+            reasons.append("occupied_bandwidth_too_small")
+            flags.append("occupied_bandwidth_low")
+        if max_occupied > 0 and occupied_bw > max_occupied:
+            reasons.append("occupied_bandwidth_too_large")
+            flags.append("occupied_bandwidth_high")
+        if max_offset > 0 and frequency_offset_hz > max_offset:
+            reasons.append("profile_frequency_offset_limit_exceeded")
+            flags.append("profile_frequency_offset_warning")
+        if bool(qc_policy.get("require_metadata")) and not metadata_check.get("valid", False):
+            reasons.append("metadata_incomplete")
+            flags.append("metadata_missing")
+        if bool(qc_policy.get("require_label")) and label_status != "strong_label":
+            reasons.append("strong_label_required")
+            flags.append("label_not_strong")
+        if label_status == "weak_label" and not bool(qc_policy.get("allow_weak_label")):
+            reasons.append("weak_label_not_allowed")
+            flags.append("weak_label")
+        if label_status == "unlabeled" and not bool(qc_policy.get("allow_unlabeled")):
+            reasons.append("unlabeled_not_allowed")
+            flags.append("unlabeled")
 
         if sample_drop_count > 0:
             reasons.append("sample_drops_detected")
@@ -1040,9 +1207,45 @@ class FingerprintingService:
         if operator_decision in {"valid", "doubtful", "rejected"}:
             status = operator_decision
 
+        severe_reasons = {"adc_clipping", "signal_outside_capture_band", "sample_drops_detected", "buffer_overflow", "absence_of_activity"}
+        capture_quality = "valid"
+        if any(item in reasons for item in severe_reasons) or status == "rejected":
+            capture_quality = "invalid"
+        elif policy_profile in {"exploratory", "training_draft"} and reasons:
+            capture_quality = "warning"
+        elif status == "doubtful":
+            capture_quality = "doubtful"
+        elif reasons or flags:
+            capture_quality = "warning"
+
+        review_status = "needs_review"
+        training_readiness = "not_ready"
+        if policy_profile == "manual_override":
+            if not manual_override_reason.strip():
+                reasons.append("manual_override_reason_required")
+                flags.append("manual_override_reason_missing")
+            review_status = "manual_override"
+            training_readiness = "debug_only"
+            if status == "valid":
+                status = "doubtful"
+        elif policy_profile == "exploratory":
+            review_status = "needs_review"
+            training_readiness = "not_ready"
+        elif policy_profile == "training_draft":
+            review_status = "needs_review"
+            training_readiness = "candidate" if capture_quality in {"valid", "warning"} and label_status != "unlabeled" else "not_ready"
+        else:
+            if capture_quality == "valid" and label_status == "strong_label" and metadata_check.get("valid", False):
+                review_status = "accepted"
+                training_readiness = "ready_for_training"
+
         return {
             "status": status,
-            "reasons": reasons,
-            "flags": flags,
+            "capture_quality": capture_quality,
+            "review_status": review_status,
+            "training_readiness": training_readiness,
+            "qc_policy_profile": policy_profile,
+            "reasons": sorted(set(reasons)),
+            "flags": sorted(set(flags)),
             "qc_profile_id": qc_profile_id,
         }

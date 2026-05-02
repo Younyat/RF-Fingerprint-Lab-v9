@@ -107,8 +107,22 @@ class RFExperimentDatasetV1Builder:
         ids = {str(item) for item in payload.get("capture_ids", []) if item}
         if ids:
             captures = [item for item in captures if str(item.get("capture_id")) in ids]
+        inclusion_mode = str(payload.get("inclusion_mode", "scientific_strict"))
+        excluded_count = 0
+        if inclusion_mode == "scientific_strict":
+            before = len(captures)
+            captures = [item for item in captures if self._is_scientific_ready(item)]
+            excluded_count = before - len(captures)
         records = [self._capture_to_sample(capture, payload) for capture in captures]
-        return records, self._scientific_warnings(records, payload)
+        warnings = self._scientific_warnings(records, payload)
+        if excluded_count:
+            warnings.append(
+                {
+                    "type": "scientific_readiness_filter",
+                    "message": f"{excluded_count} captures were excluded from RFExperimentDatasetV1 because they are not strong_label + accepted + ready_for_training, or legacy valid equivalents.",
+                }
+            )
+        return records, warnings
 
     def _records_from_external(self, payload: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         manifest_path = payload.get("source_manifest_path")
@@ -402,6 +416,22 @@ class RFExperimentDatasetV1Builder:
         if missing_hashes:
             warnings.append({"type": "missing_hashes", "message": f"{missing_hashes} samples do not have SHA-256 evidence hashes."})
         return warnings
+
+    def _is_scientific_ready(self, capture: dict[str, Any]) -> bool:
+        label = capture.get("transmitter_id") or capture.get("signal_type") or capture.get("modulation_class") or capture.get("label")
+        label_status = capture.get("label_status")
+        review_status = capture.get("review_status")
+        readiness = capture.get("training_readiness")
+        capture_quality = capture.get("capture_quality")
+        if label_status or review_status or readiness:
+            return (
+                label not in (None, "", "unknown")
+                and label_status == "strong_label"
+                and review_status == "accepted"
+                and readiness == "ready_for_training"
+                and capture_quality in {None, "valid"}
+            )
+        return label not in (None, "", "unknown") and capture.get("qc_status") == "valid"
 
     def _discover_files(self, root: Path, source_format: str) -> list[Path]:
         suffixes = {

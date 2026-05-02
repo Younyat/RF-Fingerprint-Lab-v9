@@ -92,17 +92,26 @@
     "burst_end_sample": 9999999
   },
   "quality_review": {
-    "status": "doubtful",
+    "status": "valid",
     "reasons": [
-      "bandwidth_too_tight"
+      "profile_frequency_offset_limit_exceeded",
+      "strong_label_required",
+      "unlabeled_not_allowed"
     ],
     "quality_flags": [
-      "occupied_bandwidth_near_capture_limit"
+      "label_not_strong",
+      "profile_frequency_offset_warning",
+      "unlabeled"
     ],
-    "operator_decision": null,
-    "review_notes": "",
-    "export_windows": [],
-    "updated_at_utc": "2026-04-28T14:48:52.363607+00:00"
+    "operator_decision": "valid",
+    "review_notes": "Accepted for dataset export.",
+    "export_windows": [
+      "transient_start",
+      "whole_burst"
+    ],
+    "updated_at_utc": "2026-05-02T14:07:38.308390+00:00",
+    "review_status": "accepted",
+    "training_readiness": "candidate"
   },
   "artifacts": {
     "iq_file": "C:\\Users\\Usuario\\Desktop\\NICS\\RF-Fingerprint-Lab\\spectrum-lab\\backend\\app\\infrastructure\\persistence\\storage\\recordings\\modulated_signal_captures\\cfile_d107adee_89.461517MHz_473.9kHz.cfile",
@@ -116,5 +125,5 @@
     "live_preview_peak_level_db": -58.19457244873047,
     "live_preview_peak_frequency_hz": 89372656.25
   },
-  "updated_at_utc": "2026-04-28T14:48:52.363607+00:00"
+  "updated_at_utc": "2026-05-02T14:07:38.309407+00:00"
 }
