@@ -144,6 +144,30 @@ interface AutoFreezeCandidate {
   bins: number;
 }
 
+interface AutoFreezeCaptureTarget {
+  candidate: AutoFreezeCandidate;
+  frozenFrame: SpectrumData;
+  viewRange: { centerFrequency: number; span: number };
+}
+
+interface CaptureProgressDetails {
+  startFrequencyHz: number;
+  stopFrequencyHz: number;
+  gainDb: number;
+  antenna: string;
+  artifactScope: string;
+  txId: string;
+  class: string;
+  operator: string;
+  environment: string;
+  sha256: string;
+  livePreviewSnrDb: number | null;
+  livePreviewNoiseDb: number | null;
+  livePreviewPeakDb: number | null;
+  captureMode: string;
+  triggerDetected: boolean;
+}
+
 const findAutoFreezeCandidate = (
   frame: SpectrumData,
   band: { start: number; stop: number; span: number },
@@ -312,6 +336,11 @@ export const SpectrumView: React.FC = () => {
   const [selectedRfExperimentType, setSelectedRfExperimentType] = useState<'best' | 'e5' | 'e1' | 'e3' | null>('best');
   const [rsuOverlayMode, setRsuOverlayMode] = useState<'hybrid' | 'ai_only'>('hybrid');
   const [autoFreezeArmed, setAutoFreezeArmed] = useState(false);
+  const [autoFreezeCaptureTarget, setAutoFreezeCaptureTarget] = useState<AutoFreezeCaptureTarget | null>(null);
+  const [autoFreezeCaptureProcessing, setAutoFreezeCaptureProcessing] = useState(false);
+  const [autoFreezeCaptureStatus, setAutoFreezeCaptureStatus] = useState<string | null>(null);
+  const [captureProgressDetails, setCaptureProgressDetails] = useState<CaptureProgressDetails | null>(null);
+  const [showCaptureProgressOverlay, setShowCaptureProgressOverlay] = useState(false);
   const [rfScene, setRfScene] = useState<RFSceneAnalysis | null>(null);
   const [rfOverlayError, setRfOverlayError] = useState<string | null>(null);
   const [rsuLive, setRsuLive] = useState<RFSignalUnderstandingResult | null>(null);
@@ -717,6 +746,92 @@ export const SpectrumView: React.FC = () => {
     }
   };
 
+  const captureAutoFreezeSignal = async (fileFormat: 'iq' | 'cfile') => {
+    const target = autoFreezeCaptureTarget;
+    if (!target) return;
+
+    // Calcular detalles en vivo
+    const bandQuality = markerBand ? estimateBandQuality(
+      target.frozenFrame.frequencyArray,
+      target.frozenFrame.powerLevels,
+      markerBand.start,
+      markerBand.stop
+    ) : null;
+
+    const details: CaptureProgressDetails = {
+      startFrequencyHz: target.candidate.startFrequencyHz,
+      stopFrequencyHz: target.candidate.stopFrequencyHz,
+      gainDb: deviceStatus.gain,
+      antenna: 'RX2', // Hardcodeado según el sistema
+      artifactScope: 'local project storage',
+      txId: 'unknown',
+      class: selectedProfile?.signal_type ?? 'unknown',
+      operator: 'auto', // Hardcodeado para capturas automáticas
+      environment: 'lab', // Hardcodeado
+      sha256: 'calculating...',
+      livePreviewSnrDb: bandQuality?.snrDb ?? null,
+      livePreviewNoiseDb: bandQuality?.noiseFloorDb ?? null,
+      livePreviewPeakDb: target.candidate.peakLevelDb,
+      captureMode: 'immediate',
+      triggerDetected: true, // Ya que fue trigger por Auto Freeze
+    };
+
+    setCaptureProgressDetails(details);
+    setShowCaptureProgressOverlay(true);
+
+    const profileDuration = selectedProfile?.capture_duration_seconds ?? 10;
+    const labelHint = selectedProfile?.label
+      ? `Auto Freeze capture: ${selectedProfile.label}`
+      : `Auto Freeze signal ${formatFrequency(target.candidate.peakFrequencyHz)}`;
+
+    try {
+      setAutoFreezeCaptureProcessing(true);
+      setAutoFreezeCaptureStatus(`Saving ${fileFormat.toUpperCase()} capture...`);
+      setControlError(null);
+      const response = await apiService.captureRFSignalForTraining({
+        start_frequency_hz: target.candidate.startFrequencyHz,
+        stop_frequency_hz: target.candidate.stopFrequencyHz,
+        duration_seconds: profileDuration,
+        label_hint: labelHint,
+        session_id: `autofreeze_${new Date().toISOString()}`,
+        file_format: fileFormat,
+        gain_db: selectedProfile?.recommended_gain_db,
+        profile_key: selectedProfile?.key,
+        profile: selectedProfile ?? undefined,
+        apply_bandpass_filter: markerBandpassEnabled,
+        filter_stopband_attenuation_db: markerBandpassAttenuationDb,
+      });
+
+      // Actualizar SHA256 si disponible
+      if (response?.sha256) {
+        setCaptureProgressDetails(prev => prev ? { ...prev, sha256: response.sha256 } : null);
+      }
+
+      setAutoFreezeCaptureStatus(
+        `Auto Freeze saved as ${fileFormat.toUpperCase()}.` +
+        (response?.capture_id ? ` ID=${response.capture_id}` : ''),
+      );
+      setControlError(`Auto Freeze capture saved as ${fileFormat.toUpperCase()}.`);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setAutoFreezeCaptureStatus(`Capture failed: ${message}`);
+      setControlError(message);
+    } finally {
+      setAutoFreezeCaptureProcessing(false);
+      setAutoFreezeCaptureTarget(null);
+      // Mantener overlay visible por un tiempo para ver el resultado
+      setTimeout(() => {
+        setShowCaptureProgressOverlay(false);
+        setCaptureProgressDetails(null);
+      }, 3000);
+    }
+  };
+
+  const dismissAutoFreezeCapturePrompt = () => {
+    setAutoFreezeCaptureTarget(null);
+    setAutoFreezeCaptureStatus(null);
+  };
+
   const resumeLive = () => {
     setFrozenSpectrumData(null);
     setFrozenWaterfallData([]);
@@ -770,6 +885,12 @@ export const SpectrumView: React.FC = () => {
         `Auto Freeze captured ${formatFrequency(triggerCandidate.peakFrequencyHz)} inside M1-M2: ` +
         `${triggerCandidate.snrDb.toFixed(1)} dB SNR, ${formatBandwidth(triggerCandidate.bandwidthHz)} BW.`,
       );
+      setAutoFreezeCaptureTarget({
+        candidate: triggerCandidate,
+        frozenFrame: triggerFrame,
+        viewRange,
+      });
+      setAutoFreezeCaptureStatus('Seleccione si desea guardar esta señal como .cfile o .iq para entrenamiento.');
       autoFreezeTriggeringRef.current = false;
     });
   }, [autoFreezeArmed, isFrozen, liveSpectrumData, markerBand, markerBandpassAttenuationDb, markerBandpassEnabled]);
@@ -1269,8 +1390,44 @@ export const SpectrumView: React.FC = () => {
               : `Auto Freeze ${markerBand ? formatFrequency(markerBand.center) : 'M1-M2'}`}
           </button>
 
+          {autoFreezeCaptureTarget && (
+            <div className="rounded-md border border-amber-500 bg-amber-950/40 p-3 text-sm text-amber-100">
+              <div className="mb-2 font-semibold text-amber-200">Auto Freeze captured a signal.</div>
+              <div className="mb-2">
+                {autoFreezeCaptureStatus ?? 'Seleccione un formato para guardar esta captura en la librería de entrenamiento.'}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => captureAutoFreezeSignal('cfile')}
+                  disabled={autoFreezeCaptureProcessing}
+                  className="rounded-md border border-amber-400 bg-amber-500 px-3 py-2 text-xs font-medium text-slate-950 hover:bg-amber-400 disabled:opacity-50"
+                >
+                  Guardar como .cfile
+                </button>
+                <button
+                  type="button"
+                  onClick={() => captureAutoFreezeSignal('iq')}
+                  disabled={autoFreezeCaptureProcessing}
+                  className="rounded-md border border-slate-700 bg-slate-700 px-3 py-2 text-xs font-medium text-slate-100 hover:bg-slate-600 disabled:opacity-50"
+                >
+                  Guardar como .iq
+                </button>
+                <button
+                  type="button"
+                  onClick={dismissAutoFreezeCapturePrompt}
+                  disabled={autoFreezeCaptureProcessing}
+                  className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-medium text-slate-100 hover:bg-slate-800 disabled:opacity-50"
+                >
+                  No capturar
+                </button>
+              </div>
+            </div>
+          )}
           <button
-            onClick={() => setMarkerBandpassEnabled((current) => !current)}
+            onClick={() => {
+              setMarkerBandpassEnabled((current) => !current);
+            }}
             disabled={!markerBand}
             aria-pressed={markerBandpassEnabled}
             className={cn(
@@ -2027,6 +2184,95 @@ export const SpectrumView: React.FC = () => {
           </div>
         </aside>
       </div>
+
+      {/* Capture Progress Overlay */}
+      {showCaptureProgressOverlay && captureProgressDetails && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="rounded-lg border border-slate-700 bg-slate-900/95 p-6 shadow-xl max-w-md w-full mx-4">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-slate-100">Captura en Progreso</h3>
+              {autoFreezeCaptureProcessing && (
+                <div className="flex items-center gap-2 text-sm text-slate-400">
+                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-slate-400 border-t-transparent"></div>
+                  Procesando...
+                </div>
+              )}
+            </div>
+            <div className="space-y-2 text-sm">
+              <div className="grid grid-cols-2 gap-2">
+                <span className="text-slate-400">Start:</span>
+                <span className="text-slate-100">{formatFrequency(captureProgressDetails.startFrequencyHz)}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <span className="text-slate-400">Stop:</span>
+                <span className="text-slate-100">{formatFrequency(captureProgressDetails.stopFrequencyHz)}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <span className="text-slate-400">Gain:</span>
+                <span className="text-slate-100">{captureProgressDetails.gainDb.toFixed(1)} dB</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <span className="text-slate-400">Antenna:</span>
+                <span className="text-slate-100">{captureProgressDetails.antenna}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <span className="text-slate-400">Artifact scope:</span>
+                <span className="text-slate-100">{captureProgressDetails.artifactScope}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <span className="text-slate-400">Tx ID:</span>
+                <span className="text-slate-100">{captureProgressDetails.txId}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <span className="text-slate-400">Class:</span>
+                <span className="text-slate-100">{captureProgressDetails.class}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <span className="text-slate-400">Operator:</span>
+                <span className="text-slate-100">{captureProgressDetails.operator}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <span className="text-slate-400">Environment:</span>
+                <span className="text-slate-100">{captureProgressDetails.environment}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <span className="text-slate-400">SHA256:</span>
+                <span className="text-slate-100 font-mono text-xs">{captureProgressDetails.sha256}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <span className="text-slate-400">Live preview SNR:</span>
+                <span className="text-slate-100">{captureProgressDetails.livePreviewSnrDb ? `${captureProgressDetails.livePreviewSnrDb.toFixed(1)} dB` : 'n/a'}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <span className="text-slate-400">Live preview noise:</span>
+                <span className="text-slate-100">{captureProgressDetails.livePreviewNoiseDb ? `${captureProgressDetails.livePreviewNoiseDb.toFixed(1)} dB` : 'n/a'}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <span className="text-slate-400">Live preview peak:</span>
+                <span className="text-slate-100">{captureProgressDetails.livePreviewPeakDb ? `${captureProgressDetails.livePreviewPeakDb.toFixed(1)} dB` : 'n/a'}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <span className="text-slate-400">Capture mode:</span>
+                <span className="text-slate-100">{captureProgressDetails.captureMode}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <span className="text-slate-400">Trigger detected:</span>
+                <span className="text-slate-100">{captureProgressDetails.triggerDetected ? 'true' : 'false'}</span>
+              </div>
+            </div>
+            {!autoFreezeCaptureProcessing && (
+              <div className="mt-4 flex justify-end">
+                <button
+                  onClick={() => setShowCaptureProgressOverlay(false)}
+                  className="rounded-md border border-slate-700 bg-slate-800 px-4 py-2 text-sm text-slate-100 hover:bg-slate-700"
+                >
+                  Cerrar
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -13,16 +13,12 @@
   "sample_rate_hz": 2000000.0,
   "center_frequency_hz": 0.0,
   "original_center_frequencies_hz": [
-    89333039.234,
-    89368750.0,
-    89379093.926,
-    89411718.5,
-    89450781.0
+    89461516.814
   ],
   "canonicalized": true,
   "canonical_center_hz": 0.0,
   "canonical_sample_rate_hz": 2000000.0,
-  "canonical_bandwidth_hz": 1800000.0,
+  "canonical_bandwidth_hz": 587084.7974540874,
   "canonical_segment_length_samples": 1024,
   "preprocessing_profile_id": "rff_v1_centered_filtered_resampled_iq_powernorm"
 }

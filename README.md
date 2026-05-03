@@ -52,7 +52,7 @@ The application is built with a FastAPI backend and a React/TypeScript frontend.
 - Mouse-wheel zoom on spectrum span
 - Crosshair cursor readout with frequency and level
 - Frozen View mode for pausing the current spectrum/waterfall frame in memory while preserving markers, zoom, overlays, and existing detection interactions
-- Auto Freeze M1-M2 trigger for fast transient signals inside the marker-defined band
+- Auto Freeze M1-M2 trigger for fast transient signals inside the marker-defined band, with optional post-freeze capture as `.cfile` or `.iq` into the training capture library, showing a transparent progress overlay with live-calculated metadata (SNR, peak, noise, class from profile, etc.)
 - RF Profile dropdown with hardcoded professional observation presets for reproducible capture and fingerprinting experiments
 - Peak Hold overlay with permanent Max Hold and configurable decay
 - Marker Band-Pass controls with live FFT-mask preview and real FIR filtering for I/Q capture and demodulation
