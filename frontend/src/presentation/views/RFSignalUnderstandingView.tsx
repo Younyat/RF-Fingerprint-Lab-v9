@@ -93,6 +93,7 @@ export const RFSignalUnderstandingView: React.FC = () => {
   const [selectedRFProfile, setSelectedRFProfile] = useState<AppliedRFProfile | null>(() => loadSelectedRFProfile());
   const [markerBandpass, setMarkerBandpass] = useState(() => loadMarkerBandpassSettings());
   const [captureRegistry, setCaptureRegistry] = useState<Array<Record<string, any>>>([]);
+  const [selectedCaptures, setSelectedCaptures] = useState<Set<string>>(new Set());
   const [trainingQueue, setTrainingQueue] = useState<Record<string, any> | null>(null);
   const [trainingResult, setTrainingResult] = useState<Record<string, any> | null>(null);
   const [trainingTarget, setTrainingTarget] = useState<'local' | 'remote'>('local');
@@ -408,6 +409,56 @@ export const RFSignalUnderstandingView: React.FC = () => {
     }
   };
 
+  const deleteRegistered = async (captureId: string) => {
+    if (!confirm(`Are you sure you want to delete capture ${captureId}?`)) return;
+    try {
+      setLoading(true);
+      await apiService.deleteRegisteredRFSignalCapture(captureId);
+      await refreshLearningLoop();
+      setError(null);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleCaptureSelection = (captureId: string) => {
+    setSelectedCaptures(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(captureId)) {
+        newSet.delete(captureId);
+      } else {
+        newSet.add(captureId);
+      }
+      return newSet;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedCaptures.size === captureRegistry.length) {
+      setSelectedCaptures(new Set());
+    } else {
+      setSelectedCaptures(new Set(captureRegistry.map(c => c.capture_id)));
+    }
+  };
+
+  const deleteSelected = async () => {
+    if (selectedCaptures.size === 0) return;
+    if (!confirm(`Are you sure you want to delete ${selectedCaptures.size} selected captures?`)) return;
+    try {
+      setLoading(true);
+      await Promise.all(Array.from(selectedCaptures).map(id => apiService.deleteRegisteredRFSignalCapture(id)));
+      setSelectedCaptures(new Set());
+      await refreshLearningLoop();
+      setError(null);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const trainSignalTypeClassifier = async () => {
     if (!canTrainSignalType) {
       setTrainingResult({
@@ -601,12 +652,28 @@ export const RFSignalUnderstandingView: React.FC = () => {
       <section className="mt-4 rounded-lg border p-4" style={{ borderColor: 'var(--app-border)', background: 'var(--app-surface)' }}>
         <div className="mb-3 flex items-center justify-between">
           <div className="text-sm font-semibold">Captured RF files</div>
-          <button type="button" onClick={refreshLearningLoop} className="rounded-md border px-2 py-1 text-xs" style={{ borderColor: 'var(--app-border)' }}>Refresh</button>
+          <div className="flex gap-2">
+            <button type="button" onClick={toggleSelectAll} className="rounded-md border px-2 py-1 text-xs" style={{ borderColor: 'var(--app-border)' }}>
+              {selectedCaptures.size === captureRegistry.length ? 'Deselect All' : 'Select All'}
+            </button>
+            <button type="button" onClick={deleteSelected} disabled={selectedCaptures.size === 0 || loading} className="rounded-md border px-2 py-1 text-xs bg-red-500 text-white disabled:opacity-50" style={{ borderColor: 'var(--app-border)' }}>
+              Delete Selected ({selectedCaptures.size})
+            </button>
+            <button type="button" onClick={refreshLearningLoop} className="rounded-md border px-2 py-1 text-xs" style={{ borderColor: 'var(--app-border)' }}>Refresh</button>
+          </div>
         </div>
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto overflow-y-auto max-h-96">
           <table className="w-full min-w-[820px] text-left text-sm">
             <thead className="text-xs uppercase text-[var(--app-text-muted)]">
               <tr>
+                <th className="px-2 py-2">
+                  <input
+                    type="checkbox"
+                    checked={selectedCaptures.size === captureRegistry.length && captureRegistry.length > 0}
+                    onChange={toggleSelectAll}
+                    className="rounded"
+                  />
+                </th>
                 <th className="px-2 py-2">Capture ID</th>
                 <th className="px-2 py-2">Frequency</th>
                 <th className="px-2 py-2">Sample rate</th>
@@ -618,8 +685,16 @@ export const RFSignalUnderstandingView: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {captureRegistry.slice(0, 8).map((capture) => (
+              {captureRegistry.map((capture) => (
                 <tr key={capture.capture_id} className="border-t" style={{ borderColor: 'var(--app-border)' }}>
+                  <td className="px-2 py-2">
+                    <input
+                      type="checkbox"
+                      checked={selectedCaptures.has(capture.capture_id)}
+                      onChange={() => toggleCaptureSelection(capture.capture_id)}
+                      className="rounded"
+                    />
+                  </td>
                   <td className="px-2 py-2">{capture.capture_id}</td>
                   <td className="px-2 py-2">{formatFrequency(Number(capture.center_frequency_hz ?? 0))}</td>
                   <td className="px-2 py-2">{formatFrequency(Number(capture.sample_rate_hz ?? 0))}/s</td>
@@ -628,12 +703,13 @@ export const RFSignalUnderstandingView: React.FC = () => {
                   <td className="px-2 py-2">{(capture.labels ?? []).join(', ') || 'none'}</td>
                   <td className="px-2 py-2">{capture.used_for_training ? 'yes' : 'no'}</td>
                   <td className="px-2 py-2">
-                    <button type="button" onClick={() => analyzeRegistered(String(capture.capture_id))} className="rounded-md border px-2 py-1 text-xs" style={{ borderColor: 'var(--app-border)' }}>Analyze</button>
+                    <button type="button" onClick={() => analyzeRegistered(String(capture.capture_id))} className="rounded-md border px-2 py-1 text-xs mr-2" style={{ borderColor: 'var(--app-border)' }}>Analyze</button>
+                    <button type="button" onClick={() => deleteRegistered(String(capture.capture_id))} className="rounded-md border px-2 py-1 text-xs bg-red-500 text-white" style={{ borderColor: 'var(--app-border)' }}>Delete</button>
                   </td>
                 </tr>
               ))}
               {captureRegistry.length === 0 && (
-                <tr><td colSpan={8} className="px-2 py-6 text-center text-[var(--app-text-muted)]">No registered captures yet.</td></tr>
+                <tr><td colSpan={9} className="px-2 py-6 text-center text-[var(--app-text-muted)]">No registered captures yet.</td></tr>
               )}
             </tbody>
           </table>

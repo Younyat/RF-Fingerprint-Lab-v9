@@ -176,6 +176,7 @@ export const API_ENDPOINTS = {
   RF_SIGNAL_UNDERSTANDING_CAPTURE_REGISTRY: '/api/rf-signal-understanding/capture-registry',
   RF_SIGNAL_UNDERSTANDING_REGISTER_CAPTURE: '/api/rf-signal-understanding/capture-registry/register',
   RF_SIGNAL_UNDERSTANDING_ANALYZE_REGISTERED_CAPTURE: (id: string) => `/api/rf-signal-understanding/capture-registry/${id}/analyze`,
+  RF_SIGNAL_UNDERSTANDING_DELETE_REGISTERED_CAPTURE: (id: string) => `/api/rf-signal-understanding/capture-registry/${id}`,
   RF_SIGNAL_UNDERSTANDING_TRAINING_QUEUE: '/api/rf-signal-understanding/training-queue',
 
   // RF Experiment Lab

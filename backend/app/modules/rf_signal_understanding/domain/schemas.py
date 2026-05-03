@@ -101,6 +101,14 @@ class CaptureForTrainingRequest(BaseModel):
     apply_bandpass_filter: bool = False
     filter_stopband_attenuation_db: float = 60.0
     filter_transition_width_hz: float | None = None
+    live_preview_snr_db: float | None = None
+    live_preview_noise_floor_db: float | None = None
+    live_preview_peak_level_db: float | None = None
+    live_preview_peak_frequency_hz: float | None = None
+    transmitter_id: str | None = None
+    transmitter_class: str | None = None
+    operator: str | None = None
+    environment: str | None = None
 
 
 class RegisterCaptureRequest(BaseModel):
@@ -115,6 +123,10 @@ class RegisterCaptureRequest(BaseModel):
     session_id: str | None = None
     profile_key: str | None = None
     profile: dict[str, Any] | None = None
+    transmitter_id: str | None = None
+    transmitter_class: str | None = None
+    operator: str | None = None
+    environment: str | None = None
 
 
 class ModelSummary(BaseModel):

@@ -750,30 +750,30 @@ export const SpectrumView: React.FC = () => {
     const target = autoFreezeCaptureTarget;
     if (!target) return;
 
-    // Calcular detalles en vivo
-    const bandQuality = markerBand ? estimateBandQuality(
+    // Calcular detalles en vivo usando la ventana de la señal detectada, no solo el marker band.
+    const bandQuality = estimateBandQuality(
       target.frozenFrame.frequencyArray,
       target.frozenFrame.powerLevels,
-      markerBand.start,
-      markerBand.stop
-    ) : null;
+      target.candidate.startFrequencyHz,
+      target.candidate.stopFrequencyHz,
+    );
 
     const details: CaptureProgressDetails = {
       startFrequencyHz: target.candidate.startFrequencyHz,
       stopFrequencyHz: target.candidate.stopFrequencyHz,
       gainDb: deviceStatus.gain,
-      antenna: 'RX2', // Hardcodeado según el sistema
+      antenna: 'RX2',
       artifactScope: 'local project storage',
-      txId: 'unknown',
-      class: selectedProfile?.signal_type ?? 'unknown',
-      operator: 'auto', // Hardcodeado para capturas automáticas
-      environment: 'lab', // Hardcodeado
+      txId: selectedProfile?.key ?? 'auto_freeze',
+      class: selectedProfile?.signal_type ?? selectedProfile?.label ?? 'auto_freeze',
+      operator: 'auto',
+      environment: 'lab',
       sha256: 'calculating...',
-      livePreviewSnrDb: bandQuality?.snrDb ?? null,
+      livePreviewSnrDb: bandQuality?.snrDb ?? target.candidate.snrDb ?? null,
       livePreviewNoiseDb: bandQuality?.noiseFloorDb ?? null,
-      livePreviewPeakDb: target.candidate.peakLevelDb,
+      livePreviewPeakDb: bandQuality?.peakLevelDb ?? target.candidate.peakLevelDb ?? null,
       captureMode: 'immediate',
-      triggerDetected: true, // Ya que fue trigger por Auto Freeze
+      triggerDetected: true,
     };
 
     setCaptureProgressDetails(details);
@@ -800,6 +800,14 @@ export const SpectrumView: React.FC = () => {
         profile: selectedProfile ?? undefined,
         apply_bandpass_filter: markerBandpassEnabled,
         filter_stopband_attenuation_db: markerBandpassAttenuationDb,
+        live_preview_snr_db: details.livePreviewSnrDb,
+        live_preview_noise_floor_db: details.livePreviewNoiseDb,
+        live_preview_peak_level_db: details.livePreviewPeakDb,
+        live_preview_peak_frequency_hz: target.candidate.peakFrequencyHz,
+        transmitter_id: details.txId,
+        transmitter_class: details.class,
+        operator: details.operator,
+        environment: details.environment,
       });
 
       // Actualizar SHA256 si disponible

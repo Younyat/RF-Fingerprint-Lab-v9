@@ -1,10 +1,10 @@
 {
   "device_to_label": {
-    "remote_001": 0,
-    "remote_002": 1
+    "BLE Advertising Channel 37": 0,
+    "Commercial FM Broadcast": 1
   },
   "label_to_device": {
-    "0": "remote_001",
-    "1": "remote_002"
+    "0": "BLE Advertising Channel 37",
+    "1": "Commercial FM Broadcast"
   }
 }

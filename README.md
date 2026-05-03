@@ -173,6 +173,98 @@ RF Experiment Lab exposes this as an explicit dataset eligibility selector:
 
 When E5 reports that it needs at least two classes, that count is computed after the eligibility gate and after the selected `label_field` is applied. For E5 signal-recognition baselines, prefer `signal_type` or `modulation_class`. Use `transmitter_id` only when the goal is physical-device fingerprinting and the operator has confirmed real transmitter identities. If selected captures are still `candidate`, use `training_draft` for a draft baseline or promote reviewed captures to `ready_for_training` in Dataset Builder for scientific results.
 
+### Troubleshooting: Dataset Eligibility Messages
+
+If you see a message like this in the `RF Experiment Lab` tab:
+
+```
+E5 found no eligible captures for training under scientific_strict. Considered 12 records, excluded 7. Reasons: {'missing_or_unknown_label': 5, 'review_not_accepted': 1, 'label_not_strong': 1}. Use Dataset Builder to mark reviewed samples as ready_for_training for scientific runs, or select training_draft for exploratory baselines with candidate captures.
+```
+
+This is not an error—it's the **scientific dataset gate** in action. RF Experiment Lab enforces strict eligibility by default to ensure reproducible, benchmarkable results. The message means that some of your captures don't meet the criteria for scientific training under `scientific_strict` policy.
+
+#### Why this happens
+
+The `scientific_strict` policy only accepts captures that are:
+- `label_status == strong_label` (confirmed labels, not automatic guesses)
+- `review_status == accepted` (manually reviewed and approved)
+- `training_readiness == ready_for_training` (promoted for scientific use)
+- `capture_quality == valid` (passes automatic QC checks)
+
+Captures are excluded for reasons like:
+- `missing_or_unknown_label`: No valid label assigned (e.g., `unknown`, `tx_unknown`)
+- `review_not_accepted`: Not manually accepted in Dataset Builder
+- `label_not_strong`: Label is weak (e.g., from automatic band-profile resolution)
+- Other QC issues like invalid quality or not ready for training
+
+#### What you can do
+
+You have two main options:
+
+**Option 1: Prepare scientific data in Dataset Builder**  
+Go to the `Dataset Builder` tab and review the excluded captures:
+1. Check and correct labels (e.g., set `signal_type`, `modulation_class`, or `transmitter_id`)
+2. Confirm strong labels by clicking "Confirm as strong label" if applicable
+3. Accept the capture by clicking "Accept" after QC review
+4. Promote to `ready_for_training` if it's suitable for scientific benchmarks
+
+Once updated, return to `RF Experiment Lab` and try the preview/run again. This ensures your results are scientifically valid.
+
+**Option 2: Use exploratory mode for quick baselines**  
+If you want to train a draft baseline while curating your dataset:
+1. In `RF Experiment Lab`, change `Dataset eligibility` to `training_draft`
+2. This allows `candidate` captures with strong labels and non-invalid QC
+3. Use this for exploratory runs, but note that results are not primary scientific evidence
+
+For debugging or plumbing tests, you can select `all_debug`, but those runs should not be reported as scientific benchmarks.
+
+### Troubleshooting: Split Errors and Missing Classes
+
+If you see a message like this in the `RF Experiment Lab` tab:
+
+```
+E5 closed-set evaluation has classes missing from train split: broadcast_fm
+```
+
+This means the selected split strategy (e.g., `session_disjoint` or `capture_disjoint`) has assigned all captures of the class `broadcast_fm` to the evaluation set (validation or test), leaving no examples in the training set. Closed-set evaluation requires all classes to be present in training so the model can learn them.
+
+#### Why this happens
+
+Group-disjoint splits (like `session_disjoint`) ensure no group overlaps between train/val/test, but if a class is only present in one group, that group might be assigned to evaluation. This is common with small datasets or when classes are session-specific.
+
+#### What you can do
+
+**Option 1: Switch to random split**  
+In `RF Experiment Lab`, change `Split strategy` to `random`. This allows classes to be distributed randomly across splits, ensuring all classes appear in training. Note that random splits are not scientifically strict for reproducibility, so use them for exploratory runs.
+
+**Option 2: Adjust split ratios**  
+Increase the `train_ratio` (e.g., from 0.7 to 0.8) to put more data in training. This might help if the issue is marginal class distribution.
+
+**Option 3: Check your data**  
+Review in `Dataset Builder` if `broadcast_fm` (or other classes) have enough samples across different sessions/groups. If a class is only in one session, consider adding more captures or using a different `group_by` field.
+
+For scientific results, prefer group-disjoint splits, but ensure your dataset has balanced classes across groups.
+
+### Troubleshooting: Persistent Datasets After Deletion
+
+If datasets still appear in `RF Experiment Lab` after deleting them from `Capture Lab`, this is expected behavior. RF Experiment Lab lists captures from multiple sources:
+
+- **Fingerprinting captures**: Records curated in `Dataset Builder` (stored in `backend/app/storage/fingerprinting/captures/`)
+- **RF Signal Understanding registry**: Captures registered for signal analysis
+- **Internal RF Experiment Lab samples**: Built-in samples for testing
+
+Deleting from `Capture Lab` only removes the raw modulated signal records. If you imported captures to `Dataset Builder` or `RF Signal Understanding`, they remain available for experiments.
+
+#### What you can do
+
+- To remove from `Dataset Builder`: Go to `Dataset Builder` and delete the capture there.
+- To remove from `RF Signal Understanding`: Open that tab and delete from the registry.
+- For internal samples: These are built-in and cannot be deleted, but you can filter them out by capture ID in RF Experiment Lab.
+
+**Note**: Starting from this version, deleting a capture from `Capture Lab` will automatically remove linked records from `Dataset Builder` and `RF Signal Understanding` if they reference the same IQ/metadata files. This ensures a clean cascade delete across all registries.
+
+This design allows reusing curated datasets across experiments without re-acquiring raw signals.
+
 ### Implemented experiment families
 
 | ID | Module | Stage | Representation | Model family | Scientific role |

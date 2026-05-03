@@ -10,15 +10,16 @@
   "seed": 42,
   "start_mode": "from_scratch",
   "device_used": "cuda",
-  "sample_rate_hz": 2000000.0,
+  "sample_rate_hz": 1562500.0,
   "center_frequency_hz": 0.0,
   "original_center_frequencies_hz": [
-    89461516.814
+    98500000.0,
+    2402000000.0
   ],
   "canonicalized": true,
   "canonical_center_hz": 0.0,
-  "canonical_sample_rate_hz": 2000000.0,
-  "canonical_bandwidth_hz": 587084.7974540874,
+  "canonical_sample_rate_hz": 1562500.0,
+  "canonical_bandwidth_hz": 1406250.0,
   "canonical_segment_length_samples": 1024,
   "preprocessing_profile_id": "rff_v1_centered_filtered_resampled_iq_powernorm"
 }

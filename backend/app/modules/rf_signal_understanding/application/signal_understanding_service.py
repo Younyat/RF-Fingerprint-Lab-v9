@@ -676,6 +676,10 @@ class RFSignalUnderstandingService:
             "session_id": request.session_id,
             "profile_key": request.profile_key,
             "profile": request.profile,
+            "transmitter_id": request.transmitter_id,
+            "transmitter_class": request.transmitter_class,
+            "operator": request.operator,
+            "environment": request.environment,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "analysis_status": "pending",
             "training_status": "not_reviewed",
@@ -688,6 +692,13 @@ class RFSignalUnderstandingService:
     def list_registered_captures(self) -> dict[str, Any]:
         captures = self._read_capture_registry()
         return {"captures": sorted(captures, key=lambda item: item.get("created_at", ""), reverse=True)}
+
+    def delete_registered_capture(self, capture_id: str) -> None:
+        captures = self._read_capture_registry()
+        updated_captures = [c for c in captures if c.get("capture_id") != capture_id]
+        if len(updated_captures) == len(captures):
+            raise FileNotFoundError(f"Registered RF capture not found: {capture_id}")
+        self._write_capture_registry(updated_captures)
 
     def analyze_registered_capture(self, capture_id: str) -> dict[str, Any]:
         capture = self._get_registered_capture(capture_id)
@@ -736,6 +747,14 @@ class RFSignalUnderstandingService:
             apply_bandpass_filter=bool(request.apply_bandpass_filter),
             filter_stopband_attenuation_db=float(request.filter_stopband_attenuation_db),
             filter_transition_width_hz=request.filter_transition_width_hz,
+            live_preview_snr_db=request.live_preview_snr_db,
+            live_preview_noise_floor_db=request.live_preview_noise_floor_db,
+            live_preview_peak_level_db=request.live_preview_peak_level_db,
+            live_preview_peak_frequency_hz=request.live_preview_peak_frequency_hz,
+            transmitter_id=request.transmitter_id or "",
+            transmitter_class=request.transmitter_class or "",
+            operator=request.operator or "",
+            environment=request.environment or "",
         )
         iq_path = capture.get("iq_file")
         if not iq_path:
@@ -753,6 +772,10 @@ class RFSignalUnderstandingService:
                 session_id=request.session_id,
                 profile_key=request.profile_key or resolved_profile.get("profile_key"),
                 profile=request.profile or resolved_profile,
+                transmitter_id=request.transmitter_id,
+                transmitter_class=request.transmitter_class,
+                operator=request.operator,
+                environment=request.environment,
             )
         )
         analyzed = self.analyze_registered_capture(registered["capture_id"])

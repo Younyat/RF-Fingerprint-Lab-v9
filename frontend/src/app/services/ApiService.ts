@@ -364,6 +364,14 @@ export class ApiService {
     apply_bandpass_filter?: boolean;
     filter_stopband_attenuation_db?: number;
     filter_transition_width_hz?: number | null;
+    live_preview_snr_db?: number | null;
+    live_preview_noise_floor_db?: number | null;
+    live_preview_peak_level_db?: number | null;
+    live_preview_peak_frequency_hz?: number | null;
+    transmitter_id?: string;
+    transmitter_class?: string;
+    operator?: string;
+    environment?: string;
   }): Promise<Record<string, any>> {
     const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_CAPTURE_FOR_TRAINING}`, payload);
     return response.data;
@@ -381,6 +389,11 @@ export class ApiService {
 
   async analyzeRegisteredRFSignalCapture(id: string): Promise<Record<string, any>> {
     const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_ANALYZE_REGISTERED_CAPTURE(id)}`);
+    return response.data;
+  }
+
+  async deleteRegisteredRFSignalCapture(id: string): Promise<Record<string, any>> {
+    const response = await axios.delete(`${this.baseURL}${API_ENDPOINTS.RF_SIGNAL_UNDERSTANDING_DELETE_REGISTERED_CAPTURE(id)}`);
     return response.data;
   }
 

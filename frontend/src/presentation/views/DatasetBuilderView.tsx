@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ApiService } from '../../app/services/ApiService';
-import { FingerprintingCaptureRecord } from '../../shared/types';
+import { FingerprintingCaptureRecord, ModulatedSignalCapture } from '../../shared/types';
 import { buildRfCaptureDiagnostic } from '../../shared/utils';
 
 const api = new ApiService();
@@ -29,6 +29,7 @@ const formatHz = (value?: number | null) => {
 export const DatasetBuilderView: React.FC = () => {
   const [captures, setCaptures] = useState<FingerprintingCaptureRecord[]>([]);
   const [rsuCaptures, setRsuCaptures] = useState<Array<Record<string, any>>>([]);
+  const [captureLabCaptures, setCaptureLabCaptures] = useState<ModulatedSignalCapture[]>([]);
   const [selectedCaptureId, setSelectedCaptureId] = useState<string>('');
   const [splitFilter, setSplitFilter] = useState<'all' | 'train' | 'val' | 'predict'>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'valid' | 'doubtful' | 'rejected'>('all');
@@ -39,15 +40,55 @@ export const DatasetBuilderView: React.FC = () => {
   const [actionMessage, setActionMessage] = useState<string>('');
 
   const refresh = async () => {
-    const [data, rsuRegistry] = await Promise.all([
+    const [data, rsuRegistry, captureLabData] = await Promise.all([
       api.getFingerprintingCaptures(),
       api.getRFSignalCaptureRegistry().catch(() => ({ captures: [] })),
+      api.getModulatedSignalCaptures().catch(() => []),
     ]);
     setCaptures(data);
     setRsuCaptures(rsuRegistry.captures ?? []);
+    setCaptureLabCaptures(Array.isArray(captureLabData) ? captureLabData : (captureLabData as any)?.captures ?? []);
     setLastRefresh(new Date().toISOString());
     if (!selectedCaptureId && data.length > 0) {
       setSelectedCaptureId(data[0].capture_id);
+    }
+  };
+
+  const importModulatedCapture = async (capture: ModulatedSignalCapture) => {
+    setActionMessage('');
+    const captureId = String(capture.id);
+    const alreadyImported = captures.some(
+      (item) => item.artifacts?.source_capture_id === captureId || item.capture_id === captureId,
+    );
+    if (alreadyImported) {
+      setActionMessage(`Capture Lab dataset ${captureId} is already present in Dataset Builder.`);
+      return;
+    }
+    try {
+      await api.importModulatedCaptureToFingerprinting(captureId, {
+        session_id: capture.session_id || `capture_lab_${captureId}`,
+        dataset_split: capture.dataset_split || 'train',
+        transmitter_label: String(capture.label ?? capture.transmitter_id ?? `capture_lab_${captureId}`),
+        transmitter_class: String(capture.transmitter_class ?? capture.modulation_hint ?? 'unknown'),
+        transmitter_id: String(capture.transmitter_id ?? capture.label ?? `capture_lab_${captureId}`),
+        operator: String(capture.operator ?? 'capture_lab'),
+        environment: String(capture.environment ?? 'unknown'),
+        notes: String(capture.notes ?? 'Imported from Capture Lab for Dataset Builder QC review.'),
+        ground_truth_confidence: 'weak_from_capture_lab',
+        family: String(capture.transmitter_class ?? capture.modulation_hint ?? 'unknown'),
+        signal_family: String(capture.transmitter_class ?? capture.modulation_hint ?? 'unknown'),
+        signal_type: String(capture.transmitter_class ?? capture.modulation_hint ?? 'unknown'),
+        modulation_class: capture.modulation_hint,
+        band_label: String(capture.label ?? ''),
+        profile_key: null,
+        label_status: 'weak_label',
+      });
+      setActionMessage(`Imported Capture Lab dataset ${captureId}. Review it before using it for training.`);
+      await refresh();
+      setSelectedCaptureId(captureId);
+    } catch (error) {
+      console.error('Failed to import Capture Lab dataset', error);
+      setActionMessage(`Failed to import Capture Lab dataset ${captureId}.`);
     }
   };
 
@@ -396,6 +437,60 @@ export const DatasetBuilderView: React.FC = () => {
           {rsuCaptures.length === 0 && (
             <div className="rounded-2xl border border-dashed border-cyan-200 bg-white p-4 text-sm text-slate-500">
               No RF Signal Understanding captures are registered yet.
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="mb-5 rounded-[1.75rem] border border-amber-200 bg-amber-50/80 p-5 shadow-[0_18px_40px_rgba(15,23,42,0.06)]">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-800">Capture Lab candidates</div>
+            <h2 className="mt-2 text-xl font-semibold text-slate-900">Capturas de Capture Lab disponibles para Dataset Builder</h2>
+            <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-700">
+              Estas capturas ya existen en el registro de Capture Lab. Puedes importarlas al Dataset Builder para someterlas a QC,
+              decidir su split y validar etiquetas antes de usarlas en entrenamiento.
+            </p>
+          </div>
+          <button className="rounded-full border border-amber-300 bg-white px-4 py-2 text-sm font-semibold text-amber-800" onClick={() => refresh()}>
+            Refresh candidates
+          </button>
+        </div>
+        <div className="mt-4 grid gap-3 xl:grid-cols-3">
+          {captureLabCaptures.map((capture) => {
+            const captureId = String(capture.id);
+            const imported = captures.some((item) => item.artifacts?.source_capture_id === captureId || item.capture_id === captureId);
+            return (
+              <article key={captureId} className="rounded-2xl border border-amber-100 bg-white p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="font-semibold text-slate-900">{captureId}</div>
+                    <div className="mt-1 text-xs text-slate-500">{capture.capture_type ?? 'capture_lab'} | {capture.file_format ?? 'iq'}</div>
+                  </div>
+                  <span className={`rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] ${imported ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                    {imported ? 'imported' : 'candidate'}
+                  </span>
+                </div>
+                <div className="mt-3 space-y-1 text-xs text-slate-600">
+                  <div>Split: {capture.dataset_split ?? 'unknown'}</div>
+                  <div>Session: {capture.session_id ?? 'none'}</div>
+                  <div>Source: {capture.source_device ?? capture.driver ?? 'unknown'}</div>
+                  <div>Trigger: {String(capture.trigger_capture?.trigger_detected ?? 'unknown')}</div>
+                  <div className="truncate">IQ: {String(capture.iq_file ?? capture.metadata_file ?? 'not linked')}</div>
+                </div>
+                <button
+                  className="mt-3 w-full rounded-full border border-amber-300 px-3 py-2 text-sm font-semibold text-amber-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => importModulatedCapture(capture)}
+                  disabled={imported}
+                >
+                  {imported ? 'Already in Dataset Builder' : 'Import for QC review'}
+                </button>
+              </article>
+            );
+          })}
+          {captureLabCaptures.length === 0 && (
+            <div className="rounded-2xl border border-dashed border-amber-200 bg-white p-4 text-sm text-slate-500">
+              No Capture Lab datasets were found in the modulated capture registry.
             </div>
           )}
         </div>

@@ -1,17 +1,17 @@
 {
   "train_sessions": {
-    "remote_001": [
+    "BLE Advertising Channel 37": [
       "session_001"
     ],
-    "remote_002": [
+    "Commercial FM Broadcast": [
       "session_001"
     ]
   },
   "test_sessions": {
-    "remote_001": [
+    "BLE Advertising Channel 37": [
       "session_001"
     ],
-    "remote_002": [
+    "Commercial FM Broadcast": [
       "session_001"
     ]
   }

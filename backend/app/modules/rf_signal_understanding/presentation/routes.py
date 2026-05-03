@@ -94,6 +94,14 @@ def build_rf_signal_understanding_router(service: RFSignalUnderstandingService, 
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @router.delete("/capture-registry/{capture_id}")
+    async def delete_registry_capture(capture_id: str):
+        try:
+            service.delete_registered_capture(capture_id)
+            return {"message": f"Capture {capture_id} deleted successfully"}
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @router.get("/training-queue")
     async def training_queue():
         return service.training_queue_summary()

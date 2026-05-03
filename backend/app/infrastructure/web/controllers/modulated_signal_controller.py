@@ -251,6 +251,7 @@ class ModulatedSignalController:
     def delete_capture(self, capture_id: str) -> dict:
         capture = self.get_capture(capture_id)
         removed_registry_records = self._delete_linked_fingerprinting_records(capture)
+        removed_registry_records.extend(self._delete_linked_rf_signal_understanding_records(capture))
         candidate_values = [capture.get("iq_file"), capture.get("metadata_file")]
         removed_files: list[str] = []
         skipped_external_files: list[str] = []
@@ -319,6 +320,28 @@ class ModulatedSignalController:
                 record_path.unlink()
                 removed.append(record_path.stem)
         return removed
+
+    def _delete_linked_rf_signal_understanding_records(self, capture: dict) -> list[str]:
+        registry_path = app_settings.storage.root_dir / "rf_signal_understanding" / "capture_registry" / "captures.json"
+        if not registry_path.exists():
+            return []
+        capture_id = capture.get("id")
+        if not capture_id:
+            return []
+        try:
+            with registry_path.open("r", encoding="utf-8") as handle:
+                records = json.load(handle)
+        except Exception:
+            return []
+        if not isinstance(records, list):
+            return []
+        original_count = len(records)
+        filtered_records = [r for r in records if str(r.get("capture_id")) != str(capture_id)]
+        if len(filtered_records) < original_count:
+            with registry_path.open("w", encoding="utf-8") as handle:
+                json.dump(filtered_records, handle, indent=2, ensure_ascii=False)
+            return [str(capture_id)]
+        return []
 
     def _existing_file(self, value: str | None, label: str) -> Path:
         if not value:
