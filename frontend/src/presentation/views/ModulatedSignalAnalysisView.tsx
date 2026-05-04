@@ -301,7 +301,6 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
     setDeletingCaptureId(capture.id);
     try {
       const result = await apiService.deleteModulatedSignalCapture(capture.id);
-      setCaptures((current) => current.filter((item) => item.id !== capture.id));
       const registryInfo = result.deleted_registry_records.length
         ? ` Removed ${result.deleted_registry_records.length} linked fingerprinting record(s).`
         : '';
@@ -309,6 +308,7 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
         ? ` Skipped ${result.skipped_external_files.length} external file(s) outside this project.`
         : '';
       setSuccess(`Capture ${result.capture_id} deleted. Removed ${result.deleted_files.length} local file(s).${registryInfo}${skippedInfo}`);
+      await loadCaptures();
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {

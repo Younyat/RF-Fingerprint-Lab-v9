@@ -262,6 +262,12 @@ class RFExperimentPredictionBody(BaseModel):
     persist: bool = True
 
 
+class LiveInferenceBody(BaseModel):
+    model_id: str
+    experiment_type: str | None = None
+    live_context: dict[str, Any] = Field(default_factory=dict)
+
+
 def _ok(data: Any, message: str = "ok", available: bool = True, status: str = "ok") -> dict[str, Any]:
     return {
         "status": status,
@@ -432,6 +438,20 @@ def build_rf_experiment_lab_router(service) -> APIRouter:
     async def rf_experiment_compare_region(body: RFExperimentPredictionBody) -> dict[str, Any]:
         try:
             return _ok(service.compare_models_on_region(body.model_dump()), "RF Experiment Lab model comparison on region completed")
+        except Exception as exc:
+            return _error(exc)
+
+    @router.get("/models/registry")
+    async def model_registry() -> dict[str, Any]:
+        try:
+            return _ok(service.model_registry_list(), "Model registry with live-inference readiness")
+        except Exception as exc:
+            return _error(exc)
+
+    @router.post("/models/live-inference")
+    async def live_inference(body: LiveInferenceBody) -> dict[str, Any]:
+        try:
+            return _ok(service.run_live_inference(body.model_dump()), "Live inference completed")
         except Exception as exc:
             return _error(exc)
 

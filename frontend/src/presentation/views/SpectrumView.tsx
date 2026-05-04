@@ -347,13 +347,14 @@ export const SpectrumView: React.FC = () => {
   const [rsuOverlayError, setRsuOverlayError] = useState<string | null>(null);
   const [rfExperimentOverlay, setRfExperimentOverlay] = useState<Record<string, any> | null>(null);
   const [rfExperimentOverlayError, setRfExperimentOverlayError] = useState<string | null>(null);
+  const [liveInferenceResult, setLiveInferenceResult] = useState<Record<string, any> | null>(null);
   const [panOverlayPosition, setPanOverlayPosition] = useState({ x: 16, y: 16 });
 
   const selectedRfExperimentRun = useMemo(() => {
     if (!rfExperimentOverlay || !selectedRfExperimentType) return null;
     if (selectedRfExperimentType === 'best') return rfExperimentOverlay.best ?? null;
     const typeName = RF_EXPERIMENT_TYPE_NAMES[selectedRfExperimentType];
-    const candidates = (rfExperimentOverlay.runs ?? []).filter((run: Record<string, any>) => String(run.experiment_type) === typeName);
+    const candidates = (rfExperimentOverlay.models ?? []).filter((m: Record<string, any>) => String(m.experiment_type) === typeName);
     return candidates
       .sort((left: Record<string, any>, right: Record<string, any>) =>
         Number(right.metrics_summary?.macro_f1 ?? -1) - Number(left.metrics_summary?.macro_f1 ?? -1),
@@ -363,10 +364,14 @@ export const SpectrumView: React.FC = () => {
   useEffect(() => {
     if (!showRfExperimentOverlay) {
       setSelectedRfExperimentType(null);
+      setLiveInferenceResult(null);
     }
   }, [showRfExperimentOverlay]);
 
   const dragStateRef = useRef<{ type: 'pan' | null; offsetX: number; offsetY: number }>({ type: null, offsetX: 0, offsetY: 0 });
+  const spectrumDataRef = useRef<typeof spectrumData>(spectrumData);
+  const markerBandRef = useRef<typeof markerBand>(markerBand);
+  const selectedRfExperimentTypeRef = useRef<typeof selectedRfExperimentType>(selectedRfExperimentType);
   const suppressNextClickRef = useRef(false);
   const autoFreezeTriggeringRef = useRef(false);
   const autoFreezeFrameBufferRef = useRef<SpectrumData[]>([]);
@@ -428,6 +433,10 @@ export const SpectrumView: React.FC = () => {
       // Ignore storage failures.
     }
   }, [showPanOverlay, showMarkerBadges, showCursorBadge, showRfIntelligenceOverlay, showRsuOverlay, showRfExperimentOverlay, rsuOverlayMode, panOverlayPosition]);
+
+  useEffect(() => { spectrumDataRef.current = spectrumData; }, [spectrumData]);
+  useEffect(() => { markerBandRef.current = markerBand; }, [markerBand]);
+  useEffect(() => { selectedRfExperimentTypeRef.current = selectedRfExperimentType; }, [selectedRfExperimentType]);
 
   useEffect(() => {
     try {
@@ -625,19 +634,65 @@ export const SpectrumView: React.FC = () => {
     let cancelled = false;
     const refreshExperimentOverlay = async () => {
       try {
-        const [healthResponse, runs] = await Promise.all([
+        const [healthResponse, models] = await Promise.all([
           apiService.getRFExperimentLabHealth(),
-          apiService.listRFExperimentRuns(),
+          apiService.getModelRegistry(),
         ]);
         if (cancelled) return;
         const health = healthResponse?.data ?? healthResponse;
-        const candidates = runs.filter((run) => ['e5_spectral_feature_baseline', 'e1_raw_iq_cnn1d', 'e3_spectrogram_cnn2d'].includes(String(run.experiment_type)));
-        setRfExperimentOverlay({
-          health,
-          runs: candidates,
-          best: [...candidates].sort((left, right) => Number(right.metrics_summary?.macro_f1 ?? -1) - Number(left.metrics_summary?.macro_f1 ?? -1))[0] ?? null,
-        });
+        const candidates = models.filter((m) =>
+          ['e5_spectral_feature_baseline', 'e1_raw_iq_cnn1d', 'e3_spectrogram_cnn2d'].includes(String(m.experiment_type)),
+        );
+        const readyCandidates = candidates.filter((m) => m.ready_for_live_inference);
+        const best =
+          [...readyCandidates].sort(
+            (a, b) => Number(b.metrics_summary?.macro_f1 ?? -1) - Number(a.metrics_summary?.macro_f1 ?? -1),
+          )[0] ?? null;
+
+        setRfExperimentOverlay({ health, models: candidates, best });
         setRfExperimentOverlayError(null);
+
+        // Determine which model to use for live inference based on current selection.
+        const currentType = selectedRfExperimentTypeRef.current;
+        let inferenceModel: Record<string, any> | null = null;
+        if (currentType === 'best') {
+          inferenceModel = best;
+        } else if (currentType && currentType in RF_EXPERIMENT_TYPE_NAMES) {
+          const typeName = RF_EXPERIMENT_TYPE_NAMES[currentType as keyof typeof RF_EXPERIMENT_TYPE_NAMES];
+          inferenceModel =
+            [...readyCandidates]
+              .filter((m) => m.experiment_type === typeName && m.live_compatible)
+              .sort((a, b) => Number(b.metrics_summary?.macro_f1 ?? -1) - Number(a.metrics_summary?.macro_f1 ?? -1))[0] ?? null;
+        }
+
+        const currentSpectrum = spectrumDataRef.current;
+        const currentMarker = markerBandRef.current;
+
+        if (inferenceModel?.live_compatible && currentSpectrum && currentSpectrum.frequencyArray.length >= 4) {
+          try {
+            const inferenceResult = await apiService.runLiveInference({
+              model_id: String(inferenceModel.model_id),
+              experiment_type: String(inferenceModel.experiment_type),
+              live_context: {
+                frequency_array_hz: currentSpectrum.frequencyArray,
+                power_levels_db: currentSpectrum.powerLevels,
+                center_frequency_hz: currentSpectrum.centerFrequency,
+                ...(currentMarker ? { marker_start_hz: currentMarker.start, marker_stop_hz: currentMarker.stop } : {}),
+              },
+            });
+            if (!cancelled) {
+              setLiveInferenceResult(
+                inferenceResult
+                  ? { ...inferenceResult, task: inferenceModel.task, label_field: inferenceModel.label_field }
+                  : null,
+              );
+            }
+          } catch {
+            if (!cancelled) setLiveInferenceResult(null);
+          }
+        } else if (!cancelled) {
+          setLiveInferenceResult(null);
+        }
       } catch (error) {
         if (!cancelled) {
           setRfExperimentOverlayError(getErrorMessage(error));
@@ -1906,23 +1961,77 @@ export const SpectrumView: React.FC = () => {
             )}
             {showRfExperimentOverlay && (
               <div className="pointer-events-none absolute inset-0 z-[10]">
-                <div className="absolute left-12 top-36 max-w-md rounded-md border border-emerald-200/35 bg-slate-950/35 px-3 py-2 text-[10px] text-emerald-100 shadow-lg backdrop-blur-sm">
-                  <div className="uppercase tracking-[0.16em]">RF Experiment Lab</div>
-                  <div className="mt-1 text-[11px] normal-case text-slate-100">
-                    Selected model: {selectedRfExperimentType ? RF_EXPERIMENT_TYPE_LABELS[selectedRfExperimentType] : 'none'}{selectedRfExperimentType === 'best' ? ' (best candidate)' : ''}
+                {/* Status card */}
+                <div className="absolute left-12 top-36 max-w-xs rounded-md border border-emerald-200/35 bg-slate-950/80 px-3 py-2 text-[10px] text-emerald-100 shadow-lg backdrop-blur-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="uppercase tracking-[0.16em]">RF Experiment Lab</span>
+                    {selectedRfExperimentRun?.ready_for_live_inference && (
+                      <span className="ml-2 rounded-full bg-emerald-500/20 px-1.5 py-0.5 text-[9px] text-emerald-300">LIVE</span>
+                    )}
                   </div>
-                  <div className="mt-1 text-[11px] normal-case text-slate-100">
-                    {selectedRfExperimentRun
-                      ? `Run: ${String(selectedRfExperimentRun.experiment_id ?? selectedRfExperimentRun.run_id ?? 'unknown')} / ${String(selectedRfExperimentRun.experiment_type ?? 'unknown')}`
-                      : 'No validated run available for this model.'}
+                  <div className="mt-1 text-[10px] text-slate-400">
+                    {selectedRfExperimentType ? RF_EXPERIMENT_TYPE_LABELS[selectedRfExperimentType] : 'no type selected'}
+                    {selectedRfExperimentRun ? ` · ${String(selectedRfExperimentRun.model_id ?? selectedRfExperimentRun.experiment_id ?? '').split(':')[1]?.slice(0, 16) ?? ''}` : ''}
                   </div>
-                  <div className="mt-1 text-[11px] normal-case text-slate-100">
-                    Macro F1: {String(selectedRfExperimentRun?.metrics_summary?.macro_f1 ?? 'n/a')} | Accuracy: {String(selectedRfExperimentRun?.metrics_summary?.accuracy ?? 'n/a')}
-                  </div>
-                  <div className="mt-1 text-[10px] text-emerald-100/80">
-                    Live identity is not asserted until a validated inference route is explicitly enabled.
-                  </div>
+                  {liveInferenceResult?.status === 'ok' ? (
+                    <>
+                      <div className="mt-2 text-[15px] font-bold leading-tight text-emerald-200">{String(liveInferenceResult.predicted_label)}</div>
+                      <div className="mt-0.5 text-[11px] text-slate-200">
+                        {liveInferenceResult.confidence != null
+                          ? `${(Number(liveInferenceResult.confidence) * 100).toFixed(1)}% confidence`
+                          : 'confidence n/a'}
+                      </div>
+                      <div className="mt-1 text-[10px] text-slate-400">
+                        Task: {String(liveInferenceResult.task ?? 'unknown')}
+                        {liveInferenceResult.latency_ms != null ? ` · ${Number(liveInferenceResult.latency_ms).toFixed(1)} ms` : ''}
+                        {liveInferenceResult.marker_filtered ? ' · marker band' : ' · full span'}
+                      </div>
+                    </>
+                  ) : liveInferenceResult?.status === 'incompatible' ? (
+                    <div className="mt-1.5 text-[10px] text-amber-300/90">
+                      {String((liveInferenceResult.rejection_reasons as string[])?.[0] ?? 'Incompatible with live stream')}
+                    </div>
+                  ) : liveInferenceResult?.status === 'not_ready' ? (
+                    <div className="mt-1.5 text-[10px] text-slate-400">
+                      Not ready: {String((liveInferenceResult.rejection_reasons as string[])?.[0] ?? 'model did not pass readiness gate')}
+                    </div>
+                  ) : selectedRfExperimentRun ? (
+                    <>
+                      <div className="mt-1.5 text-[11px] text-slate-300">
+                        Macro F1: {String(selectedRfExperimentRun.metrics_summary?.macro_f1 ?? 'n/a')} | Acc: {String(selectedRfExperimentRun.metrics_summary?.accuracy ?? 'n/a')}
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-slate-500">
+                        {selectedRfExperimentRun.live_compatible
+                          ? 'Waiting for spectrum data…'
+                          : 'Batch-only — capture IQ for inference.'}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="mt-1.5 text-[10px] text-slate-500">No validated model available.</div>
+                  )}
                 </div>
+                {/* Band annotation when live inference is successful and marker band is set */}
+                {liveInferenceResult?.status === 'ok' && markerBand && (() => {
+                  const specStart = displaySettings.centerFrequency - displaySettings.span / 2;
+                  const leftPct = ((markerBand.start - specStart) / displaySettings.span) * 100;
+                  const widthPct = (markerBand.span / displaySettings.span) * 100;
+                  if (leftPct < -5 || leftPct + widthPct > 105 || widthPct < 0.1) return null;
+                  const clampedLeft = Math.max(0, leftPct);
+                  const clampedWidth = Math.min(100 - clampedLeft, widthPct);
+                  return (
+                    <div
+                      className="absolute top-0 bottom-0 border-l border-r border-emerald-400/50 bg-emerald-400/[0.07]"
+                      style={{ left: `${clampedLeft}%`, width: `${clampedWidth}%` }}
+                    >
+                      <div className="absolute top-2 left-1/2 -translate-x-1/2 rounded-md border border-emerald-300/40 bg-emerald-950/85 px-2 py-0.5 text-[10px] text-emerald-100 whitespace-nowrap backdrop-blur-sm shadow">
+                        {String(liveInferenceResult.predicted_label)}
+                        {liveInferenceResult.confidence != null
+                          ? ` · ${(Number(liveInferenceResult.confidence) * 100).toFixed(0)}%`
+                          : ''}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             )}
             {cursor && showCursorBadge && (
@@ -2110,27 +2219,56 @@ export const SpectrumView: React.FC = () => {
               <div className="mt-5 flex items-center justify-between gap-2">
                 <div className="text-xs uppercase text-slate-400">Experiment Lab</div>
                 <div className="rounded-full border border-emerald-200/30 bg-emerald-300/10 px-2 py-0.5 text-[10px] text-emerald-100">
-                  {(rfExperimentOverlay?.runs ?? []).length} runs
+                  {(rfExperimentOverlay?.models ?? []).length} models
                 </div>
               </div>
               <div className="mt-2 space-y-2">
-                <div className="rounded-md border border-emerald-200/30 bg-emerald-300/10 px-2 py-2 text-xs text-slate-200">
-                  <div className="font-semibold text-emerald-100">Prediction visibility</div>
-                  <div className="mt-1 text-slate-300">
-                    Shows validated E1/E3/E5 candidates. It does not assert live RF identity until a production inference router is enabled.
+                {liveInferenceResult?.status === 'ok' ? (
+                  <div className="rounded-md border border-emerald-500/30 bg-emerald-950/50 px-2 py-2 text-xs">
+                    <div className="font-semibold text-emerald-200">Live Inference Result</div>
+                    <div className="mt-1 text-[13px] font-bold text-emerald-100">{String(liveInferenceResult.predicted_label)}</div>
+                    <div className="mt-1 grid grid-cols-2 gap-x-2 gap-y-1 text-slate-300">
+                      <span>Confidence</span>
+                      <span className="text-right">
+                        {liveInferenceResult.confidence != null ? `${(Number(liveInferenceResult.confidence) * 100).toFixed(1)}%` : 'n/a'}
+                      </span>
+                      <span>Task</span>
+                      <span className="text-right">{String(liveInferenceResult.task ?? 'unknown')}</span>
+                      <span>Latency</span>
+                      <span className="text-right">
+                        {liveInferenceResult.latency_ms != null ? `${Number(liveInferenceResult.latency_ms).toFixed(1)} ms` : 'n/a'}
+                      </span>
+                      <span>Source</span>
+                      <span className="text-right">{liveInferenceResult.marker_filtered ? 'marker band' : 'full span'}</span>
+                    </div>
+                    {Array.isArray(liveInferenceResult.top_k) && liveInferenceResult.top_k.length > 1 && (
+                      <div className="mt-2">
+                        <div className="text-[10px] text-slate-400 mb-1">Top candidates</div>
+                        {(liveInferenceResult.top_k as Array<{ label: string; score: number }>).slice(0, 3).map((item) => (
+                          <div key={item.label} className="flex items-center gap-1 text-[10px]">
+                            <span className="flex-1 text-slate-300 truncate">{item.label}</span>
+                            <span className="text-slate-400">{(item.score * 100).toFixed(0)}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                </div>
-                {rfExperimentOverlay?.best ? (
+                ) : rfExperimentOverlay?.best ? (
                   <div className="rounded-md border border-slate-800 bg-slate-950/50 px-2 py-2 text-xs">
-                    <div className="font-semibold text-slate-100">{rfExperimentOverlay.best.experiment_type}</div>
+                    <div className="font-semibold text-slate-100">{String(rfExperimentOverlay.best.experiment_type)}</div>
                     <div className="mt-1 grid grid-cols-2 gap-x-2 gap-y-1 text-slate-300">
                       <span>Macro F1</span>
                       <span className="text-right">{String(rfExperimentOverlay.best.metrics_summary?.macro_f1 ?? 'n/a')}</span>
                       <span>Accuracy</span>
                       <span className="text-right">{String(rfExperimentOverlay.best.metrics_summary?.accuracy ?? 'n/a')}</span>
-                      <span>Split</span>
-                      <span className="text-right">{String(rfExperimentOverlay.best.split_strategy ?? 'unknown')}</span>
+                      <span>Task</span>
+                      <span className="text-right">{String(rfExperimentOverlay.best.task ?? 'unknown')}</span>
                     </div>
+                    {liveInferenceResult?.status === 'incompatible' && (
+                      <div className="mt-1.5 text-[10px] text-amber-300/80">
+                        {String((liveInferenceResult.rejection_reasons as string[])?.[0] ?? 'Incompatible')}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="rounded-md border border-slate-800 bg-slate-950/50 px-2 py-2 text-xs text-slate-400">

@@ -462,6 +462,26 @@ export class ApiService {
     return response.data?.data ?? [];
   }
 
+  async getModelRegistry(): Promise<Array<Record<string, any>>> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_MODEL_REGISTRY}`);
+    return response.data?.data ?? [];
+  }
+
+  async runLiveInference(body: {
+    model_id: string;
+    experiment_type?: string;
+    live_context: {
+      frequency_array_hz: number[];
+      power_levels_db: number[];
+      center_frequency_hz: number;
+      marker_start_hz?: number;
+      marker_stop_hz?: number;
+    };
+  }): Promise<Record<string, any> | null> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_LIVE_INFERENCE}`, body);
+    return response.data?.data ?? null;
+  }
+
   async getRFExperimentRun(experimentId: string): Promise<Record<string, any>> {
     const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_EXPERIMENTS}/${encodeURIComponent(experimentId)}`);
     return response.data?.data ?? response.data;

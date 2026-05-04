@@ -90,23 +90,58 @@ export const RF_PROFILES: Record<string, RFProfile> = {
     recommended_gain_db: 30,
     training_note: 'Useful for satellite pass decoding and visual spectrum validation. Not suitable for local IoT fingerprinting.',
   },
-  remote_433_ook: {
-    key: 'remote_433_ook',
-    label: '433.92 MHz OOK Remote',
-    family: 'ism_remote',
-    signal_type: 'short_range_remote_control',
-    center_frequency_hz: 433_920_000,
-    marker_left_hz: 433_820_000,
-    marker_right_hz: 434_020_000,
-    span_hz: 1_000_000,
-    sample_rate_hz: 1_000_000,
-    expected_bandwidth_hz: [10_000, 100_000],
-    modulation: ['OOK', 'ASK'],
-    temporal_pattern: 'short_bursts',
-    capture_duration_seconds: 5,
-    recommended_gain_db: 25,
-    training_note: 'Good profile for transmitter fingerprinting. Keep distance, gain, antenna and capture duration stable across devices.',
-  },
+
+  dacia_remote_433_ook: {
+  key: 'dacia_remote_433_ook',
+  label: 'Dacia 433.92 MHz OOK Remote Key',
+  family: 'automotive_remote',
+  signal_type: 'vehicle_remote_key',
+
+  center_frequency_hz: 433_965_776,
+
+  // Real analysis/capture span: 0.7 MHz centered at 433.965776 MHz
+  marker_left_hz: 433_615_809,
+  marker_right_hz: 434_315_744,
+
+  span_hz: 700_000,
+  sample_rate_hz: 700_000,
+
+  expected_bandwidth_hz: [10_000, 100_000],
+  modulation: ['OOK', 'ASK'],
+  temporal_pattern: 'short_bursts',
+
+  capture_duration_seconds: 5,
+  recommended_gain_db: 25,
+
+  training_note: 'Profile for Dacia remote-key RF fingerprinting. Keep distance, gain, antenna orientation and capture duration stable across repeated captures.',
+},
+
+
+
+remote_433_ook: {
+  key: 'remote_433_ook',
+  label: '433.92 MHz OOK Remote',
+  family: 'ism_remote',
+  signal_type: 'short_range_remote_control',
+
+  center_frequency_hz: 433_920_000,
+
+  // Real analysis/capture span: 1.5 MHz centered at 433.92 MHz
+  marker_left_hz: 433_170_000,
+  marker_right_hz: 434_670_000,
+
+  span_hz: 1_500_000,
+  sample_rate_hz: 1_500_000,
+
+  expected_bandwidth_hz: [10_000, 100_000],
+  modulation: ['OOK', 'ASK'],
+  temporal_pattern: 'short_bursts',
+
+  capture_duration_seconds: 5,
+  recommended_gain_db: 25,
+
+  training_note: 'Good profile for transmitter fingerprinting. Keep distance, gain, antenna and capture duration stable across devices.',
+},
   ism_868_lora_125khz: {
     key: 'ism_868_lora_125khz',
     label: '868 MHz LoRa 125 kHz',

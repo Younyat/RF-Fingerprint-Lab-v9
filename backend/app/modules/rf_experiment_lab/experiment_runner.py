@@ -141,6 +141,78 @@ class RFExperimentLabService:
     def compare_models_on_region(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.inference_service.compare_on_region(payload)
 
+    def model_registry_list(self) -> list[dict[str, Any]]:
+        from app.modules.rf_experiment_lab.live_inference_adapter import LiveInferenceAdapter
+        return LiveInferenceAdapter().model_registry(self.result_store.results_dir)
+
+    def run_live_inference(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from app.modules.rf_experiment_lab.live_inference_adapter import LiveInferenceAdapter, ModelReadinessGate
+
+        model_id = str(payload.get("model_id", ""))
+        live_context = payload.get("live_context") or {}
+        if ":" not in model_id:
+            raise ValueError(f"Invalid model_id format (expected experiment_type:run_id): {model_id!r}")
+        exp_type, run_id = model_id.split(":", 1)
+        result_dir = self.result_store.results_dir / exp_type / run_id
+        if not result_dir.exists():
+            raise ValueError(f"Model result directory not found for model_id={model_id!r}")
+
+        readiness = ModelReadinessGate.check(result_dir, exp_type)
+        if not readiness["live_compatible"]:
+            return {
+                "model_id": model_id,
+                "experiment_type": exp_type,
+                "status": "incompatible",
+                "compatible": False,
+                "ready_for_live_inference": False,
+                "rejection_reasons": readiness["rejection_reasons"],
+                "predicted_label": None,
+                "confidence": None,
+                "top_k": [],
+            }
+        if not readiness["ready_for_live_inference"]:
+            return {
+                "model_id": model_id,
+                "experiment_type": exp_type,
+                "status": "not_ready",
+                "compatible": True,
+                "ready_for_live_inference": False,
+                "rejection_reasons": readiness["rejection_reasons"],
+                "predicted_label": None,
+                "confidence": None,
+                "top_k": [],
+            }
+
+        freq = live_context.get("frequency_array_hz") or []
+        pwr = live_context.get("power_levels_db") or []
+        center = float(live_context.get("center_frequency_hz") or 0.0)
+        marker_start = live_context.get("marker_start_hz")
+        marker_stop = live_context.get("marker_stop_hz")
+        if marker_start is not None:
+            marker_start = float(marker_start)
+        if marker_stop is not None:
+            marker_stop = float(marker_stop)
+
+        adapter = LiveInferenceAdapter()
+        result = adapter.run_e5_live_inference(
+            model_pkl_path=readiness["model_file"],
+            label_schema=readiness["label_schema"] or {},
+            frequency_array_hz=freq,
+            power_levels_db=pwr,
+            center_frequency_hz=center,
+            marker_start_hz=marker_start,
+            marker_stop_hz=marker_stop,
+        )
+        return {
+            "model_id": model_id,
+            "experiment_type": exp_type,
+            "status": "ok",
+            "compatible": True,
+            "ready_for_live_inference": True,
+            "rejection_reasons": [],
+            **result,
+        }
+
     def list_configs(self) -> list[dict[str, Any]]:
         return self.result_store.list_configs()
 

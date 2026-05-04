@@ -99,7 +99,7 @@ export const RF_PROFILES: Record<string, RFProfile> = {
     marker_left_hz: 433_820_000,
     marker_right_hz: 434_020_000,
     span_hz: 1_000_000,
-    sample_rate_hz: 1_000_000,
+    sample_rate_hz: 1_500_000,
     expected_bandwidth_hz: [10_000, 100_000],
     modulation: ['OOK', 'ASK'],
     temporal_pattern: 'short_bursts',

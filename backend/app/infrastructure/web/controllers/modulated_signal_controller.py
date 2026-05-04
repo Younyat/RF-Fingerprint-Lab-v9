@@ -264,8 +264,11 @@ class ModulatedSignalController:
             if not self._is_safe_capture_artifact(path):
                 skipped_external_files.append(str(path))
                 continue
-            path.unlink()
-            removed_files.append(str(path.resolve()))
+            try:
+                path.unlink()
+                removed_files.append(str(path.resolve()))
+            except OSError:
+                skipped_external_files.append(str(path))
 
         return {
             "capture_id": capture_id,
@@ -317,12 +320,15 @@ class ModulatedSignalController:
                 except OSError:
                     continue
             if linked_paths.intersection(normalized_refs):
-                record_path.unlink()
-                removed.append(record_path.stem)
+                try:
+                    record_path.unlink()
+                    removed.append(record_path.stem)
+                except OSError:
+                    pass
         return removed
 
     def _delete_linked_rf_signal_understanding_records(self, capture: dict) -> list[str]:
-        registry_path = app_settings.storage.root_dir / "rf_signal_understanding" / "capture_registry" / "captures.json"
+        registry_path = app_settings.storage.storage_root / "rf_signal_understanding" / "capture_registry" / "captures.json"
         if not registry_path.exists():
             return []
         capture_id = capture.get("id")

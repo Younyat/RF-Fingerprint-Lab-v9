@@ -200,6 +200,8 @@ export const API_ENDPOINTS = {
   RF_EXPERIMENT_E3_RUN: '/api/rf-experiment-lab/experiments/e3-spectrogram-cnn2d/run',
   RF_EXPERIMENT_INFERENCE_PREDICT: '/api/rf-experiment-lab/inference/predict',
   RF_EXPERIMENT_INFERENCE_COMPARE_REGION: '/api/rf-experiment-lab/inference/compare-region',
+  RF_EXPERIMENT_MODEL_REGISTRY: '/api/rf-experiment-lab/models/registry',
+  RF_EXPERIMENT_LIVE_INFERENCE: '/api/rf-experiment-lab/models/live-inference',
   RF_EXPERIMENT_SIGMF_PREVIEW: '/api/rf-experiment-lab/sigmf/preview',
   RF_EXPERIMENT_SIGMF_EXPORT: '/api/rf-experiment-lab/sigmf/export',
   RF_EXPERIMENT_HDF5_MANIFEST_PREVIEW: '/api/rf-experiment-lab/hdf5-manifest/preview',
