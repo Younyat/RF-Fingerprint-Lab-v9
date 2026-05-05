@@ -6,6 +6,9 @@ The application is built with a FastAPI backend and a React/TypeScript frontend.
 
 ## Recent updates
 
+- **Triggered Capture system** — Capture Lab now has a full triggered-capture mode backed by a new `triggered_burst_capture.py` worker that runs as a GNU Radio `gr.sync_block` fed by a `uhd.usrp_source`, keeping a pre-trigger ring buffer in memory at all times. The burst start is never lost. Two strategies are available: `Adaptive Energy` (rolling-percentile noise floor, fires on energy spike) and `Smart Burst` (adds persistence and saturation rejection). The capture session can run multiple events with configurable cooldown, per-event Auto QC (SNR, saturation, clipping, duration), and per-event `.iq`/`.cfile` + `.json` metadata files. The task (Device Fingerprinting vs Signal Recognition) and signal type are set per session.
+- **WinError 123 training fix** — MLOps training no longer crashes when the `rf_dataset` directory contains subdirectories whose names include colons or other characters that are invalid in the Win32 file-system namespace (e.g. ISO-8601 timestamps written by older capture scripts). The export cleanup now falls back to `cmd /c rd /s /q` on Windows when `shutil.rmtree` fails.
+- **RF Experiment Lab live inference** — The `Experiment Overlay` in Live Monitor now runs real E5 inference against the live spectrum PSD. It extracts 13 spectral features from the live frequency/power arrays (using the same feature pipeline as training), loads the deployed `model.pkl` from the selected experiment result, and shows the predicted label, confidence, task, latency, and a band annotation on the spectrum canvas. E1 and E3 are correctly rejected with an explanation (they require raw IQ or spectrogram input). The model registry now distinguishes ready vs. live-compatible models.
 - Dataset Builder `Recompute QC` now runs as an automatic offline QC pass using the stored IQ file, the capture QC policy, metadata completeness, label status and signal-family profile. It no longer treats a previous manual `valid` decision as a substitute for scientific QC.
 - Dataset Builder can now fill missing or weak labels/classes from `backend/app/modules/rf_intelligence/band_profiles.json`. The generated label is intentionally stored as `weak_label` until an operator confirms it as `strong_label`.
 - Capture Lab and marker-band capture now resolve Marker 1 / Marker 2 against the RF band profile knowledge base so new captures are no longer silently dominated by `unknown` labels.
@@ -38,6 +41,7 @@ The application is built with a FastAPI backend and a React/TypeScript frontend.
 - ASK/FSK/PSK/OOK marker-band IQ capture with metadata export for digital analysis
 - Modulated signal analysis tab for marker-limited IQ dataset capture
 - Guided `Capture Lab` safety checks for bandwidth, duration, and invalid frequency windows before launching IQ acquisition
+- **Triggered Capture** in Capture Lab via GNU Radio `gr.sync_block` with circular pre-trigger ring buffer, adaptive energy trigger and smart burst trigger, multi-event sessions, per-event Auto QC, and per-event metadata files
 - Persistent transparent execution overlay for SDR operations and ML jobs (training, retraining, validation, prediction) that stays visible while navigating between tabs without blocking the interface
 - Live marker-band QC preview with peak, noise floor, SNR, and peak frequency before recording
 - RF Intelligence tab and optional Live Monitor overlay for real-time RF object detection, bandwidth/SNR estimation, rule-based protocol hypotheses, temporal tracking, and evidence notes
@@ -122,6 +126,95 @@ The frontend now exposes this work in a dedicated `RF Experiment Lab` tab. The t
 8. Model Comparison: compare E1, E3 and E5 under a common metric table and benchmark report.
 
 The `Live Monitor` also includes an `Experiment Overlay` button next to `RF Overlay` and `Understanding Overlay`. RF Experiment Lab now also exposes an inference-report contract for saved captures, marker-limited regions, frozen windows and live context. The current inference layer persists traceable prediction reports with model ID, dataset version, input sample ID, timestamp, top-k, confidence, latency and agreement/disagreement between selected experiment results. It remains an experimental RF Experiment Lab function and must not be confused with the older operational model registry.
+
+### Triggered Capture
+
+Capture Lab has two capture modes accessible through the **Capture Mode** selector:
+
+| Mode | Description |
+|------|-------------|
+| **Manual Capture** | Records IQ immediately for the full requested duration using the GNU Radio flowgraph. |
+| **Triggered Capture** | Streams IQ continuously via a GNU Radio `uhd.usrp_source` block, keeps a pre-trigger ring buffer in memory, and saves per-event files only when a trigger condition fires. |
+
+#### Why a circular buffer
+
+A post-record approach (record everything, then trim) always loses the very beginning of a burst when the signal starts before the software detects it. The Triggered Capture worker (`backend/tools/triggered_burst_capture.py`) maintains a `_CircularBlockBuffer` of pre-trigger samples that is always kept full during streaming. When the trigger fires, the pre-trigger IQ is already in memory and is prepended to the post-trigger data, so the full burst is preserved.
+
+#### Trigger strategies
+
+| Strategy | Behaviour |
+|----------|-----------|
+| **Adaptive Energy** (`adaptive_energy_trigger`) | Estimates the noise floor as the N-th percentile of mean block energies over a rolling window. Fires when the current block energy exceeds `noise_floor × 10^(threshold_db/10)`. |
+| **Smart Burst** (`smart_burst_trigger`) | Extends Adaptive Energy with a persistence check (must stay above threshold for ≥ `persistence_ms`) and saturation rejection (ignores blocks whose peak power exceeds a saturation level). |
+
+#### Session parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Threshold dB | 6 | Energy must exceed noise by this many dB to fire. |
+| Pre-trigger ms | 50 | IQ samples kept from before the trigger point. |
+| Post-trigger ms | 100 | IQ samples captured after the trigger fires. |
+| Min event ms | 10 | Events shorter than this fail Auto QC. |
+| Max event ms | 2000 | Events longer than this fail Auto QC. |
+| Max wait s | 10 | Maximum wait time per event before timeout. |
+| Repetitions | 1 | How many events to capture in the session. |
+| Cooldown ms | 500 | Wait between events. |
+| Min valid events | 1 | Minimum QC-valid events required; session fails otherwise. |
+| Smart persistence ms | 10 | For Smart Burst: minimum time above threshold before firing. |
+
+#### Auto QC
+
+When enabled, each captured event is tested against:
+
+- **SNR check** — event SNR (energy_db − noise_floor_db) must exceed 3 dB.
+- **Saturation** — max(|sample|) must be below 0.99 (complex64 full-scale).
+- **Clipping** — fraction of consecutive identical I or Q values must be below 0.40.
+- **Duration** — event duration must be within [min_event_ms, max_event_ms].
+- **Empty samples** — max(|sample|) must exceed 1e-12.
+
+Events that fail QC are logged and skipped (not saved) unless the Auto QC checkbox is unchecked.
+
+#### Target task
+
+| Task | Label field | Use case |
+|------|-------------|----------|
+| **Device Fingerprinting** | `transmitter_id` | Identify the physical transmitter from its RF imperfections. |
+| **Signal Recognition** | `signal_type` | Classify the signal type (WiFi, BLE, LoRa, OOK…). |
+
+When Signal Recognition is selected, a Signal Type field appears in the UI for the user to name the signal class.
+
+#### Output files
+
+Each captured event produces two files in the Capture Lab output directory:
+
+```text
+triggered_{capture_id}_{freq}MHz_ev00.cfile   # or .iq
+triggered_{capture_id}_{freq}MHz_ev00.json
+triggered_{capture_id}_{freq}MHz_ev01.cfile
+triggered_{capture_id}_{freq}MHz_ev01.json
+...
+```
+
+All event `.json` files appear automatically in the `Generated RF Captures` list after refresh. The API response for the POST request returns the first QC-valid event as the primary capture; the rest are saved and discoverable without a separate call.
+
+The `trigger_capture` field in each event metadata includes:
+
+```text
+strategy             — adaptive_energy_trigger or smart_burst_trigger
+threshold_db
+trigger_energy_db    — measured energy at trigger point
+noise_floor_db       — rolling noise floor at trigger point
+snr_db               — trigger_energy_db − noise_floor_db
+trigger_timestamp_utc
+pre_trigger_samples
+post_trigger_samples
+event_index          — 0-based index within the session
+session_events_requested
+session_events_captured
+session_events_qc_passed
+```
+
+---
 
 ### Capture Lab and Dataset Routing
 
@@ -817,7 +910,7 @@ Then open:
 8. Enable `RF Overlay` in `Live Monitor` or open `RF Intelligence` to inspect automatically detected RF objects, candidate labels, confidence, and evidence.
 9. Click the spectrum to add markers with frequency and signal level.
 10. Open `Demodulation` to demodulate or capture the RF band between M1 and M2.
-11. Open `Capture Lab` to capture IQ for `train`, `val`, or `predict`.
+11. Open `Capture Lab` to capture IQ for `train`, `val`, or `predict`. Choose **Manual Capture** for immediate fixed-duration recording or **Triggered Capture** to wait for a signal burst with a circular pre-trigger buffer, configurable strategy (Adaptive Energy or Smart Burst), multi-event sessions, and per-event Auto QC.
 12. Use `Dataset Builder` to accept, reject, or mark the imported capture as doubtful before using it in ML workflows.
 13. Continue in `Training`, `Validation`, or `Inference` according to the split assigned during capture.
 14. Use `RF Experiment Lab` for reproducible E0/E5/E1/E3 experiment previews, training runs and benchmark reports.

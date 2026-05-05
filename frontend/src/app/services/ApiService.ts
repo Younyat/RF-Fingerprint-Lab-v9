@@ -660,10 +660,21 @@ export class ApiService {
     livePreviewPeakLevelDb?: number;
     livePreviewPeakFrequencyHz?: number;
     captureMode: 'immediate' | 'triggered_burst';
+    // Triggered capture params
+    triggerStrategy?: 'adaptive_energy_trigger' | 'smart_burst_trigger';
     triggerThresholdDb?: number;
     preTriggerMs?: number;
     postTriggerMs?: number;
+    minEventDurationMs?: number;
+    maxEventDurationMs?: number;
+    cooldownMs?: number;
     triggerMaxWaitSeconds?: number;
+    captureRepetitions?: number;
+    minValidEvents?: number;
+    smartPersistenceMs?: number;
+    autoQcEnabled?: boolean;
+    targetTask?: 'device_fingerprinting' | 'signal_recognition';
+    signalType?: string;
   }): Promise<ModulatedSignalCapture> {
     const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.MODULATED_SIGNAL_CAPTURES}`, {
       start_frequency_hz: request.startFrequencyHz,
@@ -684,10 +695,20 @@ export class ApiService {
       live_preview_peak_level_db: request.livePreviewPeakLevelDb,
       live_preview_peak_frequency_hz: request.livePreviewPeakFrequencyHz,
       capture_mode: request.captureMode,
+      trigger_strategy: request.triggerStrategy,
       trigger_threshold_db: request.triggerThresholdDb,
       pre_trigger_ms: request.preTriggerMs,
       post_trigger_ms: request.postTriggerMs,
+      min_event_duration_ms: request.minEventDurationMs,
+      max_event_duration_ms: request.maxEventDurationMs,
+      cooldown_ms: request.cooldownMs,
       trigger_max_wait_s: request.triggerMaxWaitSeconds,
+      capture_repetitions: request.captureRepetitions,
+      min_valid_events: request.minValidEvents,
+      smart_persistence_ms: request.smartPersistenceMs,
+      auto_qc_enabled: request.autoQcEnabled,
+      target_task: request.targetTask,
+      signal_type: request.signalType,
     });
     return response.data;
   }

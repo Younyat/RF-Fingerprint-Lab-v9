@@ -61,10 +61,20 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
   const [notes, setNotes] = useState('');
   const [autoImport, setAutoImport] = useState(true);
   const [captureMode, setCaptureMode] = useState<'immediate' | 'triggered_burst'>('immediate');
+  const [triggerStrategy, setTriggerStrategy] = useState<'adaptive_energy_trigger' | 'smart_burst_trigger'>('adaptive_energy_trigger');
   const [triggerThresholdDb, setTriggerThresholdDb] = useState('6');
-  const [preTriggerMs, setPreTriggerMs] = useState('0');
-  const [postTriggerMs, setPostTriggerMs] = useState('50');
-  const [triggerMaxWaitSeconds, setTriggerMaxWaitSeconds] = useState('5');
+  const [preTriggerMs, setPreTriggerMs] = useState('50');
+  const [postTriggerMs, setPostTriggerMs] = useState('100');
+  const [minEventDurationMs, setMinEventDurationMs] = useState('10');
+  const [maxEventDurationMs, setMaxEventDurationMs] = useState('2000');
+  const [cooldownMs, setCooldownMs] = useState('500');
+  const [triggerMaxWaitSeconds, setTriggerMaxWaitSeconds] = useState('10');
+  const [captureRepetitions, setCaptureRepetitions] = useState('1');
+  const [minValidEvents, setMinValidEvents] = useState('1');
+  const [smartPersistenceMs, setSmartPersistenceMs] = useState('10');
+  const [autoQcEnabled, setAutoQcEnabled] = useState(true);
+  const [targetTask, setTargetTask] = useState<'device_fingerprinting' | 'signal_recognition'>('device_fingerprinting');
+  const [signalType, setSignalType] = useState('');
   const [isCapturing, setIsCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -127,7 +137,14 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
   const requestedTriggerThresholdDb = Number(triggerThresholdDb);
   const requestedPreTriggerMs = Number(preTriggerMs);
   const requestedPostTriggerMs = Number(postTriggerMs);
+  const requestedMinEventDurationMs = Number(minEventDurationMs);
+  const requestedMaxEventDurationMs = Number(maxEventDurationMs);
+  const requestedCooldownMs = Number(cooldownMs);
   const requestedTriggerMaxWaitSeconds = Number(triggerMaxWaitSeconds);
+  const requestedCaptureRepetitions = Number(captureRepetitions);
+  const requestedMinValidEvents = Number(minValidEvents);
+  const requestedSmartPersistenceMs = Number(smartPersistenceMs);
+
   const captureValidationMessage = useMemo(() => {
     if (!activeBand) {
       return captureBandMode === 'markers'
@@ -137,12 +154,14 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
     if (activeBand.bandwidth > CAPTURE_LAB_MAX_BANDWIDTH_HZ) {
       return `Capture Lab supports up to ${(CAPTURE_LAB_MAX_BANDWIDTH_HZ / 1e6).toFixed(1)} MHz of bandwidth in this workflow. Reduce the requested window.`;
     }
-    if (!Number.isFinite(requestedDuration) || requestedDuration <= 0 || requestedDuration > CAPTURE_LAB_MAX_DURATION_S) {
-      return `Duration must be between 0 and ${CAPTURE_LAB_MAX_DURATION_S} seconds.`;
+    if (captureMode === 'immediate') {
+      if (!Number.isFinite(requestedDuration) || requestedDuration <= 0 || requestedDuration > CAPTURE_LAB_MAX_DURATION_S) {
+        return `Duration must be between 0 and ${CAPTURE_LAB_MAX_DURATION_S} seconds.`;
+      }
     }
     if (captureMode === 'triggered_burst') {
       if (!Number.isFinite(requestedTriggerThresholdDb) || requestedTriggerThresholdDb <= 0 || requestedTriggerThresholdDb > 40) {
-        return 'Triggered Burst threshold must be between 0 and 40 dB above the estimated noise floor.';
+        return 'Trigger threshold must be between 0 and 40 dB above the estimated noise floor.';
       }
       if (!Number.isFinite(requestedPreTriggerMs) || requestedPreTriggerMs < 0 || requestedPreTriggerMs > 5000) {
         return 'Pre-trigger must be between 0 and 5000 ms.';
@@ -150,8 +169,25 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
       if (!Number.isFinite(requestedPostTriggerMs) || requestedPostTriggerMs < 0 || requestedPostTriggerMs > 5000) {
         return 'Post-trigger must be between 0 and 5000 ms.';
       }
+      if (!Number.isFinite(requestedMinEventDurationMs) || requestedMinEventDurationMs < 1 || requestedMinEventDurationMs > 5000) {
+        return 'Min event duration must be between 1 and 5000 ms.';
+      }
+      if (!Number.isFinite(requestedMaxEventDurationMs) || requestedMaxEventDurationMs < requestedMinEventDurationMs) {
+        return 'Max event duration must be ≥ min event duration.';
+      }
       if (!Number.isFinite(requestedTriggerMaxWaitSeconds) || requestedTriggerMaxWaitSeconds <= 0 || requestedTriggerMaxWaitSeconds > 120) {
-        return 'Trigger max wait must be between 0 and 120 seconds.';
+        return 'Max wait per event must be between 0 and 120 seconds.';
+      }
+      if (!Number.isFinite(requestedCaptureRepetitions) || requestedCaptureRepetitions < 1 || requestedCaptureRepetitions > 20) {
+        return 'Capture repetitions must be between 1 and 20.';
+      }
+      if (!Number.isFinite(requestedMinValidEvents) || requestedMinValidEvents < 1 || requestedMinValidEvents > requestedCaptureRepetitions) {
+        return 'Min valid events must be between 1 and capture repetitions.';
+      }
+      if (triggerStrategy === 'smart_burst_trigger') {
+        if (!Number.isFinite(requestedSmartPersistenceMs) || requestedSmartPersistenceMs < 0 || requestedSmartPersistenceMs > 1000) {
+          return 'Smart burst persistence must be between 0 and 1000 ms.';
+        }
       }
     }
     return null;
@@ -160,10 +196,17 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
     captureBandMode,
     requestedDuration,
     captureMode,
+    triggerStrategy,
     requestedTriggerThresholdDb,
     requestedPreTriggerMs,
     requestedPostTriggerMs,
+    requestedMinEventDurationMs,
+    requestedMaxEventDurationMs,
+    requestedCooldownMs,
     requestedTriggerMaxWaitSeconds,
+    requestedCaptureRepetitions,
+    requestedMinValidEvents,
+    requestedSmartPersistenceMs,
   ]);
 
   const loadCaptures = async () => {
@@ -335,11 +378,16 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
     setError(null);
     setSuccess(null);
     setIsCapturing(true);
+    const activityDetail = captureMode === 'triggered_burst'
+      ? `${formatFrequency(activeBand.start)} – ${formatFrequency(activeBand.stop)} · ${requestedCaptureRepetitions} event(s) · strategy: ${triggerStrategy.replace('_trigger', '')} · Navigation remains available.`
+      : `${formatFrequency(activeBand.start)} to ${formatFrequency(activeBand.stop)} · ${duration}s · Navigation remains available.`;
     setGlobalActivity({
       visible: true,
       kind: 'capturing',
-      title: `Capturing ${datasetSplit.toUpperCase()} dataset segment`,
-      detail: `${formatFrequency(activeBand.start)} to ${formatFrequency(activeBand.stop)} · ${duration}s · Navigation remains available.`,
+      title: captureMode === 'triggered_burst'
+        ? `Triggered capture – waiting for signal (${datasetSplit.toUpperCase()})`
+        : `Capturing ${datasetSplit.toUpperCase()} dataset segment`,
+      detail: activityDetail,
     });
     try {
       const capture = await apiService.captureModulatedSignal({
@@ -361,10 +409,20 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
         livePreviewPeakLevelDb: liveBandQuality?.peakLevelDb,
         livePreviewPeakFrequencyHz: liveBandQuality?.peakFrequencyHz,
         captureMode,
+        triggerStrategy,
         triggerThresholdDb: requestedTriggerThresholdDb,
         preTriggerMs: requestedPreTriggerMs,
         postTriggerMs: requestedPostTriggerMs,
+        minEventDurationMs: requestedMinEventDurationMs,
+        maxEventDurationMs: requestedMaxEventDurationMs,
+        cooldownMs: requestedCooldownMs,
         triggerMaxWaitSeconds: requestedTriggerMaxWaitSeconds,
+        captureRepetitions: requestedCaptureRepetitions,
+        minValidEvents: requestedMinValidEvents,
+        smartPersistenceMs: requestedSmartPersistenceMs,
+        autoQcEnabled,
+        targetTask,
+        signalType,
       });
 
       if (autoImport) {
@@ -390,10 +448,13 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
       }
 
       setCaptures((current) => [capture, ...current.filter((item) => item.id !== capture.id)]);
+      const sessionInfo = capture.trigger_capture
+        ? ` (${capture.trigger_capture.session_events_captured ?? 1} event(s) captured, ${capture.trigger_capture.session_events_qc_passed ?? 1} QC-passed)`
+        : '';
       setSuccess(
         autoImport
-          ? `Capture ${capture.id} stored and imported as ${datasetSplit}.`
-          : `Capture ${capture.id} stored as raw IQ metadata with split ${datasetSplit}.`,
+          ? `Capture ${capture.id} stored and imported as ${datasetSplit}.${sessionInfo}`
+          : `Capture ${capture.id} stored as raw IQ metadata with split ${datasetSplit}.${sessionInfo}`,
       );
     } catch (err) {
       setError(getErrorMessage(err));
@@ -607,8 +668,8 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
                       : 'border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800',
                   )}
                 >
-                  <div className="font-semibold uppercase">Immediate</div>
-                  <div className="mt-2 text-xs text-slate-400">Graba inmediatamente toda la ventana temporal pedida.</div>
+                  <div className="font-semibold uppercase">Manual Capture</div>
+                  <div className="mt-2 text-xs text-slate-400">Graba inmediatamente toda la ventana temporal pedida. Sin espera de señal.</div>
                 </button>
                 <button
                   type="button"
@@ -616,32 +677,156 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
                   className={cn(
                     'rounded-md border p-3 text-left text-sm transition',
                     captureMode === 'triggered_burst'
-                      ? 'border-emerald-500 bg-emerald-500/10 text-white'
+                      ? 'border-blue-500 bg-blue-500/10 text-white'
                       : 'border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800',
                   )}
                 >
-                  <div className="font-semibold uppercase">Triggered Burst</div>
-                  <div className="mt-2 text-xs text-slate-400">Espera actividad y recorta automáticamente el IQ alrededor del primer burst detectado.</div>
+                  <div className="font-semibold uppercase">Triggered Capture</div>
+                  <div className="mt-2 text-xs text-slate-400">Buffer circular continuo de IQ. Dispara al detectar actividad. El inicio del burst nunca se pierde.</div>
                 </button>
               </div>
 
               {captureMode === 'triggered_burst' && (
-                <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-4">
-                  <label className="flex flex-col gap-1 text-xs text-slate-400">
-                    Threshold dB
-                    <input value={triggerThresholdDb} onChange={(event) => setTriggerThresholdDb(event.target.value)} className={inputClass} />
-                  </label>
-                  <label className="flex flex-col gap-1 text-xs text-slate-400">
-                    Pre-trigger ms
-                    <input value={preTriggerMs} onChange={(event) => setPreTriggerMs(event.target.value)} className={inputClass} />
-                  </label>
-                  <label className="flex flex-col gap-1 text-xs text-slate-400">
-                    Post-trigger ms
-                    <input value={postTriggerMs} onChange={(event) => setPostTriggerMs(event.target.value)} className={inputClass} />
-                  </label>
-                  <label className="flex flex-col gap-1 text-xs text-slate-400">
-                    Max wait s
-                    <input value={triggerMaxWaitSeconds} onChange={(event) => setTriggerMaxWaitSeconds(event.target.value)} className={inputClass} />
+                <div className="mt-4 space-y-4">
+                  {/* Trigger strategy */}
+                  <div>
+                    <div className="mb-2 text-xs uppercase text-slate-500">Trigger Strategy</div>
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                      <button
+                        type="button"
+                        onClick={() => setTriggerStrategy('adaptive_energy_trigger')}
+                        className={cn(
+                          'rounded-md border p-3 text-left text-sm transition',
+                          triggerStrategy === 'adaptive_energy_trigger'
+                            ? 'border-blue-400 bg-blue-500/10 text-white'
+                            : 'border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800',
+                        )}
+                      >
+                        <div className="font-semibold">Adaptive Energy</div>
+                        <div className="mt-1 text-xs text-slate-400">Estimación dinámica del ruido por percentil. Dispara cuando la energía supera el umbral.</div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTriggerStrategy('smart_burst_trigger')}
+                        className={cn(
+                          'rounded-md border p-3 text-left text-sm transition',
+                          triggerStrategy === 'smart_burst_trigger'
+                            ? 'border-blue-400 bg-blue-500/10 text-white'
+                            : 'border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800',
+                        )}
+                      >
+                        <div className="font-semibold">Smart Burst</div>
+                        <div className="mt-1 text-xs text-slate-400">Adds persistence check and saturation rejection to reduce false positives.</div>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Core trigger timing */}
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                    <label className="flex flex-col gap-1 text-xs text-slate-400">
+                      Threshold dB
+                      <input value={triggerThresholdDb} onChange={(e) => setTriggerThresholdDb(e.target.value)} className={inputClass} />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs text-slate-400">
+                      Pre-trigger ms
+                      <input value={preTriggerMs} onChange={(e) => setPreTriggerMs(e.target.value)} className={inputClass} />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs text-slate-400">
+                      Post-trigger ms
+                      <input value={postTriggerMs} onChange={(e) => setPostTriggerMs(e.target.value)} className={inputClass} />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs text-slate-400">
+                      Max wait s
+                      <input value={triggerMaxWaitSeconds} onChange={(e) => setTriggerMaxWaitSeconds(e.target.value)} className={inputClass} />
+                    </label>
+                  </div>
+
+                  {/* Event duration + session */}
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                    <label className="flex flex-col gap-1 text-xs text-slate-400">
+                      Min event ms
+                      <input value={minEventDurationMs} onChange={(e) => setMinEventDurationMs(e.target.value)} className={inputClass} />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs text-slate-400">
+                      Max event ms
+                      <input value={maxEventDurationMs} onChange={(e) => setMaxEventDurationMs(e.target.value)} className={inputClass} />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs text-slate-400">
+                      Repetitions
+                      <input value={captureRepetitions} onChange={(e) => setCaptureRepetitions(e.target.value)} className={inputClass} />
+                    </label>
+                    <label className="flex flex-col gap-1 text-xs text-slate-400">
+                      Cooldown ms
+                      <input value={cooldownMs} onChange={(e) => setCooldownMs(e.target.value)} className={inputClass} />
+                    </label>
+                  </div>
+
+                  {/* Min valid + smart persistence (conditional) */}
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                    <label className="flex flex-col gap-1 text-xs text-slate-400">
+                      Min valid events
+                      <input value={minValidEvents} onChange={(e) => setMinValidEvents(e.target.value)} className={inputClass} />
+                    </label>
+                    {triggerStrategy === 'smart_burst_trigger' && (
+                      <label className="flex flex-col gap-1 text-xs text-slate-400">
+                        Persistence ms
+                        <input value={smartPersistenceMs} onChange={(e) => setSmartPersistenceMs(e.target.value)} className={inputClass} />
+                      </label>
+                    )}
+                  </div>
+
+                  {/* Target task */}
+                  <div>
+                    <div className="mb-2 text-xs uppercase text-slate-500">Target Task</div>
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                      <button
+                        type="button"
+                        onClick={() => setTargetTask('device_fingerprinting')}
+                        className={cn(
+                          'rounded-md border p-3 text-left text-sm transition',
+                          targetTask === 'device_fingerprinting'
+                            ? 'border-violet-500 bg-violet-500/10 text-white'
+                            : 'border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800',
+                        )}
+                      >
+                        <div className="font-semibold">Device Fingerprinting</div>
+                        <div className="mt-1 text-xs text-slate-400">Label = Transmitter ID. Identifica el dispositivo emisor.</div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTargetTask('signal_recognition')}
+                        className={cn(
+                          'rounded-md border p-3 text-left text-sm transition',
+                          targetTask === 'signal_recognition'
+                            ? 'border-violet-500 bg-violet-500/10 text-white'
+                            : 'border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800',
+                        )}
+                      >
+                        <div className="font-semibold">Signal Recognition</div>
+                        <div className="mt-1 text-xs text-slate-400">Label = Signal Type. Clasifica el tipo de señal (WiFi, BLE, LoRa…).</div>
+                      </button>
+                    </div>
+                    {targetTask === 'signal_recognition' && (
+                      <label className="mt-3 flex flex-col gap-1 text-xs text-slate-400">
+                        Signal Type
+                        <input
+                          value={signalType}
+                          onChange={(e) => setSignalType(e.target.value)}
+                          placeholder="e.g. WiFi_2.4GHz, BLE, LoRa_868"
+                          className={inputClass}
+                        />
+                      </label>
+                    )}
+                  </div>
+
+                  {/* Auto QC */}
+                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={autoQcEnabled}
+                      onChange={(e) => setAutoQcEnabled(e.target.checked)}
+                    />
+                    Auto QC – reject events with low SNR, saturation or clipping
                   </label>
                 </div>
               )}
@@ -731,7 +916,9 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
                 )}
               >
                 <Play className="mr-2 h-4 w-4" />
-                {isCapturing ? 'Capturing...' : `Capture ${fileFormat.toUpperCase()}`}
+                {isCapturing
+                  ? (captureMode === 'triggered_burst' ? 'Waiting for trigger...' : 'Capturing...')
+                  : (captureMode === 'triggered_burst' ? `Trigger ${fileFormat.toUpperCase()}` : `Capture ${fileFormat.toUpperCase()}`)}
               </button>
             </div>
 
@@ -914,8 +1101,17 @@ function CaptureRow({
         <div>Live preview noise: {capture.preview_metrics?.live_preview_noise_floor_db !== undefined ? formatPowerLevel(capture.preview_metrics.live_preview_noise_floor_db) : 'n/a'}</div>
         <div>Live preview peak: {capture.preview_metrics?.live_preview_peak_level_db !== undefined ? formatPowerLevel(capture.preview_metrics.live_preview_peak_level_db) : 'n/a'}</div>
         <div>Capture mode: {capture.trigger_capture?.mode || 'immediate'}</div>
+        {capture.trigger_capture?.strategy && (
+          <div>Strategy: {capture.trigger_capture.strategy.replace('_trigger', '').replace('_', ' ')}</div>
+        )}
         <div>Trigger detected: {capture.trigger_capture?.trigger_detected === undefined ? 'n/a' : String(capture.trigger_capture.trigger_detected)}</div>
         <div>Captured duration: {capturedDurationLabel}</div>
+        {capture.trigger_capture?.snr_db !== undefined && (
+          <div>Trigger SNR: {capture.trigger_capture.snr_db.toFixed(1)} dB</div>
+        )}
+        {capture.trigger_capture?.session_events_captured !== undefined && (
+          <div>Session events: {capture.trigger_capture.session_events_captured} captured / {capture.trigger_capture.session_events_qc_passed ?? '?'} QC-passed</div>
+        )}
       </div>
 
       <RfDiagnosticCard diagnostic={postCaptureDiagnostic} titlePrefix="Post-capture intelligence" compact />

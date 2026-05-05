@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,24 @@ from scipy import signal
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _rmtree_safe(path: Path) -> None:
+    """Remove a directory tree. On Windows falls back to 'cmd /c rd /s /q' when the
+    tree contains path components with characters that are invalid in the Win32 namespace
+    (e.g. colons from ISO-8601 timestamps written by older capture code)."""
+    try:
+        shutil.rmtree(path)
+    except OSError as exc:
+        if sys.platform != "win32":
+            raise
+        result = subprocess.run(
+            ["cmd", "/c", "rd", "/s", "/q", str(path)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise OSError(f"Failed to remove {path}: {result.stderr.strip()}") from exc
 
 
 CANONICAL_PREPROCESSING_PROFILE_ID = "rff_v1_centered_filtered_resampled_iq_powernorm"
@@ -46,6 +65,7 @@ class _JobManager:
             raise ValueError(
                 f"Failed to start job process. executable={executable} cwd={cwd or '<none>'} error={exc}"
             ) from exc
+
         job_id = str(uuid.uuid4())
         job = {
             "job_id": job_id,
@@ -59,11 +79,14 @@ class _JobManager:
             "stdout_lines": deque(maxlen=4000),
             "stderr_lines": deque(maxlen=4000),
         }
+
         with self._lock:
             self._jobs[job_id] = job
             self._latest_by_type[str(metadata.get("job_type", ""))] = job_id
+
         self._start_reader(job_id, "stdout")
         self._start_reader(job_id, "stderr")
+
         return {
             "job_id": job_id,
             "status": "running",
@@ -81,9 +104,12 @@ class _JobManager:
             if job is None:
                 return
             stream = getattr(job["process"], stream_name)
+
         if stream is None:
             return
+
         lines_key = f"{stream_name}_lines"
+
         try:
             for raw_line in iter(stream.readline, b""):
                 if not raw_line:
@@ -108,14 +134,18 @@ class _JobManager:
             selected_id = job_id or self._latest_by_type.get(job_type)
             if selected_id is None or selected_id not in self._jobs:
                 return {"status": "not_found", "job_id": selected_id}
+
             job = self._jobs[selected_id]
             returncode = job["process"].poll()
+
             if returncode is not None and job["returncode"] is None:
                 job["returncode"] = returncode
                 job["ended_at_utc"] = _utc_now()
+
             status = "running"
             if job["returncode"] is not None:
                 status = "completed" if job["returncode"] == 0 else "failed"
+
             return {
                 "status": status,
                 "job_id": selected_id,
@@ -231,20 +261,17 @@ class MlOpsService:
         }
 
     def _load_retraining_snapshots(self, index_path: Path, versions_dir: Path) -> list[dict[str, Any]]:
-        """
-        Reads retraining lineage from versions/index.json and falls back to the
-        versions directory. The fallback matters because a completed retraining
-        may create snapshot folders even if the index is stale or unreadable.
-        """
         snapshots: list[dict[str, Any]] = []
         index = self._load_json(index_path)
         raw_versions = index.get("versions", []) if isinstance(index, dict) else []
+
         if isinstance(raw_versions, list):
             for item in raw_versions:
                 if isinstance(item, dict):
                     snapshots.append(self._normalize_retraining_snapshot(item))
 
         known_ids = {str(item.get("version_id") or item.get("version") or "") for item in snapshots}
+
         if versions_dir.exists():
             for child in sorted(versions_dir.iterdir()):
                 if not child.is_dir() or child.name in known_ids:
@@ -267,6 +294,7 @@ class MlOpsService:
         version_id = str(item.get("version_id") or item.get("version") or "snapshot").strip()
         snapshot_dir = Path(str(item.get("snapshot_dir") or "")) if item.get("snapshot_dir") else None
         model_file = Path(str(item.get("model_file") or "")) if item.get("model_file") else None
+
         return {
             **item,
             "version": version_id,
@@ -283,19 +311,24 @@ class MlOpsService:
     def list_models(self) -> list[dict[str, Any]]:
         models_dir = self._mlops_reports_root / "models"
         items: list[dict[str, Any]] = []
+
         for path in sorted(models_dir.glob("*.json")):
             data = self._load_json(path)
             if isinstance(data, dict):
                 items.append(data)
+
         return items
 
     def current_model(self) -> dict[str, Any] | None:
         models_dir = self._mlops_reports_root / "models"
         current = models_dir / "current.txt"
+
         if not current.exists():
             return None
+
         version = current.read_text(encoding="utf-8").strip()
         data = self._load_json(models_dir / f"{version}.json")
+
         return data if isinstance(data, dict) else None
 
     def model_by_version(self, version: str) -> dict[str, Any] | None:
@@ -305,12 +338,14 @@ class MlOpsService:
     def start_training(self, payload: dict[str, Any], retrain: bool = False) -> dict[str, Any]:
         remote_user = str(payload.get("remote_user", "")).strip()
         remote_host = str(payload.get("remote_host", "")).strip()
+
         if not remote_user or not remote_host:
             raise ValueError("Remote training requires both remote_user and remote_host.")
 
         target_center_frequency_hz = self._parse_optional_float(payload.get("target_center_frequency_hz"))
         center_frequency_tolerance_hz = self._parse_optional_float(payload.get("center_frequency_tolerance_hz")) or 1.0
         dataset_dir = self._resolve_path(payload.get("local_dataset_dir"), self._train_dataset_dir)
+
         export_summary = self._export_fingerprinting_split(
             dataset_split="train",
             destination_dir=dataset_dir,
@@ -351,9 +386,11 @@ class MlOpsService:
             "-Stride",
             str(int(payload.get("stride", 1024))),
         ]
+
         remote_venv = str(payload.get("remote_venv_activate", "")).strip()
         if remote_venv:
             command.extend(["-RemoteVenvActivate", remote_venv])
+
         return self._job_manager.start_job(
             command=command,
             cwd=str(self._scripts_dir),
@@ -373,10 +410,17 @@ class MlOpsService:
     def run_validation(self, payload: dict[str, Any], async_mode: bool) -> dict[str, Any]:
         model_dir = self._resolve_path(payload.get("model_dir"), self._model_output_dir)
         self._validate_model_dir(model_dir)
+
         val_root = self._resolve_path(payload.get("val_root"), self._val_dataset_dir)
         train_config_for_validation = self._load_json(model_dir / "train_config.json") or {}
-        canonical_segment_length = int(train_config_for_validation.get("canonical_segment_length_samples") or train_config_for_validation.get("window_size") or 1024)
+        canonical_segment_length = int(
+            train_config_for_validation.get("canonical_segment_length_samples")
+            or train_config_for_validation.get("window_size")
+            or 1024
+        )
+
         selected_capture_ids = {str(item).strip() for item in (payload.get("selected_capture_ids") or []) if str(item).strip()}
+
         export_summary = self._export_fingerprinting_split(
             dataset_split="val",
             destination_dir=val_root,
@@ -387,11 +431,10 @@ class MlOpsService:
             canonical_bandwidth_hz=self._parse_optional_float(train_config_for_validation.get("canonical_bandwidth_hz")),
         )
         self._validate_validation_dataset(export_summary, model_dir)
-        selected_metadata_paths = self._resolve_validation_selection(
-            payload=payload,
-            export_summary=export_summary,
-        )
+
+        selected_metadata_paths = self._resolve_validation_selection(payload=payload, export_summary=export_summary)
         output_json = self._resolve_path(payload.get("output_json"), self._validation_output_dir / "validation_report.json")
+
         command = [
             self._resolve_python_executable(str(payload.get("python_exe", "")).strip()),
             str(self._scripts_dir / "validate_rf_fingerprint.py"),
@@ -404,8 +447,10 @@ class MlOpsService:
             "--batch-size",
             str(int(payload.get("batch_size", 256))),
         ]
+
         for item in selected_metadata_paths:
             command.extend(["--selected-metadata-path", str(item)])
+
         if async_mode:
             return self._job_manager.start_job(
                 command=command,
@@ -417,6 +462,7 @@ class MlOpsService:
                     "selected_metadata_paths": selected_metadata_paths,
                 },
             )
+
         result = subprocess.run(command, cwd=str(self._scripts_dir), capture_output=True, text=True)
         response = {
             "command_result": {
@@ -428,39 +474,51 @@ class MlOpsService:
             "dataset_export": export_summary,
             "selected_metadata_paths": selected_metadata_paths,
         }
+
         if result.returncode == 0 and output_json.exists():
             report = self._load_json(output_json)
             if report is not None:
                 response["report"] = report
                 self._store_validation_report(output_json, report)
+
         return response
 
     def validation_status(self, job_id: str | None = None) -> dict[str, Any]:
         status = self._job_manager.get_status("validation", job_id=job_id)
         status = self._attach_report(status)
+
         if status.get("status") == "completed" and isinstance(status.get("report"), dict):
             output_json = str((status.get("metadata") or {}).get("output_json", "")).strip()
             if output_json:
                 self._store_validation_report(Path(output_json), status["report"])
+
         return status
 
     def list_validation_reports(self) -> list[dict[str, Any]]:
         reports_dir = self._mlops_reports_root / "validation_reports"
         items: list[dict[str, Any]] = []
+
         for path in sorted(reports_dir.glob("*.json")):
             data = self._load_json(path)
             if isinstance(data, dict):
                 items.append(data)
+
         return items
 
     def _store_validation_report(self, source_path: Path, report: dict[str, Any]) -> Path:
         reports_dir = self._mlops_reports_root / "validation_reports"
         reports_dir.mkdir(parents=True, exist_ok=True)
+
         source_digest = str(source_path.resolve()).replace(":", "").replace("\\", "_").replace("/", "_")
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         out_path = reports_dir / f"validation_{stamp}_{abs(hash(source_digest)) % 1000000:06d}.json"
-        if not any(existing.read_text(encoding="utf-8", errors="ignore") == json.dumps(report, indent=2, ensure_ascii=False) for existing in reports_dir.glob("*.json")):
+
+        if not any(
+            existing.read_text(encoding="utf-8", errors="ignore") == json.dumps(report, indent=2, ensure_ascii=False)
+            for existing in reports_dir.glob("*.json")
+        ):
             out_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+
         return out_path
 
     def classify_capture(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -481,6 +539,7 @@ class MlOpsService:
 
     def list_prediction_captures(self) -> list[dict[str, Any]]:
         captures: list[dict[str, Any]] = []
+
         if self._fingerprinting_captures_dir.exists():
             for path in sorted(self._fingerprinting_captures_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
                 data = self._load_json(path)
@@ -493,8 +552,8 @@ class MlOpsService:
                 data["prediction_ready_reason"] = "ready" if data["prediction_ready"] else "IQ artifact is missing or not reachable"
                 captures.append(data)
 
-        # Backward-compatible fallback for older exported prediction datasets.
         known_ids = {str(item.get("capture_id", "")) for item in captures}
+
         for path in sorted(self._predict_dataset_dir.rglob("*.json")):
             data = self._load_json(path)
             if not isinstance(data, dict):
@@ -507,12 +566,14 @@ class MlOpsService:
             data["prediction_ready"] = True
             data["prediction_ready_reason"] = "legacy prediction dataset"
             captures.append(data)
+
         return captures
 
     def start_prediction(self, payload: dict[str, Any]) -> dict[str, Any]:
         model_dir = self._resolve_path(payload.get("model_dir"), self._model_output_dir)
         self._validate_model_dir(model_dir)
         output_json = self._resolve_path(payload.get("output_json"), self._inference_output_dir / "prediction_report.json")
+
         command = [
             self._resolve_python_executable(str(payload.get("python_exe", "")).strip()),
             str(self._scripts_dir / "infer_rf_fingerprint.py"),
@@ -525,9 +586,11 @@ class MlOpsService:
             "--batch-size",
             str(int(payload.get("batch_size", 256))),
         ]
+
         metadata_path = str(payload.get("metadata_path", "")).strip()
         if metadata_path:
             command.extend(["--metadata-path", metadata_path])
+
         return self._job_manager.start_job(
             command=command,
             cwd=str(self._scripts_dir),
@@ -540,20 +603,25 @@ class MlOpsService:
 
     def _attach_report(self, status: dict[str, Any]) -> dict[str, Any]:
         output_json = str((status.get("metadata") or {}).get("output_json", "")).strip()
+
         if output_json:
             path = Path(output_json)
             if path.exists():
                 report = self._load_json(path)
                 if report is not None:
                     status["report"] = report
+
         return status
 
     def _resolve_path(self, value: str | None, default_path: Path) -> Path:
         if value is None or str(value).strip() == "":
             return default_path
+
         path = Path(str(value))
+
         if path.is_absolute():
             return path
+
         return self._mlops_data_root / path
 
     def _export_fingerprinting_split(
@@ -570,8 +638,10 @@ class MlOpsService:
         canonical_bandwidth_hz: float | None = None,
     ) -> dict[str, Any]:
         records = self._load_fingerprinting_captures(dataset_split=dataset_split, allowed_statuses=allowed_statuses)
+
         if selected_capture_ids:
             records = [record for record in records if str(record.get("capture_id", "")).strip() in selected_capture_ids]
+
         if target_center_frequency_hz is not None:
             filtered_records: list[dict[str, Any]] = []
             for record in records:
@@ -581,14 +651,16 @@ class MlOpsService:
                 if abs(center_frequency_hz - target_center_frequency_hz) <= center_frequency_tolerance_hz:
                     filtered_records.append(record)
             records = filtered_records
+
         canonical_sample_rate_hz = self._resolve_canonical_sample_rate_hz(records, canonical_sample_rate_hz)
         canonical_bandwidth_hz = self._resolve_canonical_bandwidth_hz(records, canonical_sample_rate_hz, canonical_bandwidth_hz)
 
         if destination_dir.exists():
-            shutil.rmtree(destination_dir)
+            _rmtree_safe(destination_dir)
         destination_dir.mkdir(parents=True, exist_ok=True)
 
         exported_records: list[dict[str, Any]] = []
+
         for record in records:
             exported = self._export_capture_record(
                 record,
@@ -646,19 +718,38 @@ class MlOpsService:
     def _load_fingerprinting_captures(self, dataset_split: str, allowed_statuses: set[str]) -> list[dict[str, Any]]:
         if not self._fingerprinting_captures_dir.exists():
             return []
+
         captures: list[dict[str, Any]] = []
+
         for path in sorted(self._fingerprinting_captures_dir.glob("*.json")):
             data = self._load_json(path)
+
             if not isinstance(data, dict):
                 continue
+
             if str(data.get("dataset_split", "")).strip().lower() != dataset_split:
                 continue
+
             quality_review = data.get("quality_review") or {}
             status = str(quality_review.get("status", "")).strip().lower()
+
             if status not in allowed_statuses:
                 continue
+
             captures.append(data)
+
         return captures
+
+    @staticmethod
+    def _safe_path_part(value: Any, fallback: str = "unnamed") -> str:
+        value = str(value or fallback).strip()
+        value = re.sub(r'[<>:"/\\|?*]', "_", value)
+        value = value.replace(".", "_")
+        value = re.sub(r"\s+", "_", value)
+        value = re.sub(r"[^A-Za-z0-9_-]+", "_", value)
+        value = re.sub(r"_+", "_", value)
+        value = value.strip(" ._")
+        return value or fallback
 
     def _export_capture_record(
         self,
@@ -678,25 +769,34 @@ class MlOpsService:
         emitter_device_id = str(transmitter.get("transmitter_label") or transmitter.get("transmitter_id") or "").strip()
         session_id = str(record.get("session_id") or "").strip()
         iq_path_text = str(artifacts.get("iq_file") or capture_config.get("output_path") or "").strip()
+
         if not emitter_device_id or not session_id or not iq_path_text:
             return None
+
         iq_source = Path(iq_path_text)
+
         if not iq_source.exists() or not iq_source.is_file():
             return None
 
         original_center_hz = float(capture_config.get("center_frequency_hz", 0.0) or 0.0)
         original_sample_rate_hz = float(capture_config.get("sample_rate_hz", 0.0) or 0.0)
         original_bandwidth_hz = float(capture_config.get("effective_bandwidth_hz", original_sample_rate_hz) or original_sample_rate_hz)
+
         signal_estimate = self._estimate_signal_from_capture(iq_source, original_center_hz, original_sample_rate_hz, quality_metrics)
         estimated_signal_center_hz = float(signal_estimate["estimated_signal_center_hz"])
         estimated_signal_offset_hz = float(signal_estimate["estimated_signal_offset_hz"])
         estimated_occupied_bandwidth_hz = float(signal_estimate["estimated_occupied_bandwidth_hz"])
         frequency_shift_applied_hz = -estimated_signal_offset_hz
 
-        session_dir = destination_dir / emitter_device_id / session_id
+        safe_emitter_device_id = self._safe_path_part(emitter_device_id, "unknown_emitter")
+        safe_session_id = self._safe_path_part(session_id, "unknown_session")
+        safe_capture_id = self._safe_path_part(record.get("capture_id", "capture"), "capture")
+
+        session_dir = destination_dir / safe_emitter_device_id / safe_session_id
         session_dir.mkdir(parents=True, exist_ok=True)
+
         suffix = iq_source.suffix or ".cfile"
-        export_stem = f"iq_{emitter_device_id}_{record.get('capture_id', 'capture')}"
+        export_stem = f"iq_{safe_emitter_device_id}_{safe_capture_id}"
         exported_iq = session_dir / f"{export_stem}{suffix}"
 
         canonical_report = self._write_canonical_iq(
@@ -708,6 +808,10 @@ class MlOpsService:
             canonical_bandwidth_hz=canonical_bandwidth_hz,
             canonical_segment_length_samples=canonical_segment_length_samples,
         )
+
+        if not exported_iq.exists():
+            raise FileNotFoundError(f"Exported IQ file was not created: {exported_iq}")
+
         segment_manifest_path = session_dir / f"{export_stem}.segments.jsonl"
         self._write_segment_manifest(
             segment_manifest_path,
@@ -718,6 +822,8 @@ class MlOpsService:
         )
 
         gain_settings = capture_config.get("gain_settings") or {}
+        metadata_path = session_dir / f"{export_stem}.json"
+
         metadata = {
             "id": str(record.get("capture_id", "")),
             "generated_at_utc": str(record.get("created_at_utc", _utc_now())),
@@ -725,7 +831,9 @@ class MlOpsService:
             "source_device": str(capture_config.get("device_source", "")),
             "receiver_id": str(capture_config.get("sdr_serial") or capture_config.get("sdr_model") or "unknown"),
             "emitter_device_id": emitter_device_id,
+            "emitter_device_id_safe": safe_emitter_device_id,
             "session_id": session_id,
+            "session_id_safe": safe_session_id,
             "environment_id": str(scenario.get("environment", "")),
             "label": str(transmitter.get("transmitter_class", "")),
             "modulation_hint": str(transmitter.get("family") or "unknown"),
@@ -762,7 +870,7 @@ class MlOpsService:
             "device_addr": str(capture_config.get("sdr_serial", "")),
             "channel_index": int(capture_config.get("channel_count", 1) or 1) - 1,
             "iq_file": str(exported_iq.resolve()),
-            "metadata_file": str((session_dir / f"{export_stem}.json").resolve()),
+            "metadata_file": str(metadata_path.resolve()),
             "segment_manifest_file": str(segment_manifest_path.resolve()),
             "source_iq_file": str(iq_source.resolve()),
             "iq_format": "complex64_fc32_interleaved",
@@ -795,8 +903,9 @@ class MlOpsService:
                 "sha256",
             ],
         }
-        metadata_path = session_dir / f"{export_stem}.json"
+
         metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
+
         return {
             "capture_id": str(record.get("capture_id", "")),
             "iq_file": str(exported_iq.resolve()),
@@ -804,7 +913,9 @@ class MlOpsService:
             "source_iq_file": str(iq_source.resolve()),
             "source_metadata_file": str(artifacts.get("metadata_file") or ""),
             "emitter_device_id": emitter_device_id,
+            "emitter_device_id_safe": safe_emitter_device_id,
             "session_id": session_id,
+            "session_id_safe": safe_session_id,
             "receiver_id": metadata["receiver_id"],
             "environment_id": metadata["environment_id"],
             "original_center_frequency_hz": original_center_hz,
@@ -826,10 +937,6 @@ class MlOpsService:
             "preprocessing_profile_id": preprocessing_profile_id,
             "duration_seconds": metadata["duration_seconds"],
             "segment_manifest_file": str(segment_manifest_path.resolve()),
-            "estimated_occupied_bandwidth_hz": estimated_occupied_bandwidth_hz,
-            "canonical_filter": canonical_report["filter"],
-            "canonical_resampling": canonical_report["resampling"],
-            "canonical_segmentation": canonical_report["segmentation"],
             "sha256": metadata["sha256"],
             "label": metadata["label"],
             "modulation_hint": metadata["modulation_hint"],
@@ -839,34 +946,44 @@ class MlOpsService:
     def _resolve_canonical_sample_rate_hz(self, records: list[dict[str, Any]], requested: float | None) -> float:
         if requested is not None and requested > 0:
             return float(requested)
+
         sample_rates = []
         for record in records:
             capture_config = record.get("capture_config") or {}
             sample_rate = self._parse_optional_float(capture_config.get("sample_rate_hz"))
             if sample_rate and sample_rate > 0:
                 sample_rates.append(sample_rate)
+
         return float(min(sample_rates)) if sample_rates else 0.0
 
     def _resolve_canonical_bandwidth_hz(self, records: list[dict[str, Any]], canonical_sample_rate_hz: float, requested: float | None) -> float:
         nyquist_safe = float(canonical_sample_rate_hz) * 0.90 if canonical_sample_rate_hz > 0 else 0.0
+
         if requested is not None and requested > 0:
             return float(min(requested, nyquist_safe)) if nyquist_safe > 0 else float(requested)
+
         bandwidths: list[float] = []
         occupied: list[float] = []
+
         for record in records:
             capture_config = record.get("capture_config") or {}
             quality_metrics = record.get("quality_metrics") or {}
             sample_rate = self._parse_optional_float(capture_config.get("sample_rate_hz")) or 0.0
             bw = self._parse_optional_float(capture_config.get("effective_bandwidth_hz")) or sample_rate
+
             if bw > 0:
                 bandwidths.append(float(bw))
+
             occ = self._parse_optional_float(quality_metrics.get("occupied_bandwidth_hz"))
             if occ and occ > 0:
                 occupied.append(float(occ) * 1.25)
+
         candidates = [min(bandwidths) if bandwidths else 0.0, max(occupied) if occupied else 0.0]
         candidate = max(candidates)
+
         if nyquist_safe > 0:
             candidate = min(candidate, nyquist_safe)
+
         return float(candidate if candidate > 0 else nyquist_safe)
 
     def _estimate_signal_from_capture(
@@ -879,6 +996,7 @@ class MlOpsService:
         peak_from_qc = self._parse_optional_float(quality_metrics.get("peak_frequency_hz"))
         offset_from_qc = self._parse_optional_float(quality_metrics.get("frequency_offset_hz"))
         occupied_from_qc = self._parse_optional_float(quality_metrics.get("occupied_bandwidth_hz"))
+
         if peak_from_qc is not None:
             offset_hz = float(peak_from_qc - original_center_hz)
             return {
@@ -886,6 +1004,7 @@ class MlOpsService:
                 "estimated_signal_offset_hz": offset_hz,
                 "estimated_occupied_bandwidth_hz": float(occupied_from_qc or 0.0),
             }
+
         if offset_from_qc is not None:
             return {
                 "estimated_signal_center_hz": float(original_center_hz + offset_from_qc),
@@ -894,29 +1013,34 @@ class MlOpsService:
             }
 
         iq = np.fromfile(source_path, dtype=np.complex64, count=262144)
+
         if iq.size == 0 or sample_rate_hz <= 0:
             return {
                 "estimated_signal_center_hz": float(original_center_hz),
                 "estimated_signal_offset_hz": 0.0,
                 "estimated_occupied_bandwidth_hz": float(occupied_from_qc or 0.0),
             }
+
         nperseg = int(min(8192, max(256, iq.size)))
         freqs, psd = signal.welch(iq, fs=float(sample_rate_hz), nperseg=nperseg, return_onesided=False, scaling="density")
         freqs = np.fft.fftshift(freqs)
         psd = np.fft.fftshift(np.real(psd))
         psd = np.maximum(psd, 0.0)
         total = float(np.sum(psd))
+
         if not np.isfinite(total) or total <= 0:
             return {
                 "estimated_signal_center_hz": float(original_center_hz),
                 "estimated_signal_offset_hz": 0.0,
                 "estimated_occupied_bandwidth_hz": float(occupied_from_qc or 0.0),
             }
+
         peak_offset_hz = float(freqs[int(np.argmax(psd))])
         cumulative = np.cumsum(psd) / total
         low_idx = int(np.searchsorted(cumulative, 0.005))
         high_idx = int(np.searchsorted(cumulative, 0.995))
         occupied_bw = float(abs(freqs[min(high_idx, len(freqs) - 1)] - freqs[max(low_idx, 0)]))
+
         return {
             "estimated_signal_center_hz": float(original_center_hz + peak_offset_hz),
             "estimated_signal_offset_hz": peak_offset_hz,
@@ -933,13 +1057,18 @@ class MlOpsService:
         canonical_bandwidth_hz: float,
         canonical_segment_length_samples: int,
     ) -> dict[str, Any]:
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+
         iq = np.fromfile(source_path, dtype=np.complex64)
+
         if iq.size == 0:
             raise ValueError(f"IQ source is empty: {source_path}")
+
         if original_sample_rate_hz <= 0 or canonical_sample_rate_hz <= 0:
             raise ValueError("RF canonicalization requires positive original and canonical sample rates.")
 
         input_count = int(iq.size)
+
         if abs(offset_hz) > 0:
             n = np.arange(iq.size, dtype=np.float64)
             rotator = np.exp(-1j * 2.0 * np.pi * float(offset_hz) * n / float(original_sample_rate_hz)).astype(np.complex64)
@@ -947,18 +1076,31 @@ class MlOpsService:
 
         filter_report = {"applied": False, "type": "none", "cutoff_hz": 0.0, "num_taps": 0}
         safe_cutoff_hz = min(float(canonical_bandwidth_hz) / 2.0, float(original_sample_rate_hz) * 0.45)
+
         if safe_cutoff_hz > 0 and safe_cutoff_hz < float(original_sample_rate_hz) * 0.49:
             num_taps = int(min(513, max(65, round(float(original_sample_rate_hz) / max(safe_cutoff_hz, 1.0)) * 8 + 1)))
+
             if num_taps % 2 == 0:
                 num_taps += 1
+
             taps = signal.firwin(num_taps, safe_cutoff_hz, fs=float(original_sample_rate_hz), window="hann")
             iq = signal.lfilter(taps.astype(np.float32), [1.0], iq).astype(np.complex64)
             delay = (num_taps - 1) // 2
+
             if iq.size > delay:
                 iq = iq[delay:]
+
             filter_report = {"applied": True, "type": "fir_lowpass_hann", "cutoff_hz": safe_cutoff_hz, "num_taps": num_taps}
 
-        resampling_report = {"applied": False, "method": "none", "input_sample_rate_hz": float(original_sample_rate_hz), "output_sample_rate_hz": float(canonical_sample_rate_hz), "up": 1, "down": 1}
+        resampling_report = {
+            "applied": False,
+            "method": "none",
+            "input_sample_rate_hz": float(original_sample_rate_hz),
+            "output_sample_rate_hz": float(canonical_sample_rate_hz),
+            "up": 1,
+            "down": 1,
+        }
+
         if not np.isclose(float(original_sample_rate_hz), float(canonical_sample_rate_hz), rtol=0.0, atol=1e-6):
             from fractions import Fraction
 
@@ -974,8 +1116,10 @@ class MlOpsService:
             }
 
         power_before = float(np.mean(np.abs(iq) ** 2)) if iq.size else 0.0
+
         if np.isfinite(power_before) and power_before > 0:
             iq = iq / np.sqrt(power_before)
+
         power_after = float(np.mean(np.abs(iq) ** 2)) if iq.size else 0.0
 
         segment_length = max(1, int(canonical_segment_length_samples))
@@ -983,15 +1127,25 @@ class MlOpsService:
         segment_count = int(pre_segment_sample_count // segment_length)
         usable_count = segment_count * segment_length
         discarded_tail_samples = int(pre_segment_sample_count - usable_count) if usable_count > 0 else 0
+
         if usable_count > 0:
             iq = iq[:usable_count]
-        iq.astype(np.complex64).tofile(destination_path)
+
+        iq.astype(np.complex64).tofile(str(destination_path))
+
+        if not destination_path.exists():
+            raise FileNotFoundError(f"Canonical IQ export failed. Output file was not created: {destination_path}")
+
         return {
             "input_sample_count": input_count,
             "output_sample_count": int(iq.size),
             "filter": filter_report,
             "resampling": resampling_report,
-            "power_normalization": {"applied": bool(power_before > 0), "power_before": power_before, "power_after": power_after},
+            "power_normalization": {
+                "applied": bool(power_before > 0),
+                "power_before": power_before,
+                "power_after": power_after,
+            },
             "segmentation": {
                 "applied": True,
                 "segment_length_samples": segment_length,
@@ -1003,6 +1157,7 @@ class MlOpsService:
     def _write_segment_manifest(self, path: Path, capture_id: str, iq_file: Path, sample_count: int, segment_length_samples: int) -> None:
         segment_length = max(1, int(segment_length_samples))
         segment_count = int(sample_count // segment_length)
+
         with path.open("w", encoding="utf-8") as handle:
             for index in range(segment_count):
                 start = index * segment_length
@@ -1023,18 +1178,23 @@ class MlOpsService:
         by_capture_id: dict[str, str] = {}
         by_source_metadata: dict[str, str] = {}
         by_exported_metadata: dict[str, str] = {}
+
         for item in exported_records:
             if not isinstance(item, dict):
                 continue
+
             exported_metadata = str(item.get("metadata_file", "")).strip()
             if not exported_metadata:
                 continue
+
             capture_id = str(item.get("capture_id", "")).strip()
             if capture_id:
                 by_capture_id[capture_id] = exported_metadata
+
             source_metadata = str(item.get("source_metadata_file", "")).strip()
             if source_metadata:
                 by_source_metadata[source_metadata] = exported_metadata
+
             by_exported_metadata[exported_metadata] = exported_metadata
 
         requested_paths = payload.get("selected_metadata_paths") or []
@@ -1056,19 +1216,22 @@ class MlOpsService:
 
         return resolved
 
-
     def _validate_canonical_dataset(self, dataset_summary: dict[str, Any], context: str) -> None:
         if not bool(dataset_summary.get("all_canonicalized")):
             raise ValueError(f"{context} requires canonicalized=true for every exported capture.")
+
         profile_ids = [item for item in dataset_summary.get("preprocessing_profile_ids", []) if item]
         if len(profile_ids) != 1:
             raise ValueError(f"{context} requires exactly 1 preprocessing_profile_id. Found {len(profile_ids)}: {profile_ids or ['<none>']}.")
+
         sample_rates = list(dataset_summary.get("canonical_sample_rates_hz", []))
         if len(sample_rates) != 1:
             raise ValueError(f"{context} requires exactly 1 canonical_sample_rate_hz after preprocessing. Found {len(sample_rates)}: {sample_rates or ['<none>']}.")
+
         bandwidths = list(dataset_summary.get("canonical_bandwidths_hz", []))
         if len(bandwidths) != 1:
             raise ValueError(f"{context} requires exactly 1 canonical_bandwidth_hz after preprocessing. Found {len(bandwidths)}: {bandwidths or ['<none>']}.")
+
         segment_lengths = list(dataset_summary.get("canonical_segment_lengths_samples", []))
         if len(segment_lengths) != 1 or int(segment_lengths[0]) <= 0:
             raise ValueError(f"{context} requires exactly 1 canonical_segment_length_samples. Found {len(segment_lengths)}: {segment_lengths or ['<none>']}.")
@@ -1086,6 +1249,7 @@ class MlOpsService:
             "canonical_bandwidth_hz": (dataset_summary.get("canonical_bandwidths_hz") or [None])[0],
             "canonical_segment_length_samples": (dataset_summary.get("canonical_segment_lengths_samples") or [None])[0],
         }
+
         for key, expected_value in expected.items():
             if expected_value is None:
                 continue
@@ -1100,6 +1264,7 @@ class MlOpsService:
         manifest = self._load_json(model_dir / "dataset_manifest.json") or {}
         train_records = manifest.get("records", []) if isinstance(manifest, dict) else []
         validation_records = dataset_summary.get("exported_records", []) if isinstance(dataset_summary, dict) else []
+
         train_pairs = {
             (str(item.get("emitter_device_id", "")).strip(), str(item.get("session_id", "")).strip())
             for item in train_records
@@ -1110,7 +1275,9 @@ class MlOpsService:
             for item in validation_records
             if isinstance(item, dict)
         }
+
         overlap = sorted(pair for pair in train_pairs.intersection(validation_pairs) if all(pair))
+
         if overlap:
             details = ", ".join(f"{device}:{session}" for device, session in overlap[:10])
             raise ValueError(
@@ -1123,12 +1290,14 @@ class MlOpsService:
             raise ValueError(
                 "Training dataset export is empty. Mark at least 2 captures as train, review them as valid, and retry."
             )
+
         device_ids = list(dataset_summary.get("device_ids", []))
         if len(device_ids) < 2:
             raise ValueError(
                 "Training requires at least 2 unique transmitters with dataset_split=train and quality_review.status=valid. "
                 f"Found {len(device_ids)}: {', '.join(device_ids) if device_ids else '<none>'}."
             )
+
         self._validate_canonical_dataset(dataset_summary, context="Training")
 
     def _validate_model_dir(self, model_dir: Path) -> None:
@@ -1138,61 +1307,73 @@ class MlOpsService:
             model_dir / "dataset_manifest.json",
         ]
         missing = [str(path) for path in required if not path.exists()]
+
         if missing:
-            raise ValueError(
-                "Model directory is incomplete. Missing: " + ", ".join(missing)
-            )
+            raise ValueError("Model directory is incomplete. Missing: " + ", ".join(missing))
 
     def _validate_validation_dataset(self, dataset_summary: dict[str, Any], model_dir: Path) -> None:
         if int(dataset_summary.get("records", 0)) == 0:
             raise ValueError(
                 "Validation requires at least 1 capture with dataset_split=val and quality_review.status=valid."
             )
+
         self._validate_canonical_dataset(dataset_summary, context="Validation")
 
         train_config = self._load_json(model_dir / "train_config.json")
         if isinstance(train_config, dict):
             self._validate_against_training_canonical_config(dataset_summary, train_config)
+
         self._validate_no_train_validation_session_overlap(dataset_summary, model_dir)
 
     def _resolve_python_executable(self, requested: str | None) -> str:
         candidate = str(requested or "").strip()
+
         if candidate:
             path = Path(candidate)
             if path.exists():
                 return str(path)
             raise ValueError(f"python_exe not found: {candidate}")
+
         default_path = Path(str(self._default_python)) if getattr(self, "_default_python", None) else None
+
         if default_path and default_path.exists():
             return str(default_path)
+
         return sys.executable
 
     @staticmethod
     def _parse_optional_float(value: Any) -> float | None:
         if value is None:
             return None
+
         text = str(value).strip()
         if text == "":
             return None
+
         try:
             parsed = float(text)
         except (TypeError, ValueError):
             return None
+
         if not np.isfinite(parsed):
             return None
+
         return parsed
 
     @staticmethod
     def _resolve_powershell_executable() -> str:
         preferred = Path(r"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe")
+
         if preferred.exists():
             return str(preferred)
+
         return "powershell"
 
     @staticmethod
     def _load_json(path: Path) -> Any:
         if not path.exists():
             return None
+
         try:
             return json.loads(path.read_text(encoding="utf-8"))
         except Exception:
@@ -1218,19 +1399,24 @@ class MlOpsService:
     def _safe_tree_size(path: Path) -> int:
         if not path.exists():
             return 0
+
         total = 0
+
         try:
             for item in path.rglob("*"):
                 if item.is_file():
                     total += item.stat().st_size
         except OSError:
             return total
+
         return total
 
     def _collect_file_inventory(self, model_dir: Path) -> list[dict[str, Any]]:
         inventory: list[dict[str, Any]] = []
+
         if not model_dir.exists():
             return inventory
+
         for path in sorted(model_dir.glob("*")):
             if not path.is_file():
                 continue
@@ -1242,12 +1428,14 @@ class MlOpsService:
                     "modified_at_utc": self._safe_mtime(path),
                 }
             )
+
         return inventory
 
     @staticmethod
     def _dataset_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
         devices = sorted({str(r.get("emitter_device_id", "")).strip() for r in records if r.get("emitter_device_id")})
         sessions = sorted({f"{r.get('emitter_device_id', '')}:{r.get('session_id', '')}" for r in records if r.get("session_id")})
+
         return {
             "records": len(records),
             "devices": len(devices),
@@ -1265,8 +1453,10 @@ class MlOpsService:
                 "last_train_acc": 0.0,
                 "best_epoch": None,
             }
+
         best_row = max(history, key=lambda row: float(row.get("test_acc", 0.0)))
         last_row = history[-1]
+
         return {
             "epochs": len(history),
             "best_test_acc": float(best_row.get("test_acc", 0.0)),

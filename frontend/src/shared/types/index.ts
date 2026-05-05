@@ -174,6 +174,7 @@ export interface ModulatedSignalCapture {
   };
   trigger_capture?: {
     mode?: 'immediate' | 'triggered_burst';
+    strategy?: string;
     threshold_db?: number;
     pre_trigger_ms?: number;
     post_trigger_ms?: number;
@@ -182,6 +183,15 @@ export interface ModulatedSignalCapture {
     burst_start_sample?: number;
     burst_end_sample?: number;
     captured_duration_s?: number;
+    // Session-level fields (triggered_burst_capture.py)
+    event_index?: number;
+    session_events_requested?: number;
+    session_events_captured?: number;
+    session_events_qc_passed?: number;
+    snr_db?: number;
+    noise_floor_db?: number;
+    trigger_energy_db?: number;
+    trigger_timestamp_utc?: string;
   };
 }
 

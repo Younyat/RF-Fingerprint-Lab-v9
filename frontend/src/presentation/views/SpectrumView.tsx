@@ -17,12 +17,12 @@ const mhzToHz = (mhz: string) => Number(mhz) * 1e6;
 const khzToHz = (khz: string) => Number(khz) * 1e3;
 const spectrumOverlayStorageKey = 'spectrum-view-overlay-preferences';
 const apiService = new ApiService();
-const AUTO_FREEZE_TRIGGER_SNR_DB = 15;
-const AUTO_FREEZE_MIN_ABOVE_NOISE_DB = 6;
-const AUTO_FREEZE_MIN_REGION_BINS = 3;
-const AUTO_FREEZE_MIN_RELATIVE_BW = 0.3;
-const AUTO_FREEZE_MAX_RELATIVE_BW = 0.7;
-const AUTO_FREEZE_FRAME_BUFFER_SIZE = 12;
+const AUTO_FREEZE_TRIGGER_SNR_DB = 10;
+const AUTO_FREEZE_MIN_ABOVE_NOISE_DB = 4;
+const AUTO_FREEZE_MIN_REGION_BINS = 2;
+const AUTO_FREEZE_MIN_RELATIVE_BW = 0.5;
+const AUTO_FREEZE_MAX_RELATIVE_BW = 0.95;
+const AUTO_FREEZE_FRAME_BUFFER_SIZE = 5;
 const MARKER_BANDPASS_ATTENUATION_DB = 60;
 const markerBandpassStorageKey = 'spectrum-view-marker-bandpass-settings';
 

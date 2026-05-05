@@ -1,30 +1,30 @@
-[WARN] These devices have less than 2 sessions and evaluation rigor will be weaker: ['BLE Advertising Channel 37', 'Commercial FM Broadcast']
+[WARN] These devices have less than 2 sessions and evaluation rigor will be weaker: ['Commercial FM Broadcast', 'Commercial FM Broadcast_2']
 [INFO] Device: cuda
-[INFO] Records discovered: 2
-[INFO] Current manifest hash: 2f7ef4d1e67bbb2cd7c4ea1fc5a5a916c72a367dc09dc358d7b8b20b1e410019
+[INFO] Records discovered: 6
+[INFO] Current manifest hash: 97a074fb72ecb4cc011ed3d53c0cd3861ed53e9d2f0484bf429dae8ed132427b
 [INFO] Devices: 2
-[INFO] Train captures: 2
-[INFO] Test captures: 2
-[EPOCH 001] train_loss=0.273404 train_acc=0.9955 test_loss=0.169461 test_acc=1.0000
-[EPOCH 002] train_loss=0.122699 train_acc=1.0000 test_loss=0.086664 test_acc=1.0000
-[EPOCH 003] train_loss=0.067461 train_acc=1.0000 test_loss=0.051905 test_acc=1.0000
-[EPOCH 004] train_loss=0.042657 train_acc=1.0000 test_loss=0.034775 test_acc=1.0000
-[EPOCH 005] train_loss=0.029647 train_acc=1.0000 test_loss=0.025110 test_acc=1.0000
-[EPOCH 006] train_loss=0.021961 train_acc=1.0000 test_loss=0.019097 test_acc=1.0000
-[EPOCH 007] train_loss=0.017014 train_acc=1.0000 test_loss=0.015081 test_acc=1.0000
-[EPOCH 008] train_loss=0.013627 train_acc=1.0000 test_loss=0.012255 test_acc=1.0000
-[EPOCH 009] train_loss=0.011195 train_acc=1.0000 test_loss=0.010182 test_acc=1.0000
-[EPOCH 010] train_loss=0.009383 train_acc=1.0000 test_loss=0.008612 test_acc=1.0000
-[EPOCH 011] train_loss=0.007993 train_acc=1.0000 test_loss=0.007391 test_acc=1.0000
-[EPOCH 012] train_loss=0.006901 train_acc=1.0000 test_loss=0.006421 test_acc=1.0000
-[EPOCH 013] train_loss=0.006026 train_acc=1.0000 test_loss=0.005636 test_acc=1.0000
-[EPOCH 014] train_loss=0.005312 train_acc=1.0000 test_loss=0.004991 test_acc=1.0000
-[EPOCH 015] train_loss=0.004721 train_acc=1.0000 test_loss=0.004453 test_acc=1.0000
-[EPOCH 016] train_loss=0.004226 train_acc=1.0000 test_loss=0.003999 test_acc=1.0000
-[EPOCH 017] train_loss=0.003807 train_acc=1.0000 test_loss=0.003613 test_acc=1.0000
-[EPOCH 018] train_loss=0.003448 train_acc=1.0000 test_loss=0.003282 test_acc=1.0000
-[EPOCH 019] train_loss=0.003139 train_acc=1.0000 test_loss=0.002994 test_acc=1.0000
-[EPOCH 020] train_loss=0.002870 train_acc=1.0000 test_loss=0.002743 test_acc=1.0000
+[INFO] Train captures: 6
+[INFO] Test captures: 6
+[EPOCH 001] train_loss=0.512159 train_acc=0.7770 test_loss=0.481126 test_acc=0.7907
+[EPOCH 002] train_loss=0.431182 train_acc=0.8071 test_loss=0.519982 test_acc=0.7622
+[EPOCH 003] train_loss=0.357160 train_acc=0.8484 test_loss=0.324530 test_acc=0.8630
+[EPOCH 004] train_loss=0.318571 train_acc=0.8701 test_loss=0.247638 test_acc=0.9005
+[EPOCH 005] train_loss=0.292854 train_acc=0.8789 test_loss=0.269184 test_acc=0.8858
+[EPOCH 006] train_loss=0.272912 train_acc=0.8901 test_loss=0.252098 test_acc=0.8940
+[EPOCH 007] train_loss=0.268244 train_acc=0.8891 test_loss=0.224282 test_acc=0.9152
+[EPOCH 008] train_loss=0.246326 train_acc=0.9004 test_loss=0.281635 test_acc=0.8710
+[EPOCH 009] train_loss=0.243369 train_acc=0.8993 test_loss=0.384140 test_acc=0.8145
+[EPOCH 010] train_loss=0.228823 train_acc=0.9076 test_loss=0.167243 test_acc=0.9395
+[EPOCH 011] train_loss=0.221872 train_acc=0.9093 test_loss=0.181238 test_acc=0.9310
+[EPOCH 012] train_loss=0.212265 train_acc=0.9129 test_loss=0.153470 test_acc=0.9448
+[EPOCH 013] train_loss=0.210359 train_acc=0.9141 test_loss=0.148172 test_acc=0.9425
+[EPOCH 014] train_loss=0.199887 train_acc=0.9186 test_loss=0.164320 test_acc=0.9350
+[EPOCH 015] train_loss=0.192598 train_acc=0.9234 test_loss=0.300101 test_acc=0.8693
+[EPOCH 016] train_loss=0.190675 train_acc=0.9226 test_loss=0.131854 test_acc=0.9490
+[EPOCH 017] train_loss=0.181382 train_acc=0.9256 test_loss=0.198392 test_acc=0.9102
+[EPOCH 018] train_loss=0.191094 train_acc=0.9235 test_loss=0.293177 test_acc=0.8618
+[EPOCH 019] train_loss=0.170518 train_acc=0.9332 test_loss=0.139298 test_acc=0.9407
+[EPOCH 020] train_loss=0.169272 train_acc=0.9335 test_loss=0.360726 test_acc=0.8523
 [OK] Training complete
 [OK] Best model: /tmp/rf_train_job/rf_model_store/best_model.pt
 [OK] Enrollment profiles: /tmp/rf_train_job/rf_model_store/enrollment_profiles.json

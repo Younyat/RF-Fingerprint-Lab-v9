@@ -23,11 +23,24 @@ class MarkerBandIqCaptureBody(BaseModel):
     live_preview_noise_floor_db: float | None = None
     live_preview_peak_level_db: float | None = None
     live_preview_peak_frequency_hz: float | None = None
+    # Capture mode: "immediate" uses the GNU Radio flowgraph script;
+    # "triggered_burst" routes to triggered_burst_capture.py (UHD direct + circular buffer).
     capture_mode: str = "immediate"
+    # -- Triggered capture params --
+    trigger_strategy: str = "adaptive_energy_trigger"
     trigger_threshold_db: float = 6.0
-    pre_trigger_ms: float = 0.0
-    post_trigger_ms: float = 50.0
-    trigger_max_wait_s: float = 5.0
+    pre_trigger_ms: float = 50.0
+    post_trigger_ms: float = 100.0
+    min_event_duration_ms: float = 10.0
+    max_event_duration_ms: float = 2000.0
+    cooldown_ms: float = 500.0
+    trigger_max_wait_s: float = 10.0
+    capture_repetitions: int = 1
+    min_valid_events: int = 1
+    smart_persistence_ms: float = 10.0
+    auto_qc_enabled: bool = True
+    target_task: str = "device_fingerprinting"
+    signal_type: str = ""
 
 
 def build_modulated_signal_router(controller) -> APIRouter:
@@ -55,10 +68,20 @@ def build_modulated_signal_router(controller) -> APIRouter:
                 live_preview_peak_level_db=body.live_preview_peak_level_db,
                 live_preview_peak_frequency_hz=body.live_preview_peak_frequency_hz,
                 capture_mode=body.capture_mode,
+                trigger_strategy=body.trigger_strategy,
                 trigger_threshold_db=body.trigger_threshold_db,
                 pre_trigger_ms=body.pre_trigger_ms,
                 post_trigger_ms=body.post_trigger_ms,
+                min_event_duration_ms=body.min_event_duration_ms,
+                max_event_duration_ms=body.max_event_duration_ms,
+                cooldown_ms=body.cooldown_ms,
                 trigger_max_wait_s=body.trigger_max_wait_s,
+                capture_repetitions=body.capture_repetitions,
+                min_valid_events=body.min_valid_events,
+                smart_persistence_ms=body.smart_persistence_ms,
+                auto_qc_enabled=body.auto_qc_enabled,
+                target_task=body.target_task,
+                signal_type=body.signal_type,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

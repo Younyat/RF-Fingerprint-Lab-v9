@@ -1,17 +1,17 @@
 {
   "train_sessions": {
-    "BLE Advertising Channel 37": [
+    "Commercial FM Broadcast": [
       "session_001"
     ],
-    "Commercial FM Broadcast": [
+    "Commercial FM Broadcast_2": [
       "session_001"
     ]
   },
   "test_sessions": {
-    "BLE Advertising Channel 37": [
+    "Commercial FM Broadcast": [
       "session_001"
     ],
-    "Commercial FM Broadcast": [
+    "Commercial FM Broadcast_2": [
       "session_001"
     ]
   }
