@@ -227,9 +227,13 @@ export const API_ENDPOINTS = {
   DEMODULATION_STOP: '/api/demodulation/stop',
   DEMODULATION_AUDIO_STATUS: '/api/demodulation/audio/status',
   DEMODULATION_MARKER_BAND: '/api/demodulation/marker-band',
+  DEMODULATION_DATASET_CAPTURE: '/api/demodulation/dataset-capture',
+  DEMODULATION_PIPELINES: '/api/demodulation/pipelines',
+  DEMODULATION_BLE_TEST_CHANNELS: '/api/demodulation/ble-advertising/test-channels',
   DEMODULATION_RESULTS: '/api/demodulation/results',
   DEMODULATION_RESULT: (id: string) => `/api/demodulation/results/${id}`,
   DEMODULATION_AUDIO: (id: string) => `/api/demodulation/audio/${id}`,
+  DEMODULATION_OUTPUT: (id: string, filename: string) => `/api/demodulation/outputs/${id}/${filename}`,
 
   // Modulated signal analysis captures
   MODULATED_SIGNAL_CAPTURES: '/api/modulated-signals/captures',

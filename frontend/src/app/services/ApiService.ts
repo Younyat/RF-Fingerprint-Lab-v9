@@ -636,6 +636,29 @@ export class ApiService {
     return response.data;
   }
 
+  async getDemodulationPipelines(): Promise<Record<string, any>[]> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.DEMODULATION_PIPELINES}`);
+    return Array.isArray(response.data) ? response.data : response.data.pipelines ?? [];
+  }
+
+  async testBleAdvertisingChannels(payload: {
+    durationSeconds: number;
+    sampleRateHz?: number;
+    bandwidthHz?: number;
+  }): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.DEMODULATION_BLE_TEST_CHANNELS}`, {
+      duration_seconds: payload.durationSeconds,
+      sample_rate_hz: payload.sampleRateHz,
+      bandwidth_hz: payload.bandwidthHz,
+    });
+    return response.data;
+  }
+
+  async demodulateDatasetCapture(payload: Record<string, unknown>): Promise<DemodulationResult> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.DEMODULATION_DATASET_CAPTURE}`, payload);
+    return response.data;
+  }
+
   async getDemodulationResults(): Promise<DemodulationResult[]> {
     const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.DEMODULATION_RESULTS}`);
     return Array.isArray(response.data) ? response.data : response.data.results ?? [];
@@ -648,6 +671,15 @@ export class ApiService {
 
   getDemodulationAudioUrl(id: string): string {
     return `${this.baseURL}${API_ENDPOINTS.DEMODULATION_AUDIO(id)}`;
+  }
+
+  getDemodulationOutputUrl(id: string, filename: string): string {
+    return `${this.baseURL}${API_ENDPOINTS.DEMODULATION_OUTPUT(id, filename)}`;
+  }
+
+  async getDemodulationOutputJson(id: string, filename: string): Promise<Record<string, any>> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.DEMODULATION_OUTPUT(id, filename)}`);
+    return response.data;
   }
 
   // Modulated signal analysis capture endpoints
@@ -758,6 +790,11 @@ export class ApiService {
     const suffix = datasetSplit ? `?dataset_split=${encodeURIComponent(datasetSplit)}` : '';
     const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.FINGERPRINTING_CAPTURES}${suffix}`);
     return Array.isArray(response.data) ? response.data : response.data.captures ?? [];
+  }
+
+  async getFingerprintingCapture(captureId: string): Promise<FingerprintingCaptureRecord> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.FINGERPRINTING_CAPTURE(captureId)}`);
+    return response.data;
   }
 
   async createFingerprintingCapture(payload: unknown): Promise<FingerprintingCaptureRecord> {

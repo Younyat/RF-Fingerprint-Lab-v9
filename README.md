@@ -29,6 +29,30 @@ training data:
 It is not a generic mock dashboard. The live SDR path opens real UHD/GNU Radio
 workers, reads real samples, and stores real dataset artifacts.
 
+## Recent Changes
+
+- **BLE advertising demodulator** — The Demodulation tab now runs a real GFSK
+  demodulation chain instead of a placeholder scaffold. It applies a
+  frequency discriminator at the correct symbol rate (1 Mbit/s), uses NumPy
+  correlation to find the 40-bit preamble + Access Address sync word, applies
+  BLE data de-whitening (LFSR x⁷+x⁴+1 initialised with the channel index),
+  validates CRC-24, and decodes the PDU header, advertiser address, and AdvData
+  TLV records. Both GFSK polarities are tried automatically.
+- **Demodulation route blocking fix** — The `POST /demodulation/marker-band` and
+  `POST /demodulation/ble-advertising/test-channels` routes were declared
+  `async def` but called blocking subprocess workers, starving the asyncio event
+  loop for up to 135 s on a three-channel BLE test. Both routes are now `def` so
+  FastAPI dispatches them to a thread pool and keeps the event loop free.
+- **Triggered Capture worker** — `triggered_burst_capture.py` rebuilt as a GNU
+  Radio `gr.sync_block` fed by `uhd.usrp_source` (`from gnuradio import gr, uhd`
+  instead of the standalone `import uhd` that is absent from the RadioConda
+  environment). Removed the `set_time_unknown_pps` call that used `uhd.time_spec`,
+  which is not exposed through the `gnuradio.uhd` Python bindings.
+- **MLOps WinError 123 fix** — Training no longer crashes when the dataset
+  directory contains subdirectories with colons in their names (ISO-8601
+  timestamps from older capture scripts). The export cleanup uses
+  `cmd /c rd /s /q` as a fallback on Windows when `shutil.rmtree` fails.
+
 ## Architecture
 
 ```text
@@ -172,6 +196,35 @@ Available trigger strategies:
 | Smart Burst | Adds persistence and saturation rejection for cleaner burst events |
 
 Each valid event writes an I/Q file and a JSON metadata file.
+
+## BLE Advertising Demodulation
+
+The Demodulation tab includes a **BLE advertising channel test** that captures
+channels 37 (2402 MHz), 38 (2426 MHz), and 39 (2480 MHz) sequentially and
+attempts to decode advertising packets from each.
+
+The demodulation pipeline:
+
+1. Capture IQ from the USRP at the target channel center frequency.
+2. Run the GFSK frequency discriminator (instantaneous phase delta).
+3. Apply a moving-average low-pass filter over one symbol period.
+4. Downsample to one sample per symbol (1 Mbit/s BLE symbol rate).
+5. Search for the 40-bit sync word (8-bit preamble `0xAA` + 32-bit
+   Access Address `0x8E89BED6`) using NumPy correlation. Both polarities are
+   tested.
+6. De-whiten the PDU bits using a 7-bit LFSR (polynomial x⁷+x⁴+1) initialised
+   with the BLE channel index.
+7. Validate CRC-24 (polynomial x²⁴+x¹⁰+x⁹+x⁶+x⁴+x³+x+1, init `0x555555`).
+8. Decode the PDU header (type, TxAdd, length), advertiser MAC address, and
+   AdvData TLV records (flags, local name, TX power, manufacturer-specific data).
+
+Results are shown per channel in the test table and saved as
+`decoded_packets.json` in the demodulation output directory.
+
+**Limitations**: The pipeline requires a direct LOS signal with sufficient SNR.
+It will not recover packets from heavily faded or interfered channels, or from
+non-advertising BLE channels (data channels use a different access address and
+hop sequence that this pipeline does not implement).
 
 ## Dataset Builder And QC
 

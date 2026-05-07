@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { ApiService } from '../../app/services/ApiService';
 import { FingerprintingCaptureRecord, ModulatedSignalCapture } from '../../shared/types';
 import { buildRfCaptureDiagnostic } from '../../shared/utils';
@@ -646,13 +647,19 @@ export const DatasetBuilderView: React.FC = () => {
                     >
                       Fill missing fields
                     </button>
-                    <button
-                      className="rounded-full border border-slate-900 bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-                      onClick={() => applyBandProfile(true)}
-                      disabled={isApplyingBandProfile}
-                    >
-                      Confirm as strong label
-                    </button>
+                  <button
+                    className="rounded-full border border-slate-900 bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => applyBandProfile(true)}
+                    disabled={isApplyingBandProfile}
+                  >
+                    Confirm as strong label
+                  </button>
+                  <Link
+                    className="rounded-full border border-blue-300 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-900"
+                    to={`/demodulation?capture_id=${encodeURIComponent(selectedCapture.capture_id)}`}
+                  >
+                    Send to Demodulator
+                  </Link>
                   </div>
                 </div>
                 <div className="mt-3 grid gap-2 text-xs text-slate-700 md:grid-cols-4">
