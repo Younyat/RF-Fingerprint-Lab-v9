@@ -31,24 +31,25 @@ workers, reads real samples, and stores real dataset artifacts.
 
 ## Recent Changes
 
-- **BLE advertising demodulator** — The Demodulation tab now runs a real GFSK
-  demodulation chain instead of a placeholder scaffold. It applies a
-  frequency discriminator at the correct symbol rate (1 Mbit/s), uses NumPy
-  correlation to find the 40-bit preamble + Access Address sync word, applies
-  BLE data de-whitening (LFSR x⁷+x⁴+1 initialised with the channel index),
-  validates CRC-24, and decodes the PDU header, advertiser address, and AdvData
-  TLV records. Both GFSK polarities are tried automatically.
-- **Demodulation route blocking fix** — The `POST /demodulation/marker-band` and
+- **BLE advertising diagnostics** - The Demodulation tab performs real
+  post-capture BLE advertising analysis instead of reporting only RF activity.
+  It detects bursts, runs a GFSK discriminator, searches the advertising Access
+  Address `0x8E89BED6`, reconstructs candidate PDUs, reports computed versus
+  received CRC values, and writes intermediate artifacts for debugging. A BLE
+  result is considered valid only when at least one reconstructed packet passes
+  CRC-24 validation.
+
+- **Demodulation route blocking fix** - The `POST /demodulation/marker-band` and
   `POST /demodulation/ble-advertising/test-channels` routes were declared
   `async def` but called blocking subprocess workers, starving the asyncio event
   loop for up to 135 s on a three-channel BLE test. Both routes are now `def` so
   FastAPI dispatches them to a thread pool and keeps the event loop free.
-- **Triggered Capture worker** — `triggered_burst_capture.py` rebuilt as a GNU
+- **Triggered Capture worker** - `triggered_burst_capture.py` rebuilt as a GNU
   Radio `gr.sync_block` fed by `uhd.usrp_source` (`from gnuradio import gr, uhd`
   instead of the standalone `import uhd` that is absent from the RadioConda
   environment). Removed the `set_time_unknown_pps` call that used `uhd.time_spec`,
   which is not exposed through the `gnuradio.uhd` Python bindings.
-- **MLOps WinError 123 fix** — Training no longer crashes when the dataset
+- **MLOps WinError 123 fix** - Training no longer crashes when the dataset
   directory contains subdirectories with colons in their names (ISO-8601
   timestamps from older capture scripts). The export cleanup uses
   `cmd /c rd /s /q` as a fallback on Windows when `shutil.rmtree` fails.
@@ -197,11 +198,58 @@ Available trigger strategies:
 
 Each valid event writes an I/Q file and a JSON metadata file.
 
+## Demodulator
+
+The Demodulator tab is split into two workflows:
+
+| Mode | Input | Main use | Persistence |
+|---|---|---|---|
+| Live Demodulation | Current SDR stream and marker-selected band | Fast inspection of what is on air now | Optional IQ and result storage |
+| Dataset Demodulation | Stored `.cfile`, `.iq`, `.bin`, `.dat` or SigMF capture | Reproducible post-capture analysis | Results are linked to the source dataset/sample |
+
+Both workflows use the same demodulation pipeline registry. The difference is
+the source adapter: live mode derives metadata from SDR settings and markers,
+while dataset mode derives metadata from the stored capture and Dataset Builder
+record. Critical metadata such as sample rate, center frequency, datatype and
+source file must be present before a dataset demodulation is executed.
+
+Each demodulation result is written under the local demodulation storage area
+and is visible from the UI. The result viewer opens decoded artifacts directly
+instead of requiring the operator to inspect files manually. Depending on the
+pipeline, outputs can include:
+
+- `demodulation_report.json`
+- `decoded_packets.json`
+- `decoded_frames.json` or `decoded_frames.csv`
+- `bitstream.bin` or `recovered_bitstream.bin`
+- recovered media such as `.wav` or `.ts`
+- `logs.txt`
+
+The UI must distinguish RF activity, protocol compatibility, synchronization,
+bitstream recovery, frame reconstruction, CRC validation and payload extraction.
+Energy in a channel is not reported as a successful demodulation.
+
 ## BLE Advertising Demodulation
 
 The Demodulation tab includes a **BLE advertising channel test** that captures
 channels 37 (2402 MHz), 38 (2426 MHz), and 39 (2480 MHz) sequentially and
 attempts to decode advertising packets from each.
+
+The BLE implementation is intentionally conservative. It can report RF activity,
+burst candidates, recovered bitstream, Access Address matches and reconstructed
+packet candidates. It does not mark a capture as demodulated unless CRC-24
+validates on at least one packet. A result such as:
+
+```text
+Access Address: true
+Packets: 8
+CRC valid: 0
+Final status: ble_candidate_not_decoded
+```
+
+means the signal is compatible with BLE advertising and candidate PDUs were
+found, but no packet has been proven valid. In that state, addresses, PDU types
+and payload hex are debugging candidates, not trusted decoded content.
 
 The demodulation pipeline:
 
@@ -212,19 +260,48 @@ The demodulation pipeline:
 5. Search for the 40-bit sync word (8-bit preamble `0xAA` + 32-bit
    Access Address `0x8E89BED6`) using NumPy correlation. Both polarities are
    tested.
-6. De-whiten the PDU bits using a 7-bit LFSR (polynomial x⁷+x⁴+1) initialised
+6. De-whiten the PDU bits using a 7-bit LFSR (polynomial x^7+x^4+1) initialised
    with the BLE channel index.
-7. Validate CRC-24 (polynomial x²⁴+x¹⁰+x⁹+x⁶+x⁴+x³+x+1, init `0x555555`).
+7. Validate CRC-24 (polynomial x^24+x^10+x^9+x^6+x^4+x^3+x+1, init `0x555555`).
 8. Decode the PDU header (type, TxAdd, length), advertiser MAC address, and
    AdvData TLV records (flags, local name, TX power, manufacturer-specific data).
+
+The current decoder also performs burst-local symbol phase trials and small
+bit-phase adjustments around Access Address offsets. This improves diagnostics
+on live captures where each burst starts at a different sample phase. Candidate
+fields remain untrusted until CRC passes.
 
 Results are shown per channel in the test table and saved as
 `decoded_packets.json` in the demodulation output directory.
 
+Each BLE run writes these artifacts:
+
+| Artifact | Purpose |
+|---|---|
+| `filtered_iq.cfile` | IQ used by the BLE analysis stage |
+| `burst_candidates.json` | Detected burst windows and durations |
+| `recovered_bitstream.bin` | Packed hard-bit stream recovered from GFSK discrimination |
+| `access_address_search.json` | Correlation diagnostics for `0x8E89BED6` |
+| `decoded_packets.json` | Candidate or CRC-valid decoded packets |
+| `demodulation_report.json` | Run summary, status, metrics and warnings |
+| `logs.txt` | Human-readable pipeline trace |
+
+Valid BLE demodulation requires all of the following:
+
+- `access_address_detected = true`
+- `packets_decoded >= 1`
+- `packets_crc_valid >= 1`
+- `final_status = decoded_with_valid_crc`
+
 **Limitations**: The pipeline requires a direct LOS signal with sufficient SNR.
-It will not recover packets from heavily faded or interfered channels, or from
-non-advertising BLE channels (data channels use a different access address and
-hop sequence that this pipeline does not implement).
+The current backend uses a lightweight Python/NumPy GFSK discriminator and
+symbol sampling path. It can reach Access Address and candidate PDU diagnostics
+on strong captures, but CRC-valid packet recovery may still require a stronger
+BLE physical layer implementation with real clock recovery
+(Gardner/Mueller-Muller or GNU Radio `gr-ble`). It will not recover packets from
+heavily faded or interfered channels, or from non-advertising BLE channels
+(data channels use a different access address and hop sequence that this
+pipeline does not implement).
 
 ## Dataset Builder And QC
 

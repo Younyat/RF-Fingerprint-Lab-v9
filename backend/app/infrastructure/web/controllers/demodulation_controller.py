@@ -108,6 +108,14 @@ class DemodulationController:
                 "outputs": ["bitstream.bin", "decoded_payload.json", "demodulation_report.json"],
             },
             {
+                "id": "zigbee_ieee802154",
+                "category": "IoT Demodulation Pipelines",
+                "family": "ieee802154",
+                "label": "Zigbee / IEEE 802.15.4 O-QPSK DSSS 2.4 GHz (CH11-CH26)",
+                "status": "implemented",
+                "outputs": ["decoded_frames.json", "demodulation_report.json"],
+            },
+            {
                 "id": "ieee802154_oqpsk",
                 "category": "Protocol/system decoders",
                 "family": "ieee802154",
@@ -793,7 +801,7 @@ class DemodulationController:
         if "ble" in joined or "bluetooth" in joined:
             return "ble_advertising"
         if "zigbee" in joined or "802.15.4" in joined or "ieee802154" in joined:
-            return "ieee802154_oqpsk"
+            return "zigbee_ieee802154"
         if "dvbt" in joined or "dvb-t" in joined:
             return "dvbt"
         if "ads-b" in joined or "adsb" in joined:
@@ -892,13 +900,16 @@ class DemodulationController:
         bitstream_path = output_dir / "recovered_bitstream.bin"
         bitstream_path.write_bytes(np.packbits(raw_bits).tobytes() if raw_bits.size else b"")
 
-        decoded_pkts = self._ble_search_packets(raw_bits, channel)
+        decoded_pkts = self._ble_decode_burst_packets(filtered_iq, sample_rate, bursts, channel)
+        if not decoded_pkts:
+            decoded_pkts = self._ble_search_packets(raw_bits, channel)
         n_decoded = len(decoded_pkts)
         n_crc_valid = sum(1 for p in decoded_pkts if p.get("crc_valid", False))
         aa_detected = n_decoded > 0
 
         # Legacy AA correlation search (kept for diagnostics)
         aa_search = self._search_ble_access_address(raw_bits)
+        aa_detected = bool(aa_search.get("access_address_detected"))
 
         # Build output packet list for the frontend
         pkt_list = [
@@ -912,7 +923,13 @@ class DemodulationController:
                 "payload_hex": p.get("payload_hex"),
                 "payload_fields": p.get("payload_fields"),
                 "crc_valid": p.get("crc_valid", False),
+                "crc_computed": p.get("crc_computed"),
+                "crc_received": p.get("crc_received"),
                 "polarity": p.get("polarity", "normal"),
+                "sync_source": p.get("sync_source"),
+                "phase_adjust_bits": p.get("phase_adjust_bits"),
+                "burst_index": p.get("burst_index"),
+                "symbol_phase_samples": p.get("symbol_phase_samples"),
             }
             for i, p in enumerate(decoded_pkts)
         ]
@@ -930,7 +947,7 @@ class DemodulationController:
             "packets_crc_valid": n_crc_valid,
             "advertiser_addresses": advertiser_addresses,
             "pdu_types": pdu_types,
-            "payload_extractable": n_decoded > 0,
+            "payload_extractable": n_crc_valid > 0,
             "packets": pkt_list,
         }
 
@@ -993,13 +1010,19 @@ class DemodulationController:
         if activity.get("signal_detected") and not aa_detected:
             warnings.append("RF activity detected but no valid BLE advertising packet was recovered. "
                             "The signal may not be BLE, or the frequency/gain may need adjustment.")
-        final_status = ("ble_decoded" if n_crc_valid > 0
-                        else "ble_candidate_not_decoded" if activity.get("signal_detected")
-                        else "rf_activity_only")
+        if aa_detected and n_decoded == 0:
+            warnings.append("BLE Access Address was detected, but packet reconstruction did not recover a valid advertising PDU.")
+        if n_decoded > 0 and n_crc_valid == 0:
+            warnings.append("BLE packet candidates were reconstructed, but none passed CRC validation. Treat addresses, PDU types and payload fields as unvalidated candidates.")
+        final_status = (
+            "decoded_with_valid_crc" if aa_detected and n_decoded >= 1 and n_crc_valid >= 1
+            else "ble_candidate_not_decoded" if activity.get("signal_detected")
+            else "rf_activity_only"
+        )
         return {
-            "status": "complete" if n_crc_valid > 0 else "rf_activity_only",
+            "status": "complete" if final_status == "decoded_with_valid_crc" else "rf_activity_only",
             "final_status": final_status,
-            "valid_demodulation": n_crc_valid > 0,
+            "valid_demodulation": final_status == "decoded_with_valid_crc",
             "protocol": "bluetooth_low_energy",
             "pipeline": "ble_advertising",
             "computed_ble_channel": channel,
@@ -1048,9 +1071,8 @@ class DemodulationController:
         elif pipeline == "generic_fsk_iot":
             result = self._generic_fsk_iot(iq, data, output_dir)
         elif pipeline in {"zigbee_ieee802154", "ieee802154_oqpsk"}:
-            result = self._packet_scaffold("ieee802154", iq, data, output_dir)
+            result = self._zigbee_ieee802154(iq, data, output_dir)
             result.update(self._iot_common_envelope(iq, data, "zigbee_ieee802154", "ieee802154", "oqpsk_dsss", "ieee802154_frame_decoder"))
-            result["demodulation_level_reached"] = "rf_activity_only"
         elif pipeline == "lora_css":
             result = self._packet_scaffold("lora", iq, data, output_dir)
             result.update(self._iot_common_envelope(iq, data, "lora_css", "lora", "css", "lora_packet_decoder"))
@@ -1406,7 +1428,7 @@ class DemodulationController:
                 crc ^= 0x00065B
         return crc
 
-    def _ble_gfsk_demod(self, iq: np.ndarray, sample_rate: float) -> np.ndarray:
+    def _ble_gfsk_demod(self, iq: np.ndarray, sample_rate: float, symbol_offset_samples: int | None = None) -> np.ndarray:
         """
         GFSK frequency discriminator for BLE at 1 Mbit/s.
         Returns bit array with one bit per symbol period.
@@ -1427,18 +1449,64 @@ class DemodulationController:
         if n_syms < 10:
             return np.array([], dtype=np.uint8)
         # Center-sample each symbol; remove DC offset before thresholding
-        offset = sps_int // 2
+        offset = sps_int // 2 if symbol_offset_samples is None else int(symbol_offset_samples)
+        offset = max(0, min(offset, sps_int - 1))
         idx = np.arange(n_syms) * sps_int + offset
         idx = idx[idx < phase_delta.size]
         sampled = phase_delta[idx]
         dc = float(np.median(sampled))
         return (sampled > dc).astype(np.uint8)
 
+    def _ble_decode_burst_packets(
+        self,
+        iq: np.ndarray,
+        sample_rate: float,
+        bursts: list[tuple[int, int]],
+        channel: int,
+    ) -> list[dict]:
+        """Decode BLE packets per burst while sweeping symbol phase inside each burst."""
+        SYMBOL_RATE = 1_000_000.0
+        sps_int = max(1, int(round(max(1.0, sample_rate / SYMBOL_RATE))))
+        pad = int(max(4 * sps_int, round(40e-6 * sample_rate)))
+        decoded: list[dict] = []
+        used_offsets: list[int] = []
+        for burst_index, (start_sample, stop_sample) in enumerate(bursts):
+            seg_start = max(0, int(start_sample) - pad)
+            seg_stop = min(iq.size, int(stop_sample) + pad)
+            segment = iq[seg_start:seg_stop]
+            best_packets: list[dict] = []
+            best_score = -1
+            best_phase = 0
+            for phase in range(sps_int):
+                burst_bits = self._ble_gfsk_demod(segment, sample_rate, symbol_offset_samples=phase)
+                packets = self._ble_search_packets(burst_bits, channel)
+                if not packets:
+                    continue
+                crc_valid = sum(1 for pkt in packets if pkt.get("crc_valid"))
+                score = crc_valid * 1000 + len(packets) * 10
+                if score > best_score:
+                    best_score = score
+                    best_packets = packets
+                    best_phase = phase
+            for pkt in best_packets:
+                local_bit_offset = int(pkt.get("bit_offset", 0))
+                global_bit_offset = int(round(seg_start / sample_rate * SYMBOL_RATE)) + local_bit_offset
+                if any(abs(global_bit_offset - seen) < 24 for seen in used_offsets):
+                    continue
+                used_offsets.append(global_bit_offset)
+                pkt["bit_offset"] = global_bit_offset
+                pkt["burst_index"] = burst_index
+                pkt["symbol_phase_samples"] = best_phase
+                pkt["burst_start_sample"] = int(start_sample)
+                pkt["burst_stop_sample"] = int(stop_sample)
+                decoded.append(pkt)
+        return decoded
+
     def _ble_decode_adv_packet(self, bits_from_pdu: np.ndarray, channel: int) -> dict | None:
         """
         Decode one BLE advertising PDU (bits start immediately after the Access Address).
         De-whitens, validates CRC-24, and extracts header + payload fields.
-        Returns a packet dict on success or None if CRC fails / length invalid.
+        Returns a packet dict for a plausible PDU; CRC validity is reported separately.
         """
         MAX_PAYLOAD = 37
         if bits_from_pdu.size < (2 + 6 + 3) * 8:  # min: header + AdvA + CRC
@@ -1451,7 +1519,7 @@ class DemodulationController:
         tx_add = int(dw[4]) if dw.size > 4 else 0
         rx_add = int(dw[5]) if dw.size > 5 else 0
         length = self._ble_int_from_bits(dw, 6, 8)  # bits [13:8] of header
-        if length < 6 or length > MAX_PAYLOAD:
+        if pdu_type > 6 or length < 6 or length > MAX_PAYLOAD:
             return None
         total_bits = (2 + length + 3) * 8
         if dw.size < total_bits:
@@ -1461,8 +1529,6 @@ class DemodulationController:
         computed = self._ble_crc24_bits(crc_data, init=0x555555)
         received = self._ble_int_from_bits(dw, 24, (2 + length) * 8)
         crc_valid = (computed == received)
-        if not crc_valid:
-            return None
         # Decode advertiser address (6 bytes, LSB first → reverse for display)
         adv_bytes = [self._ble_int_from_bits(dw, 8, 16 + i * 8) for i in range(6)]
         adv_addr = ":".join(f"{b:02X}" for b in reversed(adv_bytes))
@@ -1479,7 +1545,9 @@ class DemodulationController:
             "advertiser_address": adv_addr,
             "payload_hex": bytes(payload_bytes).hex(),
             "payload_fields": self._ble_parse_adv_data(bytes(payload_bytes)),
-            "crc_valid": True,
+            "crc_valid": bool(crc_valid),
+            "crc_computed": f"0x{computed:06X}",
+            "crc_received": f"0x{received:06X}",
             "_total_bits": total_bits,
         }
 
@@ -1521,13 +1589,14 @@ class DemodulationController:
         """
         if bits.size < 50:
             return []
-        # Advertising sync word: preamble (0xAA LSB-first) + AA (0x8E89BED6 byte0-first LSB-first)
-        # 0xAA = 10101010 → bits [0,1,0,1,0,1,0,1]  (LSB first)
+        # Advertising sync word: preamble + AA (0x8E89BED6), each byte LSB-first
+        # AA first bit on air = LSB of 0xD6 = 0 → preamble = 0x55 (01010101b), LSB-first = [1,0,1,0,1,0,1,0]
+        # 0x55 → [1,0,1,0,1,0,1,0]
         # 0xD6 = 11010110 → [0,1,1,0,1,0,1,1]
         # 0xBE = 10111110 → [0,1,1,1,1,1,0,1]
         # 0x89 = 10001001 → [1,0,0,1,0,0,0,1]
         # 0x8E = 10001110 → [0,1,1,1,0,0,0,1]
-        SYNC = np.array([0,1,0,1,0,1,0,1,
+        SYNC = np.array([1,0,1,0,1,0,1,0,
                          0,1,1,0,1,0,1,1,
                          0,1,1,1,1,1,0,1,
                          1,0,0,1,0,0,0,1,
@@ -1535,26 +1604,289 @@ class DemodulationController:
         bits_f = bits.astype(np.float32) * 2 - 1
         corr = np.correlate(bits_f, SYNC, mode='valid')
         # threshold = 32/40 bits correct (allows 4 bit errors in 40-bit sync word)
-        candidates = np.where(np.abs(corr) >= 32)[0]
+        candidates: list[tuple[int, int, str]] = []
+        for pos in np.where(np.abs(corr) >= 32)[0]:
+            polarity = 1 if corr[pos] < 0 else 0
+            candidates.append((int(pos) + 40, polarity, "preamble_access_address"))
+
+        aa = np.array([0,1,1,0,1,0,1,1,
+                       0,1,1,1,1,1,0,1,
+                       1,0,0,1,0,0,0,1,
+                       0,1,1,1,0,0,0,1], dtype=np.float32) * 2 - 1
+        aa_corr = np.correlate(bits_f, aa, mode='valid')
+        for pos in np.where(np.abs(aa_corr) >= 28)[0]:
+            polarity = 1 if aa_corr[pos] < 0 else 0
+            candidates.append((int(pos) + 32, polarity, "access_address"))
         packets = []
         skip_until = -1
-        for pos in candidates:
-            if int(pos) < skip_until:
+        for pdu_start, polarity, source in sorted(candidates, key=lambda item: item[0]):
+            if int(pdu_start) < skip_until:
                 continue
-            polarity = 1 if corr[pos] < 0 else 0  # negative correlation → inverted bits
-            pdu_start = int(pos) + 40
+            # Polarity is derived from the candidate correlation above.
+            pdu_start = int(pdu_start)
             if pdu_start >= bits.size:
                 break
-            pdu_bits = bits[pdu_start:]
-            if polarity:
-                pdu_bits = pdu_bits ^ 1
-            pkt = self._ble_decode_adv_packet(pdu_bits, channel)
-            if pkt is not None:
-                pkt['bit_offset'] = int(pos)
-                pkt['polarity'] = 'inverted' if polarity else 'normal'
-                skip_until = pdu_start + pkt.pop('_total_bits', 64)
-                packets.append(pkt)
+            for phase_adjust in (-2, -1, 0, 1, 2):
+                start = pdu_start + phase_adjust
+                if start < 0 or start >= bits.size:
+                    continue
+                pdu_bits = bits[start:]
+                if polarity:
+                    pdu_bits = pdu_bits ^ 1
+                pkt = self._ble_decode_adv_packet(pdu_bits, channel)
+                if pkt is not None:
+                    pkt['bit_offset'] = int(start)
+                    pkt['sync_source'] = source
+                    pkt['phase_adjust_bits'] = phase_adjust
+                    pkt['polarity'] = 'inverted' if polarity else 'normal'
+                    skip_until = start + pkt.pop('_total_bits', 64)
+                    packets.append(pkt)
+                    break
         return packets
+
+    # ------------------------------------------------------------------
+    # Zigbee / IEEE 802.15.4 O-QPSK DSSS helpers
+    # ------------------------------------------------------------------
+
+    # IEEE 802.15.4-2006 Table 69: 32-chip PN spreading sequences (c0..c31)
+    _ZIGBEE_PN = [
+        [1,1,0,1,1,0,0,1,1,1,0,0,0,0,1,1,0,1,0,1,0,0,1,0,0,0,1,0,1,1,1,0],  # 0
+        [1,1,1,0,1,1,0,1,1,0,0,1,1,1,0,0,0,0,1,1,0,1,0,1,0,0,1,0,0,0,1,0],  # 1
+        [0,0,1,0,1,1,1,0,1,1,0,1,1,0,0,1,1,1,0,0,0,0,1,1,0,1,0,1,0,0,1,0],  # 2
+        [0,0,1,0,0,0,1,0,1,1,1,0,1,1,0,1,1,0,0,1,1,1,0,0,0,0,1,1,0,1,0,1],  # 3
+        [0,1,0,1,0,0,1,0,0,0,1,0,1,1,1,0,1,1,0,1,1,0,0,1,1,1,0,0,0,0,1,1],  # 4
+        [0,0,1,1,0,1,0,1,0,0,1,0,0,0,1,0,1,1,1,0,1,1,0,1,1,0,0,1,1,1,0,0],  # 5
+        [1,1,0,0,0,0,1,1,0,1,0,1,0,0,1,0,0,0,1,0,1,1,1,0,1,1,0,1,1,0,0,1],  # 6
+        [1,0,0,1,1,1,0,0,0,0,1,1,0,1,0,1,0,0,1,0,0,0,1,0,1,1,1,0,1,1,0,1],  # 7
+        [1,0,0,0,1,1,0,0,0,1,0,0,1,1,1,0,1,0,1,1,1,1,1,0,0,0,1,1,0,1,1,0],  # 8
+        [0,1,1,0,1,0,0,0,1,1,0,0,0,1,0,0,1,1,1,0,1,0,1,1,1,1,1,0,0,0,1,1],  # 9
+        [0,0,1,1,0,1,1,0,1,0,0,0,1,1,0,0,0,1,0,0,1,1,1,0,1,0,1,1,1,1,1,0],  # 10
+        [1,1,1,0,0,0,1,1,0,1,1,0,1,0,0,0,1,1,0,0,0,1,0,0,1,1,1,0,1,0,1,1],  # 11
+        [1,0,1,1,1,1,1,0,0,0,1,1,0,1,1,0,1,0,0,0,1,1,0,0,0,1,0,0,1,1,1,0],  # 12
+        [1,1,1,0,1,0,1,1,1,1,1,0,0,0,1,1,0,1,1,0,1,0,0,0,1,1,0,0,0,1,0,0],  # 13
+        [0,1,0,0,1,1,1,0,1,0,1,1,1,1,1,0,0,0,1,1,0,1,1,0,1,0,0,0,1,1,0,0],  # 14
+        [1,1,0,0,0,1,0,0,1,1,1,0,1,0,1,1,1,1,1,0,0,0,1,1,0,1,1,0,1,0,0,0],  # 15
+    ]
+
+    def _zigbee_channel_from_frequency(self, center_hz: float) -> tuple[int, float]:
+        """Return (channel_number, channel_center_hz) for the nearest IEEE 802.15.4 channel (CH11-CH26)."""
+        best_ch, best_dist = 11, float("inf")
+        for k in range(11, 27):
+            ch_hz = (2405.0 + 5.0 * (k - 11)) * 1e6
+            dist = abs(center_hz - ch_hz)
+            if dist < best_dist:
+                best_dist = dist
+                best_ch = k
+        return best_ch, (2405.0 + 5.0 * (best_ch - 11)) * 1e6
+
+    def _zigbee_crc16(self, data: bytes) -> int:
+        """CRC-16/KERMIT used by IEEE 802.15.4 FCS. Poly 0x1021, init 0x0000, LSB-first."""
+        crc = 0x0000
+        for byte in data:
+            crc ^= byte
+            for _ in range(8):
+                crc = (crc >> 1) ^ 0x8408 if (crc & 1) else (crc >> 1)
+        return crc & 0xFFFF
+
+    def _zigbee_oqpsk_dechip(self, iq: np.ndarray, sample_rate: float) -> np.ndarray:
+        """Recover IEEE 802.15.4 O-QPSK chips at 2 Mchip/s. Returns 0/1 chip array."""
+        CHIP_RATE = 2_000_000.0
+        spc = sample_rate / CHIP_RATE
+        spc_int = max(1, int(round(spc)))
+        if iq.size < 64:
+            return np.array([], dtype=np.uint8)
+        q = iq.astype(np.complex64)
+        if spc_int >= 2:
+            kernel = np.ones(spc_int, dtype=np.float32) / spc_int
+            iq_i = np.convolve(np.real(q), kernel, "same")
+            iq_q = np.convolve(np.imag(q), kernel, "same")
+        else:
+            iq_i = np.real(q).astype(np.float32)
+            iq_q = np.imag(q).astype(np.float32)
+        n_chips = iq.size // spc_int
+        offset = spc_int // 2
+        idx = np.arange(n_chips) * spc_int + offset
+        idx = idx[idx < iq_i.size]
+        n = idx.size
+        half = max(1, spc_int // 2)
+        idx_q = np.clip(idx + half, 0, iq_q.size - 1)
+        chips = np.zeros(n, dtype=np.uint8)
+        chips[0::2] = (iq_i[idx[0::2]] > 0).astype(np.uint8)
+        chips[1::2] = (iq_q[idx_q[1::2]] > 0).astype(np.uint8)
+        return chips
+
+    def _zigbee_try_decode_frame(self, chips_b: np.ndarray, PN_b: np.ndarray, start: int) -> dict | None:
+        """Attempt IEEE 802.15.4 frame decode from chip position start using PN correlation."""
+        MAX_SYMS = 270  # preamble(8)+SFD(2)+PHR(2)+PSDU(127*2)=266
+        n_avail = (chips_b.size - start) // 32
+        n_decode = min(MAX_SYMS, n_avail)
+        if n_decode < 12:
+            return None
+        end = start + n_decode * 32
+        segment = chips_b[start:end].astype(np.float32).reshape(n_decode, 32)
+        corrs = segment @ PN_b.T.astype(np.float32)  # (n_decode, 16)
+        symbols = np.argmax(corrs, axis=1).astype(np.int16)
+        # Check preamble: at least 7 of 8 leading symbols must be 0
+        if int(np.sum(symbols[:8] == 0)) < 7:
+            return None
+        # Check SFD: symbols[8]=7 (low nibble 0xA7), symbols[9]=10 (high nibble)
+        if symbols[8] != 7 or symbols[9] != 10:
+            return None
+        phr = int(symbols[10]) | (int(symbols[11]) << 4)
+        length = phr & 0x7F
+        if length < 2 or length > 127:
+            return None
+        needed = 12 + length * 2
+        if needed > n_decode:
+            return None
+        psdu_syms = symbols[12:12 + length * 2]
+        lo = psdu_syms[0::2].astype(np.uint8)
+        hi = psdu_syms[1::2].astype(np.uint8)
+        psdu_bytes = bytes(int(l) | (int(h) << 4) for l, h in zip(lo, hi))
+        payload = psdu_bytes[:-2]
+        fcs_recv = psdu_bytes[-2] | (psdu_bytes[-1] << 8)
+        fcs_calc = self._zigbee_crc16(payload)
+        return {
+            "phr": phr,
+            "length": length,
+            "payload_hex": payload.hex(),
+            "fcs_received": f"0x{fcs_recv:04X}",
+            "fcs_computed": f"0x{fcs_calc:04X}",
+            "crc_valid": fcs_calc == fcs_recv,
+            "_total_chips": needed * 32,
+        }
+
+    def _zigbee_search_frames(self, chips: np.ndarray) -> list[dict]:
+        """Search chip stream for IEEE 802.15.4 preamble+SFD+frame; returns decoded frame dicts."""
+        if chips.size < 12 * 32:
+            return []
+        PN_b = (np.array(self._ZIGBEE_PN, dtype=np.float32) * 2.0 - 1.0)  # (16,32) bipolar
+        pn0 = PN_b[0]
+        all_frames: list[dict] = []
+        seen: set[int] = set()
+        for polarity in (0, 1):
+            c = (chips ^ polarity).astype(np.float32) * 2.0 - 1.0
+            # Sliding window correlation with PN[0] using stride tricks
+            if c.size < 32:
+                continue
+            windows = np.lib.stride_tricks.sliding_window_view(c, 32)  # (n-31, 32)
+            corr = windows @ pn0  # (n-31,)
+            candidates = np.where(corr >= 24.0)[0]
+            skip_until = -1
+            c_int8 = c.astype(np.int8)
+            for pos in candidates:
+                pos = int(pos)
+                if pos < skip_until or pos in seen:
+                    continue
+                frame = self._zigbee_try_decode_frame(c_int8, PN_b.astype(np.int8), pos)
+                if frame is not None:
+                    total = frame.pop("_total_chips", 12 * 32)
+                    frame["chip_offset"] = pos
+                    all_frames.append(frame)
+                    seen.add(pos)
+                    skip_until = pos + total
+        return all_frames
+
+    def _zigbee_ieee802154(self, iq: np.ndarray, data: dict, output_dir: Path) -> dict:
+        """Full IEEE 802.15.4 O-QPSK DSSS pipeline: chip recovery → PN despreading → SFD → FCS."""
+        center = float(data.get("center_frequency_hz") or 0.0)
+        sample_rate = float(data.get("sample_rate_hz") or 1.0)
+        channel, ch_hz = self._zigbee_channel_from_frequency(center)
+        activity = self._summarize_iq_activity(iq, sample_rate)
+
+        chips = self._zigbee_oqpsk_dechip(iq, sample_rate)
+        chip_path = output_dir / "chips.bin"
+        chip_path.write_bytes(np.packbits(chips).tobytes() if chips.size else b"")
+
+        frames = self._zigbee_search_frames(chips) if chips.size >= 12 * 32 else []
+        n_frames = len(frames)
+        n_crc_valid = sum(1 for f in frames if f.get("crc_valid"))
+
+        decoded = {
+            "protocol": "ieee802154",
+            "pipeline": "zigbee_ieee802154",
+            "channel": channel,
+            "channel_frequency_mhz": ch_hz / 1e6,
+            "frames_decoded": n_frames,
+            "frames_crc_valid": n_crc_valid,
+            "payload_extractable": n_crc_valid > 0,
+            "frames": [
+                {
+                    "index": i,
+                    "chip_offset": f.get("chip_offset", 0),
+                    "channel": channel,
+                    "length": f.get("length"),
+                    "payload_hex": f.get("payload_hex"),
+                    "fcs_received": f.get("fcs_received"),
+                    "fcs_computed": f.get("fcs_computed"),
+                    "crc_valid": f.get("crc_valid", False),
+                }
+                for i, f in enumerate(frames)
+            ],
+        }
+        decoded_path = output_dir / "decoded_frames.json"
+        decoded_path.write_text(json.dumps(decoded, indent=2), encoding="utf-8")
+        logs_path = output_dir / "logs.txt"
+        logs_path.write_text(
+            "\n".join([
+                "Zigbee/IEEE 802.15.4 O-QPSK DSSS pipeline",
+                f"center_frequency_hz={center}",
+                f"computed_channel=CH{channel} ({ch_hz/1e6:.1f} MHz)",
+                f"chips_extracted={chips.size}",
+                f"rf_activity_detected={bool(activity.get('signal_detected'))}",
+                f"frames_decoded={n_frames}",
+                f"frames_crc_valid={n_crc_valid}",
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        final_status = (
+            "decoded_with_valid_crc" if n_crc_valid > 0
+            else "zigbee_candidate_not_decoded" if activity.get("signal_detected")
+            else "rf_activity_only"
+        )
+        return {
+            "status": "complete" if n_crc_valid > 0 else "rf_activity_only",
+            "final_status": final_status,
+            "valid_demodulation": n_crc_valid > 0,
+            "protocol": "ieee802154",
+            "pipeline": "zigbee_ieee802154",
+            "computed_zigbee_channel": channel,
+            "channel_frequency_mhz": ch_hz / 1e6,
+            "rf_activity_detected": bool(activity.get("signal_detected")),
+            "chips_extracted": int(chips.size),
+            "frames_decoded": n_frames,
+            "frames_crc_valid": n_crc_valid,
+            "confidence_score": min(1.0, n_crc_valid / 3.0) if n_crc_valid > 0 else None,
+            "stage_diagnostics": {
+                "iq_loaded": bool(iq.size > 0),
+                "rf_activity_detected": bool(activity.get("signal_detected")),
+                "oqpsk_dechip_attempted": True,
+                "chips_extracted": int(chips.size),
+                "pn_despreading_attempted": chips.size >= 12 * 32,
+                "frames_decoded": n_frames,
+                "crc_validation_attempted": n_frames > 0,
+                "frames_crc_valid": n_crc_valid,
+            },
+            "outputs": {
+                "chips": str(chip_path),
+                "decoded_frames": str(decoded_path),
+                "report": str(output_dir / "demodulation_report.json"),
+                "logs": str(logs_path),
+            },
+            "decoded_frames": decoded,
+            "notes": (
+                [f"Decoded {n_frames} IEEE 802.15.4 frame(s), {n_crc_valid} CRC-valid."]
+                if n_crc_valid > 0
+                else ["RF activity detected; no CRC-valid IEEE 802.15.4 frame recovered."]
+                if activity.get("signal_detected")
+                else ["No Zigbee/IEEE 802.15.4 frames found in the capture."]
+            ),
+            "warnings": (
+                ["Low SNR or wrong channel — chip recovery may be unreliable."]
+                if not n_crc_valid and activity.get("signal_detected")
+                else []
+            ),
+        }
 
     def _pulse_timing(self, active: np.ndarray, sample_rate: float) -> dict:
         runs_on = self._detect_boolean_runs(active, sample_rate)
