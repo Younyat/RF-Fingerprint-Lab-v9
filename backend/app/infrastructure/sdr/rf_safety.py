@@ -4,6 +4,8 @@ from dataclasses import dataclass
 import math
 import os
 
+from app.config.runtime_settings import get_runtime_value
+
 
 class RFSafetyError(ValueError):
     """Raised when a requested RF setting is outside configured safety limits."""
@@ -26,7 +28,7 @@ class RFSafetyLimits:
 
 
 def _env_float(name: str, default: float) -> float:
-    value = os.environ.get(name)
+    value = get_runtime_value(name, os.environ.get(name, default))
     if value is None or value == "":
         return default
     return float(value)

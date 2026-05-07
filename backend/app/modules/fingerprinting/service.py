@@ -10,18 +10,19 @@ from uuid import uuid4
 
 import numpy as np
 
+from app.config.runtime_settings import get_runtime_value
 from app.modules.rf_intelligence.knowledge_base import resolve_band_profile
 
 
 DEFAULT_THRESHOLDS = {
-    "min_valid_snr_db": 12.0,
+    "min_valid_snr_db": float(get_runtime_value("QC_MIN_VALID_SNR_DB", 12.0)),
     "min_doubtful_snr_db": 6.0,
-    "max_valid_clipping_pct": 0.5,
+    "max_valid_clipping_pct": float(get_runtime_value("QC_MAX_VALID_CLIPPING_PCT", 0.5)),
     "max_doubtful_clipping_pct": 2.0,
     "max_valid_frequency_offset_hz": 5_000.0,
     "max_doubtful_frequency_offset_hz": 20_000.0,
     "min_valid_burst_duration_ms": 1.0,
-    "max_silence_pct": 85.0,
+    "max_silence_pct": float(get_runtime_value("QC_MAX_SILENCE_PCT", 85.0)),
 }
 
 
@@ -1235,6 +1236,11 @@ class FingerprintingService:
         offset_ratio = float(metrics.get("frequency_offset_ratio_of_capture_band", 0.0) or 0.0)
         capture_band_edge_margin_hz = float(metrics.get("capture_band_edge_margin_hz", 0.0) or 0.0)
         analysis_method = str(metrics.get("method", metrics.get("analysis_method", "")) or "").strip().lower()
+        marker_confined_burst = (
+            qc_profile_id == "burst_rf_v1"
+            and signal_within_capture_band
+            and capture_band_edge_margin_hz >= 50_000.0
+        )
 
         if not signal_within_capture_band:
             reasons.append("signal_outside_capture_band")
@@ -1290,8 +1296,9 @@ class FingerprintingService:
             reasons.append("occupied_bandwidth_too_large")
             flags.append("occupied_bandwidth_high")
         if max_offset > 0 and frequency_offset_hz > max_offset:
-            reasons.append("profile_frequency_offset_limit_exceeded")
             flags.append("profile_frequency_offset_warning")
+            if not marker_confined_burst:
+                reasons.append("profile_frequency_offset_limit_exceeded")
         if bool(qc_policy.get("require_metadata")) and not metadata_check.get("valid", False):
             reasons.append("metadata_incomplete")
             flags.append("metadata_missing")
@@ -1340,6 +1347,14 @@ class FingerprintingService:
             status = operator_decision
 
         severe_reasons = {"adc_clipping", "signal_outside_capture_band", "sample_drops_detected", "buffer_overflow", "absence_of_activity"}
+        advisory_flags = {
+            "occupied_bandwidth_high",
+            "occupied_bandwidth_near_capture_limit",
+            "peak_not_ideally_centered",
+            "pre_post_qc_mismatch",
+            "profile_frequency_offset_warning",
+        }
+        blocking_flags = [flag for flag in flags if flag not in advisory_flags]
         capture_quality = "valid"
         if any(item in reasons for item in severe_reasons) or status == "rejected":
             capture_quality = "invalid"
@@ -1347,7 +1362,7 @@ class FingerprintingService:
             capture_quality = "warning"
         elif status == "doubtful":
             capture_quality = "doubtful"
-        elif reasons or flags:
+        elif reasons or blocking_flags:
             capture_quality = "warning"
 
         review_status = "needs_review"
@@ -1381,3 +1396,4 @@ class FingerprintingService:
             "flags": sorted(set(flags)),
             "qc_profile_id": qc_profile_id,
         }
+

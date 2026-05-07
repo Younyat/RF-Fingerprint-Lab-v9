@@ -23,6 +23,8 @@ $FrontendDir = Join-Path $RootDir "frontend"
 $VenvDir = Join-Path $BackendDir "venv"
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 $FilteredRequirements = Join-Path $BackendDir "requirements.dev-windows.txt"
+$RuntimeSettingsPath = Join-Path $BackendDir "app\infrastructure\persistence\storage\config\runtime_settings.json"
+$RuntimeSettingsValues = $null
 
 function Write-Step {
     param([string]$Message)
@@ -44,6 +46,35 @@ function Convert-ToBool {
 
     $Text = "$Value".Trim().ToLowerInvariant()
     return $Text -in @("1", "true", "`$true", "yes", "y", "on")
+}
+
+function Load-RuntimeSettings {
+    if (-not (Test-Path -LiteralPath $RuntimeSettingsPath)) {
+        return $null
+    }
+    try {
+        $Data = Get-Content -LiteralPath $RuntimeSettingsPath -Raw | ConvertFrom-Json
+        return $Data.values
+    } catch {
+        Write-Host "No se pudo leer runtime_settings.json; se usaran parametros del script y defaults." -ForegroundColor Yellow
+        return $null
+    }
+}
+
+function Get-RuntimeSetting {
+    param(
+        [string]$Name,
+        [object]$Fallback
+    )
+
+    if ($RuntimeSettingsValues -and ($RuntimeSettingsValues.PSObject.Properties.Name -contains $Name)) {
+        $Value = $RuntimeSettingsValues.$Name
+        if ($null -ne $Value -and "$Value" -ne "") {
+            return $Value
+        }
+    }
+
+    return $Fallback
 }
 
 function Get-CommandPath {
@@ -260,6 +291,59 @@ function Ensure-Tools {
 }
 
 Ensure-Tools
+
+$RuntimeSettingsValues = Load-RuntimeSettings
+if ($RuntimeSettingsValues) {
+    Write-Host "Runtime settings loaded: $RuntimeSettingsPath" -ForegroundColor DarkCyan
+}
+
+$RadioCondaPythonPath = [string](Get-RuntimeSetting -Name "RADIOCONDA_PYTHON" -Fallback $RadioCondaPythonPath)
+$AppSyncIntervalMs = [int](Get-RuntimeSetting -Name "VITE_APP_SYNC_INTERVAL_MS" -Fallback $AppSyncIntervalMs)
+$SpectrumPollIntervalMs = [int](Get-RuntimeSetting -Name "VITE_SPECTRUM_POLL_INTERVAL_MS" -Fallback $SpectrumPollIntervalMs)
+$WaterfallPollIntervalMs = [int](Get-RuntimeSetting -Name "VITE_WATERFALL_POLL_INTERVAL_MS" -Fallback $WaterfallPollIntervalMs)
+
+foreach ($RuntimeEnvKey in @(
+    "UHD_DEVICE_ARGS",
+    "DEFAULT_ANTENNA",
+    "DEFAULT_CENTER_FREQUENCY_HZ",
+    "DEFAULT_SAMPLE_RATE_HZ",
+    "DEFAULT_SPAN_HZ",
+    "DEFAULT_GAIN_DB",
+    "DEFAULT_RBW_HZ",
+    "DEFAULT_VBW_HZ",
+    "DEFAULT_REFERENCE_LEVEL_DB",
+    "DEFAULT_NOISE_FLOOR_OFFSET_DB",
+    "DEFAULT_AVERAGING_FACTOR",
+    "DEFAULT_SMOOTHING_FACTOR",
+    "DEFAULT_WATERFALL_HISTORY_SIZE",
+    "DEFAULT_RECORDING_DURATION_SECONDS",
+    "DEFAULT_FM_DEVIATION_HZ",
+    "DEFAULT_AUDIO_SAMPLE_RATE_HZ",
+    "RF_MIN_CENTER_FREQUENCY_HZ",
+    "RF_MAX_CENTER_FREQUENCY_HZ",
+    "RF_MIN_SAMPLE_RATE_HZ",
+    "RF_MAX_SAMPLE_RATE_HZ",
+    "RF_MAX_SPAN_HZ",
+    "RF_MIN_GAIN_DB",
+    "RF_MAX_GAIN_DB",
+    "RF_MIN_RBW_HZ",
+    "RF_MAX_RBW_HZ",
+    "RF_MIN_VBW_HZ",
+    "RF_MAX_VBW_HZ",
+    "REAL_SDR_FPS",
+    "REAL_SDR_MAX_FFT_SIZE",
+    "REAL_SDR_CONNECT_TIMEOUT",
+    "QC_MIN_VALID_SNR_DB",
+    "QC_MAX_VALID_CLIPPING_PCT",
+    "QC_MAX_SILENCE_PCT",
+    "RF_INTELLIGENCE_THRESHOLD_OFFSET_DB",
+    "RF_INTELLIGENCE_MIN_SNR_DB"
+)) {
+    $RuntimeValue = Get-RuntimeSetting -Name $RuntimeEnvKey -Fallback $null
+    if ($null -ne $RuntimeValue) {
+        Set-Item -Path "Env:$RuntimeEnvKey" -Value "$RuntimeValue"
+    }
+}
 
 Write-Step "Preparing backend"
 $ExistingVenvVersion = $null

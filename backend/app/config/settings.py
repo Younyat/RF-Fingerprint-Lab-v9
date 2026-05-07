@@ -5,6 +5,11 @@ import os
 from pathlib import Path
 from typing import List
 
+from app.config.runtime_settings import apply_runtime_environment, get_runtime_value
+
+
+apply_runtime_environment()
+
 
 @dataclass(slots=True, frozen=True)
 class AppSettings:
@@ -183,16 +188,31 @@ def build_settings() -> Settings:
         api=ApiSettings(),
         storage=_build_storage_settings(),
         default_device=DefaultDeviceSettings(
-            center_frequency_hz=float(os.environ.get("DEFAULT_CENTER_FREQUENCY_HZ", "89400000")),
-            sample_rate_hz=float(os.environ.get("DEFAULT_SAMPLE_RATE_HZ", "2000000")),
-            gain_db=float(os.environ.get("DEFAULT_GAIN_DB", "20")),
-            antenna=os.environ.get("DEFAULT_ANTENNA", "RX2"),
-            device_args=os.environ.get("UHD_DEVICE_ARGS", ""),
+            center_frequency_hz=float(get_runtime_value("DEFAULT_CENTER_FREQUENCY_HZ", 89_400_000.0)),
+            sample_rate_hz=float(get_runtime_value("DEFAULT_SAMPLE_RATE_HZ", 2_000_000.0)),
+            span_hz=float(get_runtime_value("DEFAULT_SPAN_HZ", 2_000_000.0)),
+            gain_db=float(get_runtime_value("DEFAULT_GAIN_DB", 20.0)),
+            antenna=str(get_runtime_value("DEFAULT_ANTENNA", "RX2")),
+            device_args=str(get_runtime_value("UHD_DEVICE_ARGS", "")),
         ),
-        default_spectrum=DefaultSpectrumSettings(),
-        default_waterfall=DefaultWaterfallSettings(),
-        default_recording=DefaultRecordingSettings(),
-        default_demodulation=DefaultDemodulationSettings(),
+        default_spectrum=DefaultSpectrumSettings(
+            rbw_hz=float(get_runtime_value("DEFAULT_RBW_HZ", 10_000.0)),
+            vbw_hz=float(get_runtime_value("DEFAULT_VBW_HZ", 3_000.0)),
+            reference_level_db=float(get_runtime_value("DEFAULT_REFERENCE_LEVEL_DB", 10.0)),
+            averaging_factor=float(get_runtime_value("DEFAULT_AVERAGING_FACTOR", 0.2)),
+            smoothing_factor=float(get_runtime_value("DEFAULT_SMOOTHING_FACTOR", 0.15)),
+            noise_floor_offset_db=float(get_runtime_value("DEFAULT_NOISE_FLOOR_OFFSET_DB", 0.0)),
+        ),
+        default_waterfall=DefaultWaterfallSettings(
+            history_size=int(get_runtime_value("DEFAULT_WATERFALL_HISTORY_SIZE", 400)),
+        ),
+        default_recording=DefaultRecordingSettings(
+            default_duration_seconds=float(get_runtime_value("DEFAULT_RECORDING_DURATION_SECONDS", 10.0)),
+        ),
+        default_demodulation=DefaultDemodulationSettings(
+            audio_sample_rate_hz=int(get_runtime_value("DEFAULT_AUDIO_SAMPLE_RATE_HZ", 48_000)),
+            fm_deviation_hz=float(get_runtime_value("DEFAULT_FM_DEVIATION_HZ", 75_000.0)),
+        ),
         logging=LoggingSettings(),
     )
 

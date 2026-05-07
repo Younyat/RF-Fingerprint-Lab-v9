@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.config.runtime_settings import get_runtime_value
+
 
 TemporalType = Literal["continuous", "bursty", "hopping_candidate", "unknown"]
 ClassifierMode = Literal["rules_only", "hybrid_rules_ml", "ml_only"]
@@ -21,8 +23,10 @@ class SpectrumFrameInput(BaseModel):
 
 
 class RFIntelligenceSettings(BaseModel):
-    threshold_offset_db: float = 10.0
-    min_snr_db: float = 6.0
+    threshold_offset_db: float = Field(
+        default_factory=lambda: float(get_runtime_value("RF_INTELLIGENCE_THRESHOLD_OFFSET_DB", 10.0))
+    )
+    min_snr_db: float = Field(default_factory=lambda: float(get_runtime_value("RF_INTELLIGENCE_MIN_SNR_DB", 6.0)))
     min_bins: int = 2
     merge_gap_bins: int = 2
     classifier_mode: ClassifierMode = "hybrid_rules_ml"

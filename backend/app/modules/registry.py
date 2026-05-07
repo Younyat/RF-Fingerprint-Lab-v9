@@ -17,6 +17,7 @@ from app.modules.recordings.module import recordings_module
 from app.modules.rf_experiment_lab.api_module import rf_experiment_lab_module
 from app.modules.rf_intelligence.module import rf_intelligence_module
 from app.modules.rf_signal_understanding.module import rf_signal_understanding_module
+from app.modules.runtime_settings.module import runtime_settings_module
 from app.modules.sessions.module import sessions_module
 from app.modules.spectrum.module import spectrum_module
 from app.modules.types import BackendModuleDefinition
@@ -33,6 +34,7 @@ class BackendModuleContext:
 
 backend_modules: list[BackendModuleDefinition] = [
     device_module,
+    runtime_settings_module,
     spectrum_module,
     waterfall_module,
     markers_module,

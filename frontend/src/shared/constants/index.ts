@@ -139,6 +139,9 @@ export const API_ENDPOINTS = {
   DEVICE_SET_GAIN: '/api/device/gain',
   DEVICE_SET_SAMPLE_RATE: '/api/device/sample-rate',
 
+  // Runtime settings
+  RUNTIME_SETTINGS: '/api/runtime-settings',
+
   // Spectrum
   SPECTRUM_LIVE: '/api/spectrum/live',
   SPECTRUM_SET_CENTER: '/api/spectrum/center-frequency',

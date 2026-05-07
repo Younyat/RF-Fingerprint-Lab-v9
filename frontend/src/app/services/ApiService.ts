@@ -141,6 +141,16 @@ export class ApiService {
     await axios.post(`${this.baseURL}${API_ENDPOINTS.DEVICE_STOP_STREAM}`);
   }
 
+  async getRuntimeSettings(): Promise<Record<string, any>> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RUNTIME_SETTINGS}`);
+    return response.data;
+  }
+
+  async saveRuntimeSettings(values: Record<string, unknown>): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.RUNTIME_SETTINGS}`, { values });
+    return response.data;
+  }
+
   async setDeviceFrequency(frequency: number): Promise<void> {
     await axios.post(`${this.baseURL}${API_ENDPOINTS.DEVICE_SET_FREQUENCY}`, { frequency_hz: frequency });
   }
