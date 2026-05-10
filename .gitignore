@@ -61,7 +61,21 @@ backend/app/infrastructure/persistence/storage/temp/
 *.complex
 
 
+# RF captures and large signal files
+*.iq
+*.cfile
+*.sigmf-data
+*.bin
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.wav
 
+# Local generated recordings
+backend/app/infrastructure/persistence/storage/recordings/
+backend/app/infrastructure/persistence/storage/datasets/
+backend/app/infrastructure/persistence/storage/exports/
 
 
 
