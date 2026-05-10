@@ -31,6 +31,55 @@ workers, reads real samples, and stores real dataset artifacts.
 
 ## Recent Changes
 
+- **E6 Oracle-Style RF Lab** — New standalone module for classical ML RF
+  fingerprinting, replicating and extending the oracle-style reference pipeline.
+  Full workflow from dataset import through training to live prediction, entirely
+  within the browser UI. Key additions:
+
+  - **37-feature tabular extraction** from raw I/Q windows: amplitude, phase, IQ
+    statistics, PAPR, spectral centroid, spread, flatness, and 12 FFT sub-band
+    energies. Features are extracted with a configurable window size and windows
+    per file, then scaled with `StandardScaler`.
+  - **8 classical ML algorithms**: `HistGradientBoosting`, `RandomForest`,
+    `ExtraTrees`, `MLP`, `SVM RBF`, `SVM linear`, `KNN`,
+    `LogisticRegression`. Each supports full probability output and is
+    saved as a joblib bundle with complete provenance metadata.
+  - **Group-disjoint stratified split** — no capture group appears in both
+    train and test sets. Manifest splits are respected when present.
+  - **Dataset import** for three reference datasets: KRI 16-device WiFi
+    (SigMF), DJI UAV Lightbridge (JSON + bin), IEEE CBRS (SigMF). A generic
+    SigMF importer covers any additional external dataset. Import percentage
+    slider controls how much of a large dataset is loaded.
+  - **Per-dataset model isolation** — model IDs are namespaced as
+    `e6_{dataset_name}_{algorithm}`, so models trained on different datasets
+    never overwrite each other.
+  - **Real-time job progress** — all long-running operations (training,
+    benchmark, import, retrain) return a `job_id` immediately. The UI polls
+    `/api/e6/jobs/{job_id}` every 800 ms and renders a green fill bar with the
+    exact percentage, elapsed time, current step message, and for benchmarks
+    the live model index (`3/8 — extra_trees`).
+  - **Training audit card** — after each training job the UI shows model
+    weight (MB), dataset IQ size (GB), accuracy / macro-F1 / balanced
+    accuracy, window count, train time, inference latency per window, and a
+    collapsible step-by-step log of the full pipeline.
+  - **Train All 8 — Benchmark** — trains all 8 algorithms sequentially on the
+    selected dataset and produces a ranked comparison table with 🥇🥈🥉
+    medals, correct/failed prediction counts, a horizontal accuracy bar chart,
+    and a model-size column (MB).
+  - **Pre-trained model import** — scan any directory for `.joblib` bundles,
+    auto-detect algorithm and dataset from filename, import individually or
+    bulk import with a single button. The 28 pre-trained models from the
+    reference project are fully supported.
+  - **File upload for IQ captures** — the Local Builder tab offers a drag-and-
+    drop upload widget as an alternative to entering a file path.
+  - **IEEE CBRS label fix** — the `auto` label strategy for IEEE CBRS datasets
+    now uses the bandwidth-category folder name (`5M`, `10M`, `15M`, `20M`)
+    as the class label instead of the transmitter hardware ID combo. Datasets
+    organised like `neu_4f197c103` now correctly detect 4 classes instead of 1.
+  - **Live inference** — models can be toggled on/off for live detection. The
+    Predict tab runs file-based inference with confidence, top-k probabilities,
+    and per-model metadata (window size, dtype, class list).
+
 - **OOK 433 / 315 / 868 MHz remote control pipeline** - New IoT demodulation
   pipeline (`ook_433_remote`) for ISM-band remote controls using EV1527/SC1527
   and PT2262/SC2262 protocols. The pipeline estimates the chip period T from a
@@ -82,11 +131,19 @@ workers, reads real samples, and stores real dataset artifacts.
 frontend/                 React, TypeScript, Vite, Tailwind
 backend/                  FastAPI application and RF/ML services
 backend/tools/            GNU Radio/UHD helper workers
-backend/app/modules/      Domain modules: fingerprinting, RF intelligence,
-                          RF Signal Understanding, RF Experiment Lab, MLOps
+backend/app/modules/      Domain modules:
+  fingerprinting/         Operational RF fingerprinting (PyTorch, live SDR)
+  rf_intelligence/        Band-profile signal detection and classification
+  rf_signal_understanding/ RF Signal Understanding (numpy softmax, E5)
+  rf_experiment_lab/      Reproducible experiment workflows (E0, E1, E3, E5)
+  mlops/                  MLOps pipeline and model lifecycle
+  e6_oracle_style/        Oracle-style classical ML fingerprinting (E6)
 backend/app/infrastructure/persistence/storage/
-                          Local captures, metadata, temporary files, datasets,
-                          model artifacts and experiment results
+  captures/               Raw I/Q files and JSON metadata
+  datasets/               Dataset Builder manifests
+  e6/                     E6 datasets, models, and uploaded IQ files
+  config/                 Runtime settings
+  models/                 Operational fingerprinting model artifacts
 scripts/run_dev.ps1       Windows development launcher
 start_unified.ps1         Project-level launcher wrapper
 ```
@@ -406,6 +463,132 @@ These generated labels start as weak technical labels. They become strong labels
 only after operator confirmation. Strong labels are required for strict
 scientific training.
 
+## E6 Oracle-Style RF Lab
+
+E6 is a self-contained classical ML fingerprinting module. It does not require
+live SDR captures — it works directly from external reference datasets or from
+IQ files added through the Local Builder. Its entire workflow runs through the
+browser UI with no command-line steps.
+
+### Feature Extraction
+
+Each IQ window produces 37 tabular features:
+
+| Group | Features |
+|---|---|
+| Amplitude | mean, std, min, max, percentile 25/75, kurtosis, skewness |
+| Phase | mean, std, range |
+| IQ statistics | I/Q power ratio, I mean, Q mean, constellation spread |
+| Signal | PAPR, zero-crossing rate |
+| Spectral | centroid, spread, flatness |
+| FFT sub-bands | 12 band energies (normalized) |
+
+### Supported Algorithms
+
+| Model | Notes |
+|---|---|
+| `extra_trees` | ExtraTreesClassifier — best default for RF fingerprinting |
+| `hist_gradient_boosting` | HistGradientBoostingClassifier — modern boosting |
+| `random_forest` | RandomForestClassifier — robust ensemble |
+| `mlp` | MLPClassifier — dense neural net over tabular features |
+| `svm_rbf` | SVC with RBF kernel |
+| `svm_linear` | SVC with linear kernel |
+| `knn` | KNeighborsClassifier — geometric baseline |
+| `logistic_regression` | LogisticRegression — linear probabilistic baseline |
+
+### Supported External Datasets
+
+| Source type | Format | Label strategy |
+|---|---|---|
+| `kri_wifi` | SigMF (cf32) | Device ID from filename |
+| `uav_lightbridge` | JSON + bin (cf16_le) | UAV device ID from annotation |
+| `ieee_cbrs` | SigMF (cf32_le) | Bandwidth folder (`5M`/`10M`/`15M`/`20M`) or explicit target |
+| `generic_sigmf` | SigMF (any) | `core:label` annotation or parent folder name |
+
+For `ieee_cbrs`, the `ieee_target` parameter selects the label strategy:
+`auto` (default, uses bandwidth folder), `band`, `tx_combo`, `receiver`, or
+`signal_label`.
+
+### E6 Storage Layout
+
+```text
+storage/e6/
+  datasets/{name}/manifest.json    Dataset manifest (captures, splits, labels)
+  models/{model_id}.joblib         Trained model bundle
+  uploads/                         IQ files uploaded from the browser
+```
+
+The joblib bundle contains: model pipeline, LabelEncoder, feature names,
+window config, class list, metrics, and training metadata. It is fully
+self-contained for offline inference.
+
+### E6 API Endpoints
+
+```text
+GET  /api/e6/health                     Module health and feature count
+GET  /api/e6/sources                    List supported external source types
+
+POST /api/e6/datasets/scan-external     Scan without importing
+POST /api/e6/datasets/import-external   Import → returns {job_id}
+POST /api/e6/datasets/create-local      Create empty local dataset
+POST /api/e6/datasets/add-capture       Add an IQ file to a dataset
+POST /api/e6/datasets/register-device   Register a transmitter device
+POST /api/e6/datasets/build-splits      Generate train/val/test splits
+GET  /api/e6/datasets                   List all datasets
+GET  /api/e6/datasets/{name}            Dataset summary
+DELETE /api/e6/datasets/{name}          Delete dataset
+
+POST /api/e6/files/upload               Upload an IQ file (multipart)
+
+POST /api/e6/train                      Train one model → returns {job_id}
+POST /api/e6/train-all                  Train all 8 models → returns {job_id}
+POST /api/e6/retrain                    Retrain existing model → returns {job_id}
+
+GET  /api/e6/models                     List model registry
+GET  /api/e6/models/live-ready          Models enabled for live detection
+POST /api/e6/models/scan-directory      Scan folder for .joblib files
+POST /api/e6/models/import-existing     Import and register a .joblib bundle
+POST /api/e6/models/import-directory    Bulk import from a folder
+GET  /api/e6/models/{model_id}          Model detail
+POST /api/e6/models/{model_id}/enable-live
+POST /api/e6/models/{model_id}/disable-live
+
+POST /api/e6/predict-file               Predict from an IQ file path
+POST /api/e6/predict-live-window        Predict from a raw IQ array
+POST /api/e6/predict-frozen-spectrum    Predict from a captured spectrum
+
+GET  /api/e6/jobs                       List all background jobs
+GET  /api/e6/jobs/{job_id}              Job status and progress
+```
+
+### Job Progress System
+
+All long operations (`train`, `train-all`, `retrain`, `import-external`) are
+non-blocking. They return `{"job_id": "..."}` immediately. The UI polls
+`GET /api/e6/jobs/{job_id}` every 800 ms and renders:
+
+- Green fill progress bar with exact percentage overlay
+- Current step message and elapsed time
+- For `train-all`: live model name and index (`3/8 — extra_trees`)
+- On completion: audit card with model weight, dataset IQ size, all metrics,
+  and a collapsible step log
+
+### E6 Operator Workflow
+
+1. **Datasets tab** — scan an external dataset directory (KRI WiFi, UAV, CBRS)
+   and import it. Use the percentage slider to import a fraction of large
+   datasets. Or build a local dataset from your own IQ captures in Local Builder.
+2. **Training tab** — select a dataset, choose an algorithm, configure window
+   parameters, and press **Train Selected Model** for a single run or
+   **Train All 8 — Benchmark** for a full comparison. A green progress bar
+   fills in real time. On completion, the audit card shows model weight, IQ size
+   used, and all metrics. The benchmark table ranks all 8 models with medals.
+3. **Models tab** — browse the registry grouped by dataset. Toggle models on or
+   off for live detection. Import pre-trained `.joblib` bundles from the
+   reference project by scanning a directory and clicking Import.
+4. **Predict tab** — select a live-enabled model and enter an IQ file path.
+   Confidence and top-k probabilities are shown per prediction.
+
 ## RF Experiment Lab
 
 RF Experiment Lab provides reproducible experimental workflows on top of curated
@@ -544,13 +727,14 @@ automation, one-off launches or CI.
 
 ## Model Formats And Export
 
-Spectrum Lab trains and saves three kinds of model artifacts:
+Spectrum Lab trains and saves four kinds of model artifacts:
 
 | Artifact | Extension | Contents | Training path |
 |---|---|---|---|
 | PyTorch checkpoint | `.pt` | `model_state_dict`, `device_to_label`, `window_size`, `stride`, `embedding_dim` | E1 CNN 1D, E3 CNN 2D, operational fingerprinting (`best_model.pt`) |
 | scikit-learn model | `.pkl` | `{"model_name", "model", "feature_names"}` | E5 Logistic Regression, Random Forest, SVM RBF, KNN |
 | NumPy softmax | `.npz` | Weight matrix `W`, bias `b`, label array, feature mean/scale | RF Signal Understanding `numpy_softmax_regression` |
+| E6 joblib bundle | `.joblib` | `model` (sklearn Pipeline), `label_encoder`, `feature_names`, `window_size`, `window_strategy`, `dtype_default`, `classes`, `task`, `dataset_name`, `model_kind`, `training_metadata` | E6 Oracle-Style RF Lab (all 8 algorithms) |
 
 Each training run also writes:
 

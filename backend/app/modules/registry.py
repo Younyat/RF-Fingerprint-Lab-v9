@@ -15,6 +15,7 @@ from app.modules.mlops.api_module import mlops_module
 from app.modules.presets.module import presets_module
 from app.modules.recordings.module import recordings_module
 from app.modules.rf_experiment_lab.api_module import rf_experiment_lab_module
+from app.modules.e6_oracle_style.api_module import e6_oracle_style_module
 from app.modules.rf_intelligence.module import rf_intelligence_module
 from app.modules.rf_signal_understanding.module import rf_signal_understanding_module
 from app.modules.runtime_settings.module import runtime_settings_module
@@ -46,6 +47,7 @@ backend_modules: list[BackendModuleDefinition] = [
     rf_intelligence_module,
     rf_signal_understanding_module,
     rf_experiment_lab_module,
+    e6_oracle_style_module,
     kiwi_receivers_module,
     kiwi_sessions_module,
     presets_module,

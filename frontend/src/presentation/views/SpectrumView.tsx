@@ -39,6 +39,32 @@ const RF_EXPERIMENT_TYPE_NAMES = {
   e3: 'e3_spectrogram_cnn2d',
 } as const;
 
+const formatE6ModelLabel = (model: Record<string, any>) => {
+  const name = String(model.model_name || model.model_id || 'E6 model');
+  const task = String(model.task || 'unknown');
+  const dataset = String(model.dataset_name || 'dataset');
+  const algorithm = String(model.algorithm || 'model').replace(/_/g, ' ');
+  return `${name} · ${task.replace(/_/g, ' ')} · ${dataset} · ${algorithm}`;
+};
+
+const formatE6TaskLabel = (taskValue: unknown) => {
+  const task = String(taskValue || '').toLowerCase();
+  if (task.includes('fingerprint')) return 'Fingerprinting';
+  if (task.includes('recognition') || task.includes('classification') || task.includes('understanding')) return 'Recognition';
+  return task ? task.replace(/_/g, ' ') : 'Unknown task';
+};
+
+const getE6ModelScore = (model: Record<string, any>) => {
+  const metrics = model.metrics ?? {};
+  const score = Number(metrics.macro_f1 ?? metrics.weighted_f1 ?? metrics.accuracy ?? metrics.balanced_accuracy);
+  return Number.isFinite(score) ? score : -1;
+};
+
+const formatE6Score = (model: Record<string, any>) => {
+  const score = getE6ModelScore(model);
+  return score >= 0 ? `${(score * 100).toFixed(1)}%` : 'n/a';
+};
+
 const formatInput = (value: number, digits = 6) => {
   if (!Number.isFinite(value)) return '';
   return Number(value.toFixed(digits)).toString();
@@ -334,6 +360,11 @@ export const SpectrumView: React.FC = () => {
   const [showRsuOverlay, setShowRsuOverlay] = useState(false);
   const [showRfExperimentOverlay, setShowRfExperimentOverlay] = useState(false);
   const [selectedRfExperimentType, setSelectedRfExperimentType] = useState<'best' | 'e5' | 'e1' | 'e3' | null>('best');
+  const [showE6LiveOverlay, setShowE6LiveOverlay] = useState(false);
+  const [e6LiveModels, setE6LiveModels] = useState<Array<Record<string, any>>>([]);
+  const [selectedE6ModelId, setSelectedE6ModelId] = useState('');
+  const [e6LiveResult, setE6LiveResult] = useState<Record<string, any> | null>(null);
+  const [e6LiveError, setE6LiveError] = useState<string | null>(null);
   const [rsuOverlayMode, setRsuOverlayMode] = useState<'hybrid' | 'ai_only'>('hybrid');
   const [autoFreezeArmed, setAutoFreezeArmed] = useState(false);
   const [autoFreezeCaptureTarget, setAutoFreezeCaptureTarget] = useState<AutoFreezeCaptureTarget | null>(null);
@@ -362,6 +393,16 @@ export const SpectrumView: React.FC = () => {
       )[0] ?? null;
   }, [rfExperimentOverlay, selectedRfExperimentType]);
 
+  const selectedE6Model = useMemo(
+    () => e6LiveModels.find((model) => String(model.model_id) === selectedE6ModelId) ?? null,
+    [e6LiveModels, selectedE6ModelId],
+  );
+
+  const topE6LiveModels = useMemo(
+    () => [...e6LiveModels].sort((left, right) => getE6ModelScore(right) - getE6ModelScore(left)).slice(0, 3),
+    [e6LiveModels],
+  );
+
   useEffect(() => {
     if (!showRfExperimentOverlay) {
       setSelectedRfExperimentType(null);
@@ -373,6 +414,7 @@ export const SpectrumView: React.FC = () => {
   const spectrumDataRef = useRef<typeof spectrumData>(spectrumData);
   const markerBandRef = useRef<typeof markerBand>(markerBand);
   const selectedRfExperimentTypeRef = useRef<typeof selectedRfExperimentType>(selectedRfExperimentType);
+  const selectedE6ModelIdRef = useRef(selectedE6ModelId);
   const suppressNextClickRef = useRef(false);
   const autoFreezeTriggeringRef = useRef(false);
   const autoFreezeFrameBufferRef = useRef<SpectrumData[]>([]);
@@ -390,6 +432,8 @@ export const SpectrumView: React.FC = () => {
         showRfIntelligenceOverlay?: boolean;
         showRsuOverlay?: boolean;
         showRfExperimentOverlay?: boolean;
+        showE6LiveOverlay?: boolean;
+        selectedE6ModelId?: string;
         rsuOverlayMode?: 'hybrid' | 'ai_only';
         panOverlayPosition?: { x?: number; y?: number };
       };
@@ -399,6 +443,8 @@ export const SpectrumView: React.FC = () => {
       if (typeof parsed.showRfIntelligenceOverlay === 'boolean') setShowRfIntelligenceOverlay(parsed.showRfIntelligenceOverlay);
       if (typeof parsed.showRsuOverlay === 'boolean') setShowRsuOverlay(parsed.showRsuOverlay);
       if (typeof parsed.showRfExperimentOverlay === 'boolean') setShowRfExperimentOverlay(parsed.showRfExperimentOverlay);
+      if (typeof parsed.showE6LiveOverlay === 'boolean') setShowE6LiveOverlay(parsed.showE6LiveOverlay);
+      if (typeof parsed.selectedE6ModelId === 'string') setSelectedE6ModelId(parsed.selectedE6ModelId);
       if (parsed.rsuOverlayMode === 'hybrid' || parsed.rsuOverlayMode === 'ai_only') setRsuOverlayMode(parsed.rsuOverlayMode);
       if (
         parsed.panOverlayPosition &&
@@ -426,6 +472,8 @@ export const SpectrumView: React.FC = () => {
           showRfIntelligenceOverlay,
           showRsuOverlay,
           showRfExperimentOverlay,
+          showE6LiveOverlay,
+          selectedE6ModelId,
           rsuOverlayMode,
           panOverlayPosition,
         }),
@@ -433,11 +481,12 @@ export const SpectrumView: React.FC = () => {
     } catch {
       // Ignore storage failures.
     }
-  }, [showPanOverlay, showMarkerBadges, showCursorBadge, showRfIntelligenceOverlay, showRsuOverlay, showRfExperimentOverlay, rsuOverlayMode, panOverlayPosition]);
+  }, [showPanOverlay, showMarkerBadges, showCursorBadge, showRfIntelligenceOverlay, showRsuOverlay, showRfExperimentOverlay, showE6LiveOverlay, selectedE6ModelId, rsuOverlayMode, panOverlayPosition]);
 
   useEffect(() => { spectrumDataRef.current = spectrumData; }, [spectrumData]);
   useEffect(() => { markerBandRef.current = markerBand; }, [markerBand]);
   useEffect(() => { selectedRfExperimentTypeRef.current = selectedRfExperimentType; }, [selectedRfExperimentType]);
+  useEffect(() => { selectedE6ModelIdRef.current = selectedE6ModelId; }, [selectedE6ModelId]);
 
   useEffect(() => {
     try {
@@ -708,6 +757,67 @@ export const SpectrumView: React.FC = () => {
       window.clearInterval(interval);
     };
   }, [showRfExperimentOverlay]);
+
+  useEffect(() => {
+    if (!showE6LiveOverlay) {
+      setE6LiveResult(null);
+      setE6LiveError(null);
+      return;
+    }
+
+    let cancelled = false;
+    const refreshE6Live = async () => {
+      try {
+        const models = await apiService.getE6LiveReadyModels();
+        if (cancelled) return;
+        setE6LiveModels(models);
+        const rankedModels = [...models].sort((left, right) => getE6ModelScore(right) - getE6ModelScore(left)).slice(0, 3);
+
+        const activeId = selectedE6ModelIdRef.current;
+        const selectedExists = rankedModels.some((model) => String(model.model_id) === activeId);
+        const nextModel = selectedExists
+          ? rankedModels.find((model) => String(model.model_id) === activeId)
+          : rankedModels[0];
+
+        if (!selectedExists && nextModel) {
+          const nextId = String(nextModel.model_id);
+          setSelectedE6ModelId(nextId);
+          selectedE6ModelIdRef.current = nextId;
+        }
+
+        const currentSpectrum = spectrumDataRef.current;
+        const currentMarker = markerBandRef.current;
+        if (!nextModel || !currentSpectrum || currentSpectrum.frequencyArray.length < 8) {
+          setE6LiveResult(null);
+          return;
+        }
+
+        const prediction = await apiService.predictE6LiveSpectrum({
+          model_id: String(nextModel.model_id),
+          frequency_array_hz: currentSpectrum.frequencyArray,
+          power_levels_db: currentSpectrum.powerLevels,
+          ...(currentMarker ? { marker_start_hz: currentMarker.start, marker_stop_hz: currentMarker.stop } : {}),
+          top_k: 5,
+        });
+        if (!cancelled) {
+          setE6LiveResult(prediction ? { ...prediction, model_entry: nextModel } : null);
+          setE6LiveError(null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setE6LiveResult(null);
+          setE6LiveError(getErrorMessage(error));
+        }
+      }
+    };
+
+    refreshE6Live();
+    const interval = window.setInterval(refreshE6Live, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [showE6LiveOverlay, selectedE6ModelId]);
 
   const markerRows = useMemo(() => {
     return markers.map((marker) => {
@@ -1705,6 +1815,42 @@ export const SpectrumView: React.FC = () => {
             ))}
           </div>
 
+          <button
+            onClick={() => setShowE6LiveOverlay((current) => !current)}
+            aria-pressed={showE6LiveOverlay}
+            title="Apply a registered E6 model to the live spectrum window or marker band. Select the exact model_id, not just the algorithm."
+            className={cn(
+              'h-9 flex items-center px-3 rounded-md text-sm font-medium',
+              showE6LiveOverlay ? 'bg-violet-300 text-slate-950 hover:bg-violet-200' : 'bg-slate-700 hover:bg-slate-600'
+            )}
+          >
+            <BrainCircuit className="w-4 h-4 mr-2" />
+            E6 Live
+          </button>
+
+          {showE6LiveOverlay && (
+            <label className="flex flex-col gap-1 text-[11px] text-slate-400">
+              E6 Model
+              <select
+                value={selectedE6ModelId}
+                disabled={topE6LiveModels.length === 0}
+                onChange={(event) => setSelectedE6ModelId(event.target.value)}
+                className="h-9 w-72 rounded-md border border-slate-700 bg-slate-950 px-2 text-sm text-slate-100 outline-none focus:border-violet-300 disabled:opacity-50"
+                title="Only the top 3 E6 live-ready models are shown here, ranked by the E6 model metrics."
+              >
+                {topE6LiveModels.length === 0 ? (
+                  <option value="">No live-ready E6 models</option>
+                ) : (
+                  topE6LiveModels.map((model) => (
+                    <option key={String(model.model_id)} value={String(model.model_id)}>
+                      #{topE6LiveModels.findIndex((ranked) => String(ranked.model_id) === String(model.model_id)) + 1} {formatE6TaskLabel(model.task)} · {formatE6ModelLabel(model)}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+          )}
+
           <div className="h-9 w-px bg-slate-700 mx-1" />
 
           <label className="flex flex-col gap-1 text-[11px] text-slate-400">
@@ -1859,6 +2005,7 @@ export const SpectrumView: React.FC = () => {
         {showRfIntelligenceOverlay && rfOverlayError && <div className="mt-2 text-sm text-amber-200">RF Intelligence overlay: {rfOverlayError}</div>}
         {showRsuOverlay && rsuOverlayError && <div className="mt-2 text-sm text-cyan-200">RF Signal Understanding overlay: {rsuOverlayError}</div>}
         {showRfExperimentOverlay && rfExperimentOverlayError && <div className="mt-2 text-sm text-emerald-200">RF Experiment overlay: {rfExperimentOverlayError}</div>}
+        {showE6LiveOverlay && e6LiveError && <div className="mt-2 text-sm text-violet-200">E6 Live overlay: {e6LiveError}</div>}
       </div>
 
       <div className={cn('flex-1 grid min-h-0 transition-[grid-template-columns] duration-300', sidebarCollapsed ? 'grid-cols-[minmax(0,1fr)_0px]' : 'grid-cols-[minmax(0,1fr)_320px]')}>
@@ -2035,6 +2182,86 @@ export const SpectrumView: React.FC = () => {
                 })()}
               </div>
             )}
+            {showE6LiveOverlay && (
+              <div className="pointer-events-none absolute inset-0 z-[11]">
+                <div className="absolute left-12 top-[17rem] max-w-sm rounded-md border border-violet-200/35 bg-slate-950/80 px-3 py-2 text-[10px] text-violet-100 shadow-lg backdrop-blur-sm">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="uppercase tracking-[0.16em]">E6 Live Monitor</span>
+                    <span className="rounded-full bg-violet-500/20 px-1.5 py-0.5 text-[9px] text-violet-200">
+                      spectrum
+                    </span>
+                  </div>
+                  <div className="mt-1 truncate text-[10px] text-slate-400">
+                    {selectedE6Model ? formatE6ModelLabel(selectedE6Model) : 'No live-ready E6 model selected'}
+                  </div>
+                  {selectedE6Model && (
+                    <div className="mt-1 inline-flex rounded-full border border-violet-200/30 bg-violet-300/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-violet-100">
+                      {formatE6TaskLabel(selectedE6Model.task)}
+                    </div>
+                  )}
+                  {topE6LiveModels.length > 0 && (
+                    <div className="mt-2 space-y-1 border-t border-violet-200/15 pt-2">
+                      <div className="text-[9px] uppercase tracking-[0.14em] text-slate-500">Top 3 E6 models</div>
+                      {topE6LiveModels.map((model, index) => (
+                        <div key={String(model.model_id)} className="flex items-center gap-2 text-[10px]">
+                          <span className="w-4 text-violet-200">#{index + 1}</span>
+                          <span className="flex-1 truncate text-slate-300">{String(model.model_name ?? model.model_id)}</span>
+                          <span className="text-slate-400">{formatE6TaskLabel(model.task)}</span>
+                          <span className="font-mono text-violet-100">{formatE6Score(model)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {e6LiveResult ? (
+                    <>
+                      <div className="mt-2 text-[15px] font-bold leading-tight text-violet-100">{String(e6LiveResult.prediction ?? 'unknown')}</div>
+                      <div className="mt-0.5 text-[11px] text-slate-200">
+                        {e6LiveResult.confidence != null
+                          ? `${(Number(e6LiveResult.confidence) * 100).toFixed(1)}% confidence`
+                          : 'confidence n/a'}
+                      </div>
+                      <div className="mt-1 text-[10px] text-slate-400">
+                        Task: {formatE6TaskLabel(e6LiveResult.task ?? selectedE6Model?.task)}
+                        {e6LiveResult.inference_time_ms != null ? ` · ${Number(e6LiveResult.inference_time_ms).toFixed(1)} ms` : ''}
+                        {markerBand ? ' · marker band' : ' · full span'}
+                      </div>
+                      {String(e6LiveResult.source ?? '') === 'spectrum_window' && (
+                        <div className="mt-1 text-[10px] text-amber-200/90">
+                          Spectrum approximation. Capture IQ for scientific E6 decisions.
+                        </div>
+                      )}
+                    </>
+                  ) : e6LiveError ? (
+                    <div className="mt-1.5 text-[10px] text-amber-200/90">{e6LiveError}</div>
+                  ) : selectedE6Model ? (
+                    <div className="mt-1.5 text-[10px] text-slate-400">Waiting for live spectrum data...</div>
+                  ) : (
+                    <div className="mt-1.5 text-[10px] text-slate-500">Enable a model for live detection in E6 Model Registry.</div>
+                  )}
+                </div>
+                {e6LiveResult && markerBand && (() => {
+                  const specStart = displaySettings.centerFrequency - displaySettings.span / 2;
+                  const leftPct = ((markerBand.start - specStart) / displaySettings.span) * 100;
+                  const widthPct = (markerBand.span / displaySettings.span) * 100;
+                  if (leftPct < -5 || leftPct + widthPct > 105 || widthPct < 0.1) return null;
+                  const clampedLeft = Math.max(0, leftPct);
+                  const clampedWidth = Math.min(100 - clampedLeft, widthPct);
+                  return (
+                    <div
+                      className="absolute top-0 bottom-0 border-l border-r border-violet-300/50 bg-violet-300/[0.06]"
+                      style={{ left: `${clampedLeft}%`, width: `${clampedWidth}%` }}
+                    >
+                      <div className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-md border border-violet-300/40 bg-violet-950/85 px-2 py-0.5 text-[10px] text-violet-100 whitespace-nowrap backdrop-blur-sm shadow">
+                        {String(e6LiveResult.prediction)}
+                        {e6LiveResult.confidence != null
+                          ? ` · ${(Number(e6LiveResult.confidence) * 100).toFixed(0)}%`
+                          : ''}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
             {cursor && showCursorBadge && (
               <div className="absolute right-4 top-4 z-10 rounded-lg border border-slate-700/80 bg-slate-950/55 px-2 py-1 text-[11px] text-slate-100 shadow-lg backdrop-blur-md">
                 {formatFrequency(cursor.frequency)} | {formatPowerLevel(cursor.level)}
@@ -2105,6 +2332,20 @@ export const SpectrumView: React.FC = () => {
             value={selectedRfExperimentType ? RF_EXPERIMENT_TYPE_LABELS[selectedRfExperimentType] : 'none'}
             tone={selectedRfExperimentType ? 'ok' : undefined}
           />
+          {showE6LiveOverlay && (
+            <>
+              <StatusRow
+                label="E6 Model"
+                value={selectedE6Model ? String(selectedE6Model.model_name ?? selectedE6Model.model_id) : 'none'}
+                tone={selectedE6Model ? 'ok' : undefined}
+              />
+              <StatusRow
+                label="E6 Purpose"
+                value={selectedE6Model ? formatE6TaskLabel(selectedE6Model.task) : 'none'}
+                tone={selectedE6Model ? 'ok' : undefined}
+              />
+            </>
+          )}
           <StatusRow label="Center" value={formatFrequency(displaySettings.centerFrequency)} />
           <StatusRow label="Span" value={formatFrequency(displaySettings.span)} />
           <StatusRow label="Start" value={formatFrequency(displaySettings.centerFrequency - displaySettings.span / 2)} />
@@ -2289,6 +2530,101 @@ export const SpectrumView: React.FC = () => {
                 ) : (
                   <div className="rounded-md border border-slate-800 bg-slate-950/50 px-2 py-2 text-xs text-slate-400">
                     No E1/E3/E5 experiment results have been validated yet.
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {showE6LiveOverlay && (
+            <>
+              <div className="mt-5 flex items-center justify-between gap-2">
+                <div className="text-xs uppercase text-slate-400">E6 Live</div>
+                <div className="rounded-full border border-violet-200/30 bg-violet-300/10 px-2 py-0.5 text-[10px] text-violet-100">
+                  {e6LiveModels.length} live-ready
+                </div>
+              </div>
+              <div className="mt-2 space-y-2">
+                {selectedE6Model && (
+                  <div className="rounded-md border border-slate-800 bg-slate-950/50 px-2 py-2 text-xs">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="font-semibold text-slate-100 truncate">{String(selectedE6Model.model_name ?? selectedE6Model.model_id)}</div>
+                      <span className="shrink-0 rounded-full border border-violet-200/30 bg-violet-300/10 px-2 py-0.5 text-[10px] text-violet-100">
+                        {formatE6TaskLabel(selectedE6Model.task)}
+                      </span>
+                    </div>
+                    <div className="mt-1 grid grid-cols-2 gap-x-2 gap-y-1 text-slate-300">
+                      <span>Task</span>
+                      <span className="text-right">{formatE6TaskLabel(selectedE6Model.task)}</span>
+                      <span>Dataset</span>
+                      <span className="text-right truncate">{String(selectedE6Model.dataset_name ?? 'n/a')}</span>
+                      <span>Algorithm</span>
+                      <span className="text-right">{String(selectedE6Model.algorithm ?? 'n/a').replace(/_/g, ' ')}</span>
+                      <span>Classes</span>
+                      <span className="text-right">{String(selectedE6Model.class_count ?? selectedE6Model.classes?.length ?? 'n/a')}</span>
+                    </div>
+                  </div>
+                )}
+                {topE6LiveModels.length > 0 && (
+                  <div className="rounded-md border border-violet-300/20 bg-slate-950/50 px-2 py-2 text-xs">
+                    <div className="mb-1 font-semibold text-violet-100">Top 3 model ranking</div>
+                    <div className="space-y-1">
+                      {topE6LiveModels.map((model, index) => (
+                        <button
+                          key={String(model.model_id)}
+                          type="button"
+                          onClick={() => setSelectedE6ModelId(String(model.model_id))}
+                          className={cn(
+                            'pointer-events-auto grid w-full grid-cols-[1.5rem_minmax(0,1fr)_5.7rem_3.6rem] items-center gap-1 rounded px-1 py-1 text-left text-[10px]',
+                            String(model.model_id) === selectedE6ModelId
+                              ? 'bg-violet-300/20 text-violet-50'
+                              : 'text-slate-300 hover:bg-slate-800',
+                          )}
+                          title={formatE6ModelLabel(model)}
+                        >
+                          <span className="font-semibold text-violet-200">#{index + 1}</span>
+                          <span className="truncate">{String(model.model_name ?? model.model_id)}</span>
+                          <span className="text-right text-slate-400">{formatE6TaskLabel(model.task)}</span>
+                          <span className="text-right font-mono text-violet-100">{formatE6Score(model)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {e6LiveResult ? (
+                  <div className="rounded-md border border-violet-400/30 bg-violet-950/30 px-2 py-2 text-xs">
+                    <div className="font-semibold text-violet-100">Prediction</div>
+                    <div className="mt-1 text-[13px] font-bold text-violet-50">{String(e6LiveResult.prediction ?? 'unknown')}</div>
+                    <div className="mt-1 grid grid-cols-2 gap-x-2 gap-y-1 text-slate-300">
+                      <span>Confidence</span>
+                      <span className="text-right">
+                        {e6LiveResult.confidence != null ? `${(Number(e6LiveResult.confidence) * 100).toFixed(1)}%` : 'n/a'}
+                      </span>
+                      <span>Input</span>
+                      <span className="text-right">{markerBand ? 'marker band' : 'full spectrum'}</span>
+                      <span>Latency</span>
+                      <span className="text-right">
+                        {e6LiveResult.inference_time_ms != null ? `${Number(e6LiveResult.inference_time_ms).toFixed(1)} ms` : 'n/a'}
+                      </span>
+                    </div>
+                    {Array.isArray(e6LiveResult.top_k) && e6LiveResult.top_k.length > 1 && (
+                      <div className="mt-2">
+                        <div className="mb-1 text-[10px] text-slate-400">Top candidates</div>
+                        {(e6LiveResult.top_k as Array<{ label: string; probability: number }>).slice(0, 4).map((item) => (
+                          <div key={item.label} className="flex items-center gap-1 text-[10px]">
+                            <span className="flex-1 truncate text-slate-300">{item.label}</span>
+                            <span className="text-slate-400">{(Number(item.probability) * 100).toFixed(0)}%</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="mt-2 text-[10px] text-amber-200/90">
+                      E6 live on spectrum is approximate; use stored IQ or live IQ capture for final fingerprinting evidence.
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-slate-800 bg-slate-950/50 px-2 py-2 text-xs text-slate-400">
+                    {e6LiveError || 'No E6 live prediction yet.'}
                   </div>
                 )}
               </div>

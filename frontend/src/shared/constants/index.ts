@@ -212,6 +212,11 @@ export const API_ENDPOINTS = {
   RF_EXPERIMENT_REPRESENTATION_EXPORT: (kind: string) => `/api/rf-experiment-lab/representations/${kind}/export`,
   RF_EXPERIMENT_REPRESENTATION_MANIFEST_EXPORT: '/api/rf-experiment-lab/representations/manifest/export',
 
+  // E6 Oracle-style classical RF fingerprinting
+  E6_MODELS: '/api/e6/models',
+  E6_MODELS_LIVE_READY: '/api/e6/models/live-ready',
+  E6_PREDICT_LIVE_SPECTRUM: '/api/e6/predict-live-spectrum',
+
   // Markers
   MARKERS_LIST: '/api/markers/',
   MARKERS_CREATE: '/api/markers/',

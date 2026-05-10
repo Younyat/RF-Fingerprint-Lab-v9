@@ -10,6 +10,7 @@ import { recordingsModule } from './recordings/module';
 import { retrainingModule } from './retraining/module';
 import { rfIntelligenceModule } from './rf-intelligence/module';
 import { rfExperimentLabModule } from './rf-experiment-lab/module';
+import { e6OracleStyleLabModule } from './e6-oracle-style-lab/module';
 import { rfSignalUnderstandingModule } from './rf-signal-understanding/module';
 import { settingsModule } from './settings/module';
 import { trainingModule } from './training/module';
@@ -31,6 +32,7 @@ export const labModules: LabModuleDefinition[] = [
   modelsModule,
   rfIntelligenceModule,
   rfExperimentLabModule,
+  e6OracleStyleLabModule,
   rfSignalUnderstandingModule,
   waterfallModule,
   recordingsModule,

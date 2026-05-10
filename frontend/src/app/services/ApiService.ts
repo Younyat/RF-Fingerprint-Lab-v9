@@ -492,6 +492,29 @@ export class ApiService {
     return response.data?.data ?? null;
   }
 
+  async getE6LiveReadyModels(): Promise<Array<Record<string, any>>> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.E6_MODELS_LIVE_READY}`);
+    if (response.data?.status === 'error') {
+      throw new Error(response.data?.message || 'E6 live-ready model list failed');
+    }
+    return response.data?.data ?? [];
+  }
+
+  async predictE6LiveSpectrum(body: {
+    model_id: string;
+    frequency_array_hz: number[];
+    power_levels_db: number[];
+    marker_start_hz?: number;
+    marker_stop_hz?: number;
+    top_k?: number;
+  }): Promise<Record<string, any> | null> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.E6_PREDICT_LIVE_SPECTRUM}`, body);
+    if (response.data?.status === 'error') {
+      throw new Error(response.data?.message || 'E6 live spectrum prediction failed');
+    }
+    return response.data?.data ?? null;
+  }
+
   async getRFExperimentRun(experimentId: string): Promise<Record<string, any>> {
     const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.RF_EXPERIMENT_EXPERIMENTS}/${encodeURIComponent(experimentId)}`);
     return response.data?.data ?? response.data;
