@@ -35,6 +35,10 @@ The frontend controls the FastAPI backend and displays live RF spectrum frames c
 - Persistent `.cfile` and `.iq` metadata capture list with separate downloads
 - Live marker-band QC preview with peak, noise floor, SNR, and peak frequency
 - Non-blocking global operation overlay for SDR connect and capture operations
+- Collapsible left navigation sidebar: circular toggle button remains visible when sidebar collapses to zero width, giving the full window to the spectrum display
+- Collapsible right status panel in Spectrum view: same pattern, sidebar animates to zero width with scrollable inner content
+- Demodulation result display adapts to signal type: analog audio results (AM/FM/WFM) show audio-specific fields; digital/IoT results show packet/protocol fields
+- IoT protocol demodulation result cards for `ook_433_remote` (EV1527/PT2262), `zigbee` (IEEE 802.15.4), `ble_advertising`, `lora`, `wifi_80211`
 - Peak marker button
 - Auto peaks button
 - Trace statistics panel
@@ -311,9 +315,11 @@ The overlay is a readiness and traceability overlay, not a claim of operational 
 
 The frontend sends the first two markers as the selected RF band. The backend captures that real band from the USRP-B200.
 
-- `AM`, `FM`, and `WFM` results include an audio player and WAV download button.
-- `ASK`, `FSK`, `PSK`, and `OOK` results expose IQ/metadata capture output for digital analysis.
+- `AM`, `FM`, and `WFM` results include an audio player and WAV download button. The result card shows audio-specific fields: center frequency, bandwidth, sample rate, signal duration, audio presence, audio sample rate, gain and antenna.
+- `ASK`, `FSK`, `PSK`, and `OOK` results expose IQ/metadata capture output for digital analysis. The result card shows packet-oriented fields: protocol, pipeline, packets decoded, CRC valid, channel.
+- IoT pipelines (`ook_433_remote`, `zigbee`, `ble_advertising`, `lora`, `wifi_80211`) show protocol-specific decode results with address, frame and repeat information.
 - If fewer than two markers exist, the demodulation button stays disabled because the RF band is not defined.
+- Results persist across page refresh. The result loader reads both flat metadata files and enriched `{id}/demodulation_report.json` reports from the IoT pipelines.
 
 ## Capture Lab Workflow
 

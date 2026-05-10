@@ -33,6 +33,33 @@ const getErrorMessage = (error: unknown) => {
   return error instanceof Error ? error.message : 'Operation failed';
 };
 
+const getResultTime = (result: DemodulationResult | Record<string, any>) => {
+  const data = result as Record<string, any>;
+  const value = data.generated_at_utc || data.timestamp_utc || data.created_at || data.metadata_created_at;
+  if (!value) return 'time n/a';
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString();
+};
+
+const isPacketLikeResult = (result: DemodulationResult | Record<string, any>, decodedPackets?: Record<string, any> | null) => {
+  const data = result as Record<string, any>;
+  const protocol = String(data.protocol ?? data.signal_type ?? decodedPackets?.protocol ?? '').toLowerCase();
+  const pipeline = String(data.pipeline ?? data.demodulation_pipeline ?? data.pipeline_name ?? '').toLowerCase();
+  return protocol.includes('bluetooth')
+    || protocol.includes('ble')
+    || pipeline.includes('ble')
+    || ['ieee802154', 'zigbee', 'adsb', 'lora'].some((name) => protocol.includes(name) || pipeline.includes(name));
+};
+
+const AUDIO_MODES = new Set(['wfm', 'wfm_broadcast', 'nfm', 'fm', 'am']);
+
+const isAudioResult = (result: Record<string, any>) => {
+  const mode = String(result.mode ?? result.pipeline ?? result.demodulation_pipeline ?? '').toLowerCase();
+  const pipeline = String(result.pipeline ?? result.demodulation_pipeline ?? '').toLowerCase();
+  return AUDIO_MODES.has(mode) || [...AUDIO_MODES].some((m) => pipeline.includes(m));
+};
+
 type DemodulationPipeline = {
   id: string;
   category?: string;
@@ -52,6 +79,9 @@ type DecodedPacket = {
   advertiser_address?: string;
   payload_hex?: string;
   payload_fields?: Record<string, unknown>;
+  crc_computed?: string;
+  crc_received?: string;
+  trust_level?: string;
   rssi_estimate_db?: number;
   snr_estimate_db?: number;
 };
@@ -133,7 +163,7 @@ export const DemodulationView: React.FC = () => {
 
   const loadResults = async () => {
     const data = await apiService.getDemodulationResults();
-    setResults(data.reverse());
+    setResults(data);
   };
 
   const loadDatasetInputs = async () => {
@@ -563,6 +593,7 @@ function BleChannelTestTable({ test }: { test: Record<string, any> }) {
               <th className="px-3 py-2">Bitstream</th>
               <th className="px-3 py-2">Access Address</th>
               <th className="px-3 py-2">Packets</th>
+              <th className="px-3 py-2">Candidates</th>
               <th className="px-3 py-2">CRC valid</th>
               <th className="px-3 py-2">Status</th>
             </tr>
@@ -577,6 +608,7 @@ function BleChannelTestTable({ test }: { test: Record<string, any> }) {
                 <td className={cn('px-3 py-2 font-semibold', row.bitstream ? 'text-emerald-300' : 'text-slate-400')}>{String(Boolean(row.bitstream))}</td>
                 <td className={cn('px-3 py-2 font-semibold', row.access_address ? 'text-emerald-300' : 'text-slate-400')}>{String(Boolean(row.access_address))}</td>
                 <td className="px-3 py-2">{String(row.packets ?? 0)}</td>
+                <td className="px-3 py-2">{String(row.candidates ?? 0)}</td>
                 <td className="px-3 py-2">{String(row.crc_valid ?? 0)}</td>
                 <td className="px-3 py-2">{String(row.status ?? 'unknown')}</td>
               </tr>
@@ -606,9 +638,15 @@ function ResultRow({ result, onDelete }: { result: DemodulationResult; onDelete:
   const logsFile = outputFilename(result.outputs?.logs || null);
   const outputDir = String((report || result as any).output_dir || '');
   const packets: DecodedPacket[] = Array.isArray(decodedPackets?.packets) ? decodedPackets?.packets : [];
+  const candidatePackets: DecodedPacket[] = Array.isArray(decodedPackets?.candidate_packets) ? decodedPackets?.candidate_packets : [];
   const packetCount = Number(report?.packets_decoded ?? decodedPackets?.packets_decoded ?? packets.length ?? 0);
+  const candidateCount = Number(report?.packet_candidates ?? decodedPackets?.packet_candidates ?? candidatePackets.length ?? 0);
   const crcValidCount = Number(report?.packets_crc_valid ?? decodedPackets?.packets_crc_valid ?? packets.filter((packet) => packet.crc_valid).length ?? 0);
   const crcRate = packetCount > 0 ? `${((crcValidCount / packetCount) * 100).toFixed(1)}%` : 'n/a';
+  const captureTime = getResultTime(report || result as any);
+  const packetLike = isPacketLikeResult(report || result as any, decodedPackets);
+  const isAudio = isAudioResult(report || result as any);
+  const hasDecodedOutput = !isAudio && (packetLike || packets.length > 0 || candidatePackets.length > 0 || Boolean(bitstreamFile || logsFile));
 
   useEffect(() => {
     let cancelled = false;
@@ -664,7 +702,7 @@ function ResultRow({ result, onDelete }: { result: DemodulationResult; onDelete:
         <div>
           <div className="text-sm font-semibold">{title}</div>
           <div className="text-xs text-slate-400">
-            {result.duration_seconds ?? 'n/a'}s capture | {formatFrequency(result.sample_rate_hz || 0)}/s | {result.signal_type || result.protocol || 'unknown signal'}
+            {captureTime} | {result.duration_seconds ?? 'n/a'}s capture | {formatFrequency(result.sample_rate_hz || 0)}/s | {result.signal_type || result.protocol || 'unknown signal'}
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -677,12 +715,14 @@ function ResultRow({ result, onDelete }: { result: DemodulationResult; onDelete:
               WAV
             </a>
           )}
-          <button
-            onClick={() => openOutput(decodedPacketsFile)}
-            className="h-9 inline-flex items-center px-3 rounded-md bg-slate-700 hover:bg-slate-600 text-sm font-medium"
-          >
-            Open decoded_packets.json
-          </button>
+          {!isAudio && (
+            <button
+              onClick={() => openOutput(decodedPacketsFile)}
+              className="h-9 inline-flex items-center px-3 rounded-md bg-slate-700 hover:bg-slate-600 text-sm font-medium"
+            >
+              Open decoded_packets.json
+            </button>
+          )}
           <button
             onClick={() => openOutput(reportFile)}
             className="h-9 inline-flex items-center px-3 rounded-md bg-slate-700 hover:bg-slate-600 text-sm font-medium"
@@ -714,22 +754,49 @@ function ResultRow({ result, onDelete }: { result: DemodulationResult; onDelete:
       {audioUrl ? (
         <audio controls src={audioUrl} className="w-full" />
       ) : (
-        <div className="text-sm text-slate-400">
-          This result does not include playable audio. Review decoded packets, payloads, bitstream or report outputs below.
-        </div>
+        !isAudio && (
+          <div className="text-sm text-slate-400">
+            This result does not include playable audio. Review decoded packets, payloads, bitstream or report outputs below.
+          </div>
+        )
       )}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
-        <Info label="Source" value={String(result.source || (result.sample_id ? 'dataset_builder' : 'live_sdr'))} />
-        <Info label="Final status" value={String(result.final_status || result.status || 'n/a')} />
-        <Info label="Protocol" value={String(result.protocol || result.signal_type || 'n/a')} />
-        <Info label="Pipeline" value={String(result.demodulation_pipeline || result.pipeline || result.mode || 'n/a')} />
-        <Info label="IQ source" value={String(result.demodulation_source || 'n/a')} />
-      </div>
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
-        <Info label="Packets/frames" value={decodedCount === undefined ? 'n/a' : String(decodedCount)} />
-        <Info label="CRC valid" value={crcCount === undefined ? 'n/a' : String(crcCount)} />
-        <Info label="Channel" value={result.channel === undefined ? 'n/a' : String(result.channel)} />
-      </div>
+      {isAudio ? (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+            <Info label="Capture time" value={captureTime} />
+            <Info label="Source" value={String(result.source || 'live_sdr')} />
+            <Info label="Demod mode" value={String((report as any)?.mode || result.pipeline || result.demodulation_pipeline || 'n/a').toUpperCase()} />
+            <Info label="Status" value={String(result.final_status || result.status || 'n/a')} />
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+            <Info label="Center freq" value={formatFrequency(result.center_frequency_hz || 0)} />
+            <Info label="Bandwidth" value={formatFrequency(result.bandwidth_hz || 0)} />
+            <Info label="Sample rate" value={`${formatFrequency(result.sample_rate_hz || 0)}/s`} />
+            <Info label="Duration" value={result.duration_seconds !== undefined ? `${result.duration_seconds} s` : 'n/a'} />
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+            <Info label="Audio" value={audioUrl ? '✓ WAV available' : '✗ not generated'} />
+            <Info label="Audio rate" value={(report as any)?.audio_rate_hz ? `${((report as any).audio_rate_hz / 1000).toFixed(0)} kHz` : 'n/a'} />
+            <Info label="Gain" value={(report as any)?.gain_db !== undefined ? `${(report as any).gain_db} dB` : 'n/a'} />
+            <Info label="Antenna" value={String((report as any)?.antenna || 'n/a')} />
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
+            <Info label="Capture time" value={captureTime} />
+            <Info label="Source" value={String(result.source || (result.sample_id ? 'dataset_builder' : 'live_sdr'))} />
+            <Info label="Final status" value={String(result.final_status || result.status || 'n/a')} />
+            <Info label="Protocol" value={String(result.protocol || result.signal_type || 'n/a')} />
+            <Info label="Pipeline" value={String(result.demodulation_pipeline || result.pipeline || result.mode || 'n/a')} />
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
+            <Info label="Packets/frames" value={decodedCount === undefined ? 'n/a' : String(decodedCount)} />
+            <Info label="CRC valid" value={crcCount === undefined ? 'n/a' : String(crcCount)} />
+            <Info label="Channel" value={result.channel === undefined ? 'n/a' : String(result.channel)} />
+          </div>
+        </>
+      )}
       {result.notes && result.notes.length > 0 && (
         <div className="rounded-md border border-slate-800 bg-slate-950 p-3 text-xs text-slate-300">
           {result.notes.join(' ')}
@@ -745,18 +812,22 @@ function ResultRow({ result, onDelete }: { result: DemodulationResult; onDelete:
           </div>
         </div>
       )}
-      <DecodedOutputPanel
-        report={report}
-        decodedPackets={decodedPackets}
-        packets={packets}
-        packetCount={packetCount}
-        crcValidCount={crcValidCount}
-        crcRate={crcRate}
-        outputError={outputError}
-        bitstreamFile={bitstreamFile}
-        logsFile={logsFile}
-        onOpenOutput={openOutput}
-      />
+      {hasDecodedOutput && (
+        <DecodedOutputPanel
+          report={report}
+          decodedPackets={decodedPackets}
+          packets={packets}
+          candidatePackets={candidatePackets}
+          packetCount={packetCount}
+          candidateCount={candidateCount}
+          crcValidCount={crcValidCount}
+          crcRate={crcRate}
+          outputError={outputError}
+          bitstreamFile={bitstreamFile}
+          logsFile={logsFile}
+          onOpenOutput={openOutput}
+        />
+      )}
     </div>
   );
 }
@@ -765,7 +836,9 @@ function DecodedOutputPanel({
   report,
   decodedPackets,
   packets,
+  candidatePackets,
   packetCount,
+  candidateCount,
   crcValidCount,
   crcRate,
   outputError,
@@ -776,7 +849,9 @@ function DecodedOutputPanel({
   report: Record<string, any> | null;
   decodedPackets: Record<string, any> | null;
   packets: DecodedPacket[];
+  candidatePackets: DecodedPacket[];
   packetCount: number;
+  candidateCount: number;
   crcValidCount: number;
   crcRate: string;
   outputError: string | null;
@@ -827,6 +902,7 @@ function DecodedOutputPanel({
         <Info label="Valid demod" value={validDemodulation ? 'true' : 'false'} />
         <Info label="Confidence" value={confidence} />
         <Info label="Packets decoded" value={String(packetCount)} />
+        {candidateCount > 0 && <Info label="BLE candidates" value={String(candidateCount)} />}
         <Info label="CRC valid" value={`${crcValidCount} (${crcRate})`} />
         <Info label="Access address" value={accessAddressDetected ? String(report?.access_address ?? '0x8E89BED6') : 'false'} />
         <Info label="BLE channel" value={String(report?.computed_ble_channel ?? report?.channel ?? decodedPackets?.channel ?? 'n/a')} />
@@ -840,6 +916,11 @@ function DecodedOutputPanel({
       {packetCount === 0 && (
         <div className="mt-3 rounded-md border border-amber-700 bg-amber-950/40 p-3 text-sm text-amber-200">
           {emptyPacketMessage}
+          {candidateCount > 0 && (
+            <div className="mt-2 text-xs text-amber-100">
+              {candidateCount} BLE packet candidate(s) were found, but they are not decoded packets because CRC validation failed.
+            </div>
+          )}
         </div>
       )}
 
@@ -876,7 +957,43 @@ function DecodedOutputPanel({
         </div>
       ) : (
         <div className="mt-3 text-xs text-slate-400">
-          {isPacketProtocol ? 'decoded_packets.json contains no recovered packets.' : 'No packet table is available for this result.'}
+          {isPacketProtocol && candidateCount === 0 ? 'decoded_packets.json contains no recovered packets.' : !isPacketProtocol ? 'No packet table is available for this result.' : ''}
+        </div>
+      )}
+
+      {candidatePackets.length > 0 && (
+        <div className="mt-4 overflow-auto rounded-md border border-amber-800/70">
+          <div className="border-b border-amber-800/70 bg-amber-950/50 px-3 py-2 text-xs font-semibold text-amber-200">
+            Candidate packets only - CRC invalid, fields are not trusted decoded content
+          </div>
+          <table className="min-w-full text-left text-xs">
+            <thead className="bg-slate-950 text-slate-400">
+              <tr>
+                <th className="px-3 py-2">Index</th>
+                <th className="px-3 py-2">Time</th>
+                <th className="px-3 py-2">Channel</th>
+                <th className="px-3 py-2">PDU type</th>
+                <th className="px-3 py-2">Candidate address</th>
+                <th className="px-3 py-2">CRC</th>
+                <th className="px-3 py-2">Computed / received</th>
+                <th className="px-3 py-2">Payload candidate</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800">
+              {candidatePackets.map((packet, index) => (
+                <tr key={`candidate-${packet.packet_index ?? index}-${packet.timestamp_seconds ?? index}`} className="bg-slate-900/70">
+                  <td className="px-3 py-2">{packet.packet_index ?? index}</td>
+                  <td className="px-3 py-2">{packet.timestamp_seconds !== undefined ? `${packet.timestamp_seconds.toFixed(5)} s` : 'n/a'}</td>
+                  <td className="px-3 py-2">{packet.channel !== undefined ? `CH${packet.channel}` : 'n/a'}</td>
+                  <td className="px-3 py-2">{packet.pdu_type ?? 'n/a'}</td>
+                  <td className="px-3 py-2 font-mono text-amber-200">{packet.advertiser_address ?? 'n/a'}</td>
+                  <td className="px-3 py-2 font-semibold text-rose-300">{packet.crc_valid ? 'valid' : 'invalid'}</td>
+                  <td className="px-3 py-2 font-mono">{packet.crc_computed ?? 'n/a'} / {packet.crc_received ?? 'n/a'}</td>
+                  <td className="max-w-[360px] truncate px-3 py-2 font-mono text-slate-300">{packet.payload_hex ?? ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 

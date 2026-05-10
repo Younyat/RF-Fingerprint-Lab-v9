@@ -398,10 +398,26 @@ Example body:
 }
 ```
 
-Supported modes:
+Supported modes and IoT pipelines:
 
-- `am`, `fm`, `wfm`: capture IQ, generate WAV audio, expose `/api/demodulation/audio/{id}`
-- `ask`, `fsk`, `psk`, `ook`: capture IQ and metadata for digital analysis/export
+| Mode / Pipeline | Band | Output |
+|---|---|---|
+| `am`, `fm`, `wfm` | Broadcast | WAV audio; expose `/api/demodulation/audio/{id}` |
+| `ask`, `fsk`, `psk`, `ook` | Any | IQ and metadata for digital analysis |
+| `ook_433_remote` | 315 / 433 / 868 MHz | EV1527 / PT2262 remote decode: address, button, repeat analysis |
+| `ook_ask_iot_sensor` | 315 / 433 / 868 MHz | Generic ISM-band OOK/ASK sensor decode |
+| `zigbee` | 2.4 GHz | IEEE 802.15.4 MAC frame decode: FCS, PAN IDs, addresses |
+| `ble_advertising` | 2.402 / 2.426 / 2.480 GHz | BLE advertising packet decode with CRC-24 validation |
+| `wifi_80211` | 2.4 / 5 GHz | IEEE 802.11 frame detection and header parse |
+| `lora` | 433 / 868 / 915 MHz | LoRa/LoRaWAN chirp spread-spectrum decode |
+
+Live SDR path for IoT pipelines: the demodulation worker captures IQ using the
+corresponding basic mode (`ook_433_remote` → `ook` worker), then the controller
+runs the full protocol-specific IoT pipeline on the captured IQ.
+
+Demodulation results survive page refresh. The loader reads flat `*.json`
+metadata files and nested `{id}/demodulation_report.json` enriched reports; the
+enriched report takes precedence when both exist for the same result ID.
 
 The backend applies the same RF safety checks used by spectrum tuning before opening the USRP-B200.
 
@@ -640,6 +656,60 @@ Supported commands:
 - `SENS:FREQ:SPAN <value>[Hz|kHz|MHz|GHz]`
 - `DISP:TRAC:Y:RLEV <value>[dB|dBm]`
 - `DISP:TRAC:Y:SCAL:PDIV <value>dB`
+
+## Model Artifacts And Export
+
+Training produces artifacts in the result package directory reported by each
+experiment run. The artifact format depends on the experiment family:
+
+| Experiment | Checkpoint | Extra artifacts |
+|---|---|---|
+| E1 Raw IQ CNN 1D | `best_model.pt` (PyTorch) | `training_config.json`, `label_schema.json`, `normalization_params.json`, `split_strategy.txt` |
+| E3 Spectrogram CNN 2D | `best_model.pt` (PyTorch) | same set; ResNet18/VGG11 if `torchvision` was available |
+| E5 Spectral Baseline | `model.pkl` (scikit-learn) | `feature_names`, `label_schema.json`, feature importance CSV |
+| RF Signal Understanding | `model.npz` (NumPy) | weight matrix `W`, bias `b`, label list, feature normalization |
+| Operational fingerprinting | `best_model.pt` (PyTorch) | `device_to_label`, `window_size`, `stride`, `embedding_dim` inside the checkpoint |
+
+### PyTorch `.pt` checkpoint contents
+
+```python
+{
+    "model_state_dict": ...,   # weights
+    "device_to_label": {...},  # int → class name
+    "window_size": int,
+    "stride": int,
+    "embedding_dim": int,
+}
+```
+
+Export options:
+- **ONNX**: `torch.onnx.export(model, dummy_input, "model.onnx")`
+- **TorchScript**: `torch.jit.trace(model, dummy_input).save("model.ts")`
+- **SafeTensors**: `safetensors.torch.save_file(model.state_dict(), "model.safetensors")`
+
+### scikit-learn `.pkl` structure
+
+```python
+{
+    "model_name": str,
+    "model": sklearn_estimator,
+    "feature_names": list[str],
+}
+```
+
+Export: `skl2onnx.convert_sklearn(pkl["model"], ...)` produces an ONNX graph
+compatible with ONNX Runtime.
+
+### NumPy `.npz` structure
+
+```python
+npz = np.load("model.npz")
+W = npz["W"]          # weight matrix [n_classes, n_features]
+b = npz["b"]          # bias [n_classes]
+labels = npz["labels"]
+```
+
+Plain arrays; no ML framework required to load or run inference.
 
 ## Troubleshooting
 

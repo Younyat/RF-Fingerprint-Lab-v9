@@ -102,6 +102,8 @@ export interface Recording {
 
 export interface DemodulationResult {
   id: string;
+  generated_at_utc?: string;
+  timestamp_utc?: string;
   status: string;
   final_status?: string;
   mode: string;

@@ -31,28 +31,50 @@ workers, reads real samples, and stores real dataset artifacts.
 
 ## Recent Changes
 
-- **BLE advertising diagnostics** - The Demodulation tab performs real
-  post-capture BLE advertising analysis instead of reporting only RF activity.
-  It detects bursts, runs a GFSK discriminator, searches the advertising Access
-  Address `0x8E89BED6`, reconstructs candidate PDUs, reports computed versus
-  received CRC values, and writes intermediate artifacts for debugging. A BLE
-  result is considered valid only when at least one reconstructed packet passes
-  CRC-24 validation.
+- **OOK 433 / 315 / 868 MHz remote control pipeline** - New IoT demodulation
+  pipeline (`ook_433_remote`) for ISM-band remote controls using EV1527/SC1527
+  and PT2262/SC2262 protocols. The pipeline estimates the chip period T from a
+  histogram of HIGH-pulse widths, segments frames by sync gaps, decodes PWM
+  bits, and matches the 20-bit address + 4-bit button field of EV1527 or the
+  12-tri-state encoding of PT2262. Repeat-frame analysis reports consistency,
+  inter-frame gap and estimated transmit period. Live SDR path is supported
+  through the `ook` worker with full IoT post-processing in the controller.
 
-- **Demodulation route blocking fix** - The `POST /demodulation/marker-band` and
-  `POST /demodulation/ble-advertising/test-channels` routes were declared
-  `async def` but called blocking subprocess workers, starving the asyncio event
-  loop for up to 135 s on a three-channel BLE test. Both routes are now `def` so
-  FastAPI dispatches them to a thread pool and keeps the event loop free.
-- **Triggered Capture worker** - `triggered_burst_capture.py` rebuilt as a GNU
-  Radio `gr.sync_block` fed by `uhd.usrp_source` (`from gnuradio import gr, uhd`
-  instead of the standalone `import uhd` that is absent from the RadioConda
-  environment). Removed the `set_time_unknown_pps` call that used `uhd.time_spec`,
-  which is not exposed through the `gnuradio.uhd` Python bindings.
+- **BLE SYNC correlation filter** - The BLE burst decoder now computes a 40-bit
+  SYNC score (8-bit preamble `0xAA` + 32-bit Access Address `0x8E89BED6`) per
+  burst across all symbol-phase candidates. Bursts with a maximum SYNC score
+  below 28/40 are discarded before CRC checking. Non-BLE 2.4 GHz interference
+  typically scores ≤ 24; real BLE bursts score 32 or higher. This eliminates
+  false-positive BLE candidates from Zigbee, WiFi CH1 leakage and ISM noise.
+
+- **Zigbee pipeline** - New IoT demodulation pipeline (`zigbee`) supporting
+  IEEE 802.15.4 O-QPSK at 2.4 GHz. Recovers chip sequences, correlates against
+  the 32-chip PN spreading code, reconstructs nibbles and bytes, parses the MAC
+  frame (FCS, frame type, sequence number, addressing), and reports PAN IDs and
+  device addresses. Note: Zigbee CH26 (2480 MHz) and BLE CH39 (2480 MHz) share
+  the same center frequency; capture context and burst structure distinguish them.
+
+- **Demodulation result persistence fix** - Live IoT pipeline results stored
+  under `{id}/demodulation_report.json` were not reloaded after page refresh.
+  The result loader now reads both the flat `*.json` pattern (script-level
+  metadata) and the nested `*/demodulation_report.json` pattern (enriched IoT
+  report), with the enriched report winning when both exist for the same ID.
+
+- **Audio demodulation display** - FM, WFM, and AM results in the Demodulation
+  tab now show audio-relevant fields: demodulation mode, center frequency,
+  bandwidth, sample rate, signal duration, audio presence and sample rate, gain,
+  and antenna. Packet-oriented fields (protocol, packets decoded, CRC valid,
+  channel) are shown only for digital and IoT demodulation results.
+
+- **Collapsible sidebars** - The left navigation sidebar and the right status
+  panel in the Spectrum view each have a circular collapse/expand button that
+  remains visible even when the panel is fully hidden. Both panels animate to
+  `w-0` when collapsed so the spectrum display uses the full screen width.
+
 - **MLOps WinError 123 fix** - Training no longer crashes when the dataset
-  directory contains subdirectories with colons in their names (ISO-8601
-  timestamps from older capture scripts). The export cleanup uses
-  `cmd /c rd /s /q` as a fallback on Windows when `shutil.rmtree` fails.
+  directory contains subdirectories with colons in their names. The export
+  cleanup uses `cmd /c rd /s /q` as a fallback on Windows when `shutil.rmtree`
+  fails.
 
 ## Architecture
 
@@ -229,6 +251,28 @@ The UI must distinguish RF activity, protocol compatibility, synchronization,
 bitstream recovery, frame reconstruction, CRC validation and payload extraction.
 Energy in a channel is not reported as a successful demodulation.
 
+The result display adapts to the demodulation type:
+
+- **Analog audio** (AM, FM, WFM): shows center frequency, bandwidth, sample
+  rate, signal duration, audio presence, audio sample rate, gain and antenna.
+- **Digital / IoT**: shows protocol, pipeline, packet count, CRC status, channel
+  index and a link to the decoded artifacts.
+
+Demodulation results survive page refresh. The loader reads both flat
+script-level metadata files and enriched nested `{id}/demodulation_report.json`
+files; the enriched report takes precedence when both exist.
+
+### IoT and Protocol Pipelines
+
+| Pipeline ID | Band | Protocol | Description |
+|---|---|---|---|
+| `ook_433_remote` | 315 / 433 / 868 MHz | EV1527, PT2262 | Remote control chip period estimation, PWM decode, address/button extraction |
+| `ook_ask_iot_sensor` | 315 / 433 / 868 MHz | Generic OOK/ASK | Generic ISM-band OOK sensor decode |
+| `zigbee` | 2.4 GHz CH11–CH26 | IEEE 802.15.4 | O-QPSK chip correlation, MAC frame parse, PAN/address decode |
+| `ble_advertising` | 2.402 / 2.426 / 2.480 GHz | BLE CH37–39 | GFSK discriminator, Access Address search, CRC-24 validation, AdvData TLV decode |
+| `wifi_80211` | 2.4 / 5 GHz | IEEE 802.11 | Frame detection and header parse |
+| `lora` | 433 / 868 / 915 MHz | LoRa/LoRaWAN | Chirp spread-spectrum decode |
+
 ## BLE Advertising Demodulation
 
 The Demodulation tab includes a **BLE advertising channel test** that captures
@@ -270,6 +314,14 @@ The current decoder also performs burst-local symbol phase trials and small
 bit-phase adjustments around Access Address offsets. This improves diagnostics
 on live captures where each burst starts at a different sample phase. Candidate
 fields remain untrusted until CRC passes.
+
+Before CRC checking, each burst is scored against a 40-bit SYNC template
+(preamble `0xAA` + Access Address `0x8E89BED6`) across all tested symbol phases.
+Bursts where the best SYNC score across all phases is below 28/40 are rejected
+without further processing. Real BLE advertising bursts score 32 or higher;
+non-BLE 2.4 GHz sources (Zigbee, WiFi CH1 leakage, ISM wideband noise) score
+24 or lower. This filter eliminates false-positive BLE candidates that otherwise
+pass the energy and burst-detection stage.
 
 Results are shown per channel in the test table and saved as
 `decoded_packets.json` in the demodulation output directory.
@@ -489,6 +541,42 @@ automation, one-off launches or CI.
 | `QC_MAX_SILENCE_PCT` | Maximum silence percentage before QC warnings |
 | `RF_INTELLIGENCE_THRESHOLD_OFFSET_DB` | Detection threshold above the estimated noise floor |
 | `RF_INTELLIGENCE_MIN_SNR_DB` | Minimum SNR for RF Intelligence candidates |
+
+## Model Formats And Export
+
+Spectrum Lab trains and saves three kinds of model artifacts:
+
+| Artifact | Extension | Contents | Training path |
+|---|---|---|---|
+| PyTorch checkpoint | `.pt` | `model_state_dict`, `device_to_label`, `window_size`, `stride`, `embedding_dim` | E1 CNN 1D, E3 CNN 2D, operational fingerprinting (`best_model.pt`) |
+| scikit-learn model | `.pkl` | `{"model_name", "model", "feature_names"}` | E5 Logistic Regression, Random Forest, SVM RBF, KNN |
+| NumPy softmax | `.npz` | Weight matrix `W`, bias `b`, label array, feature mean/scale | RF Signal Understanding `numpy_softmax_regression` |
+
+Each training run also writes:
+
+```text
+training_config.json        hyperparameters and dataset fingerprint
+label_schema.json           int → class name mapping
+normalization_params.json   canonical mean and RMS normalization used during preprocessing
+split_strategy.txt          group-disjoint split method applied
+dataset_manifest_path.txt   path to the RFExperimentDatasetV1 manifest used
+```
+
+### Export Options
+
+PyTorch `.pt` checkpoints can be exported to:
+
+- **ONNX** via `torch.onnx.export` — for cross-platform runtime inference (ONNX Runtime, TensorRT, mobile).
+- **TorchScript** via `torch.jit.trace` — for embedded or C++ deployment.
+- **SafeTensors** via `safetensors.torch.save_file` — for safe weight sharing without arbitrary code execution.
+
+scikit-learn `.pkl` models can be exported to:
+
+- **ONNX** via `skl2onnx.convert_sklearn` — for interoperability with ONNX Runtime.
+
+NumPy `.npz` models are plain arrays and can be loaded and exported without any ML framework.
+
+Export is not automated in the current UI. Use the result package path shown in the Models tab to locate the checkpoint and apply the export command externally.
 
 ## Troubleshooting
 

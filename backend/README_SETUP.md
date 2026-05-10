@@ -180,8 +180,10 @@ The spectrum view includes professional analyzer controls and measurements:
 - Crosshair readout
 - Mouse-wheel span zoom
 - CSV and PNG export
-- Marker-band AM/FM/WFM demodulation with WAV playback/export
+- Marker-band AM/FM/WFM demodulation with WAV playback/export; result display shows audio-specific fields (duration, audio sample rate)
 - Marker-band ASK/FSK/PSK/OOK IQ capture for digital analysis
+- IoT protocol demodulation pipelines: `ook_433_remote` (EV1527/PT2262 remotes), `ook_ask_iot_sensor`, `zigbee` (IEEE 802.15.4), `ble_advertising`, `wifi_80211`, `lora`
+- Collapsible left navigation sidebar and collapsible right status panel (Spectrum view); collapse/expand buttons remain visible when panels are hidden
 - Marker-band `.cfile` and `.iq` capture libraries for modulated-signal analysis, replay workflows, and AI datasets
 
 ## API Endpoints

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
-import { Activity, Loader2, RadioTower } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Loader2, RadioTower } from 'lucide-react';
 import { useAppActions, useGlobalActivity, useUiState } from '../../app/store/AppStore';
 import { cn } from '../../shared/utils';
 import { findModuleByPath, navigationModules } from '../../app/modules/labModules';
@@ -15,55 +15,56 @@ export const AppLayout: React.FC = () => {
     <div className="app-shell flex h-screen">
       {/* Sidebar */}
       <div className={cn(
-        "app-sidebar flex flex-col border-r shadow-2xl transition-all duration-300",
-        ui.sidebarCollapsed ? "w-16" : "w-64"
+        "app-sidebar relative flex flex-col border-r shadow-2xl transition-all duration-300 overflow-visible",
+        ui.sidebarCollapsed ? "w-0" : "w-64"
       )}>
-        {/* Header */}
-        <div className="border-b p-4" style={{ borderColor: 'var(--app-sidebar-border)' }}>
-          <div className="flex items-center justify-between">
-            {!ui.sidebarCollapsed && (
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-[0.22em]" style={{ color: 'var(--app-accent)' }}>RF Lab</div>
-                <h1 className="text-xl font-bold">Spectrum Lab</h1>
-              </div>
-            )}
-            <button
-              onClick={() => setUiState({ sidebarCollapsed: !ui.sidebarCollapsed })}
-              className="rounded-md p-2 hover:bg-white/5"
-              style={{ color: 'var(--app-sidebar-text)' }}
-            >
-              <Activity className="w-5 h-5" />
-            </button>
+        {/* Collapse / expand toggle — pinned to the right edge of the sidebar, always visible */}
+        <button
+          onClick={() => setUiState({ sidebarCollapsed: !ui.sidebarCollapsed })}
+          title={ui.sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          className="absolute -right-3 top-5 z-30 flex h-6 w-6 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-slate-300 shadow-md hover:bg-slate-600 hover:text-white transition-colors"
+        >
+          {ui.sidebarCollapsed
+            ? <ChevronRight className="w-3 h-3" />
+            : <ChevronLeft className="w-3 h-3" />}
+        </button>
+
+        {/* Sidebar content — hidden when collapsed */}
+        <div className={cn('flex flex-col h-full transition-opacity duration-200', ui.sidebarCollapsed ? 'opacity-0 pointer-events-none invisible' : 'opacity-100 visible')}>
+          {/* Header */}
+          <div className="border-b p-4" style={{ borderColor: 'var(--app-sidebar-border)' }}>
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-[0.22em]" style={{ color: 'var(--app-accent)' }}>RF Lab</div>
+              <h1 className="text-xl font-bold">Spectrum Lab</h1>
+            </div>
           </div>
-        </div>
 
-        {/* Navigation */}
-        <nav className="flex-1 p-4 space-y-2">
-          {navigationModules.map((item) => {
-            const isActive = location.pathname === item.path || (item.aliases ?? []).includes(location.pathname);
-            return (
-              <Link
-                key={item.id}
-                to={item.path}
-                className={cn(
-                  "flex items-center rounded-2xl px-3 py-2 text-sm font-medium transition-colors",
-                  isActive
-                    ? "bg-amber-300 text-slate-950"
-                    : "hover:bg-white/5"
-                )}
-                style={isActive ? { background: 'var(--app-accent)', color: 'var(--app-accent-foreground)' } : { color: 'var(--app-sidebar-text)' }}
-              >
-                <item.icon className="w-5 h-5 mr-3" />
-                {!ui.sidebarCollapsed && item.name}
-              </Link>
-            );
-          })}
-        </nav>
+          {/* Navigation */}
+          <nav className="flex-1 p-4 space-y-2">
+            {navigationModules.map((item) => {
+              const isActive = location.pathname === item.path || (item.aliases ?? []).includes(location.pathname);
+              return (
+                <Link
+                  key={item.id}
+                  to={item.path}
+                  className={cn(
+                    "flex items-center rounded-2xl px-3 py-2 text-sm font-medium transition-colors",
+                    isActive ? "bg-amber-300 text-slate-950" : "hover:bg-white/5"
+                  )}
+                  style={isActive ? { background: 'var(--app-accent)', color: 'var(--app-accent-foreground)' } : { color: 'var(--app-sidebar-text)' }}
+                >
+                  <item.icon className="w-5 h-5 mr-3 flex-shrink-0" />
+                  {item.name}
+                </Link>
+              );
+            })}
+          </nav>
 
-        {/* Footer */}
-        <div className="border-t p-4" style={{ borderColor: 'var(--app-sidebar-border)' }}>
-          <div className="text-xs" style={{ color: 'var(--app-sidebar-muted)' }}>
-            {!ui.sidebarCollapsed && "Acquisition + Dataset + QC"}
+          {/* Footer */}
+          <div className="border-t p-4" style={{ borderColor: 'var(--app-sidebar-border)' }}>
+            <div className="text-xs" style={{ color: 'var(--app-sidebar-muted)' }}>
+              Acquisition + Dataset + QC
+            </div>
           </div>
         </div>
       </div>

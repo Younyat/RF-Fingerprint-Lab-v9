@@ -341,6 +341,7 @@ export const SpectrumView: React.FC = () => {
   const [autoFreezeCaptureStatus, setAutoFreezeCaptureStatus] = useState<string | null>(null);
   const [captureProgressDetails, setCaptureProgressDetails] = useState<CaptureProgressDetails | null>(null);
   const [showCaptureProgressOverlay, setShowCaptureProgressOverlay] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [rfScene, setRfScene] = useState<RFSceneAnalysis | null>(null);
   const [rfOverlayError, setRfOverlayError] = useState<string | null>(null);
   const [rsuLive, setRsuLive] = useState<RFSignalUnderstandingResult | null>(null);
@@ -1860,7 +1861,7 @@ export const SpectrumView: React.FC = () => {
         {showRfExperimentOverlay && rfExperimentOverlayError && <div className="mt-2 text-sm text-emerald-200">RF Experiment overlay: {rfExperimentOverlayError}</div>}
       </div>
 
-      <div className="flex-1 grid grid-cols-[minmax(0,1fr)_320px] min-h-0">
+      <div className={cn('flex-1 grid min-h-0 transition-[grid-template-columns] duration-300', sidebarCollapsed ? 'grid-cols-[minmax(0,1fr)_0px]' : 'grid-cols-[minmax(0,1fr)_320px]')}>
         <div className="flex min-h-0 flex-col">
           <div className={cn('relative min-h-0', showWaterfallSplit ? 'flex-[3_1_0%]' : 'flex-1')}>
             {showPanOverlay && (
@@ -2078,7 +2079,22 @@ export const SpectrumView: React.FC = () => {
           )}
         </div>
 
-        <aside className="border-l border-slate-800 bg-slate-900 p-3 overflow-auto">
+        {/*
+          The aside uses overflow-visible so the toggle button (absolute -left-3) stays
+          visible even when the panel is fully collapsed to w-0. The scrollable content
+          lives inside a separate inner div with overflow-auto.
+        */}
+        <aside className={cn('relative border-l border-slate-800 bg-slate-900 transition-all duration-300 overflow-visible flex-shrink-0', sidebarCollapsed ? 'w-0' : 'w-80')}>
+          {/* Toggle button — pinned to the left edge of the aside, always visible */}
+          <button
+            onClick={() => setSidebarCollapsed((v) => !v)}
+            title={sidebarCollapsed ? 'Expand panel' : 'Collapse panel'}
+            className="absolute -left-3 top-4 z-30 flex h-6 w-6 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-slate-300 shadow-md hover:bg-slate-600 hover:text-white transition-colors"
+          >
+            {sidebarCollapsed ? <ChevronRight className="w-3 h-3" /> : <ChevronLeft className="w-3 h-3" />}
+          </button>
+          {/* Scrollable content — separate div so overflow-auto doesn't clip the toggle */}
+          <div className={cn('absolute inset-0 overflow-auto p-3 transition-opacity duration-200', sidebarCollapsed ? 'opacity-0 pointer-events-none' : 'opacity-100')}>
           <div className="text-xs uppercase text-slate-400 mb-2">Device Status</div>
           <StatusRow label="View" value={isFrozen ? 'Frozen View' : 'Live View'} tone={isFrozen ? undefined : 'ok'} />
           <StatusRow label="Status" value={deviceStatus.isConnected ? 'Connected' : 'Disconnected'} tone={deviceStatus.isConnected ? 'ok' : 'bad'} />
@@ -2328,6 +2344,7 @@ export const SpectrumView: React.FC = () => {
               </tbody>
             </table>
           </div>
+          </div>{/* end collapsible content wrapper */}
         </aside>
       </div>
 
