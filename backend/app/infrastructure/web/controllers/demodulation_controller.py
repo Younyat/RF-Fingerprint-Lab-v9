@@ -910,6 +910,10 @@ class DemodulationController:
         receiver_chain_version = "ble_receiver_chain_diagnostics_v2"
         center = float(data.get("center_frequency_hz") or 0.0)
         sample_rate = float(data.get("sample_rate_hz") or 1.0)
+        capture_bandwidth_hz = float(data.get("bandwidth_hz") or sample_rate)
+        min_burst_duration_ms = float(data.get("min_burst_duration_ms") or 2.0)
+        max_burst_duration_ms = float(data.get("max_burst_duration_ms") or 150.0)
+        min_gap_duration_ms = float(data.get("min_gap_duration_ms") or 2.5)
         channel, channel_frequency_hz = self._ble_channel_from_frequency(center)
         profile_channel = self._extract_profile_ble_channel(data)
         channel_consistency = profile_channel is None or profile_channel == channel
@@ -2156,6 +2160,167 @@ class DemodulationController:
                 )
         return pulses
 
+    def _ook433_merge_short_glitches(
+        self,
+        pulses: list[dict],
+        min_duration_us: float = 100.0,
+    ) -> list[dict]:
+        """Remove sub-symbol glitches and fuse adjacent runs with the same level."""
+        if not pulses:
+            return []
+        merged: list[dict] = []
+        for pulse in pulses:
+            item = dict(pulse)
+            if item["duration_us"] < min_duration_us and merged:
+                merged[-1]["end_sample"] = int(item["end_sample"])
+                merged[-1]["duration_us"] += float(item["duration_us"])
+                continue
+            if merged and merged[-1]["level"] == item["level"]:
+                merged[-1]["end_sample"] = int(item["end_sample"])
+                merged[-1]["duration_us"] += float(item["duration_us"])
+            else:
+                merged.append(item)
+        if len(merged) >= 2 and merged[-1]["duration_us"] < min_duration_us:
+            tail = merged.pop()
+            merged[-1]["end_sample"] = int(tail["end_sample"])
+            merged[-1]["duration_us"] += float(tail["duration_us"])
+        fused: list[dict] = []
+        for pulse in merged:
+            if fused and fused[-1]["level"] == pulse["level"]:
+                fused[-1]["end_sample"] = int(pulse["end_sample"])
+                fused[-1]["duration_us"] += float(pulse["duration_us"])
+            else:
+                fused.append(pulse)
+        return fused
+
+    def _ook433_internal_pulses_for_burst(
+        self,
+        envelope: np.ndarray,
+        start_sample: int,
+        end_sample: int,
+        sample_rate: float,
+        min_glitch_us: float = 100.0,
+    ) -> tuple[list[dict], float | None]:
+        """Extract symbol-level ON/OFF transitions inside one carrier burst."""
+        if envelope.size == 0 or end_sample <= start_sample or sample_rate <= 0:
+            return [], None
+        start = max(0, int(start_sample))
+        stop = min(int(end_sample), int(envelope.size))
+        segment = envelope[start:stop].astype(np.float32, copy=False)
+        if segment.size < max(8, int(sample_rate * min_glitch_us * 1e-6)):
+            return [], None
+        smooth_len = max(1, int(round(sample_rate * 25e-6)))
+        if smooth_len > 1 and segment.size > smooth_len:
+            kernel = np.ones(smooth_len, dtype=np.float32) / float(smooth_len)
+            smooth = np.convolve(segment, kernel, mode="same")
+        else:
+            smooth = segment
+        p10 = float(np.percentile(smooth, 10))
+        p90 = float(np.percentile(smooth, 90))
+        if p90 <= p10 * 1.05:
+            return [
+                {
+                    "level": 1,
+                    "duration_us": float((stop - start) / sample_rate * 1e6),
+                    "start_sample": start,
+                    "end_sample": stop,
+                }
+            ], None
+        threshold = (p10 + p90) / 2.0
+        local_binary = (smooth > threshold).astype(np.uint8)
+        local_pulses = self._ook433_pulse_sequence_indexed(local_binary, sample_rate)
+        absolute_pulses = []
+        for pulse in local_pulses:
+            absolute_pulses.append(
+                {
+                    "level": int(pulse["level"]),
+                    "duration_us": float(pulse["duration_us"]),
+                    "start_sample": int(start + pulse["start_sample"]),
+                    "end_sample": int(start + pulse["end_sample"]),
+                }
+            )
+        return self._ook433_merge_short_glitches(absolute_pulses, min_glitch_us), threshold
+
+    def _ook433_internal_pulse_metrics(self, internal_pulses: list[dict], burst_duration_s: float | None) -> dict:
+        marks = [float(p["duration_us"]) for p in internal_pulses if p["level"] == 1]
+        spaces = [float(p["duration_us"]) for p in internal_pulses if p["level"] == 0]
+        transitions = max(0, len(internal_pulses) - 1)
+        duration_s = float(burst_duration_s or 0.0)
+        transition_rate = transitions / duration_s if duration_s > 0 else 0.0
+
+        def stats(values: list[float], name: str) -> dict:
+            if not values:
+                return {
+                    f"min_{name}_us": None,
+                    f"max_{name}_us": None,
+                    f"median_{name}_us": None,
+                    f"short_{name}_us": None,
+                    f"long_{name}_us": None,
+                }
+            arr = np.array(values, dtype=np.float32)
+            return {
+                f"min_{name}_us": round(float(np.min(arr)), 3),
+                f"max_{name}_us": round(float(np.max(arr)), 3),
+                f"median_{name}_us": round(float(np.median(arr)), 3),
+                f"short_{name}_us": round(float(np.percentile(arr, 25)), 3),
+                f"long_{name}_us": round(float(np.percentile(arr, 75)), 3),
+            }
+
+        symbol_level_detected = transitions >= 10 and bool(marks) and bool(spaces)
+        return {
+            "internal_transition_count": transitions,
+            "average_transition_rate": round(float(transition_rate), 3),
+            "mark_count": len(marks),
+            "space_count": len(spaces),
+            **stats(marks, "mark"),
+            **stats(spaces, "space"),
+            "symbol_level_detected": symbol_level_detected,
+            "transition_rejection_reason": None if symbol_level_detected else "no_symbol_level_ook_transitions_detected",
+        }
+
+    def _ook433_instantaneous_frequency_metrics(
+        self,
+        iq: np.ndarray,
+        start_sample: int,
+        end_sample: int,
+        sample_rate: float,
+    ) -> dict:
+        if iq.size == 0 or end_sample <= start_sample or sample_rate <= 0:
+            return {"possible_modulation": "unknown"}
+        segment = iq[max(0, start_sample):min(iq.size, end_sample)]
+        if segment.size < 32:
+            return {"possible_modulation": "unknown"}
+        inst = np.diff(np.unwrap(np.angle(segment))).astype(np.float32) * (sample_rate / (2.0 * np.pi))
+        if inst.size < 16:
+            return {"possible_modulation": "unknown"}
+        lo = float(np.percentile(inst, 5))
+        hi = float(np.percentile(inst, 95))
+        clipped = inst[(inst >= lo) & (inst <= hi)]
+        if clipped.size < 16:
+            clipped = inst
+        median = float(np.median(clipped))
+        low_cluster = clipped[clipped <= median]
+        high_cluster = clipped[clipped > median]
+        if low_cluster.size < 8 or high_cluster.size < 8:
+            return {
+                "possible_modulation": "ook_or_ask_candidate",
+                "instantaneous_frequency_std_hz": round(float(np.std(clipped)), 3),
+            }
+        low_center = float(np.median(low_cluster))
+        high_center = float(np.median(high_cluster))
+        separation = abs(high_center - low_center)
+        deviation = separation / 2.0
+        balance = min(low_cluster.size, high_cluster.size) / max(low_cluster.size, high_cluster.size)
+        two_tone = separation >= 2_000.0 and balance >= 0.15
+        return {
+            "possible_modulation": "fsk_candidate" if two_tone else "ook_or_ask_candidate",
+            "instantaneous_frequency_low_hz": round(low_center, 3),
+            "instantaneous_frequency_high_hz": round(high_center, 3),
+            "frequency_deviation_hz": round(float(deviation), 3),
+            "frequency_cluster_balance": round(float(balance), 4),
+            "instantaneous_frequency_std_hz": round(float(np.std(clipped)), 3),
+        }
+
     def _ook433_estimate_t_unit(
         self, pulses: list[tuple[int, float]]
     ) -> tuple[float, float]:
@@ -2229,23 +2394,74 @@ class DemodulationController:
         self,
         pulses: list[dict],
         t_unit_us: float,
+        min_burst_duration_ms: float = 2.0,
+        max_burst_duration_ms: float = 150.0,
+        min_gap_duration_ms: float = 2.0,
     ) -> list[list[dict]]:
         """Segment indexed OOK pulses into bursts separated by long LOW gaps."""
         if not pulses:
             return []
-        gap_threshold_us = max(8.0 * t_unit_us, 2000.0)
+        gap_threshold_us = max(8.0 * t_unit_us, min_gap_duration_ms * 1000.0)
+        min_burst_us = min_burst_duration_ms * 1000.0
+        max_burst_us = max_burst_duration_ms * 1000.0
         bursts: list[list[dict]] = []
         current: list[dict] = []
+        def _append_valid(candidate: list[dict]) -> None:
+            if len(candidate) < 2:
+                return
+            duration_us = float(candidate[-1]["end_sample"] - candidate[0]["start_sample"])
+            # Convert samples to microseconds using pulse durations, avoiding a
+            # sample-rate parameter in this low-level segmenter.
+            duration_us = sum(float(p["duration_us"]) for p in candidate)
+            if min_burst_us <= duration_us <= max_burst_us:
+                bursts.append(candidate)
         for pulse in pulses:
             if pulse["level"] == 0 and pulse["duration_us"] >= gap_threshold_us:
-                if len(current) >= 6:
-                    bursts.append(current)
+                _append_valid(current)
                 current = []
             else:
                 current.append(pulse)
-        if len(current) >= 6:
-            bursts.append(current)
+        _append_valid(current)
         return bursts
+
+    def _ook433_invalid_continuous_runs(
+        self,
+        pulses: list[dict],
+        t_unit_us: float,
+        max_burst_duration_ms: float,
+        min_gap_duration_ms: float,
+    ) -> list[dict]:
+        """Return pulse groups that look like an invalid continuous envelope."""
+        if not pulses:
+            return []
+        gap_threshold_us = max(8.0 * t_unit_us, min_gap_duration_ms * 1000.0)
+        max_burst_us = max_burst_duration_ms * 1000.0
+        invalid: list[dict] = []
+        current: list[dict] = []
+        for pulse in pulses:
+            if pulse["level"] == 0 and pulse["duration_us"] >= gap_threshold_us:
+                if current:
+                    duration_us = sum(float(p["duration_us"]) for p in current)
+                    if duration_us > max_burst_us:
+                        invalid.append({
+                            "start_sample": int(current[0]["start_sample"]),
+                            "end_sample": int(current[-1]["end_sample"]),
+                            "duration_ms": duration_us / 1000.0,
+                            "reason": "invalid_continuous_envelope",
+                        })
+                current = []
+            else:
+                current.append(pulse)
+        if current:
+            duration_us = sum(float(p["duration_us"]) for p in current)
+            if duration_us > max_burst_us:
+                invalid.append({
+                    "start_sample": int(current[0]["start_sample"]),
+                    "end_sample": int(current[-1]["end_sample"]),
+                    "duration_ms": duration_us / 1000.0,
+                    "reason": "invalid_continuous_envelope",
+                })
+        return invalid
 
     def _ook433_decode_pwm_bits(
         self, pulses: list[tuple[int, float]], t_unit_us: float
@@ -2446,6 +2662,347 @@ class DemodulationController:
             assignments.append(assigned)
         return assignments
 
+    def _ook433_binary_entropy(self, bits: list[int]) -> float:
+        if not bits:
+            return 0.0
+        ones = sum(1 for bit in bits if bit == 1)
+        p1 = ones / len(bits)
+        p0 = 1.0 - p1
+        entropy = 0.0
+        for p in (p0, p1):
+            if p > 0:
+                entropy -= p * float(np.log2(p))
+        return float(entropy)
+
+    def _ook433_duration_histogram(self, durations_us: list[float], bin_us: float = 50.0) -> list[dict]:
+        values = np.array([d for d in durations_us if d >= 0], dtype=np.float32)
+        if values.size == 0:
+            return []
+        max_value = max(float(np.max(values)), bin_us)
+        bins = np.arange(0.0, max_value + bin_us * 2.0, bin_us, dtype=np.float32)
+        hist, edges = np.histogram(values, bins=bins)
+        return [
+            {
+                "start_us": round(float(edges[i]), 3),
+                "end_us": round(float(edges[i + 1]), 3),
+                "count": int(count),
+            }
+            for i, count in enumerate(hist)
+            if count > 0
+        ]
+
+    def _ook433_classify_duration(self, duration_us: float, classes: dict) -> str:
+        if duration_us >= float(classes["sync_threshold_us"]):
+            return "sync"
+        return "long" if self._ook433_is_long(duration_us, classes) else "short"
+
+    def _ook433_mostly_trivial_hex(self, hex_text: str) -> bool:
+        cleaned = "".join(ch for ch in (hex_text or "").upper() if ch in "0123456789ABCDEF")
+        if len(cleaned) < 8:
+            return False
+        dominant = max(cleaned.count("F"), cleaned.count("0"))
+        return dominant / max(len(cleaned), 1) >= 0.85
+
+    def _ook433_mostly_trivial_bits(self, bitstring: str) -> bool:
+        bits = "".join(ch for ch in (bitstring or "") if ch in "01")
+        if len(bits) < 32:
+            return False
+        dominant = max(bits.count("1"), bits.count("0"))
+        return dominant / max(len(bits), 1) >= 0.85
+
+    def _ook433_duration_classes(self, durations_us: list[float], unit_us: float) -> dict:
+        valid = np.array([d for d in durations_us if d >= 40.0], dtype=np.float32)
+        if valid.size == 0:
+            return {"short_us": unit_us, "long_us": 3.0 * unit_us, "sync_threshold_us": 8.0 * unit_us}
+        short_us = float(np.percentile(valid, 25))
+        long_us = float(np.percentile(valid, 75))
+        if long_us < short_us * 1.5:
+            long_us = max(3.0 * max(short_us, unit_us), long_us)
+        return {
+            "short_us": max(40.0, short_us),
+            "long_us": max(long_us, short_us),
+            "sync_threshold_us": max(8.0 * max(unit_us, short_us), 2000.0),
+        }
+
+    def _ook433_is_long(self, duration_us: float, classes: dict) -> bool:
+        return duration_us >= (float(classes["short_us"]) + float(classes["long_us"])) / 2.0
+
+    def _ook433_fixed_period_bits(
+        self,
+        binary: np.ndarray,
+        start_sample: int,
+        end_sample: int,
+        sample_rate: float,
+        symbol_unit_us: float,
+        threshold: float = 0.25,
+    ) -> list[int]:
+        if binary.size == 0 or end_sample <= start_sample or sample_rate <= 0:
+            return []
+        samples_per_symbol = max(1, int(round(sample_rate * max(symbol_unit_us, 50.0) * 1e-6)))
+        bits: list[int] = []
+        start = max(0, start_sample)
+        stop = min(binary.size, end_sample)
+        for offset in range(start, stop, samples_per_symbol):
+            window = binary[offset:min(stop, offset + samples_per_symbol)]
+            if window.size:
+                bits.append(1 if float(np.mean(window)) >= threshold else 0)
+        while bits and bits[0] == 0:
+            bits.pop(0)
+        while bits and bits[-1] == 0:
+            bits.pop()
+        return bits
+
+    def _ook433_bits_from_internal_pulses(
+        self,
+        pulses: list[tuple[int, float]],
+        symbol_unit_us: float,
+    ) -> list[int]:
+        """Convert symbol-level pulse runs to a raw NRZ projection."""
+        if not pulses:
+            return []
+        unit = max(float(symbol_unit_us or 0.0), 50.0)
+        bits: list[int] = []
+        for level, duration_us in pulses:
+            repeat = max(1, int(round(float(duration_us) / unit)))
+            bits.extend([int(level)] * repeat)
+        while bits and bits[0] == 0:
+            bits.pop(0)
+        while bits and bits[-1] == 0:
+            bits.pop()
+        return bits
+
+    def _ook433_decode_hypothesis(
+        self,
+        encoding_type: str,
+        pulses: list[tuple[int, float]],
+        binary: np.ndarray,
+        start_sample: int,
+        end_sample: int,
+        sample_rate: float,
+        unit_us: float,
+        classes: dict,
+    ) -> list[int]:
+        bits: list[int] = []
+        if encoding_type in {"raw_ook_nrz", "fixed_symbol_period"}:
+            if pulses:
+                return self._ook433_bits_from_internal_pulses(pulses, unit_us)
+            return self._ook433_fixed_period_bits(binary, start_sample, end_sample, sample_rate, unit_us)
+        if encoding_type == "pulse_width":
+            return [1 if self._ook433_is_long(dur, classes) else 0 for level, dur in pulses if level == 1]
+        if encoding_type in {"pulse_distance", "ppm"}:
+            for i in range(len(pulses) - 1):
+                level, _dur = pulses[i]
+                next_level, gap = pulses[i + 1]
+                if level == 1 and next_level == 0 and gap < classes["sync_threshold_us"]:
+                    bits.append(1 if self._ook433_is_long(gap, classes) else 0)
+            return bits
+        if encoding_type == "pwm":
+            i = 0
+            while i + 1 < len(pulses):
+                lv_h, dur_h = pulses[i]
+                lv_l, dur_l = pulses[i + 1]
+                if lv_h == 1 and lv_l == 0:
+                    high_long = self._ook433_is_long(dur_h, classes)
+                    low_long = self._ook433_is_long(dur_l, classes)
+                    if not high_long and low_long:
+                        bits.append(0)
+                    elif high_long and not low_long:
+                        bits.append(1)
+                    elif high_long != low_long:
+                        bits.append(1 if high_long else 0)
+                    i += 2
+                else:
+                    i += 1
+            return bits
+        if encoding_type == "manchester":
+            raw = self._ook433_fixed_period_bits(binary, start_sample, end_sample, sample_rate, max(50.0, unit_us / 2.0))
+            for i in range(0, len(raw) - 1, 2):
+                pair = (raw[i], raw[i + 1])
+                if pair == (0, 1):
+                    bits.append(0)
+                elif pair == (1, 0):
+                    bits.append(1)
+            return bits
+        if encoding_type in {"differential_manchester", "bi_phase"}:
+            raw = self._ook433_fixed_period_bits(binary, start_sample, end_sample, sample_rate, max(50.0, unit_us / 2.0))
+            previous = 1
+            for i in range(0, len(raw) - 1, 2):
+                first, second = raw[i], raw[i + 1]
+                if first == second:
+                    continue
+                transition_at_start = first != previous
+                bits.append(0 if transition_at_start else 1)
+                previous = second
+            return bits
+        if encoding_type == "tri_state":
+            pwm_bits = self._ook433_decode_hypothesis("pwm", pulses, binary, start_sample, end_sample, sample_rate, unit_us, classes)
+            # Keep tri-state as a binary projection so common/variable positions remain comparable.
+            for i in range(0, len(pwm_bits) - 1, 2):
+                pair = (pwm_bits[i], pwm_bits[i + 1])
+                if pair == (0, 0):
+                    bits.extend([0, 0])
+                elif pair == (1, 1):
+                    bits.extend([1, 1])
+                elif pair in {(0, 1), (1, 0)}:
+                    bits.extend([0, 1])
+            return bits
+        return []
+
+    def _ook433_adaptive_decodings(
+        self,
+        binary: np.ndarray,
+        bursts_indexed: list[list[dict]],
+        sample_rate: float,
+        t_unit_us: float,
+        repetition_detected: bool = False,
+        known_protocol_matched: bool = False,
+        invalid_continuous_count: int = 0,
+    ) -> tuple[list[dict], dict]:
+        encoding_types = [
+            "raw_ook_nrz",
+            "pulse_width",
+            "pulse_distance",
+            "pwm",
+            "ppm",
+            "manchester",
+            "differential_manchester",
+            "bi_phase",
+            "tri_state",
+            "fixed_symbol_period",
+        ]
+        all_candidates: list[dict] = []
+        all_pulse_durations = [float(p["duration_us"]) for burst in bursts_indexed for p in burst]
+        classes = self._ook433_duration_classes(all_pulse_durations, t_unit_us)
+        for encoding_type in encoding_types:
+            per_burst: list[dict] = []
+            bitsets: list[list[int]] = []
+            for burst_index, burst in enumerate(bursts_indexed):
+                if not burst:
+                    bits: list[int] = []
+                    start_sample = end_sample = 0
+                else:
+                    start_sample = int(burst[0]["start_sample"])
+                    end_sample = int(burst[-1]["end_sample"])
+                    pulses = [(int(p["level"]), float(p["duration_us"])) for p in burst]
+                    bits = self._ook433_decode_hypothesis(
+                        encoding_type,
+                        pulses,
+                        binary,
+                        start_sample,
+                        end_sample,
+                        sample_rate,
+                        t_unit_us,
+                        classes,
+                    )
+                bitsets.append(bits)
+                per_burst.append(
+                    {
+                        "burst_index": burst_index,
+                        "bitstring": "".join(str(bit) for bit in bits),
+                        "hex_candidate": self._ook433_bits_to_hex(bits),
+                        "bit_length": len(bits),
+                    }
+                )
+            non_empty = [bits for bits in bitsets if bits]
+            lengths = np.array([len(bits) for bits in non_empty], dtype=np.float32)
+            if lengths.size:
+                median_len = int(np.median(lengths))
+                representative = max(non_empty, key=lambda bits: (len(bits), non_empty.count(bits)))
+                length_consistency = float(max(0.0, 1.0 - (np.std(lengths) / max(float(np.mean(lengths)), 1.0))))
+            else:
+                median_len = 0
+                representative = []
+                length_consistency = 0.0
+            similarities = []
+            for i in range(len(non_empty)):
+                for j in range(i + 1, len(non_empty)):
+                    similarities.append(self._ook433_bit_similarity(non_empty[i], non_empty[j]))
+            repetition_similarity = float(np.mean(similarities)) if similarities else (1.0 if len(non_empty) == 1 else 0.0)
+            entropy = self._ook433_binary_entropy(representative)
+            entropy_score = 1.0 - min(1.0, abs(entropy - 0.65) / 0.65)
+            min_len = min((len(bits) for bits in non_empty), default=0)
+            common_positions = []
+            variable_bit_positions = []
+            if min_len > 0:
+                for pos in range(min(min_len, 512)):
+                    values = [bits[pos] for bits in non_empty if len(bits) > pos]
+                    if values and all(value == values[0] for value in values):
+                        common_positions.append({"position": pos, "bit": values[0]})
+                    else:
+                        variable_bit_positions.append(pos)
+            trivial = entropy < 0.08 or median_len < 8
+            penalties = {
+                "single_burst_penalty": 0.55 if len(non_empty) <= 1 else 1.0,
+                "no_repetition_penalty": 0.45 if not repetition_detected else 1.0,
+                "excessive_duration_penalty": 0.45 if invalid_continuous_count > 0 else 1.0,
+                "trivial_hex_penalty": 0.20 if entropy < 0.08 else 1.0,
+                "no_protocol_match_penalty": 0.85 if not known_protocol_matched else 1.0,
+            }
+            confidence = (
+                0.35 * repetition_similarity
+                + 0.25 * length_consistency
+                + 0.20 * entropy_score
+                + 0.20 * (0.0 if trivial else 1.0)
+            )
+            for penalty in penalties.values():
+                confidence *= penalty
+            rejection_reason = None
+            if not non_empty:
+                rejection_reason = "no_bits_recovered"
+            elif median_len < 8:
+                rejection_reason = "too_short"
+            elif entropy < 0.08:
+                rejection_reason = "trivial_all_zeros_or_ones"
+            elif len(non_empty) <= 1:
+                rejection_reason = "single_burst_no_repetition"
+            elif repetition_similarity < 0.55:
+                rejection_reason = "unstable_between_repeated_bursts"
+            candidate = {
+                "encoding_type": encoding_type,
+                "bitstring": "".join(str(bit) for bit in representative),
+                "hex_candidate": self._ook433_bits_to_hex(representative),
+                "bit_length": len(representative),
+                "sync_pattern": {
+                    "short_us": round(float(classes["short_us"]), 3),
+                    "long_us": round(float(classes["long_us"]), 3),
+                    "sync_threshold_us": round(float(classes["sync_threshold_us"]), 3),
+                },
+                "preamble_length": self._ook433_preamble_length(representative),
+                "symbol_unit_us": round(float(t_unit_us), 3),
+                "repetition_similarity": round(repetition_similarity, 4),
+                "length_consistency": round(length_consistency, 4),
+                "entropy": round(entropy, 4),
+                "variable_bit_positions": variable_bit_positions[:256],
+                "common_bit_positions": common_positions[:256],
+                "confidence": round(float(max(0.0, min(1.0, confidence))), 4),
+                "penalties": penalties,
+                "selected_reason": (
+                    f"{encoding_type} produced repetition_similarity={repetition_similarity:.3f}, "
+                    f"length_consistency={length_consistency:.3f}, entropy={entropy:.3f}; "
+                    f"penalties={{{', '.join(f'{k}:{v:.2f}' for k, v in penalties.items())}}}"
+                ),
+                "rejection_reason": rejection_reason,
+                "per_burst": per_burst,
+            }
+            all_candidates.append(candidate)
+        selected = max(
+            all_candidates,
+            key=lambda item: (item["rejection_reason"] is None, item["confidence"], item["bit_length"]),
+            default={},
+        )
+        return all_candidates, selected
+
+    def _ook433_preamble_length(self, bits: list[int]) -> int:
+        if not bits:
+            return 0
+        first = bits[0]
+        count = 0
+        for bit in bits:
+            if bit != first:
+                break
+            count += 1
+        return count
+
     def _ook433_burst_rf_metrics(
         self,
         iq: np.ndarray,
@@ -2454,6 +3011,7 @@ class DemodulationController:
         center_hz: float,
         sample_rate: float,
         noise_floor_power: float,
+        capture_bandwidth_hz: float | None = None,
     ) -> dict:
         """Estimate RF peak, occupied bandwidth and burst-local SNR from IQ."""
         if iq.size == 0 or end_sample <= start_sample:
@@ -2468,17 +3026,32 @@ class DemodulationController:
         spectrum = np.fft.fftshift(np.fft.fft(segment * window, n=nfft))
         power = np.abs(spectrum) ** 2
         freqs = np.fft.fftshift(np.fft.fftfreq(nfft, d=1.0 / sample_rate))
-        peak_idx = int(np.argmax(power))
-        peak_frequency_hz = float(center_hz + freqs[peak_idx])
+        if capture_bandwidth_hz and capture_bandwidth_hz > 0:
+            band_mask = np.abs(freqs) <= (float(capture_bandwidth_hz) / 2.0)
+            if not np.any(band_mask):
+                band_mask = np.ones_like(freqs, dtype=bool)
+        else:
+            band_mask = np.ones_like(freqs, dtype=bool)
+        band_power = power[band_mask]
+        band_freqs = freqs[band_mask]
+        peak_idx = int(np.argmax(band_power))
+        peak_frequency_hz = float(center_hz + band_freqs[peak_idx])
         total = float(np.sum(power))
         bandwidth_hz = None
-        if total > 0:
-            cdf = np.cumsum(power) / total
+        if total > 0 and band_power.size:
+            band_total = float(np.sum(band_power))
+            cdf = np.cumsum(band_power) / max(band_total, 1e-20)
             lo = int(np.searchsorted(cdf, 0.005))
             hi = int(np.searchsorted(cdf, 0.995))
-            lo = max(0, min(lo, freqs.size - 1))
-            hi = max(0, min(hi, freqs.size - 1))
-            bandwidth_hz = float(abs(freqs[hi] - freqs[lo]))
+            lo = max(0, min(lo, band_freqs.size - 1))
+            hi = max(0, min(hi, band_freqs.size - 1))
+            bandwidth_hz = float(abs(band_freqs[hi] - band_freqs[lo]))
+        if capture_bandwidth_hz and capture_bandwidth_hz > 0:
+            low = center_hz - float(capture_bandwidth_hz) / 2.0
+            high = center_hz + float(capture_bandwidth_hz) / 2.0
+            peak_frequency_hz = float(min(max(peak_frequency_hz, low), high))
+            if bandwidth_hz is not None:
+                bandwidth_hz = float(min(bandwidth_hz, float(capture_bandwidth_hz)))
         burst_power = float(np.mean(np.abs(segment) ** 2))
         snr_db = float(10.0 * np.log10(max(burst_power, 1e-20) / max(noise_floor_power, 1e-20)))
         return {
@@ -2504,6 +3077,10 @@ class DemodulationController:
         """
         center = float(data.get("center_frequency_hz") or 0.0)
         sample_rate = float(data.get("sample_rate_hz") or 1.0)
+        capture_bandwidth_hz = float(data.get("bandwidth_hz") or sample_rate)
+        min_burst_duration_ms = float(data.get("min_burst_duration_ms") or 2.0)
+        max_burst_duration_ms = float(data.get("max_burst_duration_ms") or 150.0)
+        min_gap_duration_ms = float(data.get("min_gap_duration_ms") or 2.5)
 
         # ISM sub-band identification
         in_433_band = 433_050_000 <= center <= 434_790_000
@@ -2513,6 +3090,7 @@ class DemodulationController:
 
         activity = self._summarize_iq_activity(iq, sample_rate)
 
+        threshold_candidates: list[float] = []
         if iq.size == 0:
             envelope = np.array([], dtype=np.float32)
             binary = np.array([], dtype=np.uint8)
@@ -2530,35 +3108,142 @@ class DemodulationController:
             else:
                 threshold = float(np.mean(envelope)) * 1.5 + 1e-12
             threshold = max(threshold, float(np.mean(envelope)) * 1.2)
+            threshold_candidates = [
+                threshold,
+                float(np.percentile(envelope, 85)),
+                float(np.percentile(envelope, 90)),
+                float(np.percentile(envelope, 95)),
+                float(np.percentile(envelope, 97.5)),
+                float(np.percentile(envelope, 99)),
+            ]
+            # Preserve order but remove duplicate thresholds.
+            seen_thresholds: set[float] = set()
+            threshold_candidates = [
+                value for value in threshold_candidates
+                if not (round(value, 12) in seen_thresholds or seen_thresholds.add(round(value, 12)))
+            ]
             binary = (envelope > threshold).astype(np.uint8)
 
-        indexed_pulses = self._ook433_pulse_sequence_indexed(binary, sample_rate)
-        pulses = [(pulse["level"], pulse["duration_us"]) for pulse in indexed_pulses]
-        t_unit_us, t_confidence = self._ook433_estimate_t_unit(pulses)
-        symbol_rate_baud = int(round(1e6 / t_unit_us)) if t_unit_us > 0 else 0
+        best_segmentation: dict | None = None
+        all_invalid_continuous_runs: list[dict] = []
+        for candidate_threshold in (threshold_candidates or [threshold]):
+            candidate_binary = (envelope > candidate_threshold).astype(np.uint8) if envelope.size else binary
+            candidate_pulses = self._ook433_pulse_sequence_indexed(candidate_binary, sample_rate)
+            candidate_tuple_pulses = [(pulse["level"], pulse["duration_us"]) for pulse in candidate_pulses]
+            candidate_t_unit_us, candidate_t_confidence = self._ook433_estimate_t_unit(candidate_tuple_pulses)
+            candidate_bursts = self._ook433_find_bursts_indexed(
+                candidate_pulses,
+                candidate_t_unit_us,
+                min_burst_duration_ms=min_burst_duration_ms,
+                max_burst_duration_ms=max_burst_duration_ms,
+                min_gap_duration_ms=min_gap_duration_ms,
+            )
+            candidate_invalid = self._ook433_invalid_continuous_runs(
+                candidate_pulses,
+                candidate_t_unit_us,
+                max_burst_duration_ms=max_burst_duration_ms,
+                min_gap_duration_ms=min_gap_duration_ms,
+            )
+            all_invalid_continuous_runs.extend(candidate_invalid)
+            burst_count = len(candidate_bursts)
+            invalid_count = len(candidate_invalid)
+            burst_durations_ms = [
+                sum(float(p["duration_us"]) for p in burst) / 1000.0
+                for burst in candidate_bursts
+            ]
+            good_duration_count = sum(20.0 <= duration <= 80.0 for duration in burst_durations_ms)
+            short_fragment_count = sum(duration < 10.0 for duration in burst_durations_ms)
+            median_duration_ms = float(np.median(burst_durations_ms)) if burst_durations_ms else 0.0
+            # Prefer repeated remote-control frames (tens of ms), not the
+            # largest number of tiny fragments produced by an over-strict threshold.
+            score = (
+                good_duration_count * 150
+                + min(burst_count, 25) * 10
+                + candidate_t_confidence * 10
+                - short_fragment_count * 25
+                - abs(median_duration_ms - 35.0) * 2
+                - invalid_count * 200
+            )
+            if burst_count == 1:
+                score -= 50
+            if burst_count == 0:
+                score -= 100
+            if burst_count > 40:
+                score -= (burst_count - 40) * 20
+            if best_segmentation is None or score > best_segmentation["score"]:
+                best_segmentation = {
+                    "score": score,
+                    "threshold": candidate_threshold,
+                    "good_duration_count": good_duration_count,
+                    "short_fragment_count": short_fragment_count,
+                    "median_duration_ms": median_duration_ms,
+                    "binary": candidate_binary,
+                    "indexed_pulses": candidate_pulses,
+                    "pulses": candidate_tuple_pulses,
+                    "t_unit_us": candidate_t_unit_us,
+                    "t_confidence": candidate_t_confidence,
+                    "bursts_indexed": candidate_bursts,
+                    "invalid_continuous_runs": candidate_invalid,
+                }
 
-        bursts_indexed = self._ook433_find_bursts_indexed(indexed_pulses, t_unit_us)
-        bursts_pulses = [
-            [(pulse["level"], pulse["duration_us"]) for pulse in burst]
-            for burst in bursts_indexed
-        ]
+        if best_segmentation:
+            threshold = float(best_segmentation["threshold"])
+            binary = best_segmentation["binary"]
+            indexed_pulses = best_segmentation["indexed_pulses"]
+            pulses = best_segmentation["pulses"]
+            t_unit_us = float(best_segmentation["t_unit_us"])
+            t_confidence = float(best_segmentation["t_confidence"])
+            bursts_indexed = best_segmentation["bursts_indexed"]
+            invalid_continuous_runs = best_segmentation["invalid_continuous_runs"]
+            if not bursts_indexed and not invalid_continuous_runs and all_invalid_continuous_runs:
+                invalid_continuous_runs = all_invalid_continuous_runs[:10]
+        else:
+            indexed_pulses = []
+            pulses = []
+            t_unit_us, t_confidence = 350.0, 0.0
+            bursts_indexed = []
+            invalid_continuous_runs = []
+
+        symbol_rate_baud = int(round(1e6 / t_unit_us)) if t_unit_us > 0 else 0
 
         decoded_bursts: list[dict] = []
         all_decoded_bits: list[list[int]] = []
         noise_floor_power = float(np.median(np.abs(iq) ** 2)) if iq.size else 0.0
         preliminary_diagnostics: list[dict] = []
-        for i, burst in enumerate(bursts_pulses):
-            protocol_bits = self._ook433_decode_pwm_bits(burst, t_unit_us)
-            indexed_burst = bursts_indexed[i] if i < len(bursts_indexed) else []
+        all_mark_us: list[float] = []
+        all_space_us: list[float] = []
+        symbol_bursts_indexed: list[list[dict]] = []
+        raw_pulse_bursts: list[dict] = []
+        for i, indexed_burst in enumerate(bursts_indexed):
             start_sample = int(indexed_burst[0]["start_sample"]) if indexed_burst else 0
             end_sample = int(indexed_burst[-1]["end_sample"]) if indexed_burst else start_sample
-            raw_bits = self._ook433_raw_bits_from_burst(binary, start_sample, end_sample, sample_rate, t_unit_us)
+            burst_duration_s = (end_sample - start_sample) / sample_rate if sample_rate > 0 else None
+            internal_pulses, internal_threshold = self._ook433_internal_pulses_for_burst(
+                envelope,
+                start_sample,
+                end_sample,
+                sample_rate,
+                min_glitch_us=100.0,
+            )
+            internal_metrics = self._ook433_internal_pulse_metrics(internal_pulses, burst_duration_s)
+            frequency_metrics = self._ook433_instantaneous_frequency_metrics(iq, start_sample, end_sample, sample_rate)
+            symbol_burst = internal_pulses if internal_metrics["symbol_level_detected"] else []
+            symbol_bursts_indexed.append(symbol_burst)
+            burst = [(pulse["level"], pulse["duration_us"]) for pulse in symbol_burst]
+            protocol_bits = self._ook433_decode_pwm_bits(burst, t_unit_us) if symbol_burst else []
+            raw_bits = (
+                self._ook433_bits_from_internal_pulses(burst, t_unit_us)
+                if internal_metrics["symbol_level_detected"]
+                else []
+            )
             bits = protocol_bits if protocol_bits else raw_bits
             all_decoded_bits.append(bits)
             ev1527 = self._ook433_match_ev1527(protocol_bits) if len(protocol_bits) >= 24 else None
             pt2262 = self._ook433_match_pt2262(burst, t_unit_us) if len(burst) >= 48 else None
-            pulse_widths_us = [round(float(p["duration_us"]), 3) for p in indexed_burst if p["level"] == 1]
-            gap_widths_us = [round(float(p["duration_us"]), 3) for p in indexed_burst if p["level"] == 0]
+            pulse_widths_us = [round(float(p["duration_us"]), 3) for p in internal_pulses if p["level"] == 1]
+            gap_widths_us = [round(float(p["duration_us"]), 3) for p in internal_pulses if p["level"] == 0]
+            all_mark_us.extend(float(value) for value in pulse_widths_us)
+            all_space_us.extend(float(value) for value in gap_widths_us)
             burst_t_unit = float(np.median(pulse_widths_us)) if pulse_widths_us else t_unit_us
             burst_symbol_rate = int(round(1e6 / burst_t_unit)) if burst_t_unit > 0 else None
             raw_bitstring = "".join(str(bit) for bit in bits)
@@ -2569,6 +3254,7 @@ class DemodulationController:
                 center,
                 sample_rate,
                 noise_floor_power,
+                capture_bandwidth_hz,
             )
             decoded_bursts.append(
                 {
@@ -2586,6 +3272,24 @@ class DemodulationController:
                     ),
                 }
             )
+            raw_pulse_bursts.append(
+                {
+                    "burst_id": i,
+                    "burst_start_us": round(float(start_sample / sample_rate * 1e6), 3) if sample_rate > 0 else None,
+                    "burst_duration_us": round(float((end_sample - start_sample) / sample_rate * 1e6), 3) if sample_rate > 0 else None,
+                    "internal_threshold": internal_threshold,
+                    "internal_transition_count": internal_metrics["internal_transition_count"],
+                    "symbol_level_detected": internal_metrics["symbol_level_detected"],
+                    "possible_modulation": frequency_metrics.get("possible_modulation"),
+                    "internal_pulses": [
+                        {
+                            "level": int(pulse["level"]),
+                            "duration_us": round(float(pulse["duration_us"]), 3),
+                        }
+                        for pulse in internal_pulses
+                    ],
+                }
+            )
             preliminary_diagnostics.append(
                 {
                     "burst_index": i,
@@ -2600,10 +3304,18 @@ class DemodulationController:
                     "symbol_rate_estimate": burst_symbol_rate,
                     "pulse_widths_us": pulse_widths_us,
                     "gap_widths_us": gap_widths_us,
+                    "mark_us": pulse_widths_us,
+                    "space_us": gap_widths_us,
+                    **internal_metrics,
+                    **frequency_metrics,
                     "bit_count": len(bits),
                     "protocol_bit_count": len(protocol_bits),
                     "raw_bit_count": len(raw_bits),
-                    "bit_recovery_method": "protocol_pwm" if protocol_bits else "raw_envelope_sampling",
+                    "bit_recovery_method": (
+                        "protocol_pwm" if protocol_bits
+                        else "raw_envelope_sampling" if raw_bits
+                        else "not_attempted_no_symbol_level_transitions"
+                    ),
                     "raw_bitstring": raw_bitstring,
                     "hex_candidate": self._ook433_bits_to_hex(bits),
                     "protocol_detected": "EV1527" if ev1527 else "PT2262" if pt2262 else "unknown_ook",
@@ -2636,10 +3348,24 @@ class DemodulationController:
                     rolling_code_candidates.append(
                         {"left_burst": i, "right_burst": j, "similarity": round(similarity, 4)}
                     )
+        duration_classes = self._ook433_duration_classes(all_mark_us + all_space_us, t_unit_us)
+        for diag in preliminary_diagnostics:
+            diag["mark_classes"] = [
+                self._ook433_classify_duration(float(value), duration_classes)
+                for value in diag.get("mark_us", [])
+            ]
+            diag["space_classes"] = [
+                self._ook433_classify_duration(float(value), duration_classes)
+                for value in diag.get("space_us", [])
+            ]
 
         n_bursts = len(decoded_bursts)
         n_ev1527 = sum(1 for b in decoded_bursts if b["ev1527"])
         n_pt2262 = sum(1 for b in decoded_bursts if b["pt2262"])
+        possible_modulation_counts: dict[str, int] = {}
+        for diag in preliminary_diagnostics:
+            modulation = str(diag.get("possible_modulation") or "unknown")
+            possible_modulation_counts[modulation] = possible_modulation_counts.get(modulation, 0) + 1
 
         # Select the best frame: most frequently repeated address wins
         best_frame: dict | None = None
@@ -2668,6 +3394,60 @@ class DemodulationController:
         dominant_protocol = (
             max(set(all_protocols), key=all_protocols.count) if all_protocols else "unknown"
         )
+        adaptive_candidates, selected_decoding = self._ook433_adaptive_decodings(
+            binary,
+            symbol_bursts_indexed,
+            sample_rate,
+            t_unit_us,
+            repetition_detected=bool(repeat_analysis.get("repetition_detected")),
+            known_protocol_matched=(n_ev1527 > 0 or n_pt2262 > 0),
+            invalid_continuous_count=len(invalid_continuous_runs),
+        )
+        symbol_level_burst_count = sum(
+            1 for diag in preliminary_diagnostics if diag.get("symbol_level_detected")
+        )
+        no_symbol_level_count = n_bursts - symbol_level_burst_count
+        cluster0_indices = [
+            index for index, cluster_id in enumerate(cluster_ids)
+            if cluster_id == 0 and index < len(all_decoded_bits)
+        ]
+        cluster0_bits = [all_decoded_bits[index] for index in cluster0_indices if all_decoded_bits[index]]
+        cluster0_similarities = [
+            self._ook433_bit_similarity(cluster0_bits[i], cluster0_bits[j])
+            for i in range(len(cluster0_bits))
+            for j in range(i + 1, len(cluster0_bits))
+        ]
+        cluster0_same_sequence = bool(cluster0_bits) and all(
+            bits == cluster0_bits[0] for bits in cluster0_bits
+        )
+        burst_stability_confidence = (
+            float(np.mean(cluster0_similarities)) if cluster0_similarities
+            else (1.0 if len(cluster0_bits) == 1 else 0.0)
+        )
+        if not repeat_analysis.get("repetition_detected"):
+            burst_stability_confidence *= 0.35
+        if n_bursts and symbol_level_burst_count == 0:
+            burst_stability_confidence = min(burst_stability_confidence, 0.25)
+        protocol_decoding_confidence = min(1.0, (n_ev1527 + n_pt2262) / max(n_bursts, 1)) if n_bursts else 0.0
+        selected_encoding_confidence = float(selected_decoding.get("confidence") or 0.0)
+        if n_bursts and symbol_level_burst_count == 0:
+            selected_encoding_confidence = min(selected_encoding_confidence, 0.10)
+            selected_decoding["confidence"] = round(float(selected_encoding_confidence), 4)
+            selected_decoding["rejection_reason"] = "no_symbol_level_ook_transitions_detected"
+        selected_hex_warning = (
+            "selected_hex_candidate_is_mostly_F_or_0"
+            if (
+                self._ook433_mostly_trivial_hex(str(selected_decoding.get("hex_candidate") or ""))
+                or self._ook433_mostly_trivial_bits(str(selected_decoding.get("bitstring") or ""))
+            )
+            else None
+        )
+        selected_reason = (
+            f"Selected {selected_decoding.get('encoding_type')} as the most stable non-rejected hypothesis. "
+            f"This is an encoding hypothesis, not a decoded remote-control protocol. "
+            f"Protocol decoder confidence is {protocol_decoding_confidence:.3f}. "
+            f"Symbol-level OOK transitions were detected in {symbol_level_burst_count}/{n_bursts} burst(s)."
+        )
 
         decoded_out = {
             "protocol": "ook_433_remote",
@@ -2680,6 +3460,9 @@ class DemodulationController:
             "t_unit_confidence": round(t_confidence, 2),
             "symbol_rate_baud": symbol_rate_baud,
             "bursts_detected": n_bursts,
+            "symbol_level_bursts": symbol_level_burst_count,
+            "no_symbol_level_bursts": no_symbol_level_count,
+            "possible_modulation_counts": possible_modulation_counts,
             "dominant_protocol": dominant_protocol,
             "ev1527_frames": n_ev1527,
             "pt2262_frames": n_pt2262,
@@ -2688,6 +3471,8 @@ class DemodulationController:
             "burst_comparison": {
                 "similarity_matrix": similarity_matrix,
                 "cluster_counts": cluster_counts,
+                "cluster0_same_sequence": cluster0_same_sequence,
+                "cluster0_repetition_similarity": round(burst_stability_confidence, 4),
                 "rolling_code_candidates": rolling_code_candidates[:50],
                 "interpretation": (
                     "repeated_code" if repeat_analysis.get("repetition_detected") else
@@ -2695,11 +3480,93 @@ class DemodulationController:
                     "no_stable_repetition_detected"
                 ),
             },
+            "adaptive_decoding": {
+                "selected_encoding_type": selected_decoding.get("encoding_type"),
+                "selected_confidence": selected_decoding.get("confidence"),
+                "burst_stability_confidence": round(float(burst_stability_confidence), 4),
+                "protocol_decoding_confidence": round(float(protocol_decoding_confidence), 4),
+                "selected_encoding_confidence": round(float(selected_encoding_confidence), 4),
+                "selected_rejection_reason": selected_decoding.get("rejection_reason"),
+                "selected_reason": selected_reason,
+                "selected_warning": selected_hex_warning,
+                "selected_hex_candidate": selected_decoding.get("hex_candidate"),
+                "selected_bit_length": selected_decoding.get("bit_length"),
+            },
             "burst_diagnostics": preliminary_diagnostics,
             "bursts": decoded_bursts,
         }
         decoded_path = output_dir / "decoded_frames.json"
         decoded_path.write_text(json.dumps(decoded_out, indent=2), encoding="utf-8")
+        raw_pulses_path = output_dir / "raw_pulses.json"
+        raw_pulses_path.write_text(
+            json.dumps(
+                {
+                    "sample_rate_hz": sample_rate,
+                    "threshold": threshold,
+                    "threshold_selection_score": best_segmentation.get("score") if best_segmentation else None,
+                    "threshold_selection_metrics": {
+                        "good_duration_count": best_segmentation.get("good_duration_count") if best_segmentation else None,
+                        "short_fragment_count": best_segmentation.get("short_fragment_count") if best_segmentation else None,
+                        "median_duration_ms": best_segmentation.get("median_duration_ms") if best_segmentation else None,
+                    },
+                    "pulse_count": len(indexed_pulses),
+                    "duration_classes": {
+                        "short_us": round(float(duration_classes["short_us"]), 3),
+                        "long_us": round(float(duration_classes["long_us"]), 3),
+                        "sync_threshold_us": round(float(duration_classes["sync_threshold_us"]), 3),
+                    },
+                    "mark_histogram": self._ook433_duration_histogram(all_mark_us),
+                    "space_histogram": self._ook433_duration_histogram(all_space_us),
+                    "global_carrier_pulses": indexed_pulses,
+                    "bursts": raw_pulse_bursts,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        burst_features_path = output_dir / "burst_features.json"
+        burst_features_path.write_text(
+            json.dumps(
+                {
+                    "burst_count": n_bursts,
+                    "symbol_level_bursts": symbol_level_burst_count,
+                    "no_symbol_level_bursts": no_symbol_level_count,
+                    "possible_modulation_counts": possible_modulation_counts,
+                    "segmentation_limits": {
+                        "min_burst_duration_ms": min_burst_duration_ms,
+                        "max_burst_duration_ms": max_burst_duration_ms,
+                        "min_gap_duration_ms": min_gap_duration_ms,
+                    },
+                    "invalid_continuous_runs": invalid_continuous_runs,
+                    "duration_classes": {
+                        "short_us": round(float(duration_classes["short_us"]), 3),
+                        "long_us": round(float(duration_classes["long_us"]), 3),
+                        "sync_threshold_us": round(float(duration_classes["sync_threshold_us"]), 3),
+                    },
+                    "mark_histogram": self._ook433_duration_histogram(all_mark_us),
+                    "space_histogram": self._ook433_duration_histogram(all_space_us),
+                    "features": preliminary_diagnostics,
+                    "cluster_counts": cluster_counts,
+                    "repeat_analysis": repeat_analysis,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        candidate_decodings_path = output_dir / "candidate_decodings.json"
+        candidate_decodings_path.write_text(
+            json.dumps(
+                {
+                    "candidate_count": len(adaptive_candidates),
+                    "selected_encoding_type": selected_decoding.get("encoding_type"),
+                    "candidates": adaptive_candidates,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        selected_decoding_path = output_dir / "selected_decoding.json"
+        selected_decoding_path.write_text(json.dumps(selected_decoding, indent=2), encoding="utf-8")
         diagnostics_out = {
             "protocol": "ook_433_remote",
             "pipeline": "ook_433_remote",
@@ -2710,8 +3577,25 @@ class DemodulationController:
             "t_unit_confidence": round(t_confidence, 2),
             "symbol_rate_baud": symbol_rate_baud,
             "burst_count": n_bursts,
+            "symbol_level_bursts": symbol_level_burst_count,
+            "no_symbol_level_bursts": no_symbol_level_count,
+            "possible_modulation_counts": possible_modulation_counts,
+            "segmentation_limits": {
+                "min_burst_duration_ms": min_burst_duration_ms,
+                "max_burst_duration_ms": max_burst_duration_ms,
+                "min_gap_duration_ms": min_gap_duration_ms,
+            },
+            "invalid_continuous_runs": invalid_continuous_runs,
+            "duration_classes": {
+                "short_us": round(float(duration_classes["short_us"]), 3),
+                "long_us": round(float(duration_classes["long_us"]), 3),
+                "sync_threshold_us": round(float(duration_classes["sync_threshold_us"]), 3),
+            },
+            "mark_histogram": self._ook433_duration_histogram(all_mark_us),
+            "space_histogram": self._ook433_duration_histogram(all_space_us),
             "repeat_analysis": repeat_analysis,
             "burst_comparison": decoded_out["burst_comparison"],
+            "adaptive_decoding": decoded_out["adaptive_decoding"],
             "bursts": preliminary_diagnostics,
         }
         diagnostics_path = output_dir / "ook_burst_diagnostics.json"
@@ -2737,8 +3621,17 @@ class DemodulationController:
                 f"symbol_rate_baud={symbol_rate_baud}",
                 f"pulses_extracted={len(pulses)}",
                 f"bursts_detected={n_bursts}",
+                f"symbol_level_bursts={symbol_level_burst_count}",
+                f"no_symbol_level_bursts={no_symbol_level_count}",
+                f"possible_modulation_counts={possible_modulation_counts}",
+                f"invalid_continuous_runs={len(invalid_continuous_runs)}",
                 f"clusters={cluster_counts}",
                 f"repeat_interpretation={decoded_out['burst_comparison']['interpretation']}",
+                f"selected_adaptive_encoding={selected_decoding.get('encoding_type')}",
+                f"selected_adaptive_confidence={selected_decoding.get('confidence')}",
+                f"burst_stability_confidence={burst_stability_confidence:.4f}",
+                f"protocol_decoding_confidence={protocol_decoding_confidence:.4f}",
+                f"selected_adaptive_rejection_reason={selected_decoding.get('rejection_reason')}",
                 f"ev1527_frames={n_ev1527}  pt2262_frames={n_pt2262}",
                 f"dominant_protocol={dominant_protocol}",
                 f"rf_activity_detected={bool(activity.get('signal_detected'))}",
@@ -2747,9 +3640,20 @@ class DemodulationController:
         )
 
         decoded_ok = n_ev1527 > 0 or n_pt2262 > 0
+        ook_warnings = []
+        if not in_band and center > 0:
+            ook_warnings.append(f"Center {center / 1e6:.3f} MHz is outside 433/315/868 MHz ISM bands - results may be unreliable.")
+        if selected_hex_warning:
+            ook_warnings.append(selected_hex_warning)
+        if n_bursts and symbol_level_burst_count == 0:
+            ook_warnings.append("no_symbol_level_ook_transitions_detected")
+        if possible_modulation_counts.get("fsk_candidate", 0) > 0:
+            ook_warnings.append("instantaneous_frequency_two_tone_candidate_consider_fsk_decoder")
         final_status = (
             "decoded_with_protocol" if decoded_ok
+            else "ook_burst_detected_no_symbol_transitions" if n_bursts > 0 and symbol_level_burst_count == 0
             else "bitstream_recovered" if n_bursts > 0
+            else "segmentation_failed" if invalid_continuous_runs
             else "rf_activity_only" if activity.get("signal_detected")
             else "no_signal_detected"
         )
@@ -2770,6 +3674,9 @@ class DemodulationController:
             "t_unit_confidence": round(t_confidence, 2),
             "symbol_rate_baud": symbol_rate_baud,
             "bursts_detected": n_bursts,
+            "symbol_level_bursts": symbol_level_burst_count,
+            "no_symbol_level_bursts": no_symbol_level_count,
+            "possible_modulation_counts": possible_modulation_counts,
             "dominant_protocol": dominant_protocol,
             "ev1527_frames": n_ev1527,
             "pt2262_frames": n_pt2262,
@@ -2780,22 +3687,54 @@ class DemodulationController:
                 "rf_activity_detected": bool(activity.get("signal_detected")),
                 "in_433_ism_band": in_band,
                 "pulses_extracted": len(pulses),
+                "symbol_level_bursts": symbol_level_burst_count,
+                "no_symbol_level_bursts": no_symbol_level_count,
+                "possible_modulation_counts": possible_modulation_counts,
                 "t_unit_us": round(t_unit_us, 1),
                 "t_unit_confidence": round(t_confidence, 2),
+                "segmentation_limits": {
+                    "min_burst_duration_ms": min_burst_duration_ms,
+                    "max_burst_duration_ms": max_burst_duration_ms,
+                    "min_gap_duration_ms": min_gap_duration_ms,
+                },
+                "invalid_continuous_runs": invalid_continuous_runs,
                 "bursts_found": n_bursts,
                 "burst_diagnostics_written": True,
                 "cluster_counts": cluster_counts,
                 "repeat_interpretation": decoded_out["burst_comparison"]["interpretation"],
+                "adaptive_decoder_attempted": True,
+                "selected_encoding_type": selected_decoding.get("encoding_type"),
+                "selected_encoding_confidence": selected_decoding.get("confidence"),
+                "burst_stability_confidence": round(float(burst_stability_confidence), 4),
+                "protocol_decoding_confidence": round(float(protocol_decoding_confidence), 4),
+                "selected_encoding_rejection_reason": selected_decoding.get("rejection_reason"),
+                "selected_encoding_warning": selected_hex_warning,
                 "ev1527_decoded": n_ev1527,
                 "pt2262_decoded": n_pt2262,
             },
             "pulse_timing": pulse_timing,
+            "analysis_interpretation": (
+                "decoded_remote_frame" if decoded_ok else
+                "ook_burst_detected; no_symbol_level_ook_transitions_detected; check_fsk_or_ask"
+                if n_bursts > 0 and symbol_level_burst_count == 0 else
+                "stable_repeated_ook_burst_detected; protocol_unknown; pulse_level_decoding_required"
+                if repeat_analysis.get("repetition_detected") else
+                "ook_activity_detected; protocol_unknown; no_stable_repetition_detected"
+            ),
+            "burst_stability_confidence": round(float(burst_stability_confidence), 4),
+            "protocol_decoding_confidence": round(float(protocol_decoding_confidence), 4),
+            "selected_encoding_confidence": round(float(selected_encoding_confidence), 4),
             "repeat_analysis": repeat_analysis,
             "burst_comparison": decoded_out["burst_comparison"],
+            "adaptive_decoding": decoded_out["adaptive_decoding"],
             "decoded_frames": decoded_out,
             "outputs": {
                 "decoded_frames": str(decoded_path),
                 "burst_diagnostics": str(diagnostics_path),
+                "raw_pulses": str(raw_pulses_path),
+                "burst_features": str(burst_features_path),
+                "candidate_decodings": str(candidate_decodings_path),
+                "selected_decoding": str(selected_decoding_path),
                 "bitstream": str(bitstream_path),
                 "logs": str(logs_path),
                 "report": str(output_dir / "demodulation_report.json"),
@@ -2809,17 +3748,14 @@ class DemodulationController:
                 if decoded_ok
                 else [f"OOK burst activity detected ({n_bursts} burst(s)) but no known protocol matched."]
                 if n_bursts > 0
+                else ["OOK envelope looked continuous or poorly segmented; no valid remote-control burst was accepted."]
+                if invalid_continuous_runs
                 else [
                     "No OOK signal detected. "
                     "Verify center frequency (433.92 / 315 / 868 MHz) and capture bandwidth."
                 ]
             ),
-            "warnings": (
-                [f"Center {center / 1e6:.3f} MHz is outside 433/315/868 MHz ISM bands — "
-                 "results may be unreliable."]
-                if not in_band and center > 0
-                else []
-            ),
+            "warnings": ook_warnings,
         }
 
     def _packet_scaffold(self, protocol: str, iq: np.ndarray, data: dict, output_dir: Path) -> dict:

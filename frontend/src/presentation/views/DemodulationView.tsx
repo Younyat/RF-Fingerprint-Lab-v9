@@ -645,6 +645,10 @@ function ResultRow({ result, onDelete }: { result: DemodulationResult; onDelete:
   const bitstreamFile = outputFilename(result.outputs?.bitstream || null);
   const candidateDiagnosticsFile = outputFilename(result.outputs?.candidate_diagnostics || null);
   const burstDiagnosticsFile = outputFilename(result.outputs?.burst_diagnostics || null);
+  const rawPulsesFile = outputFilename(result.outputs?.raw_pulses || null);
+  const burstFeaturesFile = outputFilename(result.outputs?.burst_features || null);
+  const candidateDecodingsFile = outputFilename(result.outputs?.candidate_decodings || null);
+  const selectedDecodingFile = outputFilename(result.outputs?.selected_decoding || null);
   const logsFile = outputFilename(result.outputs?.logs || null);
   const outputDir = String((report || result as any).output_dir || '');
   const packets: DecodedPacket[] = Array.isArray(decodedPackets?.packets) ? decodedPackets?.packets : [];
@@ -656,7 +660,7 @@ function ResultRow({ result, onDelete }: { result: DemodulationResult; onDelete:
   const captureTime = getResultTime(report || result as any);
   const packetLike = isPacketLikeResult(report || result as any, decodedPackets);
   const isAudio = isAudioResult(report || result as any);
-  const hasDecodedOutput = !isAudio && (packetLike || packets.length > 0 || candidatePackets.length > 0 || Boolean(bitstreamFile || candidateDiagnosticsFile || burstDiagnosticsFile || logsFile));
+  const hasDecodedOutput = !isAudio && (packetLike || packets.length > 0 || candidatePackets.length > 0 || Boolean(bitstreamFile || candidateDiagnosticsFile || burstDiagnosticsFile || rawPulsesFile || burstFeaturesFile || candidateDecodingsFile || selectedDecodingFile || logsFile));
 
   useEffect(() => {
     let cancelled = false;
@@ -836,6 +840,10 @@ function ResultRow({ result, onDelete }: { result: DemodulationResult; onDelete:
           bitstreamFile={bitstreamFile}
           candidateDiagnosticsFile={candidateDiagnosticsFile}
           burstDiagnosticsFile={burstDiagnosticsFile}
+          rawPulsesFile={rawPulsesFile}
+          burstFeaturesFile={burstFeaturesFile}
+          candidateDecodingsFile={candidateDecodingsFile}
+          selectedDecodingFile={selectedDecodingFile}
           logsFile={logsFile}
           onOpenOutput={openOutput}
         />
@@ -857,6 +865,10 @@ function DecodedOutputPanel({
   bitstreamFile,
   candidateDiagnosticsFile,
   burstDiagnosticsFile,
+  rawPulsesFile,
+  burstFeaturesFile,
+  candidateDecodingsFile,
+  selectedDecodingFile,
   logsFile,
   onOpenOutput,
 }: {
@@ -872,6 +884,10 @@ function DecodedOutputPanel({
   bitstreamFile: string | null;
   candidateDiagnosticsFile: string | null;
   burstDiagnosticsFile: string | null;
+  rawPulsesFile: string | null;
+  burstFeaturesFile: string | null;
+  candidateDecodingsFile: string | null;
+  selectedDecodingFile: string | null;
   logsFile: string | null;
   onOpenOutput: (filename: string | null) => void;
 }) {
@@ -884,7 +900,7 @@ function DecodedOutputPanel({
   const emptyPacketMessage = isBle
     ? 'RF activity detected, but no valid BLE advertising packet was recovered.'
     : isOokRemote
-      ? 'OOK burst activity was detected and a raw bitstream was recovered. No known remote-control protocol matched.'
+      ? 'OOK burst activity was detected, but no known remote-control protocol was decoded. Check symbol-level transitions and possible FSK/ASK classification below.'
     : isPacketProtocol
       ? 'RF activity detected, but no valid protocol packet or frame was recovered.'
       : 'No decoded packet output is expected for this demodulation type.';
@@ -900,6 +916,7 @@ function DecodedOutputPanel({
       : [];
   const ookComparison = report?.burst_comparison ?? report?.decoded_frames?.burst_comparison ?? {};
   const ookRepeat = report?.repeat_analysis ?? report?.decoded_frames?.repeat_analysis ?? {};
+  const ookAdaptive = report?.adaptive_decoding ?? report?.decoded_frames?.adaptive_decoding ?? {};
   const visibleCandidatePackets = candidatePackets.slice(0, 20);
   return (
     <div className="rounded-md border border-cyan-900/70 bg-cyan-950/30 p-4">
@@ -926,6 +943,26 @@ function DecodedOutputPanel({
               Open ook_burst_diagnostics.json
             </button>
           )}
+          {selectedDecodingFile && (
+            <button onClick={() => onOpenOutput(selectedDecodingFile)} className="rounded-md bg-cyan-800 px-3 py-2 text-xs font-semibold text-white hover:bg-cyan-700">
+              Open selected_decoding.json
+            </button>
+          )}
+          {candidateDecodingsFile && (
+            <button onClick={() => onOpenOutput(candidateDecodingsFile)} className="rounded-md bg-cyan-800 px-3 py-2 text-xs font-semibold text-white hover:bg-cyan-700">
+              Open candidate_decodings.json
+            </button>
+          )}
+          {burstFeaturesFile && (
+            <button onClick={() => onOpenOutput(burstFeaturesFile)} className="rounded-md bg-cyan-800 px-3 py-2 text-xs font-semibold text-white hover:bg-cyan-700">
+              Open burst_features.json
+            </button>
+          )}
+          {rawPulsesFile && (
+            <button onClick={() => onOpenOutput(rawPulsesFile)} className="rounded-md bg-cyan-800 px-3 py-2 text-xs font-semibold text-white hover:bg-cyan-700">
+              Open raw_pulses.json
+            </button>
+          )}
           {logsFile && (
             <button onClick={() => onOpenOutput(logsFile)} className="rounded-md bg-cyan-800 px-3 py-2 text-xs font-semibold text-white hover:bg-cyan-700">
               Open logs.txt
@@ -940,10 +977,18 @@ function DecodedOutputPanel({
           <Info label="Valid protocol" value={validDemodulation ? 'true' : 'false'} />
           <Info label="Confidence" value={confidence} />
           <Info label="OOK bursts" value={String(report?.bursts_detected ?? report?.decoded_frames?.bursts_detected ?? ookBursts.length ?? 0)} />
+          <Info label="Symbol bursts" value={String(report?.symbol_level_bursts ?? report?.decoded_frames?.symbol_level_bursts ?? 'n/a')} />
+          <Info label="No-symbol bursts" value={String(report?.no_symbol_level_bursts ?? report?.decoded_frames?.no_symbol_level_bursts ?? 'n/a')} />
+          <Info label="Possible modulation" value={(report?.possible_modulation_counts ?? report?.decoded_frames?.possible_modulation_counts) ? JSON.stringify(report?.possible_modulation_counts ?? report?.decoded_frames?.possible_modulation_counts) : 'n/a'} />
           <Info label="Repeated" value={ookRepeat?.repetition_detected ? 'true' : 'false'} />
           <Info label="Repetitions" value={String(ookRepeat?.repetition_count ?? 'n/a')} />
           <Info label="Clusters" value={ookComparison?.cluster_counts ? JSON.stringify(ookComparison.cluster_counts) : 'n/a'} />
           <Info label="Interpretation" value={String(ookComparison?.interpretation ?? 'n/a')} />
+          <Info label="Selected encoding" value={String(ookAdaptive?.selected_encoding_type ?? 'n/a')} />
+          <Info label="Burst stability" value={ookAdaptive?.burst_stability_confidence !== undefined ? String(ookAdaptive.burst_stability_confidence) : 'n/a'} />
+          <Info label="Protocol confidence" value={ookAdaptive?.protocol_decoding_confidence !== undefined ? String(ookAdaptive.protocol_decoding_confidence) : 'n/a'} />
+          <Info label="Encoding confidence" value={(ookAdaptive?.selected_encoding_confidence ?? ookAdaptive?.selected_confidence) !== undefined ? String(ookAdaptive.selected_encoding_confidence ?? ookAdaptive.selected_confidence) : 'n/a'} />
+          <Info label="Encoding warning" value={String(ookAdaptive?.selected_warning ?? 'none')} />
           <Info label="T unit" value={report?.t_unit_us !== undefined ? `${report.t_unit_us} us` : 'n/a'} />
           <Info label="Symbol rate" value={report?.symbol_rate_baud ? `${report.symbol_rate_baud} baud` : 'n/a'} />
           <Info label="Center" value={report?.center_frequency_hz ? formatRfCenterFrequency(Number(report.center_frequency_hz)) : 'n/a'} />
@@ -969,6 +1014,12 @@ function DecodedOutputPanel({
 
       {outputError && <div className="mt-3 text-xs text-amber-300">{outputError}</div>}
 
+      {isOokRemote && ookAdaptive?.selected_reason && (
+        <div className="mt-3 rounded-md border border-slate-800 bg-slate-950 p-3 text-xs text-slate-300">
+          {String(ookAdaptive.selected_reason)}
+        </div>
+      )}
+
       {packetCount === 0 && (
         <div className="mt-3 rounded-md border border-amber-700 bg-amber-950/40 p-3 text-sm text-amber-200">
           {emptyPacketMessage}
@@ -991,6 +1042,10 @@ function DecodedOutputPanel({
                 <th className="px-3 py-2">Duration</th>
                 <th className="px-3 py-2">Peak</th>
                 <th className="px-3 py-2">SNR</th>
+                <th className="px-3 py-2">Transitions</th>
+                <th className="px-3 py-2">Marks/spaces</th>
+                <th className="px-3 py-2">Symbol level</th>
+                <th className="px-3 py-2">Possible modulation</th>
                 <th className="px-3 py-2">Bits</th>
                 <th className="px-3 py-2">Cluster</th>
                 <th className="px-3 py-2">Repetition</th>
@@ -1005,6 +1060,10 @@ function DecodedOutputPanel({
                   <td className="px-3 py-2">{burst.burst_duration !== undefined ? `${(Number(burst.burst_duration) * 1000).toFixed(2)} ms` : 'n/a'}</td>
                   <td className="px-3 py-2">{burst.peak_frequency_hz ? formatRfCenterFrequency(Number(burst.peak_frequency_hz)) : 'n/a'}</td>
                   <td className="px-3 py-2">{burst.snr_db !== undefined && burst.snr_db !== null ? `${Number(burst.snr_db).toFixed(1)} dB` : 'n/a'}</td>
+                  <td className="px-3 py-2">{burst.internal_transition_count ?? 'n/a'}</td>
+                  <td className="px-3 py-2">{`${burst.mark_count ?? 'n/a'} / ${burst.space_count ?? 'n/a'}`}</td>
+                  <td className="px-3 py-2">{burst.symbol_level_detected === true ? 'true' : burst.symbol_level_detected === false ? 'false' : 'n/a'}</td>
+                  <td className="px-3 py-2">{burst.possible_modulation ?? 'n/a'}</td>
                   <td className="px-3 py-2">{burst.bit_count ?? 'n/a'}</td>
                   <td className="px-3 py-2">{burst.clustering_id ?? 'n/a'}</td>
                   <td className="px-3 py-2">{burst.repetition_score !== undefined ? Number(burst.repetition_score).toFixed(2) : 'n/a'}</td>
