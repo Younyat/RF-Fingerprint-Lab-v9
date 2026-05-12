@@ -643,6 +643,8 @@ function ResultRow({ result, onDelete }: { result: DemodulationResult; onDelete:
   const reportFile = outputFilename(result.outputs?.report || result.metadata_file || 'demodulation_report.json');
   const decodedPacketsFile = outputFilename(result.outputs?.decoded_packets || (result.decoded_packets ? 'decoded_packets.json' : null));
   const bitstreamFile = outputFilename(result.outputs?.bitstream || null);
+  const candidateDiagnosticsFile = outputFilename(result.outputs?.candidate_diagnostics || null);
+  const burstDiagnosticsFile = outputFilename(result.outputs?.burst_diagnostics || null);
   const logsFile = outputFilename(result.outputs?.logs || null);
   const outputDir = String((report || result as any).output_dir || '');
   const packets: DecodedPacket[] = Array.isArray(decodedPackets?.packets) ? decodedPackets?.packets : [];
@@ -654,7 +656,7 @@ function ResultRow({ result, onDelete }: { result: DemodulationResult; onDelete:
   const captureTime = getResultTime(report || result as any);
   const packetLike = isPacketLikeResult(report || result as any, decodedPackets);
   const isAudio = isAudioResult(report || result as any);
-  const hasDecodedOutput = !isAudio && (packetLike || packets.length > 0 || candidatePackets.length > 0 || Boolean(bitstreamFile || logsFile));
+  const hasDecodedOutput = !isAudio && (packetLike || packets.length > 0 || candidatePackets.length > 0 || Boolean(bitstreamFile || candidateDiagnosticsFile || burstDiagnosticsFile || logsFile));
 
   useEffect(() => {
     let cancelled = false;
@@ -832,6 +834,8 @@ function ResultRow({ result, onDelete }: { result: DemodulationResult; onDelete:
           crcRate={crcRate}
           outputError={outputError}
           bitstreamFile={bitstreamFile}
+          candidateDiagnosticsFile={candidateDiagnosticsFile}
+          burstDiagnosticsFile={burstDiagnosticsFile}
           logsFile={logsFile}
           onOpenOutput={openOutput}
         />
@@ -851,6 +855,8 @@ function DecodedOutputPanel({
   crcRate,
   outputError,
   bitstreamFile,
+  candidateDiagnosticsFile,
+  burstDiagnosticsFile,
   logsFile,
   onOpenOutput,
 }: {
@@ -864,6 +870,8 @@ function DecodedOutputPanel({
   crcRate: string;
   outputError: string | null;
   bitstreamFile: string | null;
+  candidateDiagnosticsFile: string | null;
+  burstDiagnosticsFile: string | null;
   logsFile: string | null;
   onOpenOutput: (filename: string | null) => void;
 }) {
@@ -871,9 +879,12 @@ function DecodedOutputPanel({
   const protocol = String(report?.protocol ?? report?.signal_type ?? decodedPackets?.protocol ?? '').toLowerCase();
   const pipeline = String(report?.pipeline ?? report?.demodulation_pipeline ?? report?.pipeline_name ?? '').toLowerCase();
   const isBle = protocol.includes('bluetooth') || protocol.includes('ble') || pipeline.includes('ble');
+  const isOokRemote = protocol.includes('ook_433_remote') || pipeline.includes('ook_433_remote');
   const isPacketProtocol = isBle || ['ieee802154', 'zigbee', 'adsb', 'lora'].some((name) => protocol.includes(name) || pipeline.includes(name));
   const emptyPacketMessage = isBle
     ? 'RF activity detected, but no valid BLE advertising packet was recovered.'
+    : isOokRemote
+      ? 'OOK burst activity was detected and a raw bitstream was recovered. No known remote-control protocol matched.'
     : isPacketProtocol
       ? 'RF activity detected, but no valid protocol packet or frame was recovered.'
       : 'No decoded packet output is expected for this demodulation type.';
@@ -882,6 +893,13 @@ function DecodedOutputPanel({
     : String(report.confidence_score);
   const accessAddressDetected = Boolean(report?.access_address_detected ?? decodedPackets?.access_address_detected ?? false);
   const validDemodulation = Boolean(report?.valid_demodulation ?? (accessAddressDetected && packetCount >= 1 && crcValidCount >= 1));
+  const ookBursts = Array.isArray(report?.decoded_frames?.burst_diagnostics)
+    ? report.decoded_frames.burst_diagnostics
+    : Array.isArray(report?.decoded_frames?.bursts)
+      ? report.decoded_frames.bursts
+      : [];
+  const ookComparison = report?.burst_comparison ?? report?.decoded_frames?.burst_comparison ?? {};
+  const ookRepeat = report?.repeat_analysis ?? report?.decoded_frames?.repeat_analysis ?? {};
   const visibleCandidatePackets = candidatePackets.slice(0, 20);
   return (
     <div className="rounded-md border border-cyan-900/70 bg-cyan-950/30 p-4">
@@ -898,6 +916,16 @@ function DecodedOutputPanel({
               Open bitstream.bin
             </button>
           )}
+          {candidateDiagnosticsFile && (
+            <button onClick={() => onOpenOutput(candidateDiagnosticsFile)} className="rounded-md bg-cyan-800 px-3 py-2 text-xs font-semibold text-white hover:bg-cyan-700">
+              Open candidate_diagnostics.json
+            </button>
+          )}
+          {burstDiagnosticsFile && (
+            <button onClick={() => onOpenOutput(burstDiagnosticsFile)} className="rounded-md bg-cyan-800 px-3 py-2 text-xs font-semibold text-white hover:bg-cyan-700">
+              Open ook_burst_diagnostics.json
+            </button>
+          )}
           {logsFile && (
             <button onClick={() => onOpenOutput(logsFile)} className="rounded-md bg-cyan-800 px-3 py-2 text-xs font-semibold text-white hover:bg-cyan-700">
               Open logs.txt
@@ -906,19 +934,38 @@ function DecodedOutputPanel({
         </div>
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-5">
-        <Info label="Final status" value={finalStatus} />
-        <Info label="Valid demod" value={validDemodulation ? 'true' : 'false'} />
-        <Info label="Confidence" value={confidence} />
-        <Info label="Packets decoded" value={String(packetCount)} />
-        {candidateCount > 0 && <Info label="BLE candidates" value={String(candidateCount)} />}
-        <Info label="CRC valid" value={`${crcValidCount} (${crcRate})`} />
-        <Info label="Access address" value={accessAddressDetected ? String(report?.access_address ?? '0x8E89BED6') : 'false'} />
-        <Info label="BLE channel" value={String(report?.computed_ble_channel ?? report?.channel ?? decodedPackets?.channel ?? 'n/a')} />
-        <Info label="Center" value={report?.center_frequency_hz ? formatRfCenterFrequency(Number(report.center_frequency_hz)) : 'n/a'} />
-        <Info label="Sample rate" value={report?.sample_rate_hz ? `${formatFrequency(Number(report.sample_rate_hz))}/s` : 'n/a'} />
-        <Info label="Duration" value={String(report?.capture_duration_seconds ?? report?.duration_seconds ?? 'n/a')} />
-      </div>
+      {isOokRemote ? (
+        <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-5">
+          <Info label="Final status" value={finalStatus} />
+          <Info label="Valid protocol" value={validDemodulation ? 'true' : 'false'} />
+          <Info label="Confidence" value={confidence} />
+          <Info label="OOK bursts" value={String(report?.bursts_detected ?? report?.decoded_frames?.bursts_detected ?? ookBursts.length ?? 0)} />
+          <Info label="Repeated" value={ookRepeat?.repetition_detected ? 'true' : 'false'} />
+          <Info label="Repetitions" value={String(ookRepeat?.repetition_count ?? 'n/a')} />
+          <Info label="Clusters" value={ookComparison?.cluster_counts ? JSON.stringify(ookComparison.cluster_counts) : 'n/a'} />
+          <Info label="Interpretation" value={String(ookComparison?.interpretation ?? 'n/a')} />
+          <Info label="T unit" value={report?.t_unit_us !== undefined ? `${report.t_unit_us} us` : 'n/a'} />
+          <Info label="Symbol rate" value={report?.symbol_rate_baud ? `${report.symbol_rate_baud} baud` : 'n/a'} />
+          <Info label="Center" value={report?.center_frequency_hz ? formatRfCenterFrequency(Number(report.center_frequency_hz)) : 'n/a'} />
+          <Info label="Sample rate" value={report?.sample_rate_hz ? `${formatFrequency(Number(report.sample_rate_hz))}/s` : 'n/a'} />
+          <Info label="Duration" value={String(report?.capture_duration_seconds ?? report?.duration_seconds ?? 'n/a')} />
+        </div>
+      ) : (
+        <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-5">
+          <Info label="Final status" value={finalStatus} />
+          <Info label="Valid demod" value={validDemodulation ? 'true' : 'false'} />
+          <Info label="Confidence" value={confidence} />
+          <Info label="Packets decoded" value={String(packetCount)} />
+          {candidateCount > 0 && <Info label="BLE candidates" value={String(candidateCount)} />}
+          <Info label="CRC valid" value={`${crcValidCount} (${crcRate})`} />
+          {isBle && <Info label="Access address" value={accessAddressDetected ? String(report?.access_address ?? '0x8E89BED6') : 'false'} />}
+          {isBle && <Info label="BLE channel" value={String(report?.computed_ble_channel ?? report?.channel ?? decodedPackets?.channel ?? 'n/a')} />}
+          <Info label="Center" value={report?.center_frequency_hz ? formatRfCenterFrequency(Number(report.center_frequency_hz)) : 'n/a'} />
+          <Info label="Sample rate" value={report?.sample_rate_hz ? `${formatFrequency(Number(report.sample_rate_hz))}/s` : 'n/a'} />
+          <Info label="Duration" value={String(report?.capture_duration_seconds ?? report?.duration_seconds ?? 'n/a')} />
+          {report?.ble_receiver_chain_version && <Info label="BLE chain" value={String(report.ble_receiver_chain_version)} />}
+        </div>
+      )}
 
       {outputError && <div className="mt-3 text-xs text-amber-300">{outputError}</div>}
 
@@ -934,7 +981,42 @@ function DecodedOutputPanel({
         </div>
       )}
 
-      {packets.length > 0 ? (
+      {isOokRemote && ookBursts.length > 0 && (
+        <div className="mt-4 overflow-auto rounded-md border border-slate-800">
+          <table className="min-w-full text-left text-xs">
+            <thead className="bg-slate-950 text-slate-400">
+              <tr>
+                <th className="px-3 py-2">Burst</th>
+                <th className="px-3 py-2">Start</th>
+                <th className="px-3 py-2">Duration</th>
+                <th className="px-3 py-2">Peak</th>
+                <th className="px-3 py-2">SNR</th>
+                <th className="px-3 py-2">Bits</th>
+                <th className="px-3 py-2">Cluster</th>
+                <th className="px-3 py-2">Repetition</th>
+                <th className="px-3 py-2">Hex candidate</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800">
+              {ookBursts.slice(0, 20).map((burst: any, index: number) => (
+                <tr key={`ook-burst-${burst.burst_index ?? index}`} className="bg-slate-900/70">
+                  <td className="px-3 py-2">{burst.burst_index ?? index}</td>
+                  <td className="px-3 py-2">{burst.burst_start_time !== undefined ? `${Number(burst.burst_start_time).toFixed(5)} s` : 'n/a'}</td>
+                  <td className="px-3 py-2">{burst.burst_duration !== undefined ? `${(Number(burst.burst_duration) * 1000).toFixed(2)} ms` : 'n/a'}</td>
+                  <td className="px-3 py-2">{burst.peak_frequency_hz ? formatRfCenterFrequency(Number(burst.peak_frequency_hz)) : 'n/a'}</td>
+                  <td className="px-3 py-2">{burst.snr_db !== undefined && burst.snr_db !== null ? `${Number(burst.snr_db).toFixed(1)} dB` : 'n/a'}</td>
+                  <td className="px-3 py-2">{burst.bit_count ?? 'n/a'}</td>
+                  <td className="px-3 py-2">{burst.clustering_id ?? 'n/a'}</td>
+                  <td className="px-3 py-2">{burst.repetition_score !== undefined ? Number(burst.repetition_score).toFixed(2) : 'n/a'}</td>
+                  <td className="max-w-[360px] truncate px-3 py-2 font-mono">{burst.hex_candidate ?? burst.bits_hex ?? ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {!isOokRemote && packets.length > 0 ? (
         <div className="mt-4 overflow-auto rounded-md border border-slate-800">
           <table className="min-w-full text-left text-xs">
             <thead className="bg-slate-950 text-slate-400">
@@ -967,11 +1049,13 @@ function DecodedOutputPanel({
         </div>
       ) : (
         <div className="mt-3 text-xs text-slate-400">
-          {isPacketProtocol && candidateCount === 0 ? 'decoded_packets.json contains no recovered packets.' : !isPacketProtocol ? 'No packet table is available for this result.' : ''}
+          {isOokRemote
+            ? 'OOK raw burst diagnostics are shown above when available. No packet table is expected unless a known protocol is decoded.'
+            : isPacketProtocol && candidateCount === 0 ? 'decoded_packets.json contains no recovered packets.' : !isPacketProtocol ? 'No packet table is available for this result.' : ''}
         </div>
       )}
 
-      {candidatePackets.length > 0 && (
+      {!isOokRemote && candidatePackets.length > 0 && (
         <div className="mt-4 overflow-auto rounded-md border border-amber-800/70">
           <div className="border-b border-amber-800/70 bg-amber-950/50 px-3 py-2 text-xs font-semibold text-amber-200">
             Candidate packets only - CRC invalid, fields are not trusted decoded content

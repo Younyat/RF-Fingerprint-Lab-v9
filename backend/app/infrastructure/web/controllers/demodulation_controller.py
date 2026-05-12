@@ -907,6 +907,7 @@ class DemodulationController:
         return path
 
     def _ble_scaffold(self, iq: np.ndarray, data: dict, output_dir: Path) -> dict:
+        receiver_chain_version = "ble_receiver_chain_diagnostics_v2"
         center = float(data.get("center_frequency_hz") or 0.0)
         sample_rate = float(data.get("sample_rate_hz") or 1.0)
         channel, channel_frequency_hz = self._ble_channel_from_frequency(center)
@@ -914,6 +915,7 @@ class DemodulationController:
         channel_consistency = profile_channel is None or profile_channel == channel
         activity = self._summarize_iq_activity(iq, sample_rate)
         filtered_iq = iq.astype(np.complex64, copy=True)
+        channel_filter_applied = False
         # Shift IQ so the BLE channel sits at DC before GFSK discrimination.
         # Without this, a 1 MHz offset (e.g. SDR at 2425 MHz for BLE CH38 at
         # 2426 MHz) biases the instantaneous-frequency estimate and, more
@@ -968,6 +970,16 @@ class DemodulationController:
                 "phase_adjust_bits": packet.get("phase_adjust_bits"),
                 "burst_index": packet.get("burst_index"),
                 "symbol_phase_samples": packet.get("symbol_phase_samples"),
+                "symbol_phase_selected": packet.get("symbol_phase_selected", packet.get("symbol_phase_samples")),
+                "access_address_match_score": packet.get("access_address_match_score"),
+                "pdu_start_bit": packet.get("pdu_start_bit", packet.get("bit_offset", 0)),
+                "pdu_start_adjustment": packet.get("pdu_start_adjustment", packet.get("phase_adjust_bits")),
+                "dewhitening_channel": packet.get("dewhitening_channel", channel),
+                "computed_crc": packet.get("computed_crc", packet.get("crc_computed")),
+                "received_crc": packet.get("received_crc", packet.get("crc_received")),
+                "crc_match": packet.get("crc_match", packet.get("crc_valid", False)),
+                "crc_diagnostic_variants": packet.get("crc_diagnostic_variants"),
+                "rejection_reason": packet.get("rejection_reason"),
                 "trust_level": "crc_valid" if packet.get("crc_valid", False) else "candidate_unvalidated",
             }
 
@@ -983,6 +995,7 @@ class DemodulationController:
         pdu_types = list({p["pdu_type"] for p in pkt_list if p.get("pdu_type")})
 
         packets_out = {
+            "receiver_chain_version": receiver_chain_version,
             "protocol": "bluetooth_low_energy",
             "pipeline": "ble_advertising",
             "channel": channel,
@@ -1023,10 +1036,39 @@ class DemodulationController:
         aa_path.write_text(json.dumps(aa_search, indent=2), encoding="utf-8")
         packet_path = output_dir / "decoded_packets.json"
         packet_path.write_text(json.dumps(packets_out, indent=2), encoding="utf-8")
+        diagnostics_path = output_dir / "candidate_diagnostics.json"
+        diagnostics_path.write_text(
+            json.dumps(
+                {
+                    "receiver_chain_version": receiver_chain_version,
+                    "receiver_chain": [
+                        "iq_input",
+                        "frequency_correction",
+                        "channel_filtering",
+                        "burst_detection",
+                        "symbol_timing_recovery",
+                        "gfsk_demodulation",
+                        "preamble_detection",
+                        "access_address_validation",
+                        "pdu_boundary_estimation",
+                        "dewhitening",
+                        "crc24_validation",
+                        "pdu_parsing",
+                        "report_generation",
+                    ],
+                    "candidate_count": n_candidates,
+                    "crc_valid_count": n_crc_valid,
+                    "candidates": candidate_list,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         logs_path = output_dir / "logs.txt"
         warning = None if channel_consistency else "Selected BLE channel does not match tuned center frequency"
         log_lines = [
             "BLE advertising demodulation run",
+            f"receiver_chain_version={receiver_chain_version}",
             f"center_frequency_hz={center}",
             f"computed_ble_channel={channel}",
             f"channel_frequency_hz={channel_frequency_hz}",
@@ -1045,10 +1087,12 @@ class DemodulationController:
         ]
         logs_path.write_text("\n".join(log_lines) + "\n", encoding="utf-8")
         stage_diagnostics = {
+            "receiver_chain_version": receiver_chain_version,
             "iq_loaded": bool(iq.size > 0),
             "iq_samples_analyzed": int(iq.size),
             "iq_duration_analyzed_seconds": float(iq.size / max(sample_rate, 1.0)),
-            "channel_filter_applied": True,
+            "channel_filter_applied": channel_filter_applied,
+            "channel_filter_note": "No additional BLE FIR channel filter was applied; IQ came from the selected marker capture bandwidth.",
             "frequency_correction_applied": freq_correction_applied,
             "frequency_correction_hz": float(freq_offset_hz) if freq_correction_applied else 0.0,
             "rf_activity_detected": bool(activity.get("signal_detected")),
@@ -1060,10 +1104,14 @@ class DemodulationController:
             "access_address_search_attempted": True,
             "access_address_detected": aa_detected,
             "ble_packet_reconstruction_attempted": True,
+            "pdu_boundary_adjustments_tested": [-4, -3, -2, -1, 0, 1, 2, 3, 4],
+            "dewhitening_attempted": n_candidates > 0,
+            "dewhitening_channel": channel,
             "packet_candidates": n_candidates,
             "packets_decoded": n_decoded,
             "crc_validation_attempted": True,
             "packets_crc_valid": n_crc_valid,
+            "candidate_diagnostics_written": True,
         }
         warnings = [warning] if warning else []
         if freq_correction_applied:
@@ -1095,6 +1143,7 @@ class DemodulationController:
             else "rf_activity_only"
         )
         return {
+            "ble_receiver_chain_version": receiver_chain_version,
             "status": "complete" if final_status == "decoded_with_valid_crc" else "rf_activity_only",
             "final_status": final_status,
             "valid_demodulation": final_status == "decoded_with_valid_crc",
@@ -1125,6 +1174,7 @@ class DemodulationController:
                 "burst_candidates": str(burst_path),
                 "bitstream": str(bitstream_path),
                 "access_address_search": str(aa_path),
+                "candidate_diagnostics": str(diagnostics_path),
                 "decoded_packets": str(packet_path),
                 "report": str(output_dir / "demodulation_report.json"),
                 "logs": str(logs_path),
@@ -1453,6 +1503,7 @@ class DemodulationController:
         exact_matches = 0
         near_matches = 0
         best: dict | None = None
+        top_matches: list[dict] = []
         if bits.size >= 32:
             for bit_order, polarity, pattern in variants:
                 for offset in range(0, bits.size - 31):
@@ -1460,10 +1511,18 @@ class DemodulationController:
                     if score > max_score:
                         max_score = score
                         best = {"bit_offset": offset, "bit_order": bit_order, "polarity": polarity}
+                    if score >= 24:
+                        top_matches.append({
+                            "bit_offset": int(offset),
+                            "bit_order": bit_order,
+                            "polarity": polarity,
+                            "score": score,
+                        })
                     if score == 32:
                         exact_matches += 1
                     if score >= 28:
                         near_matches += 1
+        top_matches = sorted(top_matches, key=lambda item: item["score"], reverse=True)[:50]
         return {
             "target": "0x8E89BED6",
             "exact_matches": exact_matches,
@@ -1473,6 +1532,7 @@ class DemodulationController:
             "polarity_tested": ["normal", "inverted"],
             "access_address_detected": exact_matches > 0 or max_score >= 28,
             "best_match": best,
+            "top_matches": top_matches,
         }
 
     # ------------------------------------------------------------------
@@ -1509,6 +1569,16 @@ class DemodulationController:
             if d:
                 crc ^= 0x00065B
         return crc
+
+    def _ble_crc24_bits_reflected(self, bits: np.ndarray, init: int = 0x555555) -> int:
+        """Diagnostic reflected CRC-24 variant for checking BLE bit-order mistakes."""
+        crc = init & 0xFFFFFF
+        for bit in bits:
+            d = (int(bit) ^ (crc & 1)) & 1
+            crc >>= 1
+            if d:
+                crc ^= 0xDA6000
+        return crc & 0xFFFFFF
 
     def _ble_gfsk_demod(self, iq: np.ndarray, sample_rate: float, symbol_offset_samples: int | None = None) -> np.ndarray:
         """
@@ -1602,8 +1672,10 @@ class DemodulationController:
                     continue
                 used_offsets.append(global_bit_offset)
                 pkt["bit_offset"] = global_bit_offset
+                pkt["pdu_start_bit"] = global_bit_offset
                 pkt["burst_index"] = burst_index
                 pkt["symbol_phase_samples"] = best_phase
+                pkt["symbol_phase_selected"] = best_phase
                 pkt["burst_start_sample"] = int(start_sample)
                 pkt["burst_stop_sample"] = int(stop_sample)
                 decoded.append(pkt)
@@ -1634,8 +1706,12 @@ class DemodulationController:
         # CRC check over header + payload
         crc_data = dw[:(2 + length) * 8]
         computed = self._ble_crc24_bits(crc_data, init=0x555555)
+        computed_reflected = self._ble_crc24_bits_reflected(crc_data, init=0x555555)
         received = self._ble_int_from_bits(dw, 24, (2 + length) * 8)
         crc_valid = (computed == received)
+        crc_variant_matches = []
+        if computed_reflected == received:
+            crc_variant_matches.append("reflected_crc24")
         # Decode advertiser address (6 bytes, LSB first → reverse for display)
         adv_bytes = [self._ble_int_from_bits(dw, 8, 16 + i * 8) for i in range(6)]
         adv_addr = ":".join(f"{b:02X}" for b in reversed(adv_bytes))
@@ -1655,6 +1731,17 @@ class DemodulationController:
             "crc_valid": bool(crc_valid),
             "crc_computed": f"0x{computed:06X}",
             "crc_received": f"0x{received:06X}",
+            "computed_crc": f"0x{computed:06X}",
+            "received_crc": f"0x{received:06X}",
+            "crc_match": bool(crc_valid),
+            "crc_diagnostic_variants": {
+                "msb_first_poly_0x00065B": f"0x{computed:06X}",
+                "lsb_reflected_poly_0xDA6000": f"0x{computed_reflected:06X}",
+                "received": f"0x{received:06X}",
+                "variant_matches": crc_variant_matches,
+            },
+            "dewhitening_channel": int(channel),
+            "rejection_reason": None if crc_valid else "crc_mismatch",
             "_total_bits": total_bits,
         }
 
@@ -1711,10 +1798,10 @@ class DemodulationController:
         bits_f = bits.astype(np.float32) * 2 - 1
         corr = np.correlate(bits_f, SYNC, mode='valid')
         # threshold = 32/40 bits correct (allows 4 bit errors in 40-bit sync word)
-        candidates: list[tuple[int, int, str]] = []
+        candidates: list[tuple[int, int, str, int]] = []
         for pos in np.where(np.abs(corr) >= 32)[0]:
             polarity = 1 if corr[pos] < 0 else 0
-            candidates.append((int(pos) + 40, polarity, "preamble_access_address"))
+            candidates.append((int(pos) + 40, polarity, "preamble_access_address", int(abs(corr[pos]))))
 
         aa = np.array([0,1,1,0,1,0,1,1,
                        0,1,1,1,1,1,0,1,
@@ -1723,23 +1810,24 @@ class DemodulationController:
         aa_corr = np.correlate(bits_f, aa, mode='valid')
         for pos in np.where(np.abs(aa_corr) >= 28)[0]:
             polarity = 1 if aa_corr[pos] < 0 else 0
-            candidates.append((int(pos) + 32, polarity, "access_address"))
+            candidates.append((int(pos) + 32, polarity, "access_address", int(abs(aa_corr[pos]))))
         packets = []
         skip_until = -1
-        for pdu_start, polarity, source in sorted(candidates, key=lambda item: item[0]):
+        boundary_adjustments = sorted(range(-4, 5), key=lambda value: (abs(value), value))
+        for pdu_start, polarity, source, aa_score in sorted(candidates, key=lambda item: item[0]):
             if int(pdu_start) < skip_until:
                 continue
             # Polarity is derived from the candidate correlation above.
             pdu_start = int(pdu_start)
             if pdu_start >= bits.size:
                 break
-            # Try all phase offsets; prefer CRC-valid over first structural match.
+            # Try all PDU boundary offsets; prefer CRC-valid over first structural match.
             # Without this, the first plausible offset (-2) is always taken, which
             # reads 2 bits into the AA tail and produces a structurally valid but
             # CRC-invalid PDU while the true PDU at offset 0 is never tried.
             phase_candidates: list[tuple[int, int, dict]] = []
-            for phase_adjust in (0, -1, 1, -2, 2):
-                start = pdu_start + phase_adjust
+            for pdu_start_adjustment in boundary_adjustments:
+                start = pdu_start + pdu_start_adjustment
                 if start < 0 or start >= bits.size:
                     continue
                 pdu_bits = bits[start:]
@@ -1747,7 +1835,7 @@ class DemodulationController:
                     pdu_bits = pdu_bits ^ 1
                 pkt = self._ble_decode_adv_packet(pdu_bits, channel)
                 if pkt is not None:
-                    phase_candidates.append((phase_adjust, start, pkt))
+                    phase_candidates.append((pdu_start_adjustment, start, pkt))
             if not phase_candidates:
                 continue
             valid_candidates = [(adj, st, p) for adj, st, p in phase_candidates if p.get("crc_valid")]
@@ -1755,8 +1843,11 @@ class DemodulationController:
                 valid_candidates[0] if valid_candidates else phase_candidates[0]
             )
             chosen_pkt['bit_offset'] = int(chosen_start)
+            chosen_pkt['pdu_start_bit'] = int(chosen_start)
             chosen_pkt['sync_source'] = source
             chosen_pkt['phase_adjust_bits'] = chosen_adjust
+            chosen_pkt['pdu_start_adjustment'] = chosen_adjust
+            chosen_pkt['access_address_match_score'] = int(aa_score)
             chosen_pkt['polarity'] = 'inverted' if polarity else 'normal'
             skip_until = chosen_start + chosen_pkt.pop('_total_bits', 64)
             packets.append(chosen_pkt)
@@ -2042,6 +2133,29 @@ class DemodulationController:
                 pulses.append((int(binary[s]), dur_us))
         return pulses
 
+    def _ook433_pulse_sequence_indexed(
+        self, binary: np.ndarray, sample_rate: float
+    ) -> list[dict]:
+        """Time-ordered pulse runs with sample positions for per-burst diagnostics."""
+        if binary.size == 0:
+            return []
+        edges = np.flatnonzero(np.diff(binary.astype(np.int8)))
+        seg_starts = np.concatenate([[0], edges + 1])
+        seg_ends = np.concatenate([edges + 1, [binary.size]])
+        pulses: list[dict] = []
+        for s, e in zip(seg_starts, seg_ends):
+            dur_us = (e - s) / sample_rate * 1e6
+            if dur_us >= 50.0:
+                pulses.append(
+                    {
+                        "level": int(binary[s]),
+                        "duration_us": float(dur_us),
+                        "start_sample": int(s),
+                        "end_sample": int(e),
+                    }
+                )
+        return pulses
+
     def _ook433_estimate_t_unit(
         self, pulses: list[tuple[int, float]]
     ) -> tuple[float, float]:
@@ -2111,6 +2225,28 @@ class DemodulationController:
             bursts.append(current)
         return bursts
 
+    def _ook433_find_bursts_indexed(
+        self,
+        pulses: list[dict],
+        t_unit_us: float,
+    ) -> list[list[dict]]:
+        """Segment indexed OOK pulses into bursts separated by long LOW gaps."""
+        if not pulses:
+            return []
+        gap_threshold_us = max(8.0 * t_unit_us, 2000.0)
+        bursts: list[list[dict]] = []
+        current: list[dict] = []
+        for pulse in pulses:
+            if pulse["level"] == 0 and pulse["duration_us"] >= gap_threshold_us:
+                if len(current) >= 6:
+                    bursts.append(current)
+                current = []
+            else:
+                current.append(pulse)
+        if len(current) >= 6:
+            bursts.append(current)
+        return bursts
+
     def _ook433_decode_pwm_bits(
         self, pulses: list[tuple[int, float]], t_unit_us: float
     ) -> list[int]:
@@ -2144,6 +2280,33 @@ class DemodulationController:
                 i += 2
             else:
                 i += 1
+        return bits
+
+    def _ook433_raw_bits_from_burst(
+        self,
+        binary: np.ndarray,
+        start_sample: int,
+        end_sample: int,
+        sample_rate: float,
+        t_unit_us: float,
+    ) -> list[int]:
+        """Protocol-agnostic OOK bit estimate by sampling the envelope in T-sized windows."""
+        if binary.size == 0 or end_sample <= start_sample or sample_rate <= 0:
+            return []
+        samples_per_symbol = max(1, int(round(sample_rate * max(t_unit_us, 50.0) * 1e-6)))
+        start = max(0, start_sample)
+        stop = min(binary.size, end_sample)
+        bits: list[int] = []
+        for offset in range(start, stop, samples_per_symbol):
+            window = binary[offset:min(stop, offset + samples_per_symbol)]
+            if window.size == 0:
+                continue
+            bits.append(1 if float(np.mean(window)) >= 0.25 else 0)
+        # Trim leading/trailing zeros from inter-symbol silence inside the segmented burst.
+        while bits and bits[0] == 0:
+            bits.pop(0)
+        while bits and bits[-1] == 0:
+            bits.pop()
         return bits
 
     def _ook433_bits_to_hex(self, bits: list[int]) -> str:
@@ -2255,6 +2418,75 @@ class DemodulationController:
             "unique_patterns": len(set(patterns)),
         }
 
+    def _ook433_bit_similarity(self, left: list[int], right: list[int]) -> float:
+        """Return 0-1 similarity over the overlapping portion of two bitstrings."""
+        n = min(len(left), len(right))
+        if n == 0:
+            return 0.0
+        matches = sum(1 for i in range(n) if left[i] == right[i])
+        length_penalty = n / max(len(left), len(right), 1)
+        return float((matches / n) * length_penalty)
+
+    def _ook433_cluster_bits(self, all_bits: list[list[int]], threshold: float = 0.85) -> list[int | None]:
+        """Assign simple similarity clusters for repeated/rolling-code inspection."""
+        clusters: list[list[int]] = []
+        assignments: list[int | None] = []
+        for bits in all_bits:
+            if not bits:
+                assignments.append(None)
+                continue
+            assigned = None
+            for cluster_index, representative in enumerate(clusters):
+                if self._ook433_bit_similarity(bits, representative) >= threshold:
+                    assigned = cluster_index
+                    break
+            if assigned is None:
+                clusters.append(bits)
+                assigned = len(clusters) - 1
+            assignments.append(assigned)
+        return assignments
+
+    def _ook433_burst_rf_metrics(
+        self,
+        iq: np.ndarray,
+        start_sample: int,
+        end_sample: int,
+        center_hz: float,
+        sample_rate: float,
+        noise_floor_power: float,
+    ) -> dict:
+        """Estimate RF peak, occupied bandwidth and burst-local SNR from IQ."""
+        if iq.size == 0 or end_sample <= start_sample:
+            return {"peak_frequency_hz": None, "estimated_bandwidth_hz": None, "snr_db": None}
+        segment = iq[max(0, start_sample): min(iq.size, end_sample)]
+        if segment.size < 16:
+            return {"peak_frequency_hz": None, "estimated_bandwidth_hz": None, "snr_db": None}
+        nfft = int(2 ** np.ceil(np.log2(min(max(segment.size, 256), 16384))))
+        window = np.hanning(segment.size).astype(np.float32)
+        if window.size != segment.size:
+            window = np.ones(segment.size, dtype=np.float32)
+        spectrum = np.fft.fftshift(np.fft.fft(segment * window, n=nfft))
+        power = np.abs(spectrum) ** 2
+        freqs = np.fft.fftshift(np.fft.fftfreq(nfft, d=1.0 / sample_rate))
+        peak_idx = int(np.argmax(power))
+        peak_frequency_hz = float(center_hz + freqs[peak_idx])
+        total = float(np.sum(power))
+        bandwidth_hz = None
+        if total > 0:
+            cdf = np.cumsum(power) / total
+            lo = int(np.searchsorted(cdf, 0.005))
+            hi = int(np.searchsorted(cdf, 0.995))
+            lo = max(0, min(lo, freqs.size - 1))
+            hi = max(0, min(hi, freqs.size - 1))
+            bandwidth_hz = float(abs(freqs[hi] - freqs[lo]))
+        burst_power = float(np.mean(np.abs(segment) ** 2))
+        snr_db = float(10.0 * np.log10(max(burst_power, 1e-20) / max(noise_floor_power, 1e-20)))
+        return {
+            "peak_frequency_hz": peak_frequency_hz,
+            "estimated_bandwidth_hz": bandwidth_hz,
+            "snr_db": snr_db,
+        }
+
     def _ook_433_remote(self, iq: np.ndarray, data: dict, output_dir: Path) -> dict:
         """
         Full OOK remote-control decoder for the 433.92 MHz (EU/AS), 315 MHz (NA)
@@ -2300,24 +2532,52 @@ class DemodulationController:
             threshold = max(threshold, float(np.mean(envelope)) * 1.2)
             binary = (envelope > threshold).astype(np.uint8)
 
-        pulses = self._ook433_pulse_sequence(binary, sample_rate)
+        indexed_pulses = self._ook433_pulse_sequence_indexed(binary, sample_rate)
+        pulses = [(pulse["level"], pulse["duration_us"]) for pulse in indexed_pulses]
         t_unit_us, t_confidence = self._ook433_estimate_t_unit(pulses)
         symbol_rate_baud = int(round(1e6 / t_unit_us)) if t_unit_us > 0 else 0
 
-        bursts_pulses = self._ook433_find_bursts(pulses, t_unit_us)
+        bursts_indexed = self._ook433_find_bursts_indexed(indexed_pulses, t_unit_us)
+        bursts_pulses = [
+            [(pulse["level"], pulse["duration_us"]) for pulse in burst]
+            for burst in bursts_indexed
+        ]
 
         decoded_bursts: list[dict] = []
         all_decoded_bits: list[list[int]] = []
+        noise_floor_power = float(np.median(np.abs(iq) ** 2)) if iq.size else 0.0
+        preliminary_diagnostics: list[dict] = []
         for i, burst in enumerate(bursts_pulses):
-            bits = self._ook433_decode_pwm_bits(burst, t_unit_us)
+            protocol_bits = self._ook433_decode_pwm_bits(burst, t_unit_us)
+            indexed_burst = bursts_indexed[i] if i < len(bursts_indexed) else []
+            start_sample = int(indexed_burst[0]["start_sample"]) if indexed_burst else 0
+            end_sample = int(indexed_burst[-1]["end_sample"]) if indexed_burst else start_sample
+            raw_bits = self._ook433_raw_bits_from_burst(binary, start_sample, end_sample, sample_rate, t_unit_us)
+            bits = protocol_bits if protocol_bits else raw_bits
             all_decoded_bits.append(bits)
-            ev1527 = self._ook433_match_ev1527(bits) if len(bits) >= 24 else None
+            ev1527 = self._ook433_match_ev1527(protocol_bits) if len(protocol_bits) >= 24 else None
             pt2262 = self._ook433_match_pt2262(burst, t_unit_us) if len(burst) >= 48 else None
+            pulse_widths_us = [round(float(p["duration_us"]), 3) for p in indexed_burst if p["level"] == 1]
+            gap_widths_us = [round(float(p["duration_us"]), 3) for p in indexed_burst if p["level"] == 0]
+            burst_t_unit = float(np.median(pulse_widths_us)) if pulse_widths_us else t_unit_us
+            burst_symbol_rate = int(round(1e6 / burst_t_unit)) if burst_t_unit > 0 else None
+            raw_bitstring = "".join(str(bit) for bit in bits)
+            rf_metrics = self._ook433_burst_rf_metrics(
+                iq,
+                start_sample,
+                end_sample,
+                center,
+                sample_rate,
+                noise_floor_power,
+            )
             decoded_bursts.append(
                 {
                     "burst_index": i,
                     "pulse_count": len(burst),
                     "bit_count": len(bits),
+                    "protocol_bit_count": len(protocol_bits),
+                    "raw_bit_count": len(raw_bits),
+                    "raw_bitstring": raw_bitstring,
                     "bits_hex": self._ook433_bits_to_hex(bits),
                     "ev1527": ev1527,
                     "pt2262": pt2262,
@@ -2326,8 +2586,56 @@ class DemodulationController:
                     ),
                 }
             )
+            preliminary_diagnostics.append(
+                {
+                    "burst_index": i,
+                    "burst_start_time": start_sample / sample_rate if sample_rate > 0 else None,
+                    "burst_end_time": end_sample / sample_rate if sample_rate > 0 else None,
+                    "burst_duration": (end_sample - start_sample) / sample_rate if sample_rate > 0 else None,
+                    "burst_start_sample": start_sample,
+                    "burst_end_sample": end_sample,
+                    "peak_frequency_hz": rf_metrics["peak_frequency_hz"],
+                    "estimated_bandwidth_hz": rf_metrics["estimated_bandwidth_hz"],
+                    "snr_db": rf_metrics["snr_db"],
+                    "symbol_rate_estimate": burst_symbol_rate,
+                    "pulse_widths_us": pulse_widths_us,
+                    "gap_widths_us": gap_widths_us,
+                    "bit_count": len(bits),
+                    "protocol_bit_count": len(protocol_bits),
+                    "raw_bit_count": len(raw_bits),
+                    "bit_recovery_method": "protocol_pwm" if protocol_bits else "raw_envelope_sampling",
+                    "raw_bitstring": raw_bitstring,
+                    "hex_candidate": self._ook433_bits_to_hex(bits),
+                    "protocol_detected": "EV1527" if ev1527 else "PT2262" if pt2262 else "unknown_ook",
+                }
+            )
 
         repeat_analysis = self._ook433_repeat_analysis(all_decoded_bits)
+        cluster_ids = self._ook433_cluster_bits(all_decoded_bits)
+        similarity_matrix: list[list[float]] = []
+        for left in all_decoded_bits:
+            similarity_matrix.append([
+                round(self._ook433_bit_similarity(left, right), 4)
+                for right in all_decoded_bits
+            ])
+        for i, diag in enumerate(preliminary_diagnostics):
+            row = similarity_matrix[i] if i < len(similarity_matrix) else []
+            other_scores = [score for j, score in enumerate(row) if j != i]
+            diag["repetition_score"] = round(max(other_scores), 4) if other_scores else 0.0
+            diag["similarity_between_bursts"] = row
+            diag["clustering_id"] = cluster_ids[i] if i < len(cluster_ids) else None
+        cluster_counts: dict[str, int] = {}
+        for cluster_id in cluster_ids:
+            key = "unclustered" if cluster_id is None else str(cluster_id)
+            cluster_counts[key] = cluster_counts.get(key, 0) + 1
+        rolling_code_candidates = []
+        for i, bits in enumerate(all_decoded_bits):
+            for j in range(i + 1, len(all_decoded_bits)):
+                similarity = self._ook433_bit_similarity(bits, all_decoded_bits[j])
+                if 0.35 <= similarity < 0.85 and min(len(bits), len(all_decoded_bits[j])) >= 16:
+                    rolling_code_candidates.append(
+                        {"left_burst": i, "right_burst": j, "similarity": round(similarity, 4)}
+                    )
 
         n_bursts = len(decoded_bursts)
         n_ev1527 = sum(1 for b in decoded_bursts if b["ev1527"])
@@ -2377,10 +2685,37 @@ class DemodulationController:
             "pt2262_frames": n_pt2262,
             "best_decoded_frame": best_frame,
             "repeat_analysis": repeat_analysis,
+            "burst_comparison": {
+                "similarity_matrix": similarity_matrix,
+                "cluster_counts": cluster_counts,
+                "rolling_code_candidates": rolling_code_candidates[:50],
+                "interpretation": (
+                    "repeated_code" if repeat_analysis.get("repetition_detected") else
+                    "possible_rolling_code_or_bit_errors" if rolling_code_candidates else
+                    "no_stable_repetition_detected"
+                ),
+            },
+            "burst_diagnostics": preliminary_diagnostics,
             "bursts": decoded_bursts,
         }
         decoded_path = output_dir / "decoded_frames.json"
         decoded_path.write_text(json.dumps(decoded_out, indent=2), encoding="utf-8")
+        diagnostics_out = {
+            "protocol": "ook_433_remote",
+            "pipeline": "ook_433_remote",
+            "center_frequency_hz": center,
+            "sample_rate_hz": sample_rate,
+            "threshold": threshold,
+            "t_unit_us": round(t_unit_us, 1),
+            "t_unit_confidence": round(t_confidence, 2),
+            "symbol_rate_baud": symbol_rate_baud,
+            "burst_count": n_bursts,
+            "repeat_analysis": repeat_analysis,
+            "burst_comparison": decoded_out["burst_comparison"],
+            "bursts": preliminary_diagnostics,
+        }
+        diagnostics_path = output_dir / "ook_burst_diagnostics.json"
+        diagnostics_path.write_text(json.dumps(diagnostics_out, indent=2), encoding="utf-8")
 
         raw_bits = np.array(
             all_decoded_bits[0] if all_decoded_bits else [], dtype=np.uint8
@@ -2402,6 +2737,8 @@ class DemodulationController:
                 f"symbol_rate_baud={symbol_rate_baud}",
                 f"pulses_extracted={len(pulses)}",
                 f"bursts_detected={n_bursts}",
+                f"clusters={cluster_counts}",
+                f"repeat_interpretation={decoded_out['burst_comparison']['interpretation']}",
                 f"ev1527_frames={n_ev1527}  pt2262_frames={n_pt2262}",
                 f"dominant_protocol={dominant_protocol}",
                 f"rf_activity_detected={bool(activity.get('signal_detected'))}",
@@ -2437,10 +2774,7 @@ class DemodulationController:
             "ev1527_frames": n_ev1527,
             "pt2262_frames": n_pt2262,
             "best_frame": best_frame,
-            "confidence_score": (
-                min(1.0, (n_ev1527 + n_pt2262) / 5.0) if decoded_ok else
-                (0.3 if n_bursts > 0 else 0.0)
-            ),
+            "confidence_score": min(1.0, (n_ev1527 + n_pt2262) / 5.0) if decoded_ok else None,
             "stage_diagnostics": {
                 "iq_loaded": bool(iq.size > 0),
                 "rf_activity_detected": bool(activity.get("signal_detected")),
@@ -2449,14 +2783,19 @@ class DemodulationController:
                 "t_unit_us": round(t_unit_us, 1),
                 "t_unit_confidence": round(t_confidence, 2),
                 "bursts_found": n_bursts,
+                "burst_diagnostics_written": True,
+                "cluster_counts": cluster_counts,
+                "repeat_interpretation": decoded_out["burst_comparison"]["interpretation"],
                 "ev1527_decoded": n_ev1527,
                 "pt2262_decoded": n_pt2262,
             },
             "pulse_timing": pulse_timing,
             "repeat_analysis": repeat_analysis,
+            "burst_comparison": decoded_out["burst_comparison"],
             "decoded_frames": decoded_out,
             "outputs": {
                 "decoded_frames": str(decoded_path),
+                "burst_diagnostics": str(diagnostics_path),
                 "bitstream": str(bitstream_path),
                 "logs": str(logs_path),
                 "report": str(output_dir / "demodulation_report.json"),
