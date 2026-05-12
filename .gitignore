@@ -71,6 +71,7 @@ backend/app/infrastructure/persistence/storage/temp/
 *.npy
 *.npz
 *.wav
+*.dat
 
 # Local generated recordings
 backend/app/infrastructure/persistence/storage/recordings/

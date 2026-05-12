@@ -913,7 +913,17 @@ class DemodulationController:
         profile_channel = self._extract_profile_ble_channel(data)
         channel_consistency = profile_channel is None or profile_channel == channel
         activity = self._summarize_iq_activity(iq, sample_rate)
-        filtered_iq = iq.astype(np.complex64, copy=False)
+        filtered_iq = iq.astype(np.complex64, copy=True)
+        # Shift IQ so the BLE channel sits at DC before GFSK discrimination.
+        # Without this, a 1 MHz offset (e.g. SDR at 2425 MHz for BLE CH38 at
+        # 2426 MHz) biases the instantaneous-frequency estimate and, more
+        # importantly, means the hardware receive filter is not centred on the
+        # BLE channel — clipping one sideband and causing bit errors.
+        freq_offset_hz = channel_frequency_hz - center
+        freq_correction_applied = abs(freq_offset_hz) > 1000.0
+        if freq_correction_applied:
+            t = np.arange(len(filtered_iq), dtype=np.float64) / sample_rate
+            filtered_iq *= np.exp(-2j * np.pi * float(freq_offset_hz) * t).astype(np.complex64)
         filtered_path = output_dir / "filtered_iq.cfile"
         filtered_iq.tofile(filtered_path)
         bursts = self._ble_burst_candidates(filtered_iq, sample_rate)
@@ -1019,6 +1029,9 @@ class DemodulationController:
             "BLE advertising demodulation run",
             f"center_frequency_hz={center}",
             f"computed_ble_channel={channel}",
+            f"channel_frequency_hz={channel_frequency_hz}",
+            f"frequency_correction_applied={freq_correction_applied}",
+            f"frequency_correction_hz={freq_offset_hz if freq_correction_applied else 0.0}",
             f"profile_ble_channel={profile_channel}",
             f"iq_samples_analyzed={int(iq.size)}",
             f"iq_duration_analyzed_seconds={float(iq.size / max(sample_rate, 1.0))}",
@@ -1036,6 +1049,8 @@ class DemodulationController:
             "iq_samples_analyzed": int(iq.size),
             "iq_duration_analyzed_seconds": float(iq.size / max(sample_rate, 1.0)),
             "channel_filter_applied": True,
+            "frequency_correction_applied": freq_correction_applied,
+            "frequency_correction_hz": float(freq_offset_hz) if freq_correction_applied else 0.0,
             "rf_activity_detected": bool(activity.get("signal_detected")),
             "burst_detection_attempted": True,
             "burst_count": burst_count,
@@ -1051,6 +1066,22 @@ class DemodulationController:
             "packets_crc_valid": n_crc_valid,
         }
         warnings = [warning] if warning else []
+        if freq_correction_applied:
+            hw_bw_hz = float(data.get("bandwidth_hz") or sample_rate)
+            hw_margin = hw_bw_hz / 2.0 - abs(freq_offset_hz)
+            if hw_margin < 500_000:
+                warnings.append(
+                    f"SDR center ({center/1e6:.3f} MHz) is {abs(freq_offset_hz)/1e3:.0f} kHz from BLE "
+                    f"CH{channel} ({channel_frequency_hz/1e6:.0f} MHz). The hardware receive filter "
+                    f"(±{hw_bw_hz/2/1e6:.1f} MHz) may have clipped one sideband — re-tune the SDR to "
+                    f"{channel_frequency_hz/1e6:.0f} MHz for best results. "
+                    f"Software frequency correction ({freq_offset_hz/1e3:+.0f} kHz) has been applied."
+                )
+            else:
+                warnings.append(
+                    f"SDR center offset {freq_offset_hz/1e3:+.0f} kHz from BLE CH{channel}; "
+                    f"software frequency correction applied."
+                )
         if activity.get("signal_detected") and not aa_detected:
             warnings.append("RF activity detected but no valid BLE advertising packet was recovered. "
                             "The signal may not be BLE, or the frequency/gain may need adjustment.")
@@ -1073,8 +1104,11 @@ class DemodulationController:
             "profile_ble_channel": profile_channel,
             "channel_consistency": channel_consistency,
             "warning": warning,
+            "warnings": [w for w in warnings if w],
             "channel": channel,
             "channel_frequency_mhz": channel_frequency_hz / 1e6,
+            "frequency_correction_applied": freq_correction_applied,
+            "frequency_correction_hz": float(freq_offset_hz) if freq_correction_applied else 0.0,
             "rf_activity_detected": bool(activity.get("signal_detected")),
             "burst_count": burst_count,
             "access_address_detected": aa_detected,
@@ -1480,30 +1514,37 @@ class DemodulationController:
         """
         GFSK frequency discriminator for BLE at 1 Mbit/s.
         Returns bit array with one bit per symbol period.
+
+        Uses integrate-and-dump over each full symbol period rather than
+        convolve+center-sample, which avoids even-kernel boundary ambiguity
+        and edge artifacts that were causing scattered bit errors.
         """
         SYMBOL_RATE = 1_000_000.0
         if iq.size < 16:
             return np.array([], dtype=np.uint8)
         q = iq.astype(np.complex64)
-        # Instantaneous frequency (rad/sample → Hz)
-        phase_delta = np.angle(q[1:] * np.conj(q[:-1]))
+        phase_delta = np.angle(q[1:] * np.conj(q[:-1])).astype(np.float32)
         sps = max(1.0, sample_rate / SYMBOL_RATE)
         sps_int = max(1, int(round(sps)))
-        # Moving-average LPF over one symbol period
-        if sps_int >= 2:
-            kernel = np.ones(sps_int, dtype=np.float32) / sps_int
-            phase_delta = np.convolve(phase_delta.astype(np.float32), kernel, mode='same')
-        n_syms = phase_delta.size // sps_int
+
+        offset = (sps_int // 2) if symbol_offset_samples is None else int(symbol_offset_samples)
+        offset = max(0, min(offset, sps_int - 1))
+
+        avail = phase_delta.size - offset
+        n_syms = avail // sps_int
         if n_syms < 10:
             return np.array([], dtype=np.uint8)
-        # Center-sample each symbol; remove DC offset before thresholding
-        offset = sps_int // 2 if symbol_offset_samples is None else int(symbol_offset_samples)
-        offset = max(0, min(offset, sps_int - 1))
-        idx = np.arange(n_syms) * sps_int + offset
-        idx = idx[idx < phase_delta.size]
-        sampled = phase_delta[idx]
-        dc = float(np.median(sampled))
-        return (sampled > dc).astype(np.uint8)
+
+        # Integrate instantaneous frequency over each non-overlapping symbol window.
+        # This is the optimal linear receiver for GFSK: sum(phase) over one period
+        # equals the total phase advance, directly proportional to frequency deviation.
+        # Unlike convolve+sample, this uses exactly sps_int samples per symbol with
+        # no boundary overlap or zero-padding artifacts.
+        seg = phase_delta[offset: offset + n_syms * sps_int]
+        symbol_integrals = seg.reshape(n_syms, sps_int).sum(axis=1)
+
+        dc = float(np.median(symbol_integrals))
+        return (symbol_integrals > dc).astype(np.uint8)
 
     def _ble_decode_burst_packets(
         self,

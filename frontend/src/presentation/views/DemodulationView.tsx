@@ -113,6 +113,14 @@ const outputFilename = (value?: string | null) => {
   return parts[parts.length - 1] || null;
 };
 
+const formatRfCenterFrequency = (hz: number | null | undefined): string => {
+  if (!Number.isFinite(hz)) return 'n/a';
+  const safeHz = Number(hz);
+  if (Math.abs(safeHz) >= 1e9) return `${(safeHz / 1e9).toFixed(6)} GHz`;
+  if (Math.abs(safeHz) >= 1e6) return `${(safeHz / 1e6).toFixed(3)} MHz`;
+  return formatFrequency(safeHz);
+};
+
 export const DemodulationView: React.FC = () => {
   const markers = useMarkers();
   const [searchParams] = useSearchParams();
@@ -408,7 +416,7 @@ export const DemodulationView: React.FC = () => {
                 <Info label="Format" value={selectedCapture.capture_config.file_format || 'unknown'} />
                 <Info label="Datatype" value={selectedCapture.capture_config.sample_dtype || 'missing'} />
                 <Info label="Sample rate" value={formatFrequency(selectedCapture.capture_config.sample_rate_hz) + '/s'} />
-                <Info label="Center" value={formatFrequency(selectedCapture.capture_config.center_frequency_hz)} />
+              <Info label="Center" value={formatRfCenterFrequency(selectedCapture.capture_config.center_frequency_hz)} />
                 <Info label="Signal type" value={selectedCapture.transmitter.signal_type || selectedCapture.transmitter.modulation_class || 'unknown'} />
                 <Info label="Bandwidth" value={formatFrequency(selectedCapture.capture_config.effective_bandwidth_hz)} />
                 <Info label="Duration" value={`${selectedCapture.capture_config.capture_duration_s}s`} />
@@ -451,9 +459,9 @@ export const DemodulationView: React.FC = () => {
               </p>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <Info label="M1" value={selectedBand ? formatFrequency(selectedBand.first.frequency) : 'Not set'} />
-              <Info label="M2" value={selectedBand ? formatFrequency(selectedBand.second.frequency) : 'Not set'} />
-              <Info label="Center" value={selectedBand ? formatFrequency(selectedBand.center) : 'Not set'} />
+              <Info label="M1" value={selectedBand ? formatRfCenterFrequency(selectedBand.first.frequency) : 'Not set'} />
+              <Info label="M2" value={selectedBand ? formatRfCenterFrequency(selectedBand.second.frequency) : 'Not set'} />
+              <Info label="Center" value={selectedBand ? formatRfCenterFrequency(selectedBand.center) : 'Not set'} />
               <Info label="Bandwidth" value={selectedBand ? formatFrequency(selectedBand.bandwidth) : 'Not set'} />
               <Info label="FIR filter" value={markerBandpass.enabled ? `ON, ${markerBandpass.attenuationDb} dB` : 'Off'} />
             </div>
@@ -602,7 +610,7 @@ function BleChannelTestTable({ test }: { test: Record<string, any> }) {
             {rows.map((row: any) => (
               <tr key={row.channel} className="bg-slate-900/70">
                 <td className="px-3 py-2 font-semibold">CH{row.channel}</td>
-                <td className="px-3 py-2">{formatFrequency(Number(row.frequency_hz || 0))}</td>
+                <td className="px-3 py-2">{formatRfCenterFrequency(Number(row.frequency_hz || 0))}</td>
                 <td className={cn('px-3 py-2 font-semibold', row.rf_activity ? 'text-emerald-300' : 'text-slate-400')}>{String(Boolean(row.rf_activity))}</td>
                 <td className="px-3 py-2">{String(row.bursts ?? 0)}</td>
                 <td className={cn('px-3 py-2 font-semibold', row.bitstream ? 'text-emerald-300' : 'text-slate-400')}>{String(Boolean(row.bitstream))}</td>
@@ -629,7 +637,7 @@ function ResultRow({ result, onDelete }: { result: DemodulationResult; onDelete:
   const [outputError, setOutputError] = useState<string | null>(null);
   const title = result.sample_id
     ? `${result.sample_id} | ${result.demodulation_pipeline || result.pipeline || result.mode} | ${result.final_status || result.status}`
-    : `${(result.mode || 'unknown').toUpperCase()} | ${formatFrequency(result.center_frequency_hz || 0)} | BW ${formatFrequency(result.bandwidth_hz || 0)}`;
+    : `${(result.mode || 'unknown').toUpperCase()} | ${formatRfCenterFrequency(result.center_frequency_hz || 0)} | BW ${formatFrequency(result.bandwidth_hz || 0)}`;
   const decodedCount = result.packets_decoded ?? result.frames_decoded;
   const crcCount = result.packets_crc_valid ?? result.frames_crc_valid;
   const reportFile = outputFilename(result.outputs?.report || result.metadata_file || 'demodulation_report.json');
@@ -769,7 +777,7 @@ function ResultRow({ result, onDelete }: { result: DemodulationResult; onDelete:
             <Info label="Status" value={String(result.final_status || result.status || 'n/a')} />
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
-            <Info label="Center freq" value={formatFrequency(result.center_frequency_hz || 0)} />
+            <Info label="Center freq" value={formatRfCenterFrequency(result.center_frequency_hz || 0)} />
             <Info label="Bandwidth" value={formatFrequency(result.bandwidth_hz || 0)} />
             <Info label="Sample rate" value={`${formatFrequency(result.sample_rate_hz || 0)}/s`} />
             <Info label="Duration" value={result.duration_seconds !== undefined ? `${result.duration_seconds} s` : 'n/a'} />
@@ -874,6 +882,7 @@ function DecodedOutputPanel({
     : String(report.confidence_score);
   const accessAddressDetected = Boolean(report?.access_address_detected ?? decodedPackets?.access_address_detected ?? false);
   const validDemodulation = Boolean(report?.valid_demodulation ?? (accessAddressDetected && packetCount >= 1 && crcValidCount >= 1));
+  const visibleCandidatePackets = candidatePackets.slice(0, 20);
   return (
     <div className="rounded-md border border-cyan-900/70 bg-cyan-950/30 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -906,7 +915,7 @@ function DecodedOutputPanel({
         <Info label="CRC valid" value={`${crcValidCount} (${crcRate})`} />
         <Info label="Access address" value={accessAddressDetected ? String(report?.access_address ?? '0x8E89BED6') : 'false'} />
         <Info label="BLE channel" value={String(report?.computed_ble_channel ?? report?.channel ?? decodedPackets?.channel ?? 'n/a')} />
-        <Info label="Center" value={report?.center_frequency_hz ? formatFrequency(Number(report.center_frequency_hz)) : 'n/a'} />
+        <Info label="Center" value={report?.center_frequency_hz ? formatRfCenterFrequency(Number(report.center_frequency_hz)) : 'n/a'} />
         <Info label="Sample rate" value={report?.sample_rate_hz ? `${formatFrequency(Number(report.sample_rate_hz))}/s` : 'n/a'} />
         <Info label="Duration" value={String(report?.capture_duration_seconds ?? report?.duration_seconds ?? 'n/a')} />
       </div>
@@ -919,6 +928,7 @@ function DecodedOutputPanel({
           {candidateCount > 0 && (
             <div className="mt-2 text-xs text-amber-100">
               {candidateCount} BLE packet candidate(s) were found, but they are not decoded packets because CRC validation failed.
+              {candidateCount > visibleCandidatePackets.length ? ` Showing first ${visibleCandidatePackets.length}.` : ''}
             </div>
           )}
         </div>
@@ -980,7 +990,7 @@ function DecodedOutputPanel({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">
-              {candidatePackets.map((packet, index) => (
+              {visibleCandidatePackets.map((packet, index) => (
                 <tr key={`candidate-${packet.packet_index ?? index}-${packet.timestamp_seconds ?? index}`} className="bg-slate-900/70">
                   <td className="px-3 py-2">{packet.packet_index ?? index}</td>
                   <td className="px-3 py-2">{packet.timestamp_seconds !== undefined ? `${packet.timestamp_seconds.toFixed(5)} s` : 'n/a'}</td>
