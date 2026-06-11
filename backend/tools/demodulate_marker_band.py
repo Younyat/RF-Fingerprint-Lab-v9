@@ -17,7 +17,7 @@ from scipy import signal
 from scipy.io import wavfile
 
 
-ANALOG_MODES = {"am", "fm", "wfm"}
+ANALOG_MODES = {"am", "fm", "wfm", "nfm"}
 DIGITAL_MODES = {"ask", "fsk", "psk", "ook"}
 
 
@@ -92,7 +92,7 @@ def demodulate_audio(iq: np.ndarray, mode: str, sample_rate_hz: float, audio_rat
         audio = np.abs(iq)
         sos = signal.butter(5, min(12_000.0, sample_rate_hz * 0.45), btype="lowpass", fs=sample_rate_hz, output="sos")
         audio = signal.sosfilt(sos, audio)
-    elif mode in {"fm", "wfm"}:
+    elif mode in {"fm", "wfm", "nfm"}:
         phase = np.unwrap(np.angle(iq))
         audio = np.diff(phase, prepend=phase[0])
         cutoff = 15_000.0 if mode == "wfm" else 5_000.0
@@ -235,7 +235,7 @@ def main() -> None:
         "audio_rate_hz": args.audio_rate if audio_supported else None,
         "marker_band_filter": filter_metadata,
         "notes": [
-            "AM/FM/WFM generate WAV audio.",
+            "AM/FM/WFM/NFM generate WAV audio.",
             "ASK/FSK/PSK/OOK currently capture IQ and metadata for digital analysis/export.",
         ],
     }

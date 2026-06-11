@@ -74,6 +74,7 @@ export const WINDOW_FUNCTIONS = [
 export const DEMODULATION_MODES = [
   { value: 'am', label: 'AM' },
   { value: 'fm', label: 'FM' },
+  { value: 'nfm', label: 'NFM' },
   { value: 'wfm', label: 'WFM' },
   { value: 'ask', label: 'ASK' },
   { value: 'fsk', label: 'FSK' },
@@ -85,6 +86,7 @@ export const MODULATION_HINTS = [
   { value: 'unknown', label: 'Unknown' },
   { value: 'am', label: 'AM' },
   { value: 'fm', label: 'FM' },
+  { value: 'nfm', label: 'NFM' },
   { value: 'wfm', label: 'WFM' },
   { value: 'ask', label: 'ASK' },
   { value: 'fsk', label: 'FSK' },
@@ -235,6 +237,7 @@ export const API_ENDPOINTS = {
   DEMODULATION_DATASET_CAPTURE: '/api/demodulation/dataset-capture',
   DEMODULATION_PIPELINES: '/api/demodulation/pipelines',
   DEMODULATION_BLE_TEST_CHANNELS: '/api/demodulation/ble-advertising/test-channels',
+  DEMODULATION_WIFI_5GHZ_TEST_CHANNELS: '/api/demodulation/wifi-80211/5ghz/test-channels',
   DEMODULATION_RESULTS: '/api/demodulation/results',
   DEMODULATION_RESULT: (id: string) => `/api/demodulation/results/${id}`,
   DEMODULATION_AUDIO: (id: string) => `/api/demodulation/audio/${id}`,

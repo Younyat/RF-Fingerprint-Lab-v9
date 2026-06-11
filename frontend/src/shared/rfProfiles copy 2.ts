@@ -73,73 +73,6 @@ const WIFI_5GHZ_PROFILES = Object.fromEntries(
   }),
 ) as Record<string, RFProfile>;
 
-
-
-
-const PMR446_ANALOG_CHANNELS = Array.from({ length: 16 }, (_, index) => {
-  const channel = index + 1;
-  const center_frequency_hz = 446_006_250 + index * 12_500;
-  const key = `pmr446_analog_ch${channel}`;
-
-  return [
-    key,
-    {
-      key,
-      label: `PMR446 Analog Channel ${channel}`,
-      family: 'pmr446_walkie_talkie',
-      signal_type: 'pmr446_analog_nfm_voice',
-      center_frequency_hz,
-      marker_left_hz: center_frequency_hz - 6_250,
-      marker_right_hz: center_frequency_hz + 6_250,
-      span_hz: 500_000,
-      sample_rate_hz: 500_000,
-      expected_bandwidth_hz: [6_250, 12_500],
-      modulation: ['NFM', 'FM'],
-      temporal_pattern: 'bursty_voice',
-      capture_duration_seconds: 20,
-      recommended_gain_db: 25,
-      training_note:
-        'Legal licence-free PMR446 walkie-talkie profile for Spain and Europe. Good for short-range voice burst detection and controlled RF fingerprinting if the same channel, distance, gain and antenna orientation are kept stable.',
-    },
-  ];
-}) as Array<[string, RFProfile]>;
-
-const PMR446_ANALOG_PROFILES = Object.fromEntries(PMR446_ANALOG_CHANNELS) as Record<string, RFProfile>;
-
-const PMR446_DIGITAL_6K25_CHANNELS = Array.from({ length: 32 }, (_, index) => {
-  const channel = index + 1;
-  const center_frequency_hz = 446_003_125 + index * 6_250;
-  const key = `pmr446_digital_6k25_ch${channel}`;
-
-  return [
-    key,
-    {
-      key,
-      label: `PMR446 Digital 6.25 kHz Channel ${channel}`,
-      family: 'pmr446_walkie_talkie',
-      signal_type: 'pmr446_digital_voice',
-      center_frequency_hz,
-      marker_left_hz: center_frequency_hz - 3_125,
-      marker_right_hz: center_frequency_hz + 3_125,
-      span_hz: 500_000,
-      sample_rate_hz: 500_000,
-      expected_bandwidth_hz: [6_250],
-      modulation: ['4FSK', 'C4FM', 'Digital_Voice'],
-      temporal_pattern: 'bursty_voice_frames',
-      capture_duration_seconds: 20,
-      recommended_gain_db: 25,
-      training_note:
-        'Digital PMR446 6.25 kHz profile. Use for digital walkie-talkie signal observation and fingerprinting only with controlled devices and stable SDR settings.',
-    },
-  ];
-}) as Array<[string, RFProfile]>;
-
-const PMR446_DIGITAL_6K25_PROFILES = Object.fromEntries(PMR446_DIGITAL_6K25_CHANNELS) as Record<string, RFProfile>;
-
-
-
-
-
 export const RF_PROFILES: Record<string, RFProfile> = {
   fm_broadcast_europe: {
     key: 'fm_broadcast_europe',
@@ -363,28 +296,6 @@ remote_433_ook: {
     recommended_gain_db: 30,
     training_note: 'Specific BLE profile for TI CC2540-like emitters. Use this when building a controlled dataset from CC2540 devices.',
   },
-
-  pmr446_band_monitor_spain: {
-    key: 'pmr446_band_monitor_spain',
-    label: 'PMR446 Spain / Europe Band Monitor',
-    family: 'pmr446_walkie_talkie',
-    signal_type: 'pmr446_band_activity',
-    center_frequency_hz: 446_100_000,
-    marker_left_hz: 446_000_000,
-    marker_right_hz: 446_200_000,
-    span_hz: 500_000,
-    sample_rate_hz: 500_000,
-    expected_bandwidth_hz: [6_250, 12_500],
-    modulation: ['NFM', 'FM', '4FSK', 'C4FM', 'Digital_Voice'],
-    temporal_pattern: 'bursty_voice_or_digital_frames',
-    capture_duration_seconds: 30,
-    recommended_gain_db: 25,
-    training_note:
-      'Wide PMR446 monitoring profile for Spain and Europe. Use this first to detect active walkie-talkie channels across 446.0-446.2 MHz, then switch to the exact analog or digital channel profile for dataset capture.',
-  },
-
-  ...PMR446_ANALOG_PROFILES,
-  ...PMR446_DIGITAL_6K25_PROFILES,
 
     cc2650stk_ble_adv_37: {
     key: 'cc2650stk_ble_adv_37',

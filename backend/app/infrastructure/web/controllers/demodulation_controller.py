@@ -24,12 +24,14 @@ from app.infrastructure.sdr.rf_safety import (
 class DemodulationController:
     IOT_PIPELINES = {
         "ble_advertising",
+        "wifi_80211",
         "generic_gfsk_iot",
         "ook_ask_iot_sensor",
         "generic_fsk_iot",
         "zigbee_ieee802154",
         "lora_css",
         "ook_433_remote",
+        "fsk_remote_decoder",
     }
 
     def __init__(
@@ -82,6 +84,14 @@ class DemodulationController:
                 "family": "bluetooth_low_energy",
                 "label": "BLE advertising channels 37/38/39",
                 "status": "rf_activity_and_sync_scaffold",
+                "outputs": ["decoded_packets.json", "demodulation_report.json"],
+            },
+            {
+                "id": "wifi_80211",
+                "category": "IoT Demodulation Pipelines",
+                "family": "wifi_80211",
+                "label": "Wi-Fi 802.11 2.4 / 5 GHz",
+                "status": "rf_activity_and_frame_scaffold",
                 "outputs": ["decoded_packets.json", "demodulation_report.json"],
             },
             {
@@ -179,6 +189,25 @@ class DemodulationController:
                     "burst segmentation and protocol matching with repetition analysis."
                 ),
             },
+            {
+                "id": "fsk_remote_decoder",
+                "category": "IoT Demodulation Pipelines",
+                "family": "fsk_remote_control",
+                "label": "FSK 315 / 433 / 868 MHz Remote Control",
+                "status": "fsk_bitstream_candidate_decoder",
+                "outputs": [
+                    "fsk_burst_diagnostics.json",
+                    "fsk_candidate_decodings.json",
+                    "selected_fsk_decoding.json",
+                    "demodulation_report.json",
+                ],
+                "description": (
+                    "Remote-control oriented 2-FSK detector for ISM remotes. "
+                    "Segments bursts, estimates two-tone deviation, extracts candidate bitstreams "
+                    "and reports repetition similarity. Protocol-level validation is still marked "
+                    "candidate unless a known frame format is matched."
+                ),
+            },
         ]
 
     def start_demodulation(self, mode: str) -> dict:
@@ -214,8 +243,8 @@ class DemodulationController:
         filter_transition_width_hz: float | None = None,
     ) -> dict:
         mode = mode.lower()
-        if mode not in {"am", "fm", "wfm", "ask", "fsk", "psk", "ook"} | self.IOT_PIPELINES:
-            raise ValueError("mode must be one of am, fm, wfm, ask, fsk, psk, ook, or a registered IoT pipeline")
+        if mode not in {"am", "fm", "nfm", "wfm", "ask", "fsk", "psk", "ook"} | self.IOT_PIPELINES:
+            raise ValueError("mode must be one of am, fm, nfm, wfm, ask, fsk, psk, ook, or a registered IoT pipeline")
         if duration_seconds <= 0 or duration_seconds > 60:
             raise ValueError("duration_seconds must be between 0 and 60")
         if filter_stopband_attenuation_db < 1 or filter_stopband_attenuation_db > 60:
@@ -223,14 +252,7 @@ class DemodulationController:
 
         center_frequency_hz, bandwidth_hz = validate_start_stop(start_frequency_hz, stop_frequency_hz)
         validate_gain(self._settings.gain.gain_db)
-        sample_rate_hz = min(
-            max(
-                float(self._settings.frequency.sample_rate_hz),
-                bandwidth_hz * 4.0,
-                DEFAULT_USRP_B200_LIMITS.min_sample_rate_hz,
-            ),
-            DEFAULT_USRP_B200_LIMITS.max_sample_rate_hz,
-        )
+        sample_rate_hz = self._live_capture_sample_rate_hz(mode, bandwidth_hz)
         validate_sample_rate(sample_rate_hz)
 
         demodulation_id = str(uuid.uuid4())[:8]
@@ -280,9 +302,15 @@ class DemodulationController:
                 cwd=str(backend_root),
                 capture_output=True,
                 text=True,
-                timeout=max(float(duration_seconds) + 30.0, 45.0),
+                timeout=self._live_capture_timeout_seconds(duration_seconds, sample_rate_hz),
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError(
+                "Live demodulation timed out before the SDR worker returned metadata. "
+                f"mode={mode}, sample_rate={sample_rate_hz / 1e6:.2f} MS/s, "
+                f"duration={float(duration_seconds):.1f}s"
+            ) from exc
         except Exception as exc:
             raise ValueError(str(exc)) from exc
         finally:
@@ -531,6 +559,65 @@ class DemodulationController:
             "test": "ble_advertising_channels",
             "duration_seconds": duration_seconds,
             "sample_rate_hz": sample_rate_hz,
+            "rows": rows,
+        }
+
+    def test_wifi_5ghz_channels(
+        self,
+        duration_seconds: float = 0.5,
+        bandwidth_hz: float = 20_000_000.0,
+    ) -> dict:
+        if duration_seconds <= 0 or duration_seconds > 5:
+            raise ValueError("duration_seconds must be between 0 and 5")
+        if bandwidth_hz <= 0 or bandwidth_hz > 40_000_000:
+            raise ValueError("bandwidth_hz must be between 0 and 40 MHz")
+
+        channels = self._wifi_5ghz_channels()
+        rows = []
+        for item in channels:
+            center = item["frequency_hz"]
+            try:
+                result = self.demodulate_marker_band(
+                    start_frequency_hz=center - bandwidth_hz / 2.0,
+                    stop_frequency_hz=center + bandwidth_hz / 2.0,
+                    mode="wifi_80211",
+                    duration_seconds=duration_seconds,
+                    apply_bandpass_filter=False,
+                )
+                packets = result.get("decoded_packets", {})
+                rows.append(
+                    {
+                        "channel": item["channel"],
+                        "frequency_hz": center,
+                        "rf_activity": bool(
+                            result.get("rf_activity_detected")
+                            or result.get("rf_activity", {}).get("signal_detected")
+                            or result.get("rf_metrics", {}).get("rf_activity_detected")
+                        ),
+                        "frames": int(packets.get("frames_decoded") or 0),
+                        "crc_valid": int(packets.get("frames_crc_valid") or 0),
+                        "status": result.get("final_status") or result.get("status"),
+                        "result_id": result.get("id"),
+                    }
+                )
+            except Exception as exc:
+                rows.append(
+                    {
+                        "channel": item["channel"],
+                        "frequency_hz": center,
+                        "rf_activity": False,
+                        "frames": 0,
+                        "crc_valid": 0,
+                        "status": "error",
+                        "error": str(exc),
+                    }
+                )
+        return {
+            "mode": "live_demodulation",
+            "pipeline": "wifi_80211",
+            "test": "wifi_5ghz_channels",
+            "duration_seconds": duration_seconds,
+            "bandwidth_hz": bandwidth_hz,
             "rows": rows,
         }
 
@@ -825,6 +912,8 @@ class DemodulationController:
         joined = f"{signal} {label}"
         if "ble" in joined or "bluetooth" in joined:
             return "ble_advertising"
+        if "wifi" in joined or "wi-fi" in joined or "802.11" in joined:
+            return "wifi_80211"
         if "zigbee" in joined or "802.15.4" in joined or "ieee802154" in joined:
             return "zigbee_ieee802154"
         if "dvbt" in joined or "dvb-t" in joined:
@@ -843,12 +932,59 @@ class DemodulationController:
             return "wfm_broadcast" if signal == "wfm" else signal
         return "ook_fsk_generic"
 
+    def _live_capture_sample_rate_hz(self, mode: str, bandwidth_hz: float) -> float:
+        configured_rate = float(self._settings.frequency.sample_rate_hz)
+        if mode == "wifi_80211":
+            required_rate = max(
+                bandwidth_hz * 1.25,
+                DEFAULT_USRP_B200_LIMITS.min_sample_rate_hz,
+            )
+            sample_rate_hz = min(
+                max(configured_rate, required_rate),
+                30_720_000.0,
+                DEFAULT_USRP_B200_LIMITS.max_sample_rate_hz,
+            )
+        else:
+            sample_rate_hz = min(
+                max(
+                    configured_rate,
+                    bandwidth_hz * 4.0,
+                    DEFAULT_USRP_B200_LIMITS.min_sample_rate_hz,
+                ),
+                DEFAULT_USRP_B200_LIMITS.max_sample_rate_hz,
+            )
+        validate_sample_rate(sample_rate_hz)
+        return sample_rate_hz
+
+    def _live_capture_timeout_seconds(self, duration_seconds: float, sample_rate_hz: float) -> float:
+        sample_rate_msps = sample_rate_hz / 1_000_000.0
+        if sample_rate_msps >= 20.0:
+            return max(float(duration_seconds) + 90.0, 120.0)
+        return max(float(duration_seconds) + 30.0, 45.0)
+
     def _live_worker_mode_for_pipeline(self, pipeline: str) -> str:
         if pipeline in {"ble_advertising", "generic_gfsk_iot", "generic_fsk_iot", "zigbee_ieee802154", "lora_css"}:
             return "fsk"
+        if pipeline == "wifi_80211":
+            return "psk"
         if pipeline in {"ook_ask_iot_sensor", "ook_433_remote"}:
             return "ook"
+        if pipeline == "fsk_remote_decoder":
+            return "fsk"
         return pipeline
+
+    def _wifi_5ghz_channels(self) -> list[dict]:
+        channels = [
+            36, 40, 44, 48,
+            52, 56, 60, 64,
+            100, 104, 108, 112, 116, 120, 124, 128,
+            132, 136, 140, 144,
+            149, 153, 157, 161, 165,
+        ]
+        return [
+            {"channel": channel, "frequency_hz": float((5000 + channel * 5) * 1_000_000)}
+            for channel in channels
+        ]
 
     def _base_dataset_report(self, demodulation_id: str, data: dict, pipeline: str, output_dir: Path) -> dict:
         return {
@@ -892,6 +1028,14 @@ class DemodulationController:
         audio = audio[::step]
         if audio.size < 16:
             return None
+        if pipeline == "nfm":
+            actual_rate = sample_rate_hz / step
+            cutoff_norm = min(5000.0 / (actual_rate / 2.0), 0.95)
+            n = 63
+            t = np.arange(n) - (n - 1) / 2.0
+            h = np.sinc(2.0 * cutoff_norm * t) * np.hamming(n)
+            h = (h / h.sum()).astype(np.float32)
+            audio = np.convolve(audio, h, mode="same")
         audio = audio - np.mean(audio)
         peak = float(np.max(np.abs(audio)))
         if not np.isfinite(peak) or peak <= 1e-12:
@@ -924,7 +1068,7 @@ class DemodulationController:
         # Without this, a 1 MHz offset (e.g. SDR at 2425 MHz for BLE CH38 at
         # 2426 MHz) biases the instantaneous-frequency estimate and, more
         # importantly, means the hardware receive filter is not centred on the
-        # BLE channel — clipping one sideband and causing bit errors.
+        # BLE channel â€” clipping one sideband and causing bit errors.
         freq_offset_hz = channel_frequency_hz - center
         freq_correction_applied = abs(freq_offset_hz) > 1000.0
         if freq_correction_applied:
@@ -1125,7 +1269,7 @@ class DemodulationController:
                 warnings.append(
                     f"SDR center ({center/1e6:.3f} MHz) is {abs(freq_offset_hz)/1e3:.0f} kHz from BLE "
                     f"CH{channel} ({channel_frequency_hz/1e6:.0f} MHz). The hardware receive filter "
-                    f"(±{hw_bw_hz/2/1e6:.1f} MHz) may have clipped one sideband — re-tune the SDR to "
+                    f"(Â±{hw_bw_hz/2/1e6:.1f} MHz) may have clipped one sideband â€” re-tune the SDR to "
                     f"{channel_frequency_hz/1e6:.0f} MHz for best results. "
                     f"Software frequency correction ({freq_offset_hz/1e3:+.0f} kHz) has been applied."
                 )
@@ -1199,6 +1343,9 @@ class DemodulationController:
             result.update(self._iot_common_envelope(iq, data, pipeline, "bluetooth_low_energy", "gfsk", "ble_advertising_decoder"))
         elif pipeline == "generic_gfsk_iot":
             result = self._generic_gfsk_iot(iq, data, output_dir)
+        elif pipeline == "wifi_80211":
+            result = self._wifi_80211_scaffold(iq, data, output_dir)
+            result.update(self._iot_common_envelope(iq, data, "wifi_80211", "wifi_80211", "ofdm_dsss", "ieee80211_frame_parser"))
         elif pipeline == "ook_ask_iot_sensor":
             result = self._ook_ask_iot_sensor(iq, data, output_dir)
         elif pipeline == "generic_fsk_iot":
@@ -1213,6 +1360,9 @@ class DemodulationController:
         elif pipeline == "ook_433_remote":
             result = self._ook_433_remote(iq, data, output_dir)
             result.update(self._iot_common_envelope(iq, data, "ook_433_remote", "ook_remote_control", "ook_ask", "ev1527_pt2262_decoder"))
+        elif pipeline == "fsk_remote_decoder":
+            result = self._fsk_remote_decoder(iq, data, output_dir)
+            result.update(self._iot_common_envelope(iq, data, "fsk_remote_decoder", "fsk_remote_control", "2fsk", "fsk_remote_candidate_decoder"))
         else:
             result = self._simple_digital_scaffold(iq, data, output_dir)
             result.update(self._iot_common_envelope(iq, data, pipeline, "generic_iot", "unknown", None))
@@ -1633,7 +1783,7 @@ class DemodulationController:
         pad = int(max(4 * sps_int, round(40e-6 * sample_rate)))
         decoded: list[dict] = []
         used_offsets: list[int] = []
-        # BLE advertising preamble + AA template (40 bits, ±1 encoding)
+        # BLE advertising preamble + AA template (40 bits, Â±1 encoding)
         ble_sync_tmpl = np.array([
             1,0,1,0,1,0,1,0, 0,1,1,0,1,0,1,1,
             0,1,1,1,1,1,0,1, 1,0,0,1,0,0,0,1,
@@ -1665,7 +1815,7 @@ class DemodulationController:
                     best_score = score
                     best_packets = packets
                     best_phase = phase
-            # Reject bursts that don't match the BLE sync word at any phase — these are
+            # Reject bursts that don't match the BLE sync word at any phase â€” these are
             # non-BLE 2.4 GHz interference that happen to partially match the AA pattern.
             if best_sync_across_phases < 28.0:
                 continue
@@ -1716,7 +1866,7 @@ class DemodulationController:
         crc_variant_matches = []
         if computed_reflected == received:
             crc_variant_matches.append("reflected_crc24")
-        # Decode advertiser address (6 bytes, LSB first → reverse for display)
+        # Decode advertiser address (6 bytes, LSB first â†’ reverse for display)
         adv_bytes = [self._ble_int_from_bits(dw, 8, 16 + i * 8) for i in range(6)]
         adv_addr = ":".join(f"{b:02X}" for b in reversed(adv_bytes))
         # AdvData / payload hex
@@ -1788,12 +1938,12 @@ class DemodulationController:
         if bits.size < 50:
             return []
         # Advertising sync word: preamble + AA (0x8E89BED6), each byte LSB-first
-        # AA first bit on air = LSB of 0xD6 = 0 → preamble = 0x55 (01010101b), LSB-first = [1,0,1,0,1,0,1,0]
-        # 0x55 → [1,0,1,0,1,0,1,0]
-        # 0xD6 = 11010110 → [0,1,1,0,1,0,1,1]
-        # 0xBE = 10111110 → [0,1,1,1,1,1,0,1]
-        # 0x89 = 10001001 → [1,0,0,1,0,0,0,1]
-        # 0x8E = 10001110 → [0,1,1,1,0,0,0,1]
+        # AA first bit on air = LSB of 0xD6 = 0 â†’ preamble = 0x55 (01010101b), LSB-first = [1,0,1,0,1,0,1,0]
+        # 0x55 â†’ [1,0,1,0,1,0,1,0]
+        # 0xD6 = 11010110 â†’ [0,1,1,0,1,0,1,1]
+        # 0xBE = 10111110 â†’ [0,1,1,1,1,1,0,1]
+        # 0x89 = 10001001 â†’ [1,0,0,1,0,0,0,1]
+        # 0x8E = 10001110 â†’ [0,1,1,1,0,0,0,1]
         SYNC = np.array([1,0,1,0,1,0,1,0,
                          0,1,1,0,1,0,1,1,
                          0,1,1,1,1,1,0,1,
@@ -2001,7 +2151,7 @@ class DemodulationController:
         return all_frames
 
     def _zigbee_ieee802154(self, iq: np.ndarray, data: dict, output_dir: Path) -> dict:
-        """Full IEEE 802.15.4 O-QPSK DSSS pipeline: chip recovery → PN despreading → SFD → FCS."""
+        """Full IEEE 802.15.4 O-QPSK DSSS pipeline: chip recovery â†’ PN despreading â†’ SFD â†’ FCS."""
         center = float(data.get("center_frequency_hz") or 0.0)
         sample_rate = float(data.get("sample_rate_hz") or 1.0)
         channel, ch_hz = self._zigbee_channel_from_frequency(center)
@@ -2095,7 +2245,7 @@ class DemodulationController:
                 else ["No Zigbee/IEEE 802.15.4 frames found in the capture."]
             ),
             "warnings": (
-                ["Low SNR or wrong channel — chip recovery may be unreliable."]
+                ["Low SNR or wrong channel â€” chip recovery may be unreliable."]
                 if not n_crc_valid and activity.get("signal_detected")
                 else []
             ),
@@ -2124,7 +2274,7 @@ class DemodulationController:
     def _ook433_pulse_sequence(
         self, binary: np.ndarray, sample_rate: float
     ) -> list[tuple[int, float]]:
-        """Time-ordered (level: 0/1, duration_µs) for every run in binary signal."""
+        """Time-ordered (level: 0/1, duration_Âµs) for every run in binary signal."""
         if binary.size == 0:
             return []
         edges = np.flatnonzero(np.diff(binary.astype(np.int8)))
@@ -2133,7 +2283,7 @@ class DemodulationController:
         pulses: list[tuple[int, float]] = []
         for s, e in zip(seg_starts, seg_ends):
             dur_us = (e - s) / sample_rate * 1e6
-            if dur_us >= 50.0:  # ignore sub-50 µs glitches
+            if dur_us >= 50.0:  # ignore sub-50 Âµs glitches
                 pulses.append((int(binary[s]), dur_us))
         return pulses
 
@@ -2321,12 +2471,405 @@ class DemodulationController:
             "instantaneous_frequency_std_hz": round(float(np.std(clipped)), 3),
         }
 
+    def _fsk_bits_to_hex(self, bits: list[int]) -> str:
+        return self._ook433_bits_to_hex(bits)
+
+    def _estimate_fsk_symbol_rate(self, tone_bits: np.ndarray, sample_rate: float) -> tuple[float | None, float]:
+        if tone_bits.size < 4 or sample_rate <= 0:
+            return None, 0.0
+        transitions = np.flatnonzero(np.diff(tone_bits.astype(np.int8)) != 0)
+        if transitions.size < 2:
+            return None, 0.0
+        runs = np.diff(np.concatenate([[0], transitions + 1, [tone_bits.size]]))
+        runs = runs[(runs > 0) & (runs < np.percentile(runs, 95))]
+        if runs.size == 0:
+            return None, 0.0
+        samples_per_symbol = float(np.percentile(runs, 25))
+        if samples_per_symbol <= 0:
+            return None, 0.0
+        symbol_rate = sample_rate / samples_per_symbol
+        consistency = 1.0 - min(1.0, float(np.std(runs)) / max(float(np.mean(runs)), 1.0))
+        return float(symbol_rate), float(max(0.0, min(1.0, consistency)))
+
+    def _fsk_decode_burst(
+        self,
+        iq: np.ndarray,
+        start_sample: int,
+        end_sample: int,
+        sample_rate: float,
+        burst_index: int,
+    ) -> dict:
+        segment = iq[max(0, start_sample):min(iq.size, end_sample)]
+        duration_s = (end_sample - start_sample) / sample_rate if sample_rate > 0 else 0.0
+        base = {
+            "burst_index": burst_index,
+            "burst_start_time": start_sample / sample_rate if sample_rate > 0 else None,
+            "burst_duration": duration_s,
+            "fsk_detected": False,
+            "rejection_reason": None,
+        }
+        if segment.size < 64 or sample_rate <= 0:
+            base["rejection_reason"] = "burst_too_short_for_fsk"
+            return base
+        analysis_sample_rate = float(sample_rate)
+        decimation = 1
+        max_analysis_samples = 300_000
+        if segment.size > max_analysis_samples:
+            decimation = int(np.ceil(segment.size / max_analysis_samples))
+            segment = segment[::decimation]
+            analysis_sample_rate = sample_rate / decimation
+            base["analysis_decimation"] = decimation
+            base["analysis_sample_rate_hz"] = round(float(analysis_sample_rate), 3)
+        inst = np.diff(np.unwrap(np.angle(segment))).astype(np.float32) * (analysis_sample_rate / (2.0 * np.pi))
+        if inst.size < 32:
+            base["rejection_reason"] = "insufficient_instantaneous_frequency_samples"
+            return base
+        inst = inst - float(np.median(inst))
+        lo = float(np.percentile(inst, 2))
+        hi = float(np.percentile(inst, 98))
+        inst = inst[(inst >= lo) & (inst <= hi)]
+        if inst.size < 32:
+            base["rejection_reason"] = "frequency_samples_clipped_empty"
+            return base
+        median = float(np.median(inst))
+        low_cluster = inst[inst <= median]
+        high_cluster = inst[inst > median]
+        if low_cluster.size < 8 or high_cluster.size < 8:
+            base["rejection_reason"] = "two_tone_clusters_not_found"
+            return base
+        fsk_low = float(np.median(low_cluster))
+        fsk_high = float(np.median(high_cluster))
+        tone_separation = abs(fsk_high - fsk_low)
+        deviation = tone_separation / 2.0
+        threshold = (fsk_low + fsk_high) / 2.0
+        balance = min(low_cluster.size, high_cluster.size) / max(low_cluster.size, high_cluster.size)
+        if tone_separation < 2_000.0 or balance < 0.10:
+            base.update({
+                "fsk_low_hz": round(fsk_low, 3),
+                "fsk_high_hz": round(fsk_high, 3),
+                "tone_separation_hz": round(float(tone_separation), 3),
+                "frequency_deviation_hz": round(float(deviation), 3),
+                "frequency_cluster_balance": round(float(balance), 4),
+                "rejection_reason": "weak_or_unbalanced_fsk_tones",
+            })
+            return base
+        tone_bits = (inst > threshold).astype(np.uint8)
+        symbol_rate, symbol_confidence = self._estimate_fsk_symbol_rate(tone_bits, analysis_sample_rate)
+        if symbol_rate is None:
+            symbol_rate = max(1_000.0, min(20_000.0, 1.0 / max(duration_s / 64.0, 1e-6)))
+            symbol_confidence = 0.15
+        symbol_rate = max(250.0, min(50_000.0, float(symbol_rate)))
+        candidate_rates = sorted({
+            float(symbol_rate),
+            float(max(250.0, symbol_rate * 0.5)),
+            float(min(50_000.0, symbol_rate * 2.0)),
+            1_000.0,
+            2_000.0,
+            4_800.0,
+            9_600.0,
+            19_200.0,
+        })
+        decodings = []
+        for rate in candidate_rates:
+            samples_per_symbol = max(4, int(round(analysis_sample_rate / rate)))
+            bits = []
+            for offset in range(0, tone_bits.size, samples_per_symbol):
+                window = tone_bits[offset:offset + samples_per_symbol]
+                if window.size:
+                    bits.append(1 if float(np.mean(window)) >= 0.5 else 0)
+            if len(bits) < 8:
+                continue
+            for polarity in ("normal", "inverted"):
+                candidate_bits = bits if polarity == "normal" else [1 - bit for bit in bits]
+                entropy = self._ook433_binary_entropy(candidate_bits)
+                decodings.append({
+                    "symbol_rate_estimate": round(float(rate), 3),
+                    "polarity": polarity,
+                    "bit_length": len(candidate_bits),
+                    "bitstring": "".join(str(bit) for bit in candidate_bits[:2048]),
+                    "hex_candidate": self._fsk_bits_to_hex(candidate_bits),
+                    "entropy": round(float(entropy), 4),
+                    "confidence": round(float(max(0.0, min(1.0, 0.45 * symbol_confidence + 0.35 * min(1.0, tone_separation / 50_000.0) + 0.20 * min(1.0, entropy)))), 4),
+                })
+        selected = max(decodings, key=lambda item: (item["confidence"], item["bit_length"]), default=None)
+        fsk_noise = float(np.std(inst - np.where(tone_bits > 0, fsk_high, fsk_low))) if inst.size == tone_bits.size else float(np.std(inst))
+        fsk_snr = 20.0 * np.log10(max(tone_separation, 1e-9) / max(fsk_noise, 1e-9))
+        base.update({
+            "fsk_detected": True,
+            "fsk_low_hz": round(fsk_low, 3),
+            "fsk_high_hz": round(fsk_high, 3),
+            "frequency_deviation_hz": round(float(deviation), 3),
+            "tone_separation_hz": round(float(tone_separation), 3),
+            "symbol_rate_estimate": round(float(symbol_rate), 3),
+            "symbol_rate_confidence": round(float(symbol_confidence), 4),
+            "frequency_cluster_balance": round(float(balance), 4),
+            "fsk_snr": round(float(fsk_snr), 3),
+            "candidate_decodings": decodings[:20],
+            "selected_decoding": selected,
+        })
+        return base
+
+    def _fsk_remote_candidates(
+        self,
+        iq: np.ndarray,
+        bursts_indexed: list[list[dict]],
+        sample_rate: float,
+    ) -> tuple[list[dict], list[dict], dict]:
+        diagnostics: list[dict] = []
+        candidates: list[dict] = []
+        for index, burst in enumerate(bursts_indexed):
+            if not burst:
+                continue
+            decoded = self._fsk_decode_burst(
+                iq,
+                int(burst[0]["start_sample"]),
+                int(burst[-1]["end_sample"]),
+                sample_rate,
+                index,
+            )
+            diagnostics.append(decoded)
+            selected = decoded.get("selected_decoding")
+            if decoded.get("fsk_detected") and isinstance(selected, dict):
+                item = dict(selected)
+                item["burst_index"] = index
+                item["fsk_low_hz"] = decoded.get("fsk_low_hz")
+                item["fsk_high_hz"] = decoded.get("fsk_high_hz")
+                item["frequency_deviation_hz"] = decoded.get("frequency_deviation_hz")
+                item["tone_separation_hz"] = decoded.get("tone_separation_hz")
+                candidates.append(item)
+        bitsets = [
+            [int(ch) for ch in str(candidate.get("bitstring") or "") if ch in "01"]
+            for candidate in candidates
+        ]
+        similarities = [
+            self._ook433_bit_similarity(bitsets[i], bitsets[j])
+            for i in range(len(bitsets))
+            for j in range(i + 1, len(bitsets))
+            if bitsets[i] and bitsets[j]
+        ]
+        selected = max(candidates, key=lambda item: (item.get("confidence") or 0.0, item.get("bit_length") or 0), default={})
+        if selected:
+            selected = dict(selected)
+            selected["repetition_similarity"] = round(float(np.mean(similarities)), 4) if similarities else 0.0
+            selected["final_status"] = "fsk_bitstream_candidate"
+            selected["valid_protocol"] = False
+        return diagnostics, candidates, selected
+
+    def _fsk_remote_candidates_from_ranges(
+        self,
+        iq: np.ndarray,
+        burst_ranges: list[tuple[int, int]],
+        sample_rate: float,
+    ) -> tuple[list[dict], list[dict], dict]:
+        diagnostics: list[dict] = []
+        candidates: list[dict] = []
+        for index, (start_sample, end_sample) in enumerate(burst_ranges):
+            decoded = self._fsk_decode_burst(iq, start_sample, end_sample, sample_rate, index)
+            diagnostics.append(decoded)
+            selected = decoded.get("selected_decoding")
+            if decoded.get("fsk_detected") and isinstance(selected, dict):
+                item = dict(selected)
+                item["burst_index"] = index
+                item["fsk_low_hz"] = decoded.get("fsk_low_hz")
+                item["fsk_high_hz"] = decoded.get("fsk_high_hz")
+                item["frequency_deviation_hz"] = decoded.get("frequency_deviation_hz")
+                item["tone_separation_hz"] = decoded.get("tone_separation_hz")
+                candidates.append(item)
+        bitsets = [
+            [int(ch) for ch in str(candidate.get("bitstring") or "") if ch in "01"]
+            for candidate in candidates
+        ]
+        similarities = [
+            self._ook433_bit_similarity(bitsets[i], bitsets[j])
+            for i in range(len(bitsets))
+            for j in range(i + 1, len(bitsets))
+            if bitsets[i] and bitsets[j]
+        ]
+        selected = max(candidates, key=lambda item: (item.get("confidence") or 0.0, item.get("bit_length") or 0), default={})
+        if selected:
+            selected = dict(selected)
+            selected["repetition_similarity"] = round(float(np.mean(similarities)), 4) if similarities else 0.0
+            selected["final_status"] = "fsk_bitstream_candidate"
+            selected["valid_protocol"] = False
+        return diagnostics, candidates, selected
+
+    @staticmethod
+    def _burst_ranges_from_ook_report(result: dict) -> list[tuple[int, int]]:
+        decoded_frames = result.get("decoded_frames")
+        diagnostics = decoded_frames.get("burst_diagnostics") if isinstance(decoded_frames, dict) else None
+        if not isinstance(diagnostics, list):
+            return []
+        ranges: list[tuple[int, int]] = []
+        for item in diagnostics:
+            if not isinstance(item, dict):
+                continue
+            start = item.get("burst_start_sample")
+            stop = item.get("burst_end_sample")
+            try:
+                start_i = int(start)
+                stop_i = int(stop)
+            except (TypeError, ValueError):
+                continue
+            if stop_i > start_i:
+                ranges.append((start_i, stop_i))
+        return ranges
+
+    @staticmethod
+    def _compact_fsk_decoding_for_response(decoding: Any) -> dict:
+        if not isinstance(decoding, dict):
+            return {}
+        compact = {
+            key: value
+            for key, value in decoding.items()
+            if key not in {"bitstring", "hex_candidate", "samples", "symbols"}
+        }
+        bitstring = decoding.get("bitstring")
+        if bitstring is not None:
+            text = str(bitstring)
+            compact["bit_preview"] = text[:256]
+            compact["bit_length_inline"] = len(text)
+            compact["bitstring_truncated"] = len(text) > 256
+        hex_candidate = decoding.get("hex_candidate")
+        if hex_candidate is not None:
+            text = str(hex_candidate)
+            compact["hex_preview"] = text[:256]
+            compact["hex_length_inline"] = len(text)
+            compact["hex_candidate_truncated"] = len(text) > 256
+        return compact
+
+    def _compact_fsk_remote_response(self, result: dict) -> dict:
+        selected = self._compact_fsk_decoding_for_response(result.get("selected_fsk_decoding"))
+        result["selected_fsk_decoding"] = selected
+
+        decoded_frames = result.get("decoded_frames")
+        if isinstance(decoded_frames, dict):
+            adaptive = decoded_frames.get("adaptive_decoding")
+            if isinstance(adaptive, dict):
+                adaptive = dict(adaptive)
+                adaptive["selected_fsk_decoding"] = selected
+                selected_hex = adaptive.get("selected_hex_candidate")
+                if selected_hex is not None:
+                    text = str(selected_hex)
+                    adaptive["selected_hex_preview"] = text[:256]
+                    adaptive["selected_hex_length_inline"] = len(text)
+                    adaptive["selected_hex_candidate_truncated"] = len(text) > 256
+                    adaptive.pop("selected_hex_candidate", None)
+            result["decoded_frames"] = {
+                "protocol": decoded_frames.get("protocol"),
+                "pipeline": decoded_frames.get("pipeline"),
+                "center_frequency_hz": decoded_frames.get("center_frequency_hz"),
+                "bursts_detected": decoded_frames.get("bursts_detected"),
+                "symbol_level_bursts": decoded_frames.get("symbol_level_bursts"),
+                "no_symbol_level_bursts": decoded_frames.get("no_symbol_level_bursts"),
+                "possible_modulation_counts": decoded_frames.get("possible_modulation_counts"),
+                "recommended_pipeline": decoded_frames.get("recommended_pipeline"),
+                "fsk_majority_detected": decoded_frames.get("fsk_majority_detected"),
+                "selected_fsk_decoding": selected,
+                "repeat_analysis": decoded_frames.get("repeat_analysis"),
+                "burst_comparison": decoded_frames.get("burst_comparison"),
+                "adaptive_decoding": adaptive,
+            }
+
+        adaptive = result.get("adaptive_decoding")
+        if isinstance(adaptive, dict):
+            adaptive = dict(adaptive)
+            adaptive["selected_fsk_decoding"] = selected
+            selected_hex = adaptive.get("selected_hex_candidate")
+            if selected_hex is not None:
+                text = str(selected_hex)
+                adaptive["selected_hex_preview"] = text[:256]
+                adaptive["selected_hex_length_inline"] = len(text)
+                adaptive["selected_hex_candidate_truncated"] = len(text) > 256
+                adaptive.pop("selected_hex_candidate", None)
+            result["adaptive_decoding"] = adaptive
+        return result
+
+    def _fsk_remote_decoder(self, iq: np.ndarray, data: dict, output_dir: Path) -> dict:
+        base = self._ook_433_remote(iq, data, output_dir)
+        candidates = base.get("fsk_candidate_decodings")
+        if not isinstance(candidates, list):
+            selected = base.get("selected_fsk_decoding")
+            candidates = [selected] if isinstance(selected, dict) and selected else []
+
+        selected = base.get("selected_fsk_decoding")
+        if not candidates:
+            sample_rate = float(data.get("sample_rate_hz") or base.get("sample_rate_hz") or 1.0)
+            forced_ranges = self._burst_ranges_from_ook_report(base)
+            if forced_ranges:
+                forced_diagnostics, forced_candidates, forced_selected = self._fsk_remote_candidates_from_ranges(
+                    iq,
+                    forced_ranges,
+                    sample_rate,
+                )
+                (output_dir / "fsk_burst_diagnostics.json").write_text(
+                    json.dumps({"bursts": forced_diagnostics}, indent=2),
+                    encoding="utf-8",
+                )
+                (output_dir / "fsk_candidate_decodings.json").write_text(
+                    json.dumps({"candidate_count": len(forced_candidates), "candidates": forced_candidates}, indent=2),
+                    encoding="utf-8",
+                )
+                (output_dir / "selected_fsk_decoding.json").write_text(
+                    json.dumps(forced_selected, indent=2),
+                    encoding="utf-8",
+                )
+                candidates = forced_candidates
+                selected = forced_selected
+
+        selected_ok = isinstance(selected, dict) and bool(selected)
+        bitstream_candidate = selected_ok and int(selected.get("bit_length") or 0) > 0
+        final_status = "fsk_bitstream_candidate" if bitstream_candidate else (
+            "fsk_activity_detected_no_bitstream" if base.get("rf_activity_detected") else "no_signal_detected"
+        )
+
+        base.update(
+            {
+                "status": "partial_decode" if bitstream_candidate else "rf_activity_only",
+                "final_status": final_status,
+                "valid_demodulation": False,
+                "protocol": "fsk_remote_control",
+                "pipeline": "fsk_remote_decoder",
+                "demodulation_pipeline": "fsk_remote_decoder",
+                "recommended_pipeline": None,
+                "fsk_candidates": len(candidates),
+                "selected_fsk_decoding": selected if isinstance(selected, dict) else {},
+                "notes": [
+                    "FSK remote-control pipeline selected.",
+                    "A candidate FSK bitstream was recovered, but no known remote-control frame format was validated."
+                    if bitstream_candidate
+                    else "RF activity was detected, but no stable FSK bitstream candidate was recovered.",
+                ],
+                "warnings": [
+                    "candidate_only_no_protocol_crc",
+                    "use repeated captures and compare selected_fsk_decoding for stable frame fields",
+                ],
+            }
+        )
+        base.setdefault("stage_diagnostics", {})
+        base["stage_diagnostics"].update(
+            {
+                "pipeline": "fsk_remote_decoder",
+                "fsk_candidates": len(candidates),
+                "selected_fsk_bit_length": int(selected.get("bit_length") or 0) if isinstance(selected, dict) else 0,
+                "selected_frequency_deviation_hz": selected.get("frequency_deviation_hz") if isinstance(selected, dict) else None,
+                "selected_tone_separation_hz": selected.get("tone_separation_hz") if isinstance(selected, dict) else None,
+                "selected_repetition_similarity": selected.get("repetition_similarity") if isinstance(selected, dict) else None,
+                "demodulation_level_reached": "fsk_candidate_bitstream" if bitstream_candidate else "rf_activity_only",
+            }
+        )
+        base = self._compact_fsk_remote_response(base)
+
+        report_path = output_dir / "demodulation_report.json"
+        base.setdefault("outputs", {})["report"] = str(report_path)
+        report_path.write_text(json.dumps(base, indent=2, ensure_ascii=False), encoding="utf-8")
+        return base
+
     def _ook433_estimate_t_unit(
         self, pulses: list[tuple[int, float]]
     ) -> tuple[float, float]:
         """
-        Estimate the basic time quantum T (µs) via histogram peak detection on
-        HIGH-pulse widths.  Returns (t_unit_µs, confidence 0–1).
+        Estimate the basic time quantum T (Âµs) via histogram peak detection on
+        HIGH-pulse widths.  Returns (t_unit_Âµs, confidence 0â€“1).
 
         Most 433 MHz OOK protocols use two pulse lengths in a 1:3 ratio (EV1527,
         PT2262).  T is the shorter of the two dominant peaks.
@@ -2339,10 +2882,10 @@ class DemodulationController:
         )
         if highs.size < 2:
             return 350.0, 0.0
-        # 20 µs bins over [80, 8000] µs
+        # 20 Âµs bins over [80, 8000] Âµs
         bins = np.arange(80, 8001, 20, dtype=np.float32)
         hist, _ = np.histogram(highs, bins=bins)
-        # Local maxima with count ≥ 2
+        # Local maxima with count â‰¥ 2
         peak_centers: list[float] = []
         for i in range(1, len(hist) - 1):
             if hist[i] >= 2 and hist[i] > hist[i - 1] and hist[i] > hist[i + 1]:
@@ -2355,7 +2898,7 @@ class DemodulationController:
         confidence = 0.5
         if len(peak_centers) >= 2:
             ratio = peak_centers[1] / t_unit if t_unit > 0 else 0.0
-            if 2.5 <= ratio <= 3.5:   # 1:3 → EV1527, PT2262
+            if 2.5 <= ratio <= 3.5:   # 1:3 â†’ EV1527, PT2262
                 confidence = 0.90
             elif 1.8 <= ratio <= 2.2:  # 1:2 ratio
                 confidence = 0.75
@@ -2372,7 +2915,7 @@ class DemodulationController:
     ) -> list[list[tuple[int, float]]]:
         """
         Segment pulse sequence into bursts separated by long LOW gaps (sync/inter-
-        frame silence).  A gap delimiter is a LOW duration ≥ max(8·T, 2 ms).
+        frame silence).  A gap delimiter is a LOW duration â‰¥ max(8Â·T, 2 ms).
         """
         if not pulses:
             return []
@@ -2469,9 +3012,9 @@ class DemodulationController:
         """
         Decode PWM bit-stream from consecutive HIGH+LOW pulse pairs.
         Convention (EV1527 / SC1527 / HX2262):
-          bit 0 → 1T HIGH + 3T LOW
-          bit 1 → 3T HIGH + 1T LOW
-        Tolerance: ±60 % of T to handle crystal tolerance and propagation jitter.
+          bit 0 â†’ 1T HIGH + 3T LOW
+          bit 1 â†’ 3T HIGH + 1T LOW
+        Tolerance: Â±60 % of T to handle crystal tolerance and propagation jitter.
         """
         bits: list[int] = []
         tol = 0.6 * t_unit_us
@@ -2539,7 +3082,7 @@ class DemodulationController:
         Match an EV1527 / SC1527 / HX2262 24-bit OOK frame.
         Frame structure: [20-bit device address][4-bit button code].
         Bit order: MSB first (as transmitted on-air after sync pulse).
-        No CRC — receiver relies on repetition for reliability.
+        No CRC â€” receiver relies on repetition for reliability.
         """
         if len(bits) < 24:
             return None
@@ -2567,10 +3110,10 @@ class DemodulationController:
         """
         Match a PT2262 / SC2262 / HT6P20B 12-tri-state OOK frame.
         Each tri-state is two consecutive PWM pulse-pairs (4 pulses total):
-          tri 0 → (1T H + 3T L) + (1T H + 3T L)  [D0 D0]
-          tri 1 → (3T H + 1T L) + (3T H + 1T L)  [D1 D1]
-          tri F → (1T H + 3T L) + (3T H + 1T L)  [D0 D1]  (floating pin)
-        12 tri-states → 8 address + 4 data.
+          tri 0 â†’ (1T H + 3T L) + (1T H + 3T L)  [D0 D0]
+          tri 1 â†’ (3T H + 1T L) + (3T H + 1T L)  [D1 D1]
+          tri F â†’ (1T H + 3T L) + (3T H + 1T L)  [D0 D1]  (floating pin)
+        12 tri-states â†’ 8 address + 4 data.
         """
         if len(pulses) < 48:
             return None
@@ -3067,13 +3610,13 @@ class DemodulationController:
 
         Pipeline stages:
           1. Adaptive envelope thresholding (IQR-based, robust to ISM noise floor).
-          2. Binary pulse-sequence extraction with 50 µs glitch rejection.
+          2. Binary pulse-sequence extraction with 50 Âµs glitch rejection.
           3. T-unit estimation via histogram peak detection on HIGH-pulse widths.
-          4. Burst segmentation by sync-gap detection (LOW ≥ 8·T or 2 ms).
+          4. Burst segmentation by sync-gap detection (LOW â‰¥ 8Â·T or 2 ms).
           5. Per-burst PWM decoding (1T/3T convention) + protocol matching:
-               • EV1527 / SC1527 / HX2262  (20-bit address + 4-bit button, no CRC)
-               • PT2262 / SC2262 / HT6P20B (12 tri-states: 8-addr + 4-data)
-          6. Repetition analysis: most remotes repeat the frame 3–10 times per press.
+               â€¢ EV1527 / SC1527 / HX2262  (20-bit address + 4-bit button, no CRC)
+               â€¢ PT2262 / SC2262 / HT6P20B (12 tri-states: 8-addr + 4-data)
+          6. Repetition analysis: most remotes repeat the frame 3â€“10 times per press.
         """
         center = float(data.get("center_frequency_hz") or 0.0)
         sample_rate = float(data.get("sample_rate_hz") or 1.0)
@@ -3407,6 +3950,14 @@ class DemodulationController:
             1 for diag in preliminary_diagnostics if diag.get("symbol_level_detected")
         )
         no_symbol_level_count = n_bursts - symbol_level_burst_count
+        fsk_majority = (
+            n_bursts > 0
+            and possible_modulation_counts.get("fsk_candidate", 0) >= max(1, int(np.ceil(n_bursts * 0.6)))
+            and no_symbol_level_count >= max(1, int(np.ceil(n_bursts * 0.6)))
+        )
+        fsk_burst_diagnostics, fsk_candidate_decodings, selected_fsk_decoding = (
+            self._fsk_remote_candidates(iq, bursts_indexed, sample_rate) if fsk_majority else ([], [], {})
+        )
         cluster0_indices = [
             index for index, cluster_id in enumerate(cluster_ids)
             if cluster_id == 0 and index < len(all_decoded_bits)
@@ -3430,7 +3981,22 @@ class DemodulationController:
             burst_stability_confidence = min(burst_stability_confidence, 0.25)
         protocol_decoding_confidence = min(1.0, (n_ev1527 + n_pt2262) / max(n_bursts, 1)) if n_bursts else 0.0
         selected_encoding_confidence = float(selected_decoding.get("confidence") or 0.0)
-        if n_bursts and symbol_level_burst_count == 0:
+        if fsk_majority:
+            selected_encoding_confidence = 0.0
+            selected_decoding = {
+                "encoding_type": None,
+                "bitstring": "",
+                "hex_candidate": "",
+                "bit_length": 0,
+                "confidence": 0.0,
+                "recommended_pipeline": "fsk_remote_decoder",
+                "rejection_reason": "not_symbol_level_ook_possible_fsk",
+                "selected_reason": (
+                    "Most bursts are FSK candidates and do not expose symbol-level OOK amplitude transitions. "
+                    "OOK adaptive encoding is disabled; run the FSK remote decoder."
+                ),
+            }
+        elif n_bursts and symbol_level_burst_count == 0:
             selected_encoding_confidence = min(selected_encoding_confidence, 0.10)
             selected_decoding["confidence"] = round(float(selected_encoding_confidence), 4)
             selected_decoding["rejection_reason"] = "no_symbol_level_ook_transitions_detected"
@@ -3443,10 +4009,14 @@ class DemodulationController:
             else None
         )
         selected_reason = (
-            f"Selected {selected_decoding.get('encoding_type')} as the most stable non-rejected hypothesis. "
-            f"This is an encoding hypothesis, not a decoded remote-control protocol. "
-            f"Protocol decoder confidence is {protocol_decoding_confidence:.3f}. "
-            f"Symbol-level OOK transitions were detected in {symbol_level_burst_count}/{n_bursts} burst(s)."
+            str(selected_decoding.get("selected_reason"))
+            if fsk_majority and selected_decoding.get("selected_reason")
+            else (
+                f"Selected {selected_decoding.get('encoding_type')} as the most stable non-rejected hypothesis. "
+                f"This is an encoding hypothesis, not a decoded remote-control protocol. "
+                f"Protocol decoder confidence is {protocol_decoding_confidence:.3f}. "
+                f"Symbol-level OOK transitions were detected in {symbol_level_burst_count}/{n_bursts} burst(s)."
+            )
         )
 
         decoded_out = {
@@ -3464,6 +4034,9 @@ class DemodulationController:
             "no_symbol_level_bursts": no_symbol_level_count,
             "possible_modulation_counts": possible_modulation_counts,
             "dominant_protocol": dominant_protocol,
+            "recommended_pipeline": "fsk_remote_decoder" if fsk_majority else None,
+            "fsk_majority_detected": fsk_majority,
+            "selected_fsk_decoding": selected_fsk_decoding,
             "ev1527_frames": n_ev1527,
             "pt2262_frames": n_pt2262,
             "best_decoded_frame": best_frame,
@@ -3489,6 +4062,9 @@ class DemodulationController:
                 "selected_rejection_reason": selected_decoding.get("rejection_reason"),
                 "selected_reason": selected_reason,
                 "selected_warning": selected_hex_warning,
+                "recommended_pipeline": selected_decoding.get("recommended_pipeline"),
+                "fsk_majority_detected": fsk_majority,
+                "selected_fsk_decoding": selected_fsk_decoding,
                 "selected_hex_candidate": selected_decoding.get("hex_candidate"),
                 "selected_bit_length": selected_decoding.get("bit_length"),
             },
@@ -3567,6 +4143,12 @@ class DemodulationController:
         )
         selected_decoding_path = output_dir / "selected_decoding.json"
         selected_decoding_path.write_text(json.dumps(selected_decoding, indent=2), encoding="utf-8")
+        fsk_burst_diagnostics_path = output_dir / "fsk_burst_diagnostics.json"
+        fsk_burst_diagnostics_path.write_text(json.dumps({"bursts": fsk_burst_diagnostics}, indent=2), encoding="utf-8")
+        fsk_candidate_decodings_path = output_dir / "fsk_candidate_decodings.json"
+        fsk_candidate_decodings_path.write_text(json.dumps({"candidate_count": len(fsk_candidate_decodings), "candidates": fsk_candidate_decodings}, indent=2), encoding="utf-8")
+        selected_fsk_decoding_path = output_dir / "selected_fsk_decoding.json"
+        selected_fsk_decoding_path.write_text(json.dumps(selected_fsk_decoding, indent=2), encoding="utf-8")
         diagnostics_out = {
             "protocol": "ook_433_remote",
             "pipeline": "ook_433_remote",
@@ -3649,8 +4231,11 @@ class DemodulationController:
             ook_warnings.append("no_symbol_level_ook_transitions_detected")
         if possible_modulation_counts.get("fsk_candidate", 0) > 0:
             ook_warnings.append("instantaneous_frequency_two_tone_candidate_consider_fsk_decoder")
+        if fsk_majority:
+            ook_warnings.append("not_symbol_level_ook_possible_fsk")
         final_status = (
             "decoded_with_protocol" if decoded_ok
+            else "fsk_candidate_detected" if fsk_majority
             else "ook_burst_detected_no_symbol_transitions" if n_bursts > 0 and symbol_level_burst_count == 0
             else "bitstream_recovered" if n_bursts > 0
             else "segmentation_failed" if invalid_continuous_runs
@@ -3678,6 +4263,9 @@ class DemodulationController:
             "no_symbol_level_bursts": no_symbol_level_count,
             "possible_modulation_counts": possible_modulation_counts,
             "dominant_protocol": dominant_protocol,
+            "recommended_pipeline": "fsk_remote_decoder" if fsk_majority else None,
+            "fsk_majority_detected": fsk_majority,
+            "selected_fsk_decoding": selected_fsk_decoding,
             "ev1527_frames": n_ev1527,
             "pt2262_frames": n_pt2262,
             "best_frame": best_frame,
@@ -3709,12 +4297,16 @@ class DemodulationController:
                 "protocol_decoding_confidence": round(float(protocol_decoding_confidence), 4),
                 "selected_encoding_rejection_reason": selected_decoding.get("rejection_reason"),
                 "selected_encoding_warning": selected_hex_warning,
+                "recommended_pipeline": "fsk_remote_decoder" if fsk_majority else None,
+                "fsk_majority_detected": fsk_majority,
                 "ev1527_decoded": n_ev1527,
                 "pt2262_decoded": n_pt2262,
             },
             "pulse_timing": pulse_timing,
             "analysis_interpretation": (
                 "decoded_remote_frame" if decoded_ok else
+                "fsk_candidate_detected; ook_not_symbol_level; run_fsk_remote_decoder"
+                if fsk_majority else
                 "ook_burst_detected; no_symbol_level_ook_transitions_detected; check_fsk_or_ask"
                 if n_bursts > 0 and symbol_level_burst_count == 0 else
                 "stable_repeated_ook_burst_detected; protocol_unknown; pulse_level_decoding_required"
@@ -3735,6 +4327,9 @@ class DemodulationController:
                 "burst_features": str(burst_features_path),
                 "candidate_decodings": str(candidate_decodings_path),
                 "selected_decoding": str(selected_decoding_path),
+                "fsk_burst_diagnostics": str(fsk_burst_diagnostics_path),
+                "fsk_candidate_decodings": str(fsk_candidate_decodings_path),
+                "selected_fsk_decoding": str(selected_fsk_decoding_path),
                 "bitstream": str(bitstream_path),
                 "logs": str(logs_path),
                 "report": str(output_dir / "demodulation_report.json"),
@@ -3780,6 +4375,127 @@ class DemodulationController:
                 "RF activity is not reported as successful protocol demodulation.",
             ],
         }
+
+    def _wifi_80211_scaffold(self, iq: np.ndarray, data: dict, output_dir: Path) -> dict:
+        sample_rate = float(data.get("sample_rate_hz") or 1.0)
+        center = float(data.get("center_frequency_hz") or 0.0)
+        bandwidth = float(data.get("bandwidth_hz") or 0.0)
+        activity = self._summarize_iq_activity(iq, sample_rate)
+        channel = self._wifi_channel_from_frequency(center)
+
+        magnitude = np.abs(iq).astype(np.float32) if iq.size else np.array([], dtype=np.float32)
+        candidates: list[dict] = []
+        if magnitude.size and activity.get("signal_detected"):
+            smooth_window = max(1, int(sample_rate * 20e-6))
+            if smooth_window > 1:
+                kernel = np.ones(smooth_window, dtype=np.float32) / float(smooth_window)
+                envelope = np.convolve(magnitude, kernel, mode="same")
+            else:
+                envelope = magnitude
+            threshold = float(np.median(envelope) + 3.0 * np.std(envelope))
+            active = envelope > threshold
+            edges = np.flatnonzero(np.diff(active.astype(np.int8)) != 0)
+            starts = []
+            stops = []
+            if active.size:
+                if active[0]:
+                    starts.append(0)
+                starts.extend((edges[active[edges + 1]] + 1).tolist())
+                stops.extend((edges[active[edges]] + 1).tolist())
+                if active[-1]:
+                    stops.append(active.size)
+            min_samples = max(1, int(sample_rate * 16e-6))
+            max_candidates = 200
+            for index, (start, stop) in enumerate(zip(starts, stops)):
+                if stop <= start or (stop - start) < min_samples:
+                    continue
+                segment = iq[start:stop]
+                if segment.size == 0:
+                    continue
+                power = np.abs(segment) ** 2
+                peak_power = float(np.max(power)) if power.size else 0.0
+                mean_power = float(np.mean(power)) if power.size else 0.0
+                candidates.append(
+                    {
+                        "candidate_index": len(candidates),
+                        "start_time_seconds": float(start / sample_rate),
+                        "duration_seconds": float((stop - start) / sample_rate),
+                        "sample_count": int(stop - start),
+                        "peak_power_db": float(10.0 * np.log10(max(peak_power, 1e-20))),
+                        "mean_power_db": float(10.0 * np.log10(max(mean_power, 1e-20))),
+                        "ofdm_activity_candidate": True,
+                        "crc_valid": False,
+                        "note": "Energy burst candidate only; no IEEE 802.11 PHY synchronization or FCS validation was performed.",
+                    }
+                )
+                if len(candidates) >= max_candidates:
+                    break
+
+        frames = []
+        packets = {
+            "protocol": "wifi_80211",
+            "channel": channel.get("channel"),
+            "band": channel.get("band"),
+            "center_frequency_hz": center,
+            "bandwidth_hz": bandwidth,
+            "frames_decoded": 0,
+            "frames_crc_valid": 0,
+            "packet_candidates": len(candidates),
+            "payload_extractable": False,
+            "frames": frames,
+            "candidate_packets": candidates,
+        }
+        packet_path = output_dir / "decoded_packets.json"
+        packet_path.write_text(json.dumps(packets, indent=2), encoding="utf-8")
+
+        detected = bool(activity.get("signal_detected"))
+        final_status = "wifi_activity_detected_no_valid_frames" if detected else "no_signal_detected"
+        return {
+            "status": "rf_activity_only" if detected else "sync_failed",
+            "final_status": final_status,
+            "protocol": "wifi_80211",
+            "pipeline": "wifi_80211",
+            "valid_demodulation": False,
+            "rf_activity_detected": detected,
+            "wifi_band": channel.get("band"),
+            "wifi_channel": channel.get("channel"),
+            "wifi_channel_frequency_hz": channel.get("center_frequency_hz"),
+            "frames_decoded": 0,
+            "frames_crc_valid": 0,
+            "packet_candidates": len(candidates),
+            "confidence_score": None,
+            "outputs": {"decoded_packets": str(packet_path), "report": str(output_dir / "demodulation_report.json")},
+            "decoded_packets": packets,
+            "stage_diagnostics": {
+                "iq_loaded": bool(iq.size > 0),
+                "rf_activity_detected": detected,
+                "candidate_bursts": len(candidates),
+                "channel_inferred": channel,
+                "demodulation_level_reached": "energy_burst_detection",
+                "limitations": [
+                    "No 802.11 preamble synchronization",
+                    "No OFDM equalization",
+                    "No MAC header parse",
+                    "No FCS/CRC validation",
+                ],
+            },
+            "notes": [
+                f"Wi-Fi activity candidate(s): {len(candidates)} on {channel.get('band') or 'unknown band'} channel {channel.get('channel') or 'n/a'}.",
+                "This build detects Wi-Fi-band RF burst candidates, but does not reconstruct CRC-valid IEEE 802.11 frames.",
+            ],
+        }
+
+    def _wifi_channel_from_frequency(self, frequency_hz: float) -> dict:
+        mhz = frequency_hz / 1_000_000.0
+        if 2401.0 <= mhz <= 2495.0:
+            channel = int(round((mhz - 2407.0) / 5.0))
+            if channel == 14 or 1 <= channel <= 13:
+                center_mhz = 2484.0 if channel == 14 else 2407.0 + channel * 5.0
+                return {"band": "2.4GHz", "channel": channel, "center_frequency_hz": center_mhz * 1_000_000}
+        if 5000.0 <= mhz <= 5900.0:
+            channel = int(round((mhz - 5000.0) / 5.0))
+            return {"band": "5GHz", "channel": channel, "center_frequency_hz": (5000.0 + channel * 5.0) * 1_000_000}
+        return {"band": None, "channel": None, "center_frequency_hz": None}
 
     def _simple_digital_scaffold(self, iq: np.ndarray, data: dict, output_dir: Path) -> dict:
         magnitude = np.abs(iq)

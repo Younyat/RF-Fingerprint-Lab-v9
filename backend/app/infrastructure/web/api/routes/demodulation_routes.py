@@ -44,6 +44,11 @@ class BleChannelTestBody(BaseModel):
     bandwidth_hz: float = 2_000_000.0
 
 
+class Wifi5GhzChannelTestBody(BaseModel):
+    duration_seconds: float = 0.5
+    bandwidth_hz: float = 20_000_000.0
+
+
 def build_demodulation_router(controller) -> APIRouter:
     router = APIRouter(prefix="/demodulation", tags=["demodulation"])
     
@@ -91,6 +96,16 @@ def build_demodulation_router(controller) -> APIRouter:
             return controller.test_ble_advertising_channels(
                 duration_seconds=body.duration_seconds,
                 sample_rate_hz=body.sample_rate_hz,
+                bandwidth_hz=body.bandwidth_hz,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.post("/wifi-80211/5ghz/test-channels")
+    def test_wifi_5ghz_channels(body: Wifi5GhzChannelTestBody):
+        try:
+            return controller.test_wifi_5ghz_channels(
+                duration_seconds=body.duration_seconds,
                 bandwidth_hz=body.bandwidth_hz,
             )
         except ValueError as exc:

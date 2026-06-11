@@ -677,6 +677,17 @@ export class ApiService {
     return response.data;
   }
 
+  async testWifi5GhzChannels(payload: {
+    durationSeconds: number;
+    bandwidthHz?: number;
+  }): Promise<Record<string, any>> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.DEMODULATION_WIFI_5GHZ_TEST_CHANNELS}`, {
+      duration_seconds: payload.durationSeconds,
+      bandwidth_hz: payload.bandwidthHz,
+    });
+    return response.data;
+  }
+
   async demodulateDatasetCapture(payload: Record<string, unknown>): Promise<DemodulationResult> {
     const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.DEMODULATION_DATASET_CAPTURE}`, payload);
     return response.data;

@@ -49,7 +49,7 @@ const isPacketLikeResult = (result: DemodulationResult | Record<string, any>, de
   return protocol.includes('bluetooth')
     || protocol.includes('ble')
     || pipeline.includes('ble')
-    || ['ieee802154', 'zigbee', 'adsb', 'lora'].some((name) => protocol.includes(name) || pipeline.includes(name));
+    || ['wifi', '80211', 'ieee802154', 'zigbee', 'adsb', 'lora'].some((name) => protocol.includes(name) || pipeline.includes(name));
 };
 
 const AUDIO_MODES = new Set(['wfm', 'wfm_broadcast', 'nfm', 'fm', 'am']);
@@ -121,6 +121,121 @@ const formatRfCenterFrequency = (hz: number | null | undefined): string => {
   return formatFrequency(safeHz);
 };
 
+type LiveBandDetection = {
+  pipeline: string;
+  label: string;
+  detail: string;
+  confidence: 'high' | 'medium';
+};
+
+const detectLiveBandProfiles = (band: { center: number; bandwidth: number } | null): LiveBandDetection[] => {
+  if (!band) return [];
+  const centerMhz = band.center / 1_000_000;
+  const bandwidthMhz = band.bandwidth / 1_000_000;
+  const detections: LiveBandDetection[] = [];
+
+  if (bandwidthMhz >= 10 && centerMhz >= 2401 && centerMhz <= 2495) {
+    const channel = Math.round((centerMhz - 2407) / 5);
+    detections.push({
+      pipeline: 'wifi_80211',
+      label: `Wi-Fi 802.11 2.4 GHz CH${channel}`,
+      detail: 'Use the Wi-Fi pipeline for 20 MHz DSSS/OFDM channel captures.',
+      confidence: 'high',
+    });
+  }
+  if (bandwidthMhz >= 10 && centerMhz >= 5000 && centerMhz <= 5900) {
+    const channel = Math.round((centerMhz - 5000) / 5);
+    detections.push({
+      pipeline: 'wifi_80211',
+      label: `Wi-Fi 802.11 5 GHz CH${channel}`,
+      detail: 'Use the Wi-Fi pipeline for 20 MHz OFDM channel captures.',
+      confidence: 'high',
+    });
+  }
+
+  const bleChannels = [
+    { channel: 37, frequencyMhz: 2402 },
+    { channel: 38, frequencyMhz: 2426 },
+    { channel: 39, frequencyMhz: 2480 },
+  ];
+  for (const ble of bleChannels) {
+    if (bandwidthMhz <= 4 && Math.abs(centerMhz - ble.frequencyMhz) <= 2) {
+      detections.push({
+        pipeline: 'ble_advertising',
+        label: `BLE advertising CH${ble.channel}`,
+        detail: 'Use the BLE advertising pipeline for Access Address and CRC validation.',
+        confidence: 'high',
+      });
+    }
+  }
+
+  if (bandwidthMhz <= 5 && centerMhz >= 2405 && centerMhz <= 2480) {
+    const channel = Math.round((centerMhz - 2405) / 5) + 11;
+    if (channel >= 11 && channel <= 26) {
+      detections.push({
+        pipeline: 'zigbee_ieee802154',
+        label: `Zigbee / IEEE 802.15.4 CH${channel}`,
+        detail: 'Use the Zigbee pipeline for O-QPSK DSSS frame recovery.',
+        confidence: 'high',
+      });
+    }
+  }
+
+  if (centerMhz >= 88 && centerMhz <= 108 && bandwidthMhz >= 0.15) {
+    detections.push({
+      pipeline: 'wfm',
+      label: 'WFM broadcast band',
+      detail: 'Use WFM when the marker band covers a broadcast FM channel.',
+      confidence: 'medium',
+    });
+  }
+
+  if (centerMhz >= 445.9 && centerMhz <= 446.2 && bandwidthMhz <= 0.1) {
+    detections.push({
+      pipeline: 'nfm',
+      label: 'PMR446 NFM channel',
+      detail: 'PMR446 walkie-talkie band (446 MHz, 12.5 kHz channels, ±2.5 kHz deviation). Use NFM demodulation.',
+      confidence: 'high',
+    });
+  }
+
+  if (bandwidthMhz <= 0.05 && (
+    (centerMhz >= 136 && centerMhz <= 174) ||
+    (centerMhz >= 400 && centerMhz <= 512)
+  )) {
+    detections.push({
+      pipeline: 'nfm',
+      label: 'VHF/UHF land mobile NFM',
+      detail: 'Narrowband VHF/UHF channel. Use NFM for land mobile radio (PMR, public safety, aviation).',
+      confidence: 'medium',
+    });
+  }
+  if (Math.abs(centerMhz - 433.92) <= 1.5 || Math.abs(centerMhz - 315) <= 1.5 || Math.abs(centerMhz - 868.3) <= 2) {
+    detections.push({
+      pipeline: 'fsk_remote_decoder',
+      label: 'FSK remote / ISM sensor band',
+      detail: 'Use the FSK remote pipeline when OOK diagnostics show two-tone FSK candidates or no symbol-level OOK transitions.',
+      confidence: 'medium',
+    });
+    detections.push({
+      pipeline: 'ook_433_remote',
+      label: 'OOK remote / ISM sensor band',
+      detail: 'Use the OOK remote pipeline for 315/433/868 MHz burst remotes and simple ASK/OOK sensors.',
+      confidence: 'medium',
+    });
+  }
+  if (centerMhz >= 863 && centerMhz <= 870 && bandwidthMhz <= 1) {
+    detections.push({
+      pipeline: 'lora_css',
+      label: 'LoRa 868 MHz candidate',
+      detail: 'Use LoRa CSS for narrowband LoRa packet captures.',
+      confidence: 'medium',
+    });
+  }
+
+  return detections;
+};
+
 export const DemodulationView: React.FC = () => {
   const markers = useMarkers();
   const [searchParams] = useSearchParams();
@@ -130,7 +245,9 @@ export const DemodulationView: React.FC = () => {
   const [isRunning, setIsRunning] = useState(false);
   const [isDatasetRunning, setIsDatasetRunning] = useState(false);
   const [isBleTestRunning, setIsBleTestRunning] = useState(false);
+  const [isWifi5GhzTestRunning, setIsWifi5GhzTestRunning] = useState(false);
   const [bleChannelTest, setBleChannelTest] = useState<Record<string, any> | null>(null);
+  const [wifi5GhzChannelTest, setWifi5GhzChannelTest] = useState<Record<string, any> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<DemodulationResult[]>([]);
   const [markerBandpass, setMarkerBandpass] = useState(() => loadMarkerBandpassSettings());
@@ -159,6 +276,17 @@ export const DemodulationView: React.FC = () => {
     () => pipelines.filter((pipeline) => pipeline.category === 'IoT Demodulation Pipelines'),
     [pipelines],
   );
+
+  const liveDetections = useMemo(() => detectLiveBandProfiles(selectedBand), [selectedBand]);
+  const availableLiveModes = useMemo(
+    () => new Set([...DEMODULATION_MODES.map((item) => item.value), ...pipelines.map((pipeline) => pipeline.id)]),
+    [pipelines],
+  );
+  const liveSuggestion = useMemo(
+    () => liveDetections.find((detection) => availableLiveModes.has(detection.pipeline)) ?? liveDetections[0] ?? null,
+    [liveDetections, availableLiveModes],
+  );
+  const hasSuggestedPipeline = Boolean(liveSuggestion && availableLiveModes.has(liveSuggestion.pipeline));
 
   const pipelinesByCategory = useMemo(() => {
     const grouped: Record<string, DemodulationPipeline[]> = {};
@@ -285,6 +413,29 @@ export const DemodulationView: React.FC = () => {
       setError(getErrorMessage(err));
     } finally {
       setIsBleTestRunning(false);
+    }
+  };
+
+  const testWifi5GhzChannels = async () => {
+    const duration = Number(durationSeconds);
+    if (!Number.isFinite(duration) || duration <= 0 || duration > 5) {
+      setError('Wi-Fi 5 GHz channel sweep duration must be between 0 and 5 seconds per channel.');
+      return;
+    }
+    setError(null);
+    setIsWifi5GhzTestRunning(true);
+    setWifi5GhzChannelTest(null);
+    try {
+      const response = await apiService.testWifi5GhzChannels({
+        durationSeconds: duration,
+        bandwidthHz: 20_000_000,
+      });
+      setWifi5GhzChannelTest(response);
+      await loadResults();
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setIsWifi5GhzTestRunning(false);
     }
   };
 
@@ -464,7 +615,32 @@ export const DemodulationView: React.FC = () => {
               <Info label="Center" value={selectedBand ? formatRfCenterFrequency(selectedBand.center) : 'Not set'} />
               <Info label="Bandwidth" value={selectedBand ? formatFrequency(selectedBand.bandwidth) : 'Not set'} />
               <Info label="FIR filter" value={markerBandpass.enabled ? `ON, ${markerBandpass.attenuationDb} dB` : 'Off'} />
+              {liveSuggestion && <Info label="Recommended" value={liveSuggestion.label} />}
             </div>
+
+            {liveSuggestion && (
+              <div className="rounded-md border border-sky-800 bg-sky-950/30 p-3 text-sm text-sky-100">
+                <div className="font-semibold">{liveSuggestion.label}</div>
+                <div className="mt-1 text-xs text-sky-300">{liveSuggestion.detail}</div>
+                {liveDetections.length > 1 && (
+                  <div className="mt-3 grid gap-1 text-xs text-sky-200">
+                    {liveDetections.map((detection) => (
+                      <div key={`${detection.pipeline}-${detection.label}`}>
+                        {detection.label}: {detection.pipeline} ({detection.confidence})
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {hasSuggestedPipeline && mode !== liveSuggestion.pipeline && (
+                  <button
+                    onClick={() => setMode(liveSuggestion.pipeline)}
+                    className="mt-3 h-8 rounded-md bg-sky-700 px-3 text-xs font-semibold text-white hover:bg-sky-600"
+                  >
+                    Use {liveSuggestion.label}
+                  </button>
+                )}
+              </div>
+            )}
 
             <div className="flex flex-wrap items-end gap-3">
               <label className="flex flex-col gap-1 text-xs text-slate-400">
@@ -475,7 +651,7 @@ export const DemodulationView: React.FC = () => {
                   className="h-9 w-56 rounded-md border border-slate-700 bg-slate-950 px-2 text-sm text-slate-100 outline-none focus:border-blue-400"
                 >
                   <optgroup label="Basic analog demodulation">
-                    {DEMODULATION_MODES.filter((item) => ['am', 'fm', 'wfm'].includes(item.value)).map((item) => (
+                    {DEMODULATION_MODES.filter((item) => ['am', 'fm', 'nfm', 'wfm'].includes(item.value)).map((item) => (
                       <option key={item.value} value={item.value}>{item.label}</option>
                     ))}
                   </optgroup>
@@ -516,10 +692,10 @@ export const DemodulationView: React.FC = () => {
               </button>
               <button
                 onClick={testBleAdvertisingChannels}
-                disabled={isRunning || isBleTestRunning}
+                disabled={isRunning || isBleTestRunning || isWifi5GhzTestRunning}
                 className={cn(
                   'h-9 inline-flex items-center px-4 rounded-md text-sm font-semibold',
-                  isRunning || isBleTestRunning
+                  isRunning || isBleTestRunning || isWifi5GhzTestRunning
                     ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
                     : 'bg-cyan-700 hover:bg-cyan-600 text-white'
                 )}
@@ -527,10 +703,24 @@ export const DemodulationView: React.FC = () => {
                 <Radio className="w-4 h-4 mr-2" />
                 {isBleTestRunning ? 'Testing BLE...' : 'Test BLE advertising channels'}
               </button>
+              <button
+                onClick={testWifi5GhzChannels}
+                disabled={isRunning || isBleTestRunning || isWifi5GhzTestRunning}
+                className={cn(
+                  'h-9 inline-flex items-center px-4 rounded-md text-sm font-semibold',
+                  isRunning || isBleTestRunning || isWifi5GhzTestRunning
+                    ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
+                    : 'bg-sky-700 hover:bg-sky-600 text-white'
+                )}
+              >
+                <Radio className="w-4 h-4 mr-2" />
+                {isWifi5GhzTestRunning ? 'Sweeping Wi-Fi...' : 'Sweep Wi-Fi 5 GHz channels'}
+              </button>
             </div>
 
             {error && <div className="text-sm text-red-300">{error}</div>}
             {bleChannelTest && <BleChannelTestTable test={bleChannelTest} />}
+            {wifi5GhzChannelTest && <Wifi5GhzChannelSweepTable test={wifi5GhzChannelTest} />}
           </div>
 
           <div className="border border-slate-800 bg-slate-900 p-4 rounded-md">
@@ -628,6 +818,47 @@ function BleChannelTestTable({ test }: { test: Record<string, any> }) {
   );
 }
 
+function Wifi5GhzChannelSweepTable({ test }: { test: Record<string, any> }) {
+  const rows = Array.isArray(test.rows) ? test.rows : [];
+  return (
+    <div className="rounded-md border border-sky-900/70 bg-sky-950/20 p-3">
+      <div className="text-sm font-semibold text-sky-100">Wi-Fi 5 GHz Channel Sweep</div>
+      <div className="mt-1 text-xs text-sky-300">
+        Captures common 20 MHz 5 GHz Wi-Fi channels sequentially from live SDR and runs the Wi-Fi 802.11 pipeline scaffold.
+      </div>
+      <div className="mt-3 overflow-auto rounded-md border border-slate-800">
+        <table className="min-w-full text-left text-xs">
+          <thead className="bg-slate-950 text-slate-400">
+            <tr>
+              <th className="px-3 py-2">Channel</th>
+              <th className="px-3 py-2">Frequency</th>
+              <th className="px-3 py-2">RF activity</th>
+              <th className="px-3 py-2">Frames</th>
+              <th className="px-3 py-2">CRC valid</th>
+              <th className="px-3 py-2">Status</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-800">
+            {rows.map((row: any) => (
+              <tr key={row.channel} className="bg-slate-900/70">
+                <td className="px-3 py-2 font-semibold">CH{row.channel}</td>
+                <td className="px-3 py-2">{formatRfCenterFrequency(Number(row.frequency_hz || 0))}</td>
+                <td className={cn('px-3 py-2 font-semibold', row.rf_activity ? 'text-emerald-300' : 'text-slate-400')}>{String(Boolean(row.rf_activity))}</td>
+                <td className="px-3 py-2">{String(row.frames ?? 0)}</td>
+                <td className="px-3 py-2">{String(row.crc_valid ?? 0)}</td>
+                <td className={cn('px-3 py-2', row.status === 'error' ? 'text-red-300' : 'text-slate-300')}>
+                  {String(row.status ?? 'n/a')}
+                  {row.error ? <div className="mt-1 text-red-300">{String(row.error).slice(0, 180)}</div> : null}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function ResultRow({ result, onDelete }: { result: DemodulationResult; onDelete: (id: string) => void }) {
   const audioUrl = result.audio_url ? apiService.getDemodulationAudioUrl(result.id) : null;
   const [report, setReport] = useState<Record<string, any> | null>(result as any);
@@ -649,6 +880,9 @@ function ResultRow({ result, onDelete }: { result: DemodulationResult; onDelete:
   const burstFeaturesFile = outputFilename(result.outputs?.burst_features || null);
   const candidateDecodingsFile = outputFilename(result.outputs?.candidate_decodings || null);
   const selectedDecodingFile = outputFilename(result.outputs?.selected_decoding || null);
+  const fskBurstDiagnosticsFile = outputFilename(result.outputs?.fsk_burst_diagnostics || null);
+  const fskCandidateDecodingsFile = outputFilename(result.outputs?.fsk_candidate_decodings || null);
+  const selectedFskDecodingFile = outputFilename(result.outputs?.selected_fsk_decoding || null);
   const logsFile = outputFilename(result.outputs?.logs || null);
   const outputDir = String((report || result as any).output_dir || '');
   const packets: DecodedPacket[] = Array.isArray(decodedPackets?.packets) ? decodedPackets?.packets : [];
@@ -660,7 +894,7 @@ function ResultRow({ result, onDelete }: { result: DemodulationResult; onDelete:
   const captureTime = getResultTime(report || result as any);
   const packetLike = isPacketLikeResult(report || result as any, decodedPackets);
   const isAudio = isAudioResult(report || result as any);
-  const hasDecodedOutput = !isAudio && (packetLike || packets.length > 0 || candidatePackets.length > 0 || Boolean(bitstreamFile || candidateDiagnosticsFile || burstDiagnosticsFile || rawPulsesFile || burstFeaturesFile || candidateDecodingsFile || selectedDecodingFile || logsFile));
+  const hasDecodedOutput = !isAudio && (packetLike || packets.length > 0 || candidatePackets.length > 0 || Boolean(bitstreamFile || candidateDiagnosticsFile || burstDiagnosticsFile || rawPulsesFile || burstFeaturesFile || candidateDecodingsFile || selectedDecodingFile || fskBurstDiagnosticsFile || fskCandidateDecodingsFile || selectedFskDecodingFile || logsFile));
 
   useEffect(() => {
     let cancelled = false;
@@ -789,7 +1023,7 @@ function ResultRow({ result, onDelete }: { result: DemodulationResult; onDelete:
             <Info label="Duration" value={result.duration_seconds !== undefined ? `${result.duration_seconds} s` : 'n/a'} />
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
-            <Info label="Audio" value={audioUrl ? '✓ WAV available' : '✗ not generated'} />
+            <Info label="Audio" value={audioUrl ? 'âœ“ WAV available' : 'âœ— not generated'} />
             <Info label="Audio rate" value={(report as any)?.audio_rate_hz ? `${((report as any).audio_rate_hz / 1000).toFixed(0)} kHz` : 'n/a'} />
             <Info label="Gain" value={(report as any)?.gain_db !== undefined ? `${(report as any).gain_db} dB` : 'n/a'} />
             <Info label="Antenna" value={String((report as any)?.antenna || 'n/a')} />
@@ -844,6 +1078,9 @@ function ResultRow({ result, onDelete }: { result: DemodulationResult; onDelete:
           burstFeaturesFile={burstFeaturesFile}
           candidateDecodingsFile={candidateDecodingsFile}
           selectedDecodingFile={selectedDecodingFile}
+          fskBurstDiagnosticsFile={fskBurstDiagnosticsFile}
+          fskCandidateDecodingsFile={fskCandidateDecodingsFile}
+          selectedFskDecodingFile={selectedFskDecodingFile}
           logsFile={logsFile}
           onOpenOutput={openOutput}
         />
@@ -869,6 +1106,9 @@ function DecodedOutputPanel({
   burstFeaturesFile,
   candidateDecodingsFile,
   selectedDecodingFile,
+  fskBurstDiagnosticsFile,
+  fskCandidateDecodingsFile,
+  selectedFskDecodingFile,
   logsFile,
   onOpenOutput,
 }: {
@@ -888,6 +1128,9 @@ function DecodedOutputPanel({
   burstFeaturesFile: string | null;
   candidateDecodingsFile: string | null;
   selectedDecodingFile: string | null;
+  fskBurstDiagnosticsFile: string | null;
+  fskCandidateDecodingsFile: string | null;
+  selectedFskDecodingFile: string | null;
   logsFile: string | null;
   onOpenOutput: (filename: string | null) => void;
 }) {
@@ -895,10 +1138,13 @@ function DecodedOutputPanel({
   const protocol = String(report?.protocol ?? report?.signal_type ?? decodedPackets?.protocol ?? '').toLowerCase();
   const pipeline = String(report?.pipeline ?? report?.demodulation_pipeline ?? report?.pipeline_name ?? '').toLowerCase();
   const isBle = protocol.includes('bluetooth') || protocol.includes('ble') || pipeline.includes('ble');
-  const isOokRemote = protocol.includes('ook_433_remote') || pipeline.includes('ook_433_remote');
-  const isPacketProtocol = isBle || ['ieee802154', 'zigbee', 'adsb', 'lora'].some((name) => protocol.includes(name) || pipeline.includes(name));
+  const isWifi = protocol.includes('wifi') || protocol.includes('80211') || pipeline.includes('wifi') || pipeline.includes('80211');
+  const isOokRemote = protocol.includes('ook_433_remote') || pipeline.includes('ook_433_remote') || protocol.includes('fsk_remote') || pipeline.includes('fsk_remote');
+  const isPacketProtocol = isBle || isWifi || ['ieee802154', 'zigbee', 'adsb', 'lora'].some((name) => protocol.includes(name) || pipeline.includes(name));
   const emptyPacketMessage = isBle
     ? 'RF activity detected, but no valid BLE advertising packet was recovered.'
+    : isWifi
+      ? 'Wi-Fi-band RF burst candidates may be present, but no CRC-valid IEEE 802.11 frame was reconstructed.'
     : isOokRemote
       ? 'OOK burst activity was detected, but no known remote-control protocol was decoded. Check symbol-level transitions and possible FSK/ASK classification below.'
     : isPacketProtocol
@@ -948,6 +1194,21 @@ function DecodedOutputPanel({
               Open selected_decoding.json
             </button>
           )}
+          {fskBurstDiagnosticsFile && (
+            <button onClick={() => onOpenOutput(fskBurstDiagnosticsFile)} className="rounded-md bg-cyan-800 px-3 py-2 text-xs font-semibold text-white hover:bg-cyan-700">
+              Open fsk_burst_diagnostics.json
+            </button>
+          )}
+          {fskCandidateDecodingsFile && (
+            <button onClick={() => onOpenOutput(fskCandidateDecodingsFile)} className="rounded-md bg-cyan-800 px-3 py-2 text-xs font-semibold text-white hover:bg-cyan-700">
+              Open fsk_candidate_decodings.json
+            </button>
+          )}
+          {selectedFskDecodingFile && (
+            <button onClick={() => onOpenOutput(selectedFskDecodingFile)} className="rounded-md bg-cyan-800 px-3 py-2 text-xs font-semibold text-white hover:bg-cyan-700">
+              Open selected_fsk_decoding.json
+            </button>
+          )}
           {candidateDecodingsFile && (
             <button onClick={() => onOpenOutput(candidateDecodingsFile)} className="rounded-md bg-cyan-800 px-3 py-2 text-xs font-semibold text-white hover:bg-cyan-700">
               Open candidate_decodings.json
@@ -989,6 +1250,7 @@ function DecodedOutputPanel({
           <Info label="Protocol confidence" value={ookAdaptive?.protocol_decoding_confidence !== undefined ? String(ookAdaptive.protocol_decoding_confidence) : 'n/a'} />
           <Info label="Encoding confidence" value={(ookAdaptive?.selected_encoding_confidence ?? ookAdaptive?.selected_confidence) !== undefined ? String(ookAdaptive.selected_encoding_confidence ?? ookAdaptive.selected_confidence) : 'n/a'} />
           <Info label="Encoding warning" value={String(ookAdaptive?.selected_warning ?? 'none')} />
+          <Info label="Recommended" value={String(report?.recommended_pipeline ?? ookAdaptive?.recommended_pipeline ?? 'n/a')} />
           <Info label="T unit" value={report?.t_unit_us !== undefined ? `${report.t_unit_us} us` : 'n/a'} />
           <Info label="Symbol rate" value={report?.symbol_rate_baud ? `${report.symbol_rate_baud} baud` : 'n/a'} />
           <Info label="Center" value={report?.center_frequency_hz ? formatRfCenterFrequency(Number(report.center_frequency_hz)) : 'n/a'} />
@@ -1001,10 +1263,12 @@ function DecodedOutputPanel({
           <Info label="Valid demod" value={validDemodulation ? 'true' : 'false'} />
           <Info label="Confidence" value={confidence} />
           <Info label="Packets decoded" value={String(packetCount)} />
-          {candidateCount > 0 && <Info label="BLE candidates" value={String(candidateCount)} />}
+          {candidateCount > 0 && <Info label={isWifi ? 'Wi-Fi candidates' : 'BLE candidates'} value={String(candidateCount)} />}
           <Info label="CRC valid" value={`${crcValidCount} (${crcRate})`} />
           {isBle && <Info label="Access address" value={accessAddressDetected ? String(report?.access_address ?? '0x8E89BED6') : 'false'} />}
           {isBle && <Info label="BLE channel" value={String(report?.computed_ble_channel ?? report?.channel ?? decodedPackets?.channel ?? 'n/a')} />}
+          {isWifi && <Info label="Wi-Fi band" value={String(report?.wifi_band ?? decodedPackets?.band ?? 'n/a')} />}
+          {isWifi && <Info label="Wi-Fi channel" value={String(report?.wifi_channel ?? decodedPackets?.channel ?? 'n/a')} />}
           <Info label="Center" value={report?.center_frequency_hz ? formatRfCenterFrequency(Number(report.center_frequency_hz)) : 'n/a'} />
           <Info label="Sample rate" value={report?.sample_rate_hz ? `${formatFrequency(Number(report.sample_rate_hz))}/s` : 'n/a'} />
           <Info label="Duration" value={String(report?.capture_duration_seconds ?? report?.duration_seconds ?? 'n/a')} />
@@ -1013,6 +1277,12 @@ function DecodedOutputPanel({
       )}
 
       {outputError && <div className="mt-3 text-xs text-amber-300">{outputError}</div>}
+
+      {isOokRemote && (report?.recommended_pipeline === 'fsk_remote_decoder' || ookAdaptive?.recommended_pipeline === 'fsk_remote_decoder') && (
+        <div className="mt-3 rounded-md border border-amber-700 bg-amber-950/40 p-3 text-sm font-semibold text-amber-100">
+          Recommended next step: Run FSK remote decoder.
+        </div>
+      )}
 
       {isOokRemote && ookAdaptive?.selected_reason && (
         <div className="mt-3 rounded-md border border-slate-800 bg-slate-950 p-3 text-xs text-slate-300">

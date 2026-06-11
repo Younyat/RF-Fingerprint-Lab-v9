@@ -82,7 +82,7 @@ class DeviceController:
                 cwd=str(backend_root),
                 capture_output=True,
                 text=True,
-                timeout=float(os.environ.get("REAL_SDR_CONNECT_TIMEOUT", "20")),
+                timeout=float(os.environ.get("REAL_SDR_CONNECT_TIMEOUT", "60")),
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
         except Exception as exc:
