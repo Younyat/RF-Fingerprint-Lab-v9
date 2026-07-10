@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useAppStore, useDeviceStatus, useSpectrumData, useAnalyzerSettings } from '../../app/store/AppStore';
 import { ApiService } from '../../app/services/ApiService';
 import { RUNTIME_CONFIG } from '../../shared/config/runtime';
+import type { SpectrumAnnotation, SpectrumLineSeries, SpectrumRasterLayer } from '../../features/spectrum-tools/model/spectrumToolTypes';
 
 const apiService = new ApiService();
 
@@ -11,12 +12,20 @@ export const useSpectrum = ({
   displaySettings = null,
   overlayData = null,
   overlayLabel = 'Peak Hold',
+  lineSeries = [],
+  rasterLayers = [],
+  annotations = [],
+  showLiveTrace = true,
 }: {
   enabled?: boolean;
   displayData?: ReturnType<typeof useSpectrumData>;
   displaySettings?: ReturnType<typeof useAnalyzerSettings> | null;
   overlayData?: ReturnType<typeof useSpectrumData>;
   overlayLabel?: string;
+  lineSeries?: SpectrumLineSeries[];
+  rasterLayers?: SpectrumRasterLayer[];
+  annotations?: SpectrumAnnotation[];
+  showLiveTrace?: boolean;
 } = {}) => {
   const liveSpectrumData = useSpectrumData();
   const spectrumData = displayData ?? liveSpectrumData;
@@ -161,10 +170,11 @@ export const useSpectrum = ({
       }
 
       // Draw spectrum trace
-      const drawTrace = (levels: number[], color: string, lineWidth: number, sourceFrequencies?: number[], applyTraceProcessing = true) => {
+      const drawTrace = (levels: number[], color: string, lineWidth: number, sourceFrequencies?: number[], applyTraceProcessing = true, lineDash: number[] = []) => {
         const displayTrace = buildDisplayTrace(levels, sourceFrequencies, applyTraceProcessing);
         ctx.strokeStyle = color;
         ctx.lineWidth = lineWidth;
+        ctx.setLineDash(lineDash);
         ctx.beginPath();
         displayTrace.forEach((level, index) => {
           const x = padding + (index / Math.max(displayTrace.length - 1, 1)) * plotWidth;
@@ -178,11 +188,38 @@ export const useSpectrum = ({
           }
         });
         ctx.stroke();
+        ctx.setLineDash([]);
       };
 
       if (spectrumData.powerLevels.length > 0) {
-        drawTrace(spectrumData.powerLevels, getTraceColor(), 2, spectrumData.frequencyArray, true);
+        if (showLiveTrace) {
+          drawTrace(spectrumData.powerLevels, getTraceColor(), 2, spectrumData.frequencyArray, true);
+        } else {
+          // Keep legacy trace processing current while suppressing only its paint.
+          buildDisplayTrace(spectrumData.powerLevels, spectrumData.frequencyArray, true);
+        }
       }
+
+      rasterLayers.filter((layer) => layer.visible).sort((a, b) => a.zIndex - b.zIndex).forEach((layer) => {
+        if (layer.kind === 'occupancy') {
+          const stripHeight = 8;
+          layer.values.forEach((value, index) => {
+            const x = padding + index / Math.max(layer.width - 1, 1) * plotWidth;
+            ctx.fillStyle = `rgba(${Math.round(239 * value)},${Math.round(180 - 80 * value)},${Math.round(70 * (1 - value))},${layer.opacity})`;
+            ctx.fillRect(x, height - padding - stripHeight, Math.max(1, plotWidth / layer.width + 1), stripHeight);
+          });
+          return;
+        }
+        const maxValue = Math.max(1, ...layer.values);
+        const cellWidth = plotWidth / layer.width; const cellHeight = plotHeight / layer.height;
+        layer.values.forEach((value, index) => {
+          if (value <= 0) return;
+          const xIndex = index % layer.width; const yIndex = Math.floor(index / layer.width);
+          const intensity = Math.min(1, value / maxValue);
+          ctx.fillStyle = `rgba(${Math.round(56 + 180 * intensity)},${Math.round(100 + 80 * intensity)},248,${layer.opacity * intensity})`;
+          ctx.fillRect(padding + xIndex * cellWidth, padding + (layer.height - 1 - yIndex) * cellHeight, cellWidth + 1, cellHeight + 1);
+        });
+      });
 
       if (overlayData?.powerLevels.length) {
         ctx.save();
@@ -190,6 +227,20 @@ export const useSpectrum = ({
         drawTrace(overlayData.powerLevels, '#fbbf24', 1.8, overlayData.frequencyArray, false);
         ctx.restore();
       }
+
+      [...lineSeries]
+        .filter((series) => series.visible && series.powerLevelsDb.length > 0)
+        .sort((left, right) => left.zIndex - right.zIndex)
+        .forEach((series) => {
+          ctx.save();
+          ctx.globalAlpha = series.opacity;
+          drawTrace(series.powerLevelsDb, series.color, series.lineWidth, series.frequenciesHz, false, series.lineDash);
+          ctx.restore();
+        });
+
+      annotations.filter((annotation) => annotation.visible && annotation.coordinates.length).forEach((annotation) => {
+        drawTrace(annotation.coordinates, annotation.color, 1.5, spectrumData.frequencyArray, false, [7, 4]);
+      });
 
       ctx.fillStyle = '#cbd5e1';
       ctx.font = '12px sans-serif';
@@ -203,7 +254,7 @@ export const useSpectrum = ({
     });
 
     return () => cancelAnimationFrame(animationFrame);
-  }, [spectrumData, settings, overlayData, overlayLabel]);
+  }, [spectrumData, settings, overlayData, overlayLabel, lineSeries, rasterLayers, annotations, showLiveTrace]);
 
   // Auto-refresh spectrum
   useEffect(() => {

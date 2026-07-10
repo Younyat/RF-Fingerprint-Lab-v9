@@ -8,6 +8,7 @@ interface ImportMetaEnv {
   readonly VITE_REMOTE_HOST?: string;
   readonly VITE_REMOTE_VENV_ACTIVATE?: string;
   readonly VITE_RADIOCONDA_PYTHON?: string;
+  readonly VITE_SPECTRUM_TOOLS_V2?: string;
 }
 
 interface ImportMeta {

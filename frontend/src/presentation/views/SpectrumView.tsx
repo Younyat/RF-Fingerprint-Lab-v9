@@ -11,6 +11,8 @@ import { cn } from '../../shared/utils';
 import { DETECTOR_MODES, SPECTRUM_COLOR_SCHEMES, TRACE_MODES } from '../../shared/constants';
 import { RF_PROFILE_LIST, RF_PROFILE_STORAGE_KEY, RF_PROFILES, applyRFProfile } from '../../shared/rfProfiles';
 import type { AnalyzerSettings, RFObjectDetection, RFSceneAnalysis, RFSignalUnderstandingResult, SpectrumData, WaterfallData } from '../../shared/types';
+import { useSpectrumTools } from '../../features/spectrum-tools/useSpectrumTools';
+import { SpectrumToolsPanel } from '../../features/spectrum-tools/ui/SpectrumToolsPanel';
 
 const hzToMhz = (hz: number) => Number.isFinite(hz) ? hz / 1e6 : 0;
 const mhzToHz = (mhz: string) => Number(mhz) * 1e6;
@@ -25,6 +27,7 @@ const AUTO_FREEZE_MAX_RELATIVE_BW = 0.95;
 const AUTO_FREEZE_FRAME_BUFFER_SIZE = 5;
 const MARKER_BANDPASS_ATTENUATION_DB = 60;
 const markerBandpassStorageKey = 'spectrum-view-marker-bandpass-settings';
+const spectrumToolsV2Enabled = true;
 
 const RF_EXPERIMENT_TYPE_LABELS = {
   best: 'Best validated model',
@@ -321,12 +324,18 @@ export const SpectrumView: React.FC = () => {
   const peakHoldOverlayData = peakHoldEnabled && peakHoldData
     ? (markerBandpassEnabled && markerBandpassIsValid ? applyMarkerBandpassMask(peakHoldData, markerBand, markerBandpassAttenuationDb) : peakHoldData)
     : null;
+  const [showLiveTrace, setShowLiveTrace] = useState(true);
+  const spectrumTools = useSpectrumTools(spectrumData, isFrozen, spectrumToolsV2Enabled);
   const { canvasRef } = useSpectrum({
     enabled: !isFrozen,
     displayData: displayedSpectrumData,
     displaySettings,
     overlayData: peakHoldOverlayData,
     overlayLabel: peakHoldMode === 'decay' ? `Peak Hold Decay ${peakHoldDecayDbPerSecond} dB/s` : 'Max Hold',
+    lineSeries: spectrumToolsV2Enabled ? spectrumTools.lineSeries : [],
+    rasterLayers: spectrumToolsV2Enabled ? spectrumTools.rasterLayers : [],
+    annotations: spectrumToolsV2Enabled ? spectrumTools.annotations : [],
+    showLiveTrace,
   });
   const [showWaterfallSplit, setShowWaterfallSplit] = useState(false);
   const { canvasRef: waterfallCanvasRef, error: waterfallError } = useWaterfall(showWaterfallSplit && !isFrozen, isFrozen ? frozenWaterfallData : null, displaySettings);
@@ -2011,6 +2020,20 @@ export const SpectrumView: React.FC = () => {
       <div className={cn('flex-1 grid min-h-0 transition-[grid-template-columns] duration-300', sidebarCollapsed ? 'grid-cols-[minmax(0,1fr)_0px]' : 'grid-cols-[minmax(0,1fr)_320px]')}>
         <div className="flex min-h-0 flex-col">
           <div className={cn('relative min-h-0', showWaterfallSplit ? 'flex-[3_1_0%]' : 'flex-1')}>
+            {spectrumToolsV2Enabled && (
+              <SpectrumToolsPanel
+                tools={spectrumTools.tools}
+                paused={isFrozen}
+                onActiveChange={spectrumTools.setActive}
+                onVisibleChange={spectrumTools.setVisible}
+                onReset={spectrumTools.reset}
+                onConfigChange={spectrumTools.setConfig}
+                onResetAll={spectrumTools.resetAll}
+                onDisableAll={spectrumTools.disableAll}
+                liveTraceVisible={showLiveTrace}
+                onLiveTraceVisibleChange={setShowLiveTrace}
+              />
+            )}
             {showPanOverlay && (
               <div
                 className="absolute z-10 rounded-xl border border-slate-700/80 bg-slate-950/60 px-2 py-2 shadow-lg backdrop-blur-md"
