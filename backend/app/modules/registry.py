@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from app.modules.capture_lab.module import capture_lab_module
 from app.modules.demodulation.module import demodulation_module
+from app.modules.live_demodulation.module import live_demodulation_module
 from app.modules.device.module import device_module
 from app.modules.fingerprinting.api_module import fingerprinting_module
 from app.modules.kiwisdr.api_module import kiwi_receivers_module, kiwi_sessions_module
@@ -41,6 +42,7 @@ backend_modules: list[BackendModuleDefinition] = [
     markers_module,
     recordings_module,
     demodulation_module,
+    live_demodulation_module,
     capture_lab_module,
     fingerprinting_module,
     mlops_module,

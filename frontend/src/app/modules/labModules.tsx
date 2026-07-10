@@ -1,6 +1,7 @@
 import { captureLabModule } from './capture-lab/module';
 import { datasetBuilderModule } from './dataset-builder/module';
 import { demodulationModule } from './demodulation/module';
+import { liveDemodulationModule } from './live-demodulation/module';
 import { inferenceModule } from './inference/module';
 import { kiwiSdrMapModule } from './kiwisdr-map/module';
 import { liveMonitorModule } from './live-monitor/module';
@@ -37,6 +38,7 @@ export const labModules: LabModuleDefinition[] = [
   waterfallModule,
   recordingsModule,
   demodulationModule,
+  liveDemodulationModule,
   kiwiSdrMapModule,
   settingsModule,
 ];
