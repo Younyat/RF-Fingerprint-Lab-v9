@@ -1,183 +1,68 @@
 # Spectrum Lab
 
-Spectrum Lab is a browser-based RF laboratory for live spectrum monitoring,
-marker-driven I/Q capture, dataset curation, and reproducible RF machine
-learning experiments.
+Spectrum Lab is a browser-based RF laboratory for real-time spectrum monitoring,
+controlled I/Q acquisition, dataset curation, demodulation, RF scene analysis,
+model training, validation, and inference.
 
-The current hardware path targets an Ettus Research USRP-B200 through
-UHD/GNU Radio in a RadioConda Python environment. The application is split into
-a FastAPI backend and a React/TypeScript frontend.
+The primary hardware path uses an **Ettus Research USRP-B200** through
+**UHD/GNU Radio** in a RadioConda environment. The platform consists of a
+FastAPI backend and a React/TypeScript frontend.
 
-## What This Project Does
+> Spectrum Lab uses real SDR samples. The live spectrum, waterfall, captures,
+> triggered pre-buffer, demodulation, and dataset artifacts are not mock data.
 
-Spectrum Lab is designed to support the full RF workflow from observation to
-training data:
+## Contents
 
-- Observe live RF spectrum and waterfall data from a real SDR.
-- Place markers on signals of interest and use them as capture boundaries.
-- Capture raw I/Q as `.cfile` or `.iq` with JSON metadata.
-- Capture short transient signals with triggered capture and pre-trigger
-  buffering.
-- Review captures in Dataset Builder with offline QC over the saved I/Q file.
-- Repair missing class metadata from RF band profiles, then confirm labels when
-  the operator has ground-truth knowledge.
-- Route accepted captures into fingerprinting, RF Signal Understanding, or RF
-  Experiment Lab workflows.
-- Train and compare experimental RF models using reproducible dataset gates and
-  split policies.
+- [Main capabilities](#main-capabilities)
+- [Quick start](#quick-start)
+- [Recommended workflow](#recommended-workflow)
+- [Platform views](#platform-views)
+- [Live Monitor and Spectrum Tools](#live-monitor-and-spectrum-tools)
+- [Capture and dataset workflow](#capture-and-dataset-workflow)
+- [Demodulation capabilities](#demodulation-capabilities)
+- [Architecture](#architecture)
+- [Hardware and runtime](#hardware-and-runtime)
+- [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
 
-It is not a generic mock dashboard. The live SDR path opens real UHD/GNU Radio
-workers, reads real samples, and stores real dataset artifacts.
+## Main capabilities
 
-## Recent Changes
+- Real-time FFT/PSD spectrum monitoring from a USRP.
+- Spectrum and waterfall split view.
+- Frequency, span, sample-rate, gain, antenna, RBW, VBW, reference-level,
+  detector, trace, averaging, and display controls.
+- Interactive markers, marker-band filtering, automatic peaks, pan, zoom,
+  freeze, and CSV/PNG export.
+- Simultaneous Spectrum Tools traces and statistical layers.
+- Manual and triggered I/Q acquisition with pre-trigger buffering.
+- Capture metadata, checksums, experimental splits, and quality control.
+- RF Intelligence hypotheses with explicit confidence and evidence.
+- Waterfall-based RF Signal Understanding.
+- Analog, digital, and IoT demodulation workflows.
+- Dataset governance for training, validation, and prediction.
+- Model training, retraining, external validation, registry, and inference.
+- Reproducible E0/E1/E3/E5 experiments and E6 classical-ML workflows.
+- KiwiSDR receiver discovery and remote receiver map.
+- Persisted runtime settings with hardware and scientific-policy limits.
 
-- **E6 Oracle-Style RF Lab** — New standalone module for classical ML RF
-  fingerprinting, replicating and extending the oracle-style reference pipeline.
-  Full workflow from dataset import through training to live prediction, entirely
-  within the browser UI. Key additions:
+## Quick start
 
-  - **37-feature tabular extraction** from raw I/Q windows: amplitude, phase, IQ
-    statistics, PAPR, spectral centroid, spread, flatness, and 12 FFT sub-band
-    energies. Features are extracted with a configurable window size and windows
-    per file, then scaled with `StandardScaler`.
-  - **8 classical ML algorithms**: `HistGradientBoosting`, `RandomForest`,
-    `ExtraTrees`, `MLP`, `SVM RBF`, `SVM linear`, `KNN`,
-    `LogisticRegression`. Each supports full probability output and is
-    saved as a joblib bundle with complete provenance metadata.
-  - **Group-disjoint stratified split** — no capture group appears in both
-    train and test sets. Manifest splits are respected when present.
-  - **Dataset import** for three reference datasets: KRI 16-device WiFi
-    (SigMF), DJI UAV Lightbridge (JSON + bin), IEEE CBRS (SigMF). A generic
-    SigMF importer covers any additional external dataset. Import percentage
-    slider controls how much of a large dataset is loaded.
-  - **Per-dataset model isolation** — model IDs are namespaced as
-    `e6_{dataset_name}_{algorithm}`, so models trained on different datasets
-    never overwrite each other.
-  - **Real-time job progress** — all long-running operations (training,
-    benchmark, import, retrain) return a `job_id` immediately. The UI polls
-    `/api/e6/jobs/{job_id}` every 800 ms and renders a green fill bar with the
-    exact percentage, elapsed time, current step message, and for benchmarks
-    the live model index (`3/8 — extra_trees`).
-  - **Training audit card** — after each training job the UI shows model
-    weight (MB), dataset IQ size (GB), accuracy / macro-F1 / balanced
-    accuracy, window count, train time, inference latency per window, and a
-    collapsible step-by-step log of the full pipeline.
-  - **Train All 8 — Benchmark** — trains all 8 algorithms sequentially on the
-    selected dataset and produces a ranked comparison table with 🥇🥈🥉
-    medals, correct/failed prediction counts, a horizontal accuracy bar chart,
-    and a model-size column (MB).
-  - **Pre-trained model import** — scan any directory for `.joblib` bundles,
-    auto-detect algorithm and dataset from filename, import individually or
-    bulk import with a single button. The 28 pre-trained models from the
-    reference project are fully supported.
-  - **File upload for IQ captures** — the Local Builder tab offers a drag-and-
-    drop upload widget as an alternative to entering a file path.
-  - **IEEE CBRS label fix** — the `auto` label strategy for IEEE CBRS datasets
-    now uses the bandwidth-category folder name (`5M`, `10M`, `15M`, `20M`)
-    as the class label instead of the transmitter hardware ID combo. Datasets
-    organised like `neu_4f197c103` now correctly detect 4 classes instead of 1.
-  - **Live inference** — models can be toggled on/off for live detection. The
-    Predict tab runs file-based inference with confidence, top-k probabilities,
-    and per-model metadata (window size, dtype, class list).
+### Requirements
 
-- **OOK 433 / 315 / 868 MHz remote control pipeline** - New IoT demodulation
-  pipeline (`ook_433_remote`) for ISM-band remote controls using EV1527/SC1527
-  and PT2262/SC2262 protocols. The pipeline estimates the chip period T from a
-  histogram of HIGH-pulse widths, segments frames by sync gaps, decodes PWM
-  bits, and matches the 20-bit address + 4-bit button field of EV1527 or the
-  12-tri-state encoding of PT2262. Repeat-frame analysis reports consistency,
-  inter-frame gap and estimated transmit period. Live SDR path is supported
-  through the `ook` worker with full IoT post-processing in the controller.
+- Windows 10/11.
+- Node.js and npm.
+- Python environment for the FastAPI backend.
+- RadioConda with GNU Radio and UHD for real SDR workers.
+- USRP-B200/B210 or another UHD-compatible receiver.
 
-- **BLE SYNC correlation filter** - The BLE burst decoder now computes a 40-bit
-  SYNC score (8-bit preamble `0xAA` + 32-bit Access Address `0x8E89BED6`) per
-  burst across all symbol-phase candidates. Bursts with a maximum SYNC score
-  below 28/40 are discarded before CRC checking. Non-BLE 2.4 GHz interference
-  typically scores ≤ 24; real BLE bursts score 32 or higher. This eliminates
-  false-positive BLE candidates from Zigbee, WiFi CH1 leakage and ISM noise.
-
-- **Zigbee pipeline** - New IoT demodulation pipeline (`zigbee`) supporting
-  IEEE 802.15.4 O-QPSK at 2.4 GHz. Recovers chip sequences, correlates against
-  the 32-chip PN spreading code, reconstructs nibbles and bytes, parses the MAC
-  frame (FCS, frame type, sequence number, addressing), and reports PAN IDs and
-  device addresses. Note: Zigbee CH26 (2480 MHz) and BLE CH39 (2480 MHz) share
-  the same center frequency; capture context and burst structure distinguish them.
-
-- **Demodulation result persistence fix** - Live IoT pipeline results stored
-  under `{id}/demodulation_report.json` were not reloaded after page refresh.
-  The result loader now reads both the flat `*.json` pattern (script-level
-  metadata) and the nested `*/demodulation_report.json` pattern (enriched IoT
-  report), with the enriched report winning when both exist for the same ID.
-
-- **Audio demodulation display** - FM, WFM, and AM results in the Demodulation
-  tab now show audio-relevant fields: demodulation mode, center frequency,
-  bandwidth, sample rate, signal duration, audio presence and sample rate, gain,
-  and antenna. Packet-oriented fields (protocol, packets decoded, CRC valid,
-  channel) are shown only for digital and IoT demodulation results.
-
-- **Collapsible sidebars** - The left navigation sidebar and the right status
-  panel in the Spectrum view each have a circular collapse/expand button that
-  remains visible even when the panel is fully hidden. Both panels animate to
-  `w-0` when collapsed so the spectrum display uses the full screen width.
-
-- **MLOps WinError 123 fix** - Training no longer crashes when the dataset
-  directory contains subdirectories with colons in their names. The export
-  cleanup uses `cmd /c rd /s /q` as a fallback on Windows when `shutil.rmtree`
-  fails.
-
-## Architecture
-
-```text
-frontend/                 React, TypeScript, Vite, Tailwind
-backend/                  FastAPI application and RF/ML services
-backend/tools/            GNU Radio/UHD helper workers
-backend/app/modules/      Domain modules:
-  fingerprinting/         Operational RF fingerprinting (PyTorch, live SDR)
-  rf_intelligence/        Band-profile signal detection and classification
-  rf_signal_understanding/ RF Signal Understanding (numpy softmax, E5)
-  rf_experiment_lab/      Reproducible experiment workflows (E0, E1, E3, E5)
-  mlops/                  MLOps pipeline and model lifecycle
-  e6_oracle_style/        Oracle-style classical ML fingerprinting (E6)
-backend/app/infrastructure/persistence/storage/
-  captures/               Raw I/Q files and JSON metadata
-  datasets/               Dataset Builder manifests
-  e6/                     E6 datasets, models, and uploaded IQ files
-  config/                 Runtime settings
-  models/                 Operational fingerprinting model artifacts
-scripts/run_dev.ps1       Windows development launcher
-start_unified.ps1         Project-level launcher wrapper
-```
-
-The backend owns hardware access, capture workers, QC, dataset registries, model
-training, inference and persistence. The frontend owns the operator workflow:
-spectrum view, markers, Capture Lab, Dataset Builder, model views and experiment
-screens.
-
-## Hardware And Runtime
-
-Primary development target:
-
-| Component | Value |
-|---|---|
-| SDR | Ettus Research USRP-B200 |
-| Driver/runtime | UHD + GNU Radio |
-| SDR Python | RadioConda Python |
-| Default antenna | `RX2` |
-| Default center | `89.4 MHz` |
-| Default sample rate | `2 MS/s` |
-| Default gain | `20 dB` |
-
-Before running the app, UHD must be able to discover and probe the device:
+Confirm that UHD can discover and open the radio:
 
 ```powershell
 & "C:\Users\Usuario\radioconda\Library\bin\uhd_find_devices.exe"
 & "C:\Users\Usuario\radioconda\Library\bin\uhd_usrp_probe.exe"
 ```
 
-For network USRPs, pass `UHD_DEVICE_ARGS=addr=<ip>`. For multiple USB devices,
-use `UHD_DEVICE_ARGS=serial=<serial>`.
-
-## Quick Start On Windows
+### Unified launcher
 
 From the repository root:
 
@@ -185,32 +70,17 @@ From the repository root:
 powershell -ExecutionPolicy Bypass -File .\start_unified.ps1
 ```
 
-With an explicit RadioConda path:
+With an explicit RadioConda interpreter:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\start_unified.ps1 `
   -RadioCondaPythonPath "C:\Users\Usuario\radioconda\python.exe"
 ```
 
-With a remote training host configured for the UI:
+The launcher starts the backend on `http://127.0.0.1:8000`, starts Vite, and
+propagates the SDR and polling configuration required by the frontend.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\start_unified.ps1 `
-  -RemoteUser "<ssh-user>" `
-  -RemoteHost "<training-host>"
-```
-
-The launcher starts:
-
-- backend API on `http://127.0.0.1:8000`
-- frontend dev server through Vite
-- frontend environment values for polling intervals, remote host metadata and
-  RadioConda Python propagation
-- persisted runtime settings from
-  `backend/app/infrastructure/persistence/storage/config/runtime_settings.json`
-  when that file exists
-
-## Manual Development
+### Manual development
 
 Backend:
 
@@ -230,588 +100,454 @@ npm install
 npm run dev
 ```
 
-The full `backend/requirements.txt` includes GNU Radio and UHD packages. On
-Windows, the project normally uses RadioConda for SDR workers and a separate
-backend virtual environment for FastAPI dependencies.
+## Recommended workflow
 
-## Operator Workflow
+```text
+Mission Control
+      |
+      v
+Live Monitor -> Mark signal band -> Capture Lab
+                                      |
+                                      v
+                               Dataset Builder
+                                 /    |    \
+                                v     v     v
+                           Training Validation Inference
+                                |       |       |
+                                +-------+-------+
+                                        v
+                                      Models
+```
 
-1. Connect and probe the USRP.
-2. Start the application with `start_unified.ps1`.
-3. Open Live Spectrum.
-4. Tune center frequency, span, sample rate, gain and antenna.
-5. Place Marker 1 and Marker 2 around the signal band.
-6. Use Capture Lab to record the marked band.
-7. Choose manual capture for fixed-duration recordings or triggered capture for
-   burst signals.
-8. Open Dataset Builder.
-9. Run `Recompute QC`.
-10. Fill missing fields from the band profile when needed.
-11. Confirm the label as strong only when the operator has verified the signal
-    class or transmitter identity.
-12. Accept, reject or keep the capture for review.
-13. Use accepted captures for training, validation, RF Signal Understanding or RF
-    Experiment Lab.
+1. Connect the USRP and start the live stream.
+2. Tune the center frequency, span, sample rate, gain, and antenna.
+3. Inspect the signal with Live Monitor, Waterfall, Spectrum Tools, and RF
+   Intelligence overlays.
+4. Place M1 and M2 around the signal of interest.
+5. Open Capture Lab and select immediate or triggered capture.
+6. Review the saved I/Q and metadata in Dataset Builder.
+7. Recompute QC, confirm the label, and accept, reject, or mark the capture as
+   doubtful.
+8. Route accepted captures to training, validation, inference, demodulation,
+   RF Signal Understanding, or RF Experiment Lab.
 
-## Capture Modes
+## Platform views
 
-### Manual Capture
+The following sections correspond to the routes registered under
+`frontend/src/app/modules/`. Every navigation view is documented even when a
+dedicated screenshot is not yet available.
 
-Manual capture records immediately for the requested duration. It is appropriate
-for continuous signals, stable test transmitters, long packets, or controlled
-captures where the signal is already active.
+### Mission Control — `/`
 
-### Triggered Capture
+Mission Control is the top-level operational dashboard. It summarizes
+acquisition, dataset readiness, training state, validation evidence, inference,
+and model availability. Use it to identify the next blocked or incomplete stage
+in the RF fingerprinting workflow.
 
-Triggered capture streams continuously and saves an event only when the trigger
-detects a burst. It maintains a circular pre-trigger buffer, so the beginning of
-the burst is preserved. This mode is better for LoRa, OOK, FSK, remote keys,
-BLE-like bursts and other packet signals.
+### Live Monitor — `/spectrum`
 
-Available trigger strategies:
+Live Monitor is the main real-time analyzer. It provides SDR connection and
+streaming controls, spectrum navigation, markers, analyzer settings, optional
+waterfall, overlays, freeze, exports, and Spectrum Tools.
 
-| Strategy | Use |
-|---|---|
-| Adaptive Energy | General burst detection based on rolling noise floor and energy rise |
-| Smart Burst | Adds persistence and saturation rejection for cleaner burst events |
+![Live Monitor spectrum](readme_img/live_monitor.png)
 
-Each valid event writes an I/Q file and a JSON metadata file.
+The split workspace keeps the live spectrum and recent spectral history in the
+same view:
 
-## Demodulator
+![Live Monitor with waterfall](readme_img/live_monitor_waterfall.png)
 
-The Demodulator tab is split into two workflows:
+RF Intelligence can be displayed directly over the live workspace without
+changing the underlying spectrum data:
 
-| Mode | Input | Main use | Persistence |
+![Live Monitor with RF Intelligence overlay](readme_img/live_monitor_rf_intelligence_overlay.png)
+
+An older split-view reference is retained for comparison:
+
+<details>
+<summary>Legacy Live Monitor and waterfall screenshot</summary>
+
+![Legacy Live Monitor waterfall](readme_img/live_monitor_waterfall_legacy.png)
+
+</details>
+
+See [Live Monitor and Spectrum Tools](#live-monitor-and-spectrum-tools) for the
+complete technique reference.
+
+### Capture Lab — `/capture`
+
+Capture Lab performs controlled real-I/Q acquisition. It can derive capture
+limits from M1/M2, the live peak, the visible monitor window, or custom
+frequencies. Before capture it reports center, bandwidth, peak, noise floor,
+SNR, and scientific suitability.
+
+![Capture Lab](readme_img/capture_lab.png)
+
+Supported capture modes:
+
+- **Immediate**: records the requested duration immediately.
+- **Triggered Burst**: waits for an event and preserves samples from the
+  circular pre-trigger buffer.
+
+Each capture stores raw complex I/Q and JSON metadata including frequency
+limits, sample rate, gain, antenna, format, labels, split, timing, and checksum.
+
+The following screenshot shows the earlier signal-analysis capture interface,
+which is now represented by the Capture Lab route and aliases
+`/guided-capture` and `/modulated-analysis`:
+
+<details>
+<summary>Capture Lab signal-analysis interface</summary>
+
+![Capture Lab signal analysis](readme_img/capture_lab_signal_analysis.png)
+
+</details>
+
+### Dataset Builder — `/dataset-builder`
+
+Dataset Builder is the governance gate between acquisition and model use. It
+does not capture RF. It reviews saved I/Q, recomputes offline QC, manages
+labels and experimental splits, and prevents doubtful or invalid samples from
+silently entering training or validation.
+
+![Dataset Builder](readme_img/dataset_builder.png)
+
+The view separates:
+
+- `capture_quality`: `valid`, `warning`, `doubtful`, or `invalid`.
+- `label_status`: `unlabeled`, `weak_label`, or `strong_label`.
+- `review_status`: `needs_review`, `accepted`, `doubtful`, or `rejected`.
+- `split`: `train`, `val`, or `predict`.
+
+QC includes SNR, clipping, silence/near-zero content, occupied bandwidth,
+frequency offset, sample count, file consistency, and burst suitability.
+
+### Training — `/training`
+
+Training launches controlled RF fingerprinting jobs from canonicalized captures
+assigned to the training registry. It exposes dataset readiness,
+hyperparameters, remote execution status, logs, metrics, and generated model
+artifacts. Strict mode requires accepted, strongly labelled, technically valid
+captures.
+
+### Retraining — `/retraining`
+
+Retraining updates an existing model using the current curated training
+registry. It preserves lineage between the source model, dataset fingerprint,
+configuration, new metrics, and replacement candidate.
+
+### RF Intelligence — `/rf-intelligence`
+
+RF Intelligence performs real-time RF object detection and cautious
+rule/profile-based protocol hypotheses. It shows the estimated noise floor,
+detection threshold, minimum SNR, detected objects, temporal behavior,
+confidence, and the evidence supporting each hypothesis.
+
+![RF Intelligence](readme_img/rf_intelligence.png)
+
+The output is intentionally phrased as a hypothesis unless enough evidence is
+available. RF energy alone is not treated as a decoded or identified protocol.
+
+### RF Experiment Lab — `/rf-experiment-lab`
+
+RF Experiment Lab provides reproducible research workflows with strict dataset
+splits, dry-run validation, representation extraction, metrics, exports, and
+benchmark reports.
+
+Implemented experiment families include:
+
+- **E0**: morphological waterfall/spectrogram baseline.
+- **E1**: raw-I/Q 1D CNN workflow.
+- **E3**: spectrogram/waterfall 2D CNN workflow.
+- **E5**: engineered spectral-feature classical ML baseline.
+
+The view records configuration, dataset manifest, label schema, preprocessing,
+split policy, artifacts, metrics, and scientific traceability.
+
+### E6 Oracle-Style Lab — `/e6-oracle-style-lab`
+
+E6 is an oracle-style classical RF fingerprinting laboratory. It supports local
+dataset creation, SigMF and reference-dataset import, feature extraction,
+training, benchmarking, pre-trained model import, registry management, and
+file/live prediction.
+
+Available algorithms:
+
+- HistGradientBoosting
+- Random Forest
+- Extra Trees
+- MLP
+- SVM RBF
+- SVM linear
+- KNN
+- Logistic Regression
+
+Models are isolated by dataset and algorithm, and long-running jobs report
+progress, elapsed time, current stage, metrics, model size, and inference
+latency.
+
+### RF Signal Understanding — `/rf-signal-understanding`
+
+RF Signal Understanding analyzes I/Q-derived waterfall representations,
+detects time-frequency regions, extracts spectral evidence, and produces
+cautious signal-family hypotheses. The view can compare newer region/feature
+pipelines with legacy analysis results.
+
+### Validation — `/validation`
+
+Validation evaluates selected models against canonicalized validation captures
+that are kept separate from training groups. It checks leakage, label
+compatibility, artifact readiness, per-class results, aggregate metrics, and
+external-validation evidence.
+
+### Inference — `/inference`
+
+Inference runs asynchronous predictions on captures assigned to the prediction
+split. It resolves the selected capture and model, validates required metadata,
+tracks job state, and presents ranked predictions and confidence evidence.
+
+### Models — `/models`
+
+Models is the registry and model-card view. It presents model identity, task,
+algorithm, dataset lineage, label schema, validation evidence, artifact paths,
+readiness, and whether a model is enabled for live use.
+
+### Waterfall — `/waterfall`
+
+Waterfall visualizes spectral power over time. It is useful for bursts,
+frequency hopping, drift, intermittent interference, and temporal occupancy.
+The standalone view complements the split waterfall available in Live Monitor.
+
+### Recordings — `/recordings`
+
+Recordings provides a library of recording sessions and saved artifacts. It is
+used to locate, inspect, and manage I/Q or audio recordings independently of
+the curated Dataset Builder registry.
+
+### Demodulation — `/demodulation`
+
+Demodulation processes a marker-selected live band or a stored dataset capture
+through analog, digital, or IoT pipelines. Results distinguish RF activity,
+synchronization, bit recovery, frame reconstruction, CRC validation, and
+successfully decoded payloads.
+
+![Demodulation](readme_img/demodulation.png)
+
+### Live Demodulation — `/live-demodulation`
+
+Live Demodulation provides real-time AM, FM, NFM, and WFM audio recovery from
+the current SDR stream. It includes tuning, bandwidth and gain controls, Web
+Audio playback, stream status, level monitoring, and optional persistence.
+
+![Live Demodulation](readme_img/live_demodulation.png)
+
+### KiwiSDR Map — `/kiwisdr`
+
+KiwiSDR Map discovers and catalogs remote KiwiSDR receivers, displays them on a
+map, exposes receiver filters, and supports selecting a remote receiver for
+inspection. This module is separate from the local UHD/USRP hardware path.
+
+### Settings — `/settings`
+
+Settings exposes persisted application, analyzer, hardware, polling, capture,
+QC, and RF Intelligence parameters. Each setting documents its active value,
+default, source, allowed range, affected workflow, restart requirement, and
+whether the limit is imposed by hardware, software, or scientific policy.
+
+## Live Monitor and Spectrum Tools
+
+Spectrum Tools is always available from the upper-right corner of Live Monitor.
+The menu opens over the canvas and does not reduce the spectrum workspace.
+Several tools can run simultaneously because every processor receives the same
+original Live frame rather than the output of another technique.
+
+### Static overview
+
+![Spectrum Tools with Max Hold, Min Hold, averages, RMS, EWMA and statistical layers](readme_img/live_monitor_spectrum_tools.png)
+
+### Animated overview
+
+![Animated Spectrum Tools demonstration](readme_img/live_monitor_spectrum_tools.gif)
+
+### Display controls
+
+- **Live Trace** shows or hides only the original blue trace. Hiding it does not
+  stop acquisition, analysis, markers, waterfall, captures, or tool updates.
+- The **eye** hides a tool representation while its processor keeps collecting.
+- **Reset** clears only that tool's accumulated history.
+- **Disable** stops the tool and releases its accumulated state.
+- **Reset all histories** keeps tools enabled but clears their buffers.
+- **Disable all tools** disables every optional tool but leaves Live running.
+- Tooltips appear after approximately 350 ms and explain purpose, use cases,
+  limitations, requirements, impact, and parameter direction.
+
+### Technique reference
+
+| Technique | What it shows | Best used for | Important limitation |
 |---|---|---|---|
-| Live Demodulation | Current SDR stream and marker-selected band | Fast inspection of what is on air now | Optional IQ and result storage |
-| Dataset Demodulation | Stored `.cfile`, `.iq`, `.bin`, `.dat` or SigMF capture | Reproducible post-capture analysis | Results are linked to the source dataset/sample |
+| Live Trace | Current FFT/PSD frame | Immediate spectrum inspection | Hiding it is visual only; acquisition continues |
+| Max Hold | Highest observed power per bin | Bursts, hopping, intermittent signals, spurs | Does not preserve occurrence time or duration |
+| Min Hold | Lowest observed power per bin | Noise-floor inspection and persistent-channel analysis | A low outlier remains until reset |
+| Power Average | Mean power calculated in linear domain | Stable estimates of persistent energy | Smooths short events |
+| RMS Power | Effective accumulated power per bin | Energy comparison for varying signals | PSD-only RMS can resemble Power Average |
+| EWMA | Timestamp-aware exponential average | Adjustable smoothing with recent-frame emphasis | Large time constants respond slowly |
+| Percentiles | P50, P90, P95, and P99 per bin | Typical level versus rare peaks | Needs a sample window and additional processing |
+| Trace History | Previous traces with fading opacity | Drift, movement, and intermittent activity | Many traces can make the graph visually dense |
+| Density / Persistence | Distribution of observed power levels | Multiple signal states and persistence | Observed-frame density, not a regulatory measurement |
+| Spectrum Mask | Configurable upper limit line | Visual emission-limit comparison | Currently visual; it does not trigger IQ capture |
+| Observed-frame Occupancy | Time fraction above a threshold | Comparing activity across the span | Not absolute or regulatory occupancy |
+| Gated Spectrum | Spectrum inside a precise time gate | A selected part of a burst or pulse | Requires synchronized real IQ; unavailable on PSD-only Live input |
+| Zero Span | Power versus time at one selected frequency | Pulses, duty cycle, and temporal modulation | Requires continuous timed IQ and a separate time-axis panel |
 
-Both workflows use the same demodulation pipeline registry. The difference is
-the source adapter: live mode derives metadata from SDR settings and markers,
-while dataset mode derives metadata from the stored capture and Dataset Builder
-record. Critical metadata such as sample rate, center frequency, datatype and
-source file must be present before a dataset demodulation is executed.
+### Parameter behavior
 
-Each demodulation result is written under the local demodulation storage area
-and is visible from the UI. The result viewer opens decoded artifacts directly
-instead of requiring the operator to inspect files manually. Depending on the
-pipeline, outputs can include:
+| Parameter | Increase it | Decrease it |
+|---|---|---|
+| EWMA time constant | Smoother, steadier trace with slower response | Faster response with more visible noise |
+| Spectrum Mask level | Fewer crossings; only stronger signals exceed the mask | More sensitivity and more noise-related crossings |
+| Occupancy threshold | Counts only stronger signals; lower reported occupancy | Includes weaker signals/noise; higher apparent occupancy |
+
+### Freeze and geometry changes
+
+Freeze pauses visual tool updates without deleting accumulated state. Changes
+to acquisition geometry—center frequency, span, bin count, or frequency grid—
+reset incompatible buffers so values from different grids are never mixed.
+
+### Analysis source and legacy Max Hold
+
+Display and analysis remain separate concepts. Enabling a visual tool does not
+automatically change RF Intelligence, RF Signal Understanding, markers, or
+prediction input. The existing **Use Peak For Detection** control explicitly
+selects the legacy peak trace when required. Permanent and decay Max Hold,
+Reset Peaks, marker band-pass, and Freeze behavior remain available.
+
+## Capture and dataset workflow
+
+### Immediate capture
+
+Immediate mode records the selected RF window for a fixed duration. It is best
+for continuous signals, controlled transmitters, or cases where the signal is
+already active.
+
+### Triggered capture
+
+Triggered mode continuously observes the source and writes an event only after
+the configured condition is met. A bounded circular buffer preserves samples
+from before the trigger so the beginning of a burst is not lost.
+
+Typical targets include OOK remotes, LoRa, FSK, BLE-like bursts, short packets,
+and intermittent emitters.
+
+### Capture artifacts
+
+Each successful acquisition can produce:
+
+- `.cfile` or `.iq` complex-sample file.
+- JSON metadata sidecar.
+- SHA-256 checksum.
+- Capture configuration and RF context.
+- Trigger and pre-trigger metadata when applicable.
+- Dataset split and label fields.
+
+## Demodulation capabilities
+
+The demodulation registry supports analog audio, digital protocols, and IoT
+pipelines. A signal is not reported as decoded merely because energy exists in
+the selected band.
+
+| Pipeline | Status | Main output |
+|---|---|---|
+| `wfm_broadcast` | Basic implementation | Recovered WFM audio and report |
+| `nfm` | Basic implementation | Recovered NFM audio and report |
+| `am` | Basic implementation | Recovered AM audio and report |
+| `ble_advertising` | RF activity and synchronization scaffold | BLE CH37–CH39 packet candidates and CRC evidence |
+| `wifi_80211` | RF activity and frame scaffold | 2.4/5 GHz frame candidates and report |
+| `generic_gfsk_iot` | Physical bitstream estimator | Bitstream, payload candidate, and report |
+| `ook_ask_iot_sensor` | Physical bitstream estimator | Generic OOK/ASK bitstream and payload candidate |
+| `generic_fsk_iot` | Physical bitstream estimator | Generic FSK bitstream and payload candidate |
+| `zigbee_ieee802154` | Implemented | IEEE 802.15.4 frames, MAC fields, and FCS evidence |
+| `ieee802154_oqpsk` | RF activity and synchronization scaffold | O-QPSK packet candidates and report |
+| `adsb_1090` | RF activity and synchronization scaffold | ADS-B packet candidates and report |
+| `ook_fsk_generic` | Symbol-estimation scaffold | Generic OOK/FSK/GFSK bitstream diagnostics |
+| `lora_css` | Experimental scaffold | LoRa payload candidates and report |
+| `ook_433_remote` | Implemented | EV1527/PT2262 frames, address/button fields, and bitstream |
+| `fsk_remote_decoder` | Candidate decoder | ISM remote bursts, two-tone FSK candidates, and repetition evidence |
+| `dvbt` | External chain required | Detection/report only |
+| `dvbs_s2` | Experimental; external RF front end required | Detection/report only |
+
+Depending on the pipeline, persisted results can include:
 
 - `demodulation_report.json`
 - `decoded_packets.json`
 - `decoded_frames.json` or `decoded_frames.csv`
-- `bitstream.bin` or `recovered_bitstream.bin`
-- recovered media such as `.wav` or `.ts`
+- `recovered_bitstream.bin`
+- `burst_candidates.json`
+- recovered `.wav` or `.ts` media
 - `logs.txt`
 
-The UI must distinguish RF activity, protocol compatibility, synchronization,
-bitstream recovery, frame reconstruction, CRC validation and payload extraction.
-Energy in a channel is not reported as a successful demodulation.
-
-The result display adapts to the demodulation type:
-
-- **Analog audio** (AM, FM, WFM): shows center frequency, bandwidth, sample
-  rate, signal duration, audio presence, audio sample rate, gain and antenna.
-- **Digital / IoT**: shows protocol, pipeline, packet count, CRC status, channel
-  index and a link to the decoded artifacts.
-
-Demodulation results survive page refresh. The loader reads both flat
-script-level metadata files and enriched nested `{id}/demodulation_report.json`
-files; the enriched report takes precedence when both exist.
-
-### IoT and Protocol Pipelines
-
-| Pipeline ID | Band | Protocol | Description |
-|---|---|---|---|
-| `ook_433_remote` | 315 / 433 / 868 MHz | EV1527, PT2262 | Remote control chip period estimation, PWM decode, address/button extraction |
-| `ook_ask_iot_sensor` | 315 / 433 / 868 MHz | Generic OOK/ASK | Generic ISM-band OOK sensor decode |
-| `zigbee` | 2.4 GHz CH11–CH26 | IEEE 802.15.4 | O-QPSK chip correlation, MAC frame parse, PAN/address decode |
-| `ble_advertising` | 2.402 / 2.426 / 2.480 GHz | BLE CH37–39 | GFSK discriminator, Access Address search, CRC-24 validation, AdvData TLV decode |
-| `wifi_80211` | 2.4 / 5 GHz | IEEE 802.11 | Frame detection and header parse |
-| `lora` | 433 / 868 / 915 MHz | LoRa/LoRaWAN | Chirp spread-spectrum decode |
-
-## BLE Advertising Demodulation
-
-The Demodulation tab includes a **BLE advertising channel test** that captures
-channels 37 (2402 MHz), 38 (2426 MHz), and 39 (2480 MHz) sequentially and
-attempts to decode advertising packets from each.
-
-The BLE implementation is intentionally conservative. It can report RF activity,
-burst candidates, recovered bitstream, Access Address matches and reconstructed
-packet candidates. It does not mark a capture as demodulated unless CRC-24
-validates on at least one packet. A result such as:
+## Architecture
 
 ```text
-Access Address: true
-Packets: 8
-CRC valid: 0
-Final status: ble_candidate_not_decoded
+frontend/                         React, TypeScript, Vite, Tailwind
+  src/app/modules/                Route and navigation module definitions
+  src/presentation/views/         Operator-facing views
+  src/features/spectrum-tools/    Multi-technique spectrum processing and UI
+
+backend/                          FastAPI application
+  app/infrastructure/web/         Controllers and API routes
+  app/infrastructure/sdr/         Real spectrum stream and SDR safety
+  app/modules/fingerprinting/     Operational RF fingerprinting
+  app/modules/rf_intelligence/    RF scene detection and hypotheses
+  app/modules/rf_signal_understanding/
+  app/modules/rf_experiment_lab/  E0/E1/E3/E5 workflows
+  app/modules/e6_oracle_style/    E6 classical-ML workflows
+  app/modules/mlops/              Training, validation, registry lifecycle
+
+backend/tools/                    GNU Radio/UHD capture and stream workers
+readme_img/                       View-aligned README screenshots
+start_unified.ps1                 Unified Windows launcher
 ```
 
-means the signal is compatible with BLE advertising and candidate PDUs were
-found, but no packet has been proven valid. In that state, addresses, PDU types
-and payload hex are debugging candidates, not trusted decoded content.
+The backend owns hardware access, capture, pre-trigger buffering, persistence,
+QC, demodulation, training, validation, and inference. The frontend owns the
+operator workflow and visualization.
 
-The demodulation pipeline:
+## Hardware and runtime
 
-1. Capture IQ from the USRP at the target channel center frequency.
-2. Run the GFSK frequency discriminator (instantaneous phase delta).
-3. Apply a moving-average low-pass filter over one symbol period.
-4. Downsample to one sample per symbol (1 Mbit/s BLE symbol rate).
-5. Search for the 40-bit sync word (8-bit preamble `0xAA` + 32-bit
-   Access Address `0x8E89BED6`) using NumPy correlation. Both polarities are
-   tested.
-6. De-whiten the PDU bits using a 7-bit LFSR (polynomial x^7+x^4+1) initialised
-   with the BLE channel index.
-7. Validate CRC-24 (polynomial x^24+x^10+x^9+x^6+x^4+x^3+x+1, init `0x555555`).
-8. Decode the PDU header (type, TxAdd, length), advertiser MAC address, and
-   AdvData TLV records (flags, local name, TX power, manufacturer-specific data).
-
-The current decoder also performs burst-local symbol phase trials and small
-bit-phase adjustments around Access Address offsets. This improves diagnostics
-on live captures where each burst starts at a different sample phase. Candidate
-fields remain untrusted until CRC passes.
-
-Before CRC checking, each burst is scored against a 40-bit SYNC template
-(preamble `0xAA` + Access Address `0x8E89BED6`) across all tested symbol phases.
-Bursts where the best SYNC score across all phases is below 28/40 are rejected
-without further processing. Real BLE advertising bursts score 32 or higher;
-non-BLE 2.4 GHz sources (Zigbee, WiFi CH1 leakage, ISM wideband noise) score
-24 or lower. This filter eliminates false-positive BLE candidates that otherwise
-pass the energy and burst-detection stage.
-
-Results are shown per channel in the test table and saved as
-`decoded_packets.json` in the demodulation output directory.
-
-Each BLE run writes these artifacts:
-
-| Artifact | Purpose |
+| Component | Default |
 |---|---|
-| `filtered_iq.cfile` | IQ used by the BLE analysis stage |
-| `burst_candidates.json` | Detected burst windows and durations |
-| `recovered_bitstream.bin` | Packed hard-bit stream recovered from GFSK discrimination |
-| `access_address_search.json` | Correlation diagnostics for `0x8E89BED6` |
-| `decoded_packets.json` | Candidate or CRC-valid decoded packets |
-| `demodulation_report.json` | Run summary, status, metrics and warnings |
-| `logs.txt` | Human-readable pipeline trace |
+| SDR | Ettus Research USRP-B200 |
+| Driver/runtime | UHD + GNU Radio |
+| SDR Python | RadioConda Python |
+| Antenna | `RX2` |
+| Center frequency | `89.4 MHz` |
+| Sample rate | `2 MS/s` |
+| Span | `2 MHz` |
+| Gain | `20 dB` |
 
-Valid BLE demodulation requires all of the following:
+Important environment variables:
 
-- `access_address_detected = true`
-- `packets_decoded >= 1`
-- `packets_crc_valid >= 1`
-- `final_status = decoded_with_valid_crc`
-
-**Limitations**: The pipeline requires a direct LOS signal with sufficient SNR.
-The current backend uses a lightweight Python/NumPy GFSK discriminator and
-symbol sampling path. It can reach Access Address and candidate PDU diagnostics
-on strong captures, but CRC-valid packet recovery may still require a stronger
-BLE physical layer implementation with real clock recovery
-(Gardner/Mueller-Muller or GNU Radio `gr-ble`). It will not recover packets from
-heavily faded or interfered channels, or from non-advertising BLE channels
-(data channels use a different access address and hop sequence that this
-pipeline does not implement).
-
-## Dataset Builder And QC
-
-Dataset Builder is the gate between raw acquisition and training data. It tracks
-four independent states:
-
-| Field | Meaning |
+| Variable | Purpose |
 |---|---|
-| `capture_quality` | Technical quality of the I/Q file: `valid`, `warning`, `doubtful` or `invalid` |
-| `label_status` | Label evidence: `unlabeled`, `weak_label` or `strong_label` |
-| `review_status` | Human review state: `needs_review`, `accepted`, `rejected` or `manual_override` |
-| `training_readiness` | Training eligibility: `not_ready`, `candidate`, `ready_for_training` or `debug_only` |
+| `RADIOCONDA_PYTHON` | Python executable used by GNU Radio/UHD workers |
+| `UHD_DEVICE_ARGS` | Device selector such as `serial=...` or `addr=...` |
+| `DEFAULT_CENTER_FREQUENCY_HZ` | Initial analyzer center |
+| `DEFAULT_SAMPLE_RATE_HZ` | Initial sample rate |
+| `DEFAULT_SPAN_HZ` | Initial acquisition span |
+| `DEFAULT_GAIN_DB` | Initial receiver gain |
+| `DEFAULT_ANTENNA` | Initial receive antenna |
+| `REAL_SDR_FPS` | Target live spectrum worker frame rate |
+| `REAL_SDR_MAX_FFT_SIZE` | Maximum accepted FFT size |
+| `VITE_SPECTRUM_POLL_INTERVAL_MS` | Frontend spectrum polling interval |
+| `VITE_WATERFALL_POLL_INTERVAL_MS` | Frontend waterfall polling interval |
+| `QC_MIN_VALID_SNR_DB` | Minimum SNR for valid dataset captures |
+| `RF_INTELLIGENCE_MIN_SNR_DB` | Minimum SNR for RF Intelligence candidates |
 
-`Recompute QC` analyzes the stored I/Q file, not the live preview. It recomputes
-SNR, occupied bandwidth, peak offset, clipping, silence, burst activity,
-duration, edge margin and profile-specific flags.
-
-For marker-driven burst captures, the intended operator rule is simple:
-
-- if the useful signal is inside the marked band,
-- SNR is sufficient,
-- clipping and sample drops are absent,
-- the burst has usable duration,
-- metadata is complete,
-- and the label is confirmed when training requires ground truth,
-
-then the capture can become `valid` and `ready_for_training`. Peak offset inside
-the marked band is retained as a warning when relevant, but it is not by itself a
-reason to reject a good marker-band burst capture.
-
-## Labels And Band Profiles
-
-The RF band profile knowledge base is stored in:
-
-```text
-backend/app/modules/rf_intelligence/band_profiles.json
-```
-
-Dataset Builder can use it to fill missing technical fields such as:
-
-- `transmitter_label`
-- `transmitter_class`
-- `signal_type`
-- `modulation_class`
-- `protocol_family`
-- `band_label`
-- `profile_key`
-
-These generated labels start as weak technical labels. They become strong labels
-only after operator confirmation. Strong labels are required for strict
-scientific training.
-
-## E6 Oracle-Style RF Lab
-
-E6 is a self-contained classical ML fingerprinting module. It does not require
-live SDR captures — it works directly from external reference datasets or from
-IQ files added through the Local Builder. Its entire workflow runs through the
-browser UI with no command-line steps.
-
-### Feature Extraction
-
-Each IQ window produces 37 tabular features:
-
-| Group | Features |
-|---|---|
-| Amplitude | mean, std, min, max, percentile 25/75, kurtosis, skewness |
-| Phase | mean, std, range |
-| IQ statistics | I/Q power ratio, I mean, Q mean, constellation spread |
-| Signal | PAPR, zero-crossing rate |
-| Spectral | centroid, spread, flatness |
-| FFT sub-bands | 12 band energies (normalized) |
-
-### Supported Algorithms
-
-| Model | Notes |
-|---|---|
-| `extra_trees` | ExtraTreesClassifier — best default for RF fingerprinting |
-| `hist_gradient_boosting` | HistGradientBoostingClassifier — modern boosting |
-| `random_forest` | RandomForestClassifier — robust ensemble |
-| `mlp` | MLPClassifier — dense neural net over tabular features |
-| `svm_rbf` | SVC with RBF kernel |
-| `svm_linear` | SVC with linear kernel |
-| `knn` | KNeighborsClassifier — geometric baseline |
-| `logistic_regression` | LogisticRegression — linear probabilistic baseline |
-
-### Supported External Datasets
-
-| Source type | Format | Label strategy |
-|---|---|---|
-| `kri_wifi` | SigMF (cf32) | Device ID from filename |
-| `uav_lightbridge` | JSON + bin (cf16_le) | UAV device ID from annotation |
-| `ieee_cbrs` | SigMF (cf32_le) | Bandwidth folder (`5M`/`10M`/`15M`/`20M`) or explicit target |
-| `generic_sigmf` | SigMF (any) | `core:label` annotation or parent folder name |
-
-For `ieee_cbrs`, the `ieee_target` parameter selects the label strategy:
-`auto` (default, uses bandwidth folder), `band`, `tx_combo`, `receiver`, or
-`signal_label`.
-
-### E6 Storage Layout
-
-```text
-storage/e6/
-  datasets/{name}/manifest.json    Dataset manifest (captures, splits, labels)
-  models/{model_id}.joblib         Trained model bundle
-  uploads/                         IQ files uploaded from the browser
-```
-
-The joblib bundle contains: model pipeline, LabelEncoder, feature names,
-window config, class list, metrics, and training metadata. It is fully
-self-contained for offline inference.
-
-### E6 API Endpoints
-
-```text
-GET  /api/e6/health                     Module health and feature count
-GET  /api/e6/sources                    List supported external source types
-
-POST /api/e6/datasets/scan-external     Scan without importing
-POST /api/e6/datasets/import-external   Import → returns {job_id}
-POST /api/e6/datasets/create-local      Create empty local dataset
-POST /api/e6/datasets/add-capture       Add an IQ file to a dataset
-POST /api/e6/datasets/register-device   Register a transmitter device
-POST /api/e6/datasets/build-splits      Generate train/val/test splits
-GET  /api/e6/datasets                   List all datasets
-GET  /api/e6/datasets/{name}            Dataset summary
-DELETE /api/e6/datasets/{name}          Delete dataset
-
-POST /api/e6/files/upload               Upload an IQ file (multipart)
-
-POST /api/e6/train                      Train one model → returns {job_id}
-POST /api/e6/train-all                  Train all 8 models → returns {job_id}
-POST /api/e6/retrain                    Retrain existing model → returns {job_id}
-
-GET  /api/e6/models                     List model registry
-GET  /api/e6/models/live-ready          Models enabled for live detection
-POST /api/e6/models/scan-directory      Scan folder for .joblib files
-POST /api/e6/models/import-existing     Import and register a .joblib bundle
-POST /api/e6/models/import-directory    Bulk import from a folder
-GET  /api/e6/models/{model_id}          Model detail
-POST /api/e6/models/{model_id}/enable-live
-POST /api/e6/models/{model_id}/disable-live
-
-POST /api/e6/predict-file               Predict from an IQ file path
-POST /api/e6/predict-live-window        Predict from a raw IQ array
-POST /api/e6/predict-frozen-spectrum    Predict from a captured spectrum
-
-GET  /api/e6/jobs                       List all background jobs
-GET  /api/e6/jobs/{job_id}              Job status and progress
-```
-
-### Job Progress System
-
-All long operations (`train`, `train-all`, `retrain`, `import-external`) are
-non-blocking. They return `{"job_id": "..."}` immediately. The UI polls
-`GET /api/e6/jobs/{job_id}` every 800 ms and renders:
-
-- Green fill progress bar with exact percentage overlay
-- Current step message and elapsed time
-- For `train-all`: live model name and index (`3/8 — extra_trees`)
-- On completion: audit card with model weight, dataset IQ size, all metrics,
-  and a collapsible step log
-
-### E6 Operator Workflow
-
-1. **Datasets tab** — scan an external dataset directory (KRI WiFi, UAV, CBRS)
-   and import it. Use the percentage slider to import a fraction of large
-   datasets. Or build a local dataset from your own IQ captures in Local Builder.
-2. **Training tab** — select a dataset, choose an algorithm, configure window
-   parameters, and press **Train Selected Model** for a single run or
-   **Train All 8 — Benchmark** for a full comparison. A green progress bar
-   fills in real time. On completion, the audit card shows model weight, IQ size
-   used, and all metrics. The benchmark table ranks all 8 models with medals.
-3. **Models tab** — browse the registry grouped by dataset. Toggle models on or
-   off for live detection. Import pre-trained `.joblib` bundles from the
-   reference project by scanning a directory and clicking Import.
-4. **Predict tab** — select a live-enabled model and enter an IQ file path.
-   Confidence and top-k probabilities are shown per prediction.
-
-## RF Experiment Lab
-
-RF Experiment Lab provides reproducible experimental workflows on top of curated
-captures. It is separate from day-to-day live monitoring and capture.
-
-Implemented experiment families:
-
-| ID | Input | Purpose |
-|---|---|---|
-| E0 | Metadata and manifest checks | Dataset validation and traceability |
-| E5 | Spectral features | Explainable baseline for signal or transmitter classification |
-| E1 | Raw I/Q windows | 1D CNN-style raw I/Q fingerprinting experiments |
-| E3 | Spectrogram/waterfall images | 2D time-frequency learning experiments |
-
-Strict experiment runs use `scientific_strict` by default. Eligible captures must
-be:
-
-```text
-label_status == strong_label
-review_status == accepted
-training_readiness == ready_for_training
-capture_quality == valid
-```
-
-For exploratory runs, use `training_draft`. For plumbing tests only, use
-`all_debug`.
-
-## Runtime Settings
-
-The `Settings` tab exposes the operational parameters that the application uses
-for SDR startup, spectrum defaults, waterfall behavior, recording defaults,
-demodulation defaults, frontend polling, RF Intelligence and Dataset Builder QC.
-
-Settings are served by:
-
-```text
-GET  /api/runtime-settings
-POST /api/runtime-settings
-```
-
-Saved values are written to:
+Persisted runtime settings are stored under:
 
 ```text
 backend/app/infrastructure/persistence/storage/config/runtime_settings.json
 ```
-
-The launcher reads this file on startup and exports the values into the backend
-and frontend environments before starting the services. Most settings therefore
-take effect after pressing `Save` in the UI and restarting the application.
-
-Each setting includes:
-
-- the affected tab or workflow,
-- a short description,
-- what changes when the value is modified,
-- the active value and default value,
-- the source of the value: `saved`, `env` or `default`,
-- whether a restart is required,
-- the allowed range when one exists,
-- and the kind of limit.
-
-Limit kinds:
-
-| Kind | Meaning |
-|---|---|
-| `hardware` | Bounded by the SDR, host USB path, antenna path or UHD device support |
-| `software` | Bounded by application performance, UI behavior or worker implementation |
-| `scientific_policy` | Bounded by dataset quality policy, not by the radio hardware |
-
-Software and scientific-policy limits are shown in red in the Settings tab.
-Changing them can make the application more permissive, but it can also admit
-bad data, hide weak signals, increase false detections or overload the host.
-
-Operational examples:
-
-| Setting | Typical reason to change |
-|---|---|
-| `UHD_DEVICE_ARGS` | Select a specific USRP with `serial=<serial>` or a network USRP with `addr=<ip>` |
-| `DEFAULT_ANTENNA` | Use the correct receive input, for example `RX2` |
-| `DEFAULT_CENTER_FREQUENCY_HZ` | Start the spectrum view on a known band |
-| `DEFAULT_SAMPLE_RATE_HZ` / `DEFAULT_SPAN_HZ` | Capture a wider or narrower band by default |
-| `DEFAULT_GAIN_DB` | Start with a safer gain for the current RF environment |
-| `REAL_SDR_CONNECT_TIMEOUT` | Allow slow UHD initialization before declaring failure |
-| `VITE_SPECTRUM_POLL_INTERVAL_MS` | Trade UI responsiveness against API/browser load |
-| `QC_MIN_VALID_SNR_DB` | Tighten or relax the minimum SNR required for valid training captures |
-| `QC_MAX_VALID_CLIPPING_PCT` | Control how much clipping is acceptable before QC rejects a capture |
-| `RF_INTELLIGENCE_MIN_SNR_DB` | Tune weak-signal detection sensitivity |
-
-Runtime settings do not bypass real hardware limits. If a USRP, USB controller,
-driver, antenna path or host cannot support a requested value, UHD may still
-reject it or streaming may become unstable. The UI documents configured limits;
-the radio and host remain the final authority.
-
-## Important Environment Variables
-
-Most values in this table can now be edited from the `Settings` tab and saved to
-`runtime_settings.json`. Direct environment variables are still useful for
-automation, one-off launches or CI.
-
-| Variable | Purpose |
-|---|---|
-| `RADIOCONDA_PYTHON` | Python executable used for GNU Radio/UHD tools |
-| `UHD_DEVICE_ARGS` | UHD device selector such as `serial=...` or `addr=...` |
-| `DEFAULT_CENTER_FREQUENCY_HZ` | Backend startup center frequency |
-| `DEFAULT_SAMPLE_RATE_HZ` | Backend startup sample rate |
-| `DEFAULT_SPAN_HZ` | Backend startup spectrum span |
-| `DEFAULT_GAIN_DB` | Backend startup gain |
-| `DEFAULT_ANTENNA` | Backend startup antenna |
-| `DEFAULT_RBW_HZ` | Backend startup resolution bandwidth |
-| `DEFAULT_VBW_HZ` | Backend startup video bandwidth |
-| `DEFAULT_REFERENCE_LEVEL_DB` | Spectrum display reference level |
-| `DEFAULT_NOISE_FLOOR_OFFSET_DB` | Display and RF Intelligence noise-floor offset |
-| `DEFAULT_WATERFALL_HISTORY_SIZE` | Waterfall history rows retained in the UI |
-| `DEFAULT_RECORDING_DURATION_SECONDS` | Default recording duration |
-| `DEFAULT_FM_DEVIATION_HZ` | Default FM demodulation deviation |
-| `DEFAULT_AUDIO_SAMPLE_RATE_HZ` | Default demodulated audio sample rate |
-| `RF_MIN_CENTER_FREQUENCY_HZ` | Lowest center frequency accepted by safety checks |
-| `RF_MAX_CENTER_FREQUENCY_HZ` | Highest center frequency accepted by safety checks |
-| `RF_MIN_SAMPLE_RATE_HZ` | Lowest sample rate accepted by safety checks |
-| `RF_MAX_SAMPLE_RATE_HZ` | Highest sample rate accepted by safety checks |
-| `RF_MAX_SPAN_HZ` | Largest span accepted by safety checks |
-| `RF_MIN_GAIN_DB` | Lowest manual gain accepted by safety checks |
-| `RF_MAX_GAIN_DB` | Highest manual gain accepted by safety checks |
-| `REAL_SDR_CONNECT_TIMEOUT` | Timeout for SDR connection checks |
-| `REAL_SDR_FPS` | Live spectrum worker frame rate |
-| `REAL_SDR_MAX_FFT_SIZE` | Maximum FFT size accepted by the live SDR worker |
-| `VITE_APP_SYNC_INTERVAL_MS` | Frontend background sync interval |
-| `VITE_SPECTRUM_POLL_INTERVAL_MS` | Frontend spectrum polling interval |
-| `VITE_WATERFALL_POLL_INTERVAL_MS` | Frontend waterfall polling interval |
-| `VITE_RADIOCONDA_PYTHON` | Frontend copy of the SDR Python path injected by the launcher |
-| `QC_MIN_VALID_SNR_DB` | Minimum SNR for a valid Dataset Builder capture |
-| `QC_MAX_VALID_CLIPPING_PCT` | Maximum clipping percentage for a valid capture |
-| `QC_MAX_SILENCE_PCT` | Maximum silence percentage before QC warnings |
-| `RF_INTELLIGENCE_THRESHOLD_OFFSET_DB` | Detection threshold above the estimated noise floor |
-| `RF_INTELLIGENCE_MIN_SNR_DB` | Minimum SNR for RF Intelligence candidates |
-
-## Model Formats And Export
-
-Spectrum Lab trains and saves four kinds of model artifacts:
-
-| Artifact | Extension | Contents | Training path |
-|---|---|---|---|
-| PyTorch checkpoint | `.pt` | `model_state_dict`, `device_to_label`, `window_size`, `stride`, `embedding_dim` | E1 CNN 1D, E3 CNN 2D, operational fingerprinting (`best_model.pt`) |
-| scikit-learn model | `.pkl` | `{"model_name", "model", "feature_names"}` | E5 Logistic Regression, Random Forest, SVM RBF, KNN |
-| NumPy softmax | `.npz` | Weight matrix `W`, bias `b`, label array, feature mean/scale | RF Signal Understanding `numpy_softmax_regression` |
-| E6 joblib bundle | `.joblib` | `model` (sklearn Pipeline), `label_encoder`, `feature_names`, `window_size`, `window_strategy`, `dtype_default`, `classes`, `task`, `dataset_name`, `model_kind`, `training_metadata` | E6 Oracle-Style RF Lab (all 8 algorithms) |
-
-Each training run also writes:
-
-```text
-training_config.json        hyperparameters and dataset fingerprint
-label_schema.json           int → class name mapping
-normalization_params.json   canonical mean and RMS normalization used during preprocessing
-split_strategy.txt          group-disjoint split method applied
-dataset_manifest_path.txt   path to the RFExperimentDatasetV1 manifest used
-```
-
-### Export Options
-
-PyTorch `.pt` checkpoints can be exported to:
-
-- **ONNX** via `torch.onnx.export` — for cross-platform runtime inference (ONNX Runtime, TensorRT, mobile).
-- **TorchScript** via `torch.jit.trace` — for embedded or C++ deployment.
-- **SafeTensors** via `safetensors.torch.save_file` — for safe weight sharing without arbitrary code execution.
-
-scikit-learn `.pkl` models can be exported to:
-
-- **ONNX** via `skl2onnx.convert_sklearn` — for interoperability with ONNX Runtime.
-
-NumPy `.npz` models are plain arrays and can be loaded and exported without any ML framework.
-
-Export is not automated in the current UI. Use the result package path shown in the Models tab to locate the checkpoint and apply the export command externally.
-
-## Troubleshooting
-
-### Settings tab returns 404 for `/api/runtime-settings`
-
-This means the frontend is newer than the backend process that is currently
-running. Stop backend and frontend, then relaunch from the repository root:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\start_unified.ps1
-```
-
-After restart, `GET /api/runtime-settings` should return the runtime settings
-catalog. If it still returns 404, verify that the backend was started from this
-repository checkout and not from an older copy.
-
-### UHD does not find the USRP
-
-Run:
-
-```powershell
-& "C:\Users\Usuario\radioconda\Library\bin\uhd_find_devices.exe"
-& "C:\Users\Usuario\radioconda\Library\bin\uhd_usrp_probe.exe"
-```
-
-If discovery fails, check USB cable, USB 3.0 port, power, Windows driver, and
-whether another process has the device open. For network devices, verify host IP
-configuration and use `UHD_DEVICE_ARGS=addr=<ip>`.
-
-### Capture is good but training readiness is not ready
-
-Check Dataset Builder:
-
-- `capture_quality` must be `valid` for strict training.
-- `label_status` must be `strong_label`.
-- `review_status` must be `accepted`.
-- metadata must not have required missing fields.
-
-For burst captures inside the marker band, offset warnings are informational.
-They should not block readiness when the capture is otherwise good.
-
-### E1, E3 or E5 refuses to train
-
-The default eligibility policy is strict. Use Dataset Builder to promote
-reviewed captures, or choose `training_draft` for exploratory work. Also verify
-that the selected label field has at least two classes in the training split.
-
-### The backend venv is broken
-
-If `backend/venv/Scripts/python.exe` points to a missing WindowsApps Python
-launcher, recreate the virtual environment with a real Python 3.10+ executable.
 
 ## Testing
 
@@ -822,19 +558,61 @@ cd backend
 python -m pytest app/tests/unit -q
 ```
 
-Frontend build:
+Frontend production build:
 
 ```powershell
 cd frontend
 npm run build
 ```
 
-## Documentation
+Before accepting hardware-facing changes, also verify:
 
-Detailed subsystem documentation lives in:
+1. `uhd_find_devices` and `uhd_usrp_probe`.
+2. Connect/disconnect and start/stop stream.
+3. Frequency, span, sample rate, gain, antenna, RBW, and VBW.
+4. Markers, Freeze, waterfall, Spectrum Tools, and overlays.
+5. Immediate and triggered capture with pre-trigger data.
+6. Dataset Builder QC and split routing.
+7. Demodulation, training, validation, and inference paths in scope.
 
-- `backend/README.md`
-- `backend/README_SETUP.md`
-- `frontend/README.md`
+## Troubleshooting
 
-The root README is intentionally kept as the project-level operating guide.
+### UHD reports `No devices found`
+
+Run the UHD discovery and probe tools shown in [Quick start](#quick-start). If
+the radio is detected intermittently:
+
+- reconnect the USB cable and prefer a USB 3.x port;
+- close other applications that may own the USRP;
+- wait for Windows device enumeration before pressing Connect;
+- configure `UHD_DEVICE_ARGS=serial=<serial>` instead of empty autodetection;
+- verify that the UHD version used by RadioConda can probe the device.
+
+### The Settings API returns 404
+
+The frontend and backend processes are from different revisions. Stop both and
+restart from the repository root with `start_unified.ps1`.
+
+### A capture cannot enter training
+
+Check Dataset Builder. Strict training normally requires valid technical QC, a
+strong label, accepted human review, required metadata, and a training split.
+
+### E1, E3, or E5 refuses to train
+
+Verify dataset readiness, group-disjoint splits, at least two target classes,
+compatible representations, and the selected label field. Draft policies are
+for exploration and should not replace strict evaluation evidence.
+
+### Spectrum Tools obscures the Live trace
+
+Use the `Live Trace` checkbox or eye control to hide only the original trace.
+Acquisition and every processor continue running. Hide individual tools with
+their eye controls, or reset/disable only the tool whose history is no longer
+needed.
+
+## Additional documentation
+
+- [Backend documentation](backend/README.md)
+- [Backend setup](backend/README_SETUP.md)
+- [Frontend documentation](frontend/README.md)

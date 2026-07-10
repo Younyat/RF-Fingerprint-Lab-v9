@@ -435,7 +435,7 @@ The backend applies the same RF safety checks used by spectrum tuning before ope
       The backend receives marker/custom frequency windows, applies RF guardrails, and writes IQ plus metadata.
     </td>
     <td width="50%">
-      <img src="../readme_img/cfile_iqfile_generator_from_marker_BW.png" alt="Marker-band cfile and IQ generation workflow" width="100%">
+      <img src="../readme_img/capture_lab_signal_analysis.png" alt="Capture Lab marker-band cfile and IQ generation workflow" width="100%">
       <br>
       <strong>Generated artifacts</strong>
       <br>

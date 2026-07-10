@@ -263,14 +263,14 @@ The overlay is a readiness and traceability overlay, not a claim of operational 
 <table>
   <tr>
     <td width="50%">
-      <img src="../readme_img/spectrum_waterfall_v5.png" alt="Spectrum and waterfall workspace" width="100%">
+      <img src="../readme_img/live_monitor_waterfall.png" alt="Live Monitor spectrum and waterfall workspace" width="100%">
       <br>
       <strong>Live Monitor</strong>
       <br>
       Spectrum, waterfall, analyzer controls, marker workflow, and device state in the primary operator view.
     </td>
     <td width="50%">
-      <img src="../readme_img/spectrum_waterfall_active_rf_intelligence_v5.png" alt="RF Intelligence overlay in live monitor" width="100%">
+      <img src="../readme_img/live_monitor_rf_intelligence_overlay.png" alt="RF Intelligence overlay in Live Monitor" width="100%">
       <br>
       <strong>RF Overlay</strong>
       <br>
@@ -295,14 +295,14 @@ The overlay is a readiness and traceability overlay, not a claim of operational 
   </tr>
   <tr>
     <td width="50%">
-      <img src="../readme_img/dataset_analyser.png" alt="Dataset Builder review workflow" width="100%">
+      <img src="../readme_img/dataset_builder.png" alt="Dataset Builder review workflow" width="100%">
       <br>
       <strong>Dataset Builder</strong>
       <br>
       QC-driven review, split assignment, and acceptance status before ML workflows.
     </td>
     <td width="50%">
-      <img src="../readme_img/rf_intelligence_v5.png" alt="RF Intelligence console" width="100%">
+      <img src="../readme_img/rf_intelligence.png" alt="RF Intelligence console" width="100%">
       <br>
       <strong>RF Intelligence</strong>
       <br>
