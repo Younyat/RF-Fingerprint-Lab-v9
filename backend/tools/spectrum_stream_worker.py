@@ -103,6 +103,7 @@ def build_frame(
     requested_vbw_hz: float,
     frame_interval_s: float,
     previous_video_power: np.ndarray | None,
+    device_serial: str | None,
 ) -> tuple[dict, np.ndarray]:
     samples = samples[-fft_size:]
     window = np.hanning(fft_size).astype(np.float32)
@@ -126,11 +127,15 @@ def build_frame(
         "frequencies_hz": freqs.astype(float).tolist(),
         "levels_db": levels_db.astype(float).tolist(),
         "points": fft_size,
+        "fft_size": fft_size,
         "requested_rbw_hz": requested_rbw_hz,
         "effective_rbw_hz": effective_rbw_hz,
         "requested_vbw_hz": requested_vbw_hz,
         "effective_vbw_hz": min(requested_vbw_hz, 0.5 / frame_interval_s),
         "source": "uhd_gnuradio_live",
+        "power_unit": "dBFS",
+        "calibration_id": None,
+        "device_serial": device_serial,
     }, video_power
 
 
@@ -260,6 +265,11 @@ def main() -> None:
         antenna=args.antenna,
         device_addr=args.device_addr,
     )
+    try:
+        usrp_info = dict(tb.source.get_usrp_info(0))
+        device_serial = str(usrp_info.get("mboard_serial") or usrp_info.get("serial") or "").strip() or None
+    except Exception:
+        device_serial = None
 
     tb.start()
     threading.Thread(target=stdin_control_loop, args=(runtime,), daemon=True).start()
@@ -301,6 +311,7 @@ def main() -> None:
                 requested_vbw_hz,
                 interval,
                 previous_video_power,
+                device_serial,
             )
             print(json.dumps(frame), flush=True)
 

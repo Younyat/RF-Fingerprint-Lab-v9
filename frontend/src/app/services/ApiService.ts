@@ -37,6 +37,14 @@ const toSpectrumData = (data: any): SpectrumData => ({
   span: data.span ?? data.span_hz ?? 0,
   frequencyArray: data.source === 'real_sdr_error' ? [] : (data.frequencyArray ?? data.frequencies_hz ?? []),
   powerLevels: data.source === 'real_sdr_error' ? [] : (data.powerLevels ?? data.levels_db ?? []),
+  sampleRateHz: data.sampleRateHz ?? data.sample_rate_hz,
+  fftSize: data.fftSize ?? data.fft_size ?? data.points,
+  requestedRbwHz: data.requestedRbwHz ?? data.requested_rbw_hz,
+  effectiveRbwHz: data.effectiveRbwHz ?? data.effective_rbw_hz,
+  powerUnit: data.powerUnit ?? data.power_unit ?? 'dBFS',
+  sourceId: data.sourceId ?? data.source,
+  deviceSerial: data.deviceSerial ?? data.device_serial,
+  calibrationId: data.calibrationId ?? data.calibration_id,
 });
 
 const toWaterfallData = (data: any): WaterfallData => {

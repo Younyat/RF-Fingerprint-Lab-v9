@@ -149,6 +149,7 @@ export const useSpectrum = ({
       const powerRange = Math.max(settings.dbPerDiv, 1) * 10;
       const powerTop = settings.referenceLevel;
       const powerBottom = powerTop - powerRange;
+      const powerUnit = spectrumData.powerUnit ?? 'dBFS';
 
       for (let i = 0; i <= 50; i++) {
         const y = padding + (i / 50) * plotHeight;
@@ -245,7 +246,12 @@ export const useSpectrum = ({
       ctx.fillStyle = '#cbd5e1';
       ctx.font = '12px sans-serif';
       ctx.textAlign = 'left';
-      ctx.fillText(`${settings.dbPerDiv} dB/div | ${settings.traceMode} | ${settings.detectorMode}`, padding, 18);
+      const effectiveRbw = spectrumData.effectiveRbwHz;
+      const rbwLabel = Number.isFinite(effectiveRbw)
+        ? ` | RBW eff ${effectiveRbw! >= 1000 ? `${(effectiveRbw! / 1000).toFixed(2)} kHz` : `${effectiveRbw!.toFixed(1)} Hz`}`
+        : '';
+      const offsetLabel = settings.noiseFloorOffset === 0 ? '' : ` (${settings.noiseFloorOffset > 0 ? '+' : ''}${settings.noiseFloorOffset} dB display offset)`;
+      ctx.fillText(`${settings.dbPerDiv} ${powerUnit}/div${offsetLabel}${rbwLabel} | ${settings.traceMode} | ${settings.detectorMode}`, padding, 18);
       if (overlayData?.powerLevels.length) {
         ctx.fillStyle = '#fbbf24';
         ctx.textAlign = 'right';

@@ -8,7 +8,7 @@ const labels: Record<SpectrumToolKind, string> = {
   max_hold: 'Max Hold',
   min_hold: 'Min Hold',
   power_average: 'Power Average',
-  rms_power: 'RMS Power', ewma: 'EWMA', percentiles: 'Percentiles P50/P90/P95/P99', trace_history: 'Trace History', density: 'Density / Persistence', spectrum_mask: 'Spectrum Mask', gated_spectrum: 'Gated Spectrum', zero_span: 'Zero Span', occupancy: 'Observed-frame Occupancy',
+  rms_power: 'RMS Power over FFT frames', ewma: 'EWMA', percentiles: 'Percentiles P50/P90/P95/P99', trace_history: 'Trace History', density: 'Density / Persistence', spectrum_mask: 'Spectrum Mask', gated_spectrum: 'Gated Spectrum', zero_span: 'Zero Span', occupancy: 'Observed-frame Occupancy',
 };
 
 const colors: Record<SpectrumToolKind, string> = {

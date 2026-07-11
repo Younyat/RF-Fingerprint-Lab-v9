@@ -85,9 +85,16 @@ class _CircularBlockBuffer:
         b = block.astype(np.complex64)
         self._blocks.append(b)
         self._held += b.size
-        while self._held > self._max and len(self._blocks) > 1:
-            removed = self._blocks.popleft()
-            self._held -= removed.size
+        while self._held > self._max:
+            excess = self._held - self._max
+            oldest = self._blocks[0]
+            if oldest.size <= excess and len(self._blocks) > 1:
+                self._blocks.popleft()
+                self._held -= oldest.size
+                continue
+            self._blocks[0] = oldest[excess:].astype(np.complex64, copy=False)
+            self._held -= excess
+            break
 
     def snapshot(self) -> np.ndarray:
         if not self._blocks:

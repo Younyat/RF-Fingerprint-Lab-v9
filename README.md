@@ -174,6 +174,9 @@ An older split-view reference is retained for comparison:
 See [Live Monitor and Spectrum Tools](#live-monitor-and-spectrum-tools) for the
 complete technique reference.
 
+Exact formulas and automated scientific checks are recorded in
+[Spectrum Tools Critical Validation](frontend/src/features/spectrum-tools/VALIDATION.md).
+
 ### Capture Lab — `/capture`
 
 Capture Lab performs controlled real-I/Q acquisition. It can derive capture

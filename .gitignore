@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 node_modules/
 dist/
+.validation-build/
 .idea/
 .vscode/
 *.cfile

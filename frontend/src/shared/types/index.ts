@@ -5,6 +5,14 @@ export interface SpectrumData {
   span: number;
   frequencyArray: number[];
   powerLevels: number[];
+  sampleRateHz?: number;
+  fftSize?: number;
+  requestedRbwHz?: number;
+  effectiveRbwHz?: number;
+  powerUnit?: 'dBFS' | 'dBm';
+  sourceId?: string;
+  deviceSerial?: string;
+  calibrationId?: string;
 }
 
 export interface WaterfallData {

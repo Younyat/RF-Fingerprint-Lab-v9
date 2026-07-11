@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SpectrumData } from '../../shared/types';
 import type { SpectrumAnnotation, SpectrumLineSeries, SpectrumRasterLayer, SpectrumToolConfig, SpectrumToolInstance, SpectrumToolKind } from './model/spectrumToolTypes';
+import { holdsContainLive, spectrumGeometryKey, updateDensityMatrix, updatePowerAverageDb, updateRmsPowerDb } from './engine/spectrumMath';
+import { SPECTRUM_SERIES_IDS } from './engine/seriesIdentity';
 
 export type SpectrumToolsState = Record<SpectrumToolKind, SpectrumToolInstance>;
 const PREFERENCES_KEY = 'spectrum-tools-v2-preferences';
@@ -12,7 +14,6 @@ const createInitialState = (): SpectrumToolsState => Object.fromEntries(kinds.ma
   active: false, visible: true, status: 'inactive', sampleCount: 0, color: colors[kind], config: kind === 'ewma' ? { ewmaTauSeconds: 1 } : kind === 'percentiles' ? { percentileWindow: 60 } : kind === 'trace_history' ? { historyFrames: 20 } : kind === 'spectrum_mask' ? { maskUpperDb: -40 } : kind === 'occupancy' ? { thresholdDb: -70 } : {},
 }])) as SpectrumToolsState;
 
-const geometryKey = (frame: SpectrumData) => { const f = frame.frequencyArray; return `${frame.centerFrequency}:${frame.span}:${f.length}:${f[0] ?? 0}:${f[f.length - 1] ?? 0}:${f.length > 1 ? f[1] - f[0] : 0}`; };
 const finite = (value: number, fallback: number) => Number.isFinite(value) ? value : fallback;
 const percentile = (values: number[], q: number) => { const sorted = values.filter(Number.isFinite).sort((a, b) => a - b); if (!sorted.length) return Number.NaN; const p = (sorted.length - 1) * q; const lo = Math.floor(p); const hi = Math.ceil(p); return sorted[lo] + (sorted[hi] - sorted[lo]) * (p - lo); };
 
@@ -61,21 +62,36 @@ export const useSpectrumTools = (frame: SpectrumData | null, paused: boolean, en
 
   useEffect(() => {
     if (!enabled || !frame || paused) return;
-    const b = buffers.current; const geometry = geometryKey(frame); const x = frame.powerLevels;
-    if (b.geometry && b.geometry !== geometry) buffers.current = emptyBuffers();
+    const frequencies = frame.frequencyArray;
+    const geometry = spectrumGeometryKey({
+      centerFrequencyHz: frame.centerFrequency, spanHz: frame.span,
+      sampleRateHz: frame.sampleRateHz, fftSize: frame.fftSize,
+      binCount: frequencies.length, firstFrequencyHz: frequencies[0] ?? 0,
+      lastFrequencyHz: frequencies[frequencies.length - 1] ?? 0,
+      binSpacingHz: frequencies.length > 1 ? frequencies[1] - frequencies[0] : 0,
+      effectiveRbwHz: frame.effectiveRbwHz, sourceId: frame.sourceId,
+      deviceSerial: frame.deviceSerial, calibrationId: frame.calibrationId,
+    });
+    const b = buffers.current; const x = frame.powerLevels;
+    const geometryChanged = Boolean(b.geometry && b.geometry !== geometry);
+    if (geometryChanged) buffers.current = emptyBuffers();
     const state = buffers.current; state.geometry = geometry;
     const timestamp = Number.isFinite(frame.timestamp) ? frame.timestamp : Date.now(); const dt = Math.max(0.001, Math.min(10, (timestamp - (state.lastTimestamp ?? timestamp - 100)) / 1000)); state.lastTimestamp = timestamp;
     const active = kinds.filter((kind) => tools[kind].active && !unavailable.has(kind));
     if (!active.length) return;
     if (tools.max_hold.active) state.lines.max_hold = !state.lines.max_hold ? [...x] : x.map((v, i) => Number.isFinite(v) ? Math.max(finite(state.lines.max_hold?.[i] ?? v, v), v) : state.lines.max_hold?.[i] ?? v);
     if (tools.min_hold.active) state.lines.min_hold = !state.lines.min_hold ? [...x] : x.map((v, i) => Number.isFinite(v) ? Math.min(finite(state.lines.min_hold?.[i] ?? v, v), v) : state.lines.min_hold?.[i] ?? v);
-    for (const kind of ['power_average', 'rms_power'] as SpectrumToolKind[]) if (tools[kind].active) { const previous = state.lines[kind]; const counts = state.counts[kind] ?? x.map(() => 1); state.lines[kind] = !previous ? [...x] : x.map((v, i) => { if (!Number.isFinite(v)) return previous[i]; const n = counts[i] ?? 1; const meanPower = (10 ** (previous[i] / 10) * n + 10 ** (v / 10)) / (n + 1); counts[i] = n + 1; return 10 * Math.log10(meanPower); }); state.counts[kind] = counts; }
+    if (tools[SPECTRUM_SERIES_IDS.powerAverage.processor].active) { const previous = state.lines[SPECTRUM_SERIES_IDS.powerAverage.buffer]; const counts = state.counts[SPECTRUM_SERIES_IDS.powerAverage.buffer] ?? x.map(() => 1); state.lines[SPECTRUM_SERIES_IDS.powerAverage.buffer] = !previous ? [...x] : x.map((v, i) => { if (!Number.isFinite(v)) return previous[i]; const result = updatePowerAverageDb(previous[i], v, counts[i] ?? 1); counts[i] = (counts[i] ?? 1) + 1; return result; }); state.counts[SPECTRUM_SERIES_IDS.powerAverage.buffer] = counts; }
+    if (tools[SPECTRUM_SERIES_IDS.rmsPower.processor].active) { const previous = state.lines[SPECTRUM_SERIES_IDS.rmsPower.buffer]; const counts = state.counts[SPECTRUM_SERIES_IDS.rmsPower.buffer] ?? x.map(() => 1); state.lines[SPECTRUM_SERIES_IDS.rmsPower.buffer] = !previous ? [...x] : x.map((v, i) => { if (!Number.isFinite(v)) return previous[i]; const result = updateRmsPowerDb(previous[i], v, counts[i] ?? 1); counts[i] = (counts[i] ?? 1) + 1; return result; }); state.counts[SPECTRUM_SERIES_IDS.rmsPower.buffer] = counts; }
     if (tools.ewma.active) { const previous = state.lines.ewma; const alpha = 1 - Math.exp(-dt / Math.max(0.05, tools.ewma.config.ewmaTauSeconds ?? 1)); state.lines.ewma = !previous ? [...x] : x.map((v, i) => { if (!Number.isFinite(v)) return previous[i]; const p = 10 ** (previous[i] / 10) * (1 - alpha) + 10 ** (v / 10) * alpha; return 10 * Math.log10(p); }); }
     if (tools.percentiles.active) { state.frames.push([...x]); state.frames.splice(0, Math.max(0, state.frames.length - Math.min(600, Math.max(5, tools.percentiles.config.percentileWindow ?? 60)))); }
     if (tools.trace_history.active) { state.history.push([...x]); state.history.splice(0, Math.max(0, state.history.length - Math.min(1200, Math.max(2, tools.trace_history.config.historyFrames ?? 20)))); }
-    if (tools.density.active) { const width = Math.min(512, x.length); const height = 128; if (state.density.length !== width * height) state.density = new Array(width * height).fill(0); state.density = state.density.map((v) => v * 0.995); x.forEach((v, i) => { const bx = Math.min(width - 1, Math.floor(i * width / x.length)); const by = Math.min(height - 1, Math.max(0, Math.floor((v + 140) / 140 * height))); state.density[by * width + bx] += 1; }); }
+    if (tools.density.active) { const width = Math.min(512, x.length); const height = 128; state.density = updateDensityMatrix(state.density, width, height, x); }
+    if (tools.min_hold.active && tools.max_hold.active && state.lines.min_hold && state.lines.max_hold && !holdsContainLive(state.lines.min_hold, x, state.lines.max_hold)) {
+      console.error('Spectrum Tools invariant failed: expected Min Hold <= Live <= Max Hold for the same frame and geometry.');
+    }
     if (tools.occupancy.active) { if (state.occupancyActive.length !== x.length) state.occupancyActive = x.map(() => 0); const threshold = tools.occupancy.config.thresholdDb ?? -70; x.forEach((v, i) => { if (v > threshold) state.occupancyActive[i] += dt; }); state.occupancyTotal += dt; }
-    setTools((current) => Object.fromEntries(kinds.map((kind) => [kind, current[kind].active && !unavailable.has(kind) ? { ...current[kind], status: 'ready', sampleCount: current[kind].sampleCount + 1 } : current[kind]])) as SpectrumToolsState);
+    setTools((current) => Object.fromEntries(kinds.map((kind) => [kind, current[kind].active && !unavailable.has(kind) ? { ...current[kind], status: 'ready', sampleCount: geometryChanged ? 1 : current[kind].sampleCount + 1 } : current[kind]])) as SpectrumToolsState);
     setRevision((value) => value + 1);
   // Tool state changes take effect on the next immutable input frame. Keeping the
   // frame as the clock source prevents status updates from recursively processing it.
@@ -86,8 +102,8 @@ export const useSpectrumTools = (frame: SpectrumData | null, paused: boolean, en
 
   const outputs = useMemo(() => {
     if (!frame) return { lineSeries: [] as SpectrumLineSeries[], rasterLayers: [] as SpectrumRasterLayer[], annotations: [] as SpectrumAnnotation[] };
-    const b = buffers.current; const lineSeries: SpectrumLineSeries[] = []; const add = (kind: SpectrumToolKind, label: string, dash: number[], z: number, data = b.lines[kind], color = tools[kind].color) => { if (tools[kind].active && data) lineSeries.push({ id: `${kind}-${label}`, toolId: kind, label, frequenciesHz: frame.frequencyArray, powerLevelsDb: data, color, opacity: .9, lineWidth: 1.8, lineDash: dash, visible: tools[kind].visible, zIndex: z }); };
-    add('power_average', 'Power Average', [8, 3, 2, 3], 20); add('rms_power', 'RMS Power', [2, 3], 21); add('ewma', 'EWMA', [10, 4], 22); add('min_hold', 'Min Hold', [6, 4], 29); add('max_hold', 'Max Hold', [], 30);
+    const b = buffers.current; const lineSeries: SpectrumLineSeries[] = []; const add = (kind: SpectrumToolKind, label: string, dash: number[], z: number, data = b.lines[kind], color = tools[kind].color, graphicId = `${kind}-${label}`) => { if (tools[kind].active && data) lineSeries.push({ id: graphicId, toolId: kind, label, frequenciesHz: frame.frequencyArray, powerLevelsDb: data, color, opacity: .9, lineWidth: 1.8, lineDash: dash, visible: tools[kind].visible, zIndex: z }); };
+    add(SPECTRUM_SERIES_IDS.powerAverage.result, 'Power Average', [8, 3, 2, 3], 20, b.lines[SPECTRUM_SERIES_IDS.powerAverage.buffer], tools.power_average.color, SPECTRUM_SERIES_IDS.powerAverage.graphic); add(SPECTRUM_SERIES_IDS.rmsPower.result, 'RMS Power over FFT frames', [2, 3], 21, b.lines[SPECTRUM_SERIES_IDS.rmsPower.buffer], tools.rms_power.color, SPECTRUM_SERIES_IDS.rmsPower.graphic); add('ewma', 'EWMA', [10, 4], 22); add('min_hold', 'Min Hold', [6, 4], 29); add('max_hold', 'Max Hold', [], 30);
     if (tools.percentiles.active && b.frames.length) { const palette = ['#e2e8f0', '#f472b6', '#e879f9', '#f43f5e']; [0.5, .9, .95, .99].forEach((q, qi) => add('percentiles', `P${q * 100}`, qi === 0 ? [] : [4 + qi * 2, 3], 23 + qi, frame.powerLevels.map((_, i) => percentile(b.frames.map((row) => row[i]), q)), palette[qi])); }
     if (tools.trace_history.active) b.history.forEach((row, i) => lineSeries.push({ id: `history-${i}`, toolId: 'trace_history', label: 'History', frequenciesHz: frame.frequencyArray, powerLevelsDb: row, color: tools.trace_history.color, opacity: .05 + .35 * (i + 1) / b.history.length, lineWidth: 1, lineDash: [], visible: tools.trace_history.visible, zIndex: 10 }));
     const rasterLayers: SpectrumRasterLayer[] = [];

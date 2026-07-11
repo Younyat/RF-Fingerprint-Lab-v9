@@ -2375,6 +2375,8 @@ export const SpectrumView: React.FC = () => {
           <StatusRow label="Stop" value={formatFrequency(displaySettings.centerFrequency + displaySettings.span / 2)} />
           <StatusRow label="Sample Rate" value={formatFrequency(deviceStatus.sampleRate || settings.span) + '/s'} />
           <StatusRow label="RBW" value={formatFrequency(settings.rbw)} />
+          <StatusRow label="Effective RBW" value={spectrumData?.effectiveRbwHz ? formatFrequency(spectrumData.effectiveRbwHz) : 'n/a'} />
+          <StatusRow label="Power Unit" value={spectrumData?.powerUnit ?? 'dBFS'} />
           <StatusRow label="VBW" value={formatFrequency(settings.vbw)} />
           <StatusRow label="Ref" value={formatPowerLevel(settings.referenceLevel)} />
           <StatusRow label="Offset" value={formatPowerLevel(settings.noiseFloorOffset)} />
