@@ -531,6 +531,7 @@ export interface GainInput {
 export interface UiState {
   theme: 'light' | 'dark' | 'laboratory';
   sidebarCollapsed: boolean;
+  topBarCollapsed: boolean;
   activeTab: 'spectrum' | 'waterfall' | 'recordings' | 'settings';
 }
 

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
-import { ChevronLeft, ChevronRight, Loader2, RadioTower } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Loader2, RadioTower } from 'lucide-react';
 import { useAppActions, useGlobalActivity, useUiState } from '../../app/store/AppStore';
 import { cn } from '../../shared/utils';
 import { findModuleByPath, navigationModules } from '../../app/modules/labModules';
@@ -101,30 +101,45 @@ export const AppLayout: React.FC = () => {
         )}
 
         {/* Top bar */}
-        <header className="app-surface border-b px-6 py-4 shadow-sm backdrop-blur">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">
-              {findModuleByPath(location.pathname)?.name || 'Spectrum Lab'}
-            </h2>
-            <div className="flex items-center space-x-4">
-              <select
-                value={ui.theme}
-                onChange={(event) => setUiState({ theme: event.target.value as typeof ui.theme })}
-                className="rounded-full border px-3 py-2 text-sm"
-                style={{ background: 'var(--app-surface-strong)', borderColor: 'var(--app-border)', color: 'var(--app-text)' }}
-              >
-                <option value="light">White</option>
-                <option value="dark">Dark</option>
-                <option value="laboratory">Laboratory</option>
-              </select>
-              {/* Status indicator */}
-              <div className="flex items-center space-x-2">
-                <div className="h-2 w-2 rounded-full bg-emerald-500"></div>
-                <span className="text-sm app-muted-text">Shared backend active</span>
+        <div className="relative flex-shrink-0">
+          <div
+            className="overflow-hidden transition-all duration-300"
+            style={{ maxHeight: ui.topBarCollapsed ? '0px' : '160px' }}
+          >
+            <header className="app-surface border-b px-6 py-4 shadow-sm backdrop-blur">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">
+                  {findModuleByPath(location.pathname)?.name || 'Spectrum Lab'}
+                </h2>
+                <div className="flex items-center space-x-4">
+                  <select
+                    value={ui.theme}
+                    onChange={(event) => setUiState({ theme: event.target.value as typeof ui.theme })}
+                    className="rounded-full border px-3 py-2 text-sm"
+                    style={{ background: 'var(--app-surface-strong)', borderColor: 'var(--app-border)', color: 'var(--app-text)' }}
+                  >
+                    <option value="light">White</option>
+                    <option value="dark">Dark</option>
+                    <option value="laboratory">Laboratory</option>
+                  </select>
+                  {/* Status indicator */}
+                  <div className="flex items-center space-x-2">
+                    <div className="h-2 w-2 rounded-full bg-emerald-500"></div>
+                    <span className="text-sm app-muted-text">Shared backend active</span>
+                  </div>
+                </div>
               </div>
-            </div>
+            </header>
           </div>
-        </header>
+          {/* Collapse / expand toggle — pinned to the bottom edge of the top bar, always visible */}
+          <button
+            onClick={() => setUiState({ topBarCollapsed: !ui.topBarCollapsed })}
+            title={ui.topBarCollapsed ? 'Show top bar' : 'Hide top bar'}
+            className="absolute -bottom-3 left-1/2 z-30 flex h-6 w-6 -translate-x-1/2 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-slate-300 shadow-md transition-colors hover:bg-slate-600 hover:text-white"
+          >
+            {ui.topBarCollapsed ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3" />}
+          </button>
+        </div>
 
         {/* Page content */}
         <main className="flex-1 overflow-auto">

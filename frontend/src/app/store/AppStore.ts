@@ -82,6 +82,7 @@ const initialState = {
   ui: {
     theme: getStoredTheme(),
     sidebarCollapsed: false,
+    topBarCollapsed: false,
     activeTab: 'spectrum' as const,
   },
   globalActivity: null,

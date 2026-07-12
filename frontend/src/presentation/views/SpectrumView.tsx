@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { BarChart3, BrainCircuit, ChevronLeft, ChevronRight, Download, Eye, EyeOff, FlaskConical, Image, Move, Play, Square, RotateCcw, ScanSearch, Target, Usb, Unplug, Radio, Trash2, SlidersHorizontal, X } from 'lucide-react';
+import { BarChart3, BrainCircuit, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, Eye, EyeOff, FlaskConical, Image, Move, Play, Square, RotateCcw, ScanSearch, Target, Usb, Unplug, Radio, Trash2, SlidersHorizontal, X } from 'lucide-react';
 import { useSpectrum } from '../hooks/useSpectrum';
 import { useWaterfall } from '../hooks/useWaterfall';
 import { useSpectrumController } from '../controllers/SpectrumController';
@@ -382,6 +382,9 @@ export const SpectrumView: React.FC = () => {
   const [captureProgressDetails, setCaptureProgressDetails] = useState<CaptureProgressDetails | null>(null);
   const [showCaptureProgressOverlay, setShowCaptureProgressOverlay] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [controlsCollapsed, setControlsCollapsed] = useState(false);
+  const [controlsHeight, setControlsHeight] = useState<number | undefined>(undefined);
+  const controlsRef = useRef<HTMLDivElement>(null);
   const [rfScene, setRfScene] = useState<RFSceneAnalysis | null>(null);
   const [rfOverlayError, setRfOverlayError] = useState<string | null>(null);
   const [rsuLive, setRsuLive] = useState<RFSignalUnderstandingResult | null>(null);
@@ -390,6 +393,21 @@ export const SpectrumView: React.FC = () => {
   const [rfExperimentOverlayError, setRfExperimentOverlayError] = useState<string | null>(null);
   const [liveInferenceResult, setLiveInferenceResult] = useState<Record<string, any> | null>(null);
   const [panOverlayPosition, setPanOverlayPosition] = useState({ x: 16, y: 16 });
+
+  // Tracks the controls toolbar's natural height so it can be collapsed to 0
+  // and back without a hardcoded cap -- the toolbar's own height is dynamic
+  // (flex-wrap reflows differently depending on window width).
+  useEffect(() => {
+    const node = controlsRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setControlsHeight(entry.contentRect.height);
+      }
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
 
   const selectedRfExperimentRun = useMemo(() => {
     if (!rfExperimentOverlay || !selectedRfExperimentType) return null;
@@ -1473,17 +1491,84 @@ export const SpectrumView: React.FC = () => {
   };
 
   const exportPng = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    // A plain canvas.toDataURL() only grabs the spectrum canvas -- the waterfall
+    // is a separate <canvas> element, and active technique traces (Max Hold, Min
+    // Hold, Average, RMS, EWMA...) have no on-screen legend identifying which
+    // color is which. Composite everything into one offscreen canvas instead:
+    // spectrum trace, waterfall below it (only when the split view is on), and a
+    // wrapped color-swatch legend for whichever technique traces are visible.
+    const spectrumCanvas = canvasRef.current;
+    if (!spectrumCanvas) return;
+    const waterfallCanvas = showWaterfallSplit ? waterfallCanvasRef.current : null;
+    const activeSeries = spectrumTools.lineSeries.filter((series) => series.visible);
+
+    const width = Math.max(spectrumCanvas.width, waterfallCanvas?.width ?? 0);
+
+    const legendFont = '12px sans-serif';
+    const swatchSize = 12;
+    const rowHeight = 24;
+    const legendPaddingX = 12;
+    const itemGapX = 18;
+    const measureCtx = document.createElement('canvas').getContext('2d');
+    const legendItems: { label: string; color: string; x: number; row: number }[] = [];
+    if (measureCtx && activeSeries.length > 0) {
+      measureCtx.font = legendFont;
+      let x = legendPaddingX;
+      let row = 0;
+      for (const series of activeSeries) {
+        const itemWidth = swatchSize + 6 + measureCtx.measureText(series.label).width;
+        if (x + itemWidth > width - legendPaddingX && x > legendPaddingX) {
+          row += 1;
+          x = legendPaddingX;
+        }
+        legendItems.push({ label: series.label, color: series.color, x, row });
+        x += itemWidth + itemGapX;
+      }
+    }
+    const legendRowCount = legendItems.length > 0 ? Math.max(...legendItems.map((item) => item.row)) + 1 : 0;
+    const legendHeight = legendRowCount > 0 ? legendRowCount * rowHeight + 10 : 0;
+
+    const height = spectrumCanvas.height + (waterfallCanvas?.height ?? 0) + legendHeight;
+    const composite = document.createElement('canvas');
+    composite.width = width;
+    composite.height = height;
+    const ctx = composite.getContext('2d');
+    if (!ctx) return;
+
+    ctx.fillStyle = '#020617';
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(spectrumCanvas, 0, 0);
+    let offsetY = spectrumCanvas.height;
+    if (waterfallCanvas) {
+      ctx.drawImage(waterfallCanvas, 0, offsetY);
+      offsetY += waterfallCanvas.height;
+    }
+    if (legendItems.length > 0) {
+      ctx.font = legendFont;
+      ctx.textBaseline = 'middle';
+      for (const item of legendItems) {
+        const y = offsetY + 5 + item.row * rowHeight + rowHeight / 2;
+        ctx.fillStyle = item.color;
+        ctx.fillRect(item.x, y - swatchSize / 2, swatchSize, swatchSize);
+        ctx.fillStyle = '#e2e8f0';
+        ctx.fillText(item.label, item.x + swatchSize + 6, y);
+      }
+    }
+
     const link = document.createElement('a');
-    link.href = canvas.toDataURL('image/png');
+    link.href = composite.toDataURL('image/png');
     link.download = `spectraease_${Math.round(settings.centerFrequency)}Hz.png`;
     link.click();
   };
 
   return (
     <div className="h-full flex flex-col bg-slate-950 text-slate-100">
-      <div className="border-b border-slate-800 bg-slate-900 px-4 py-3">
+      <div className="relative flex-shrink-0">
+        <div
+          className="overflow-hidden transition-all duration-300"
+          style={{ maxHeight: controlsCollapsed ? '0px' : (controlsHeight !== undefined ? `${controlsHeight}px` : '2000px') }}
+        >
+          <div ref={controlsRef} className="border-b border-slate-800 bg-slate-900 px-4 py-3">
         <div className="flex flex-wrap items-end gap-3">
           <button
             onClick={handleConnectDisconnect}
@@ -2015,6 +2100,16 @@ export const SpectrumView: React.FC = () => {
         {showRsuOverlay && rsuOverlayError && <div className="mt-2 text-sm text-cyan-200">RF Signal Understanding overlay: {rsuOverlayError}</div>}
         {showRfExperimentOverlay && rfExperimentOverlayError && <div className="mt-2 text-sm text-emerald-200">RF Experiment overlay: {rfExperimentOverlayError}</div>}
         {showE6LiveOverlay && e6LiveError && <div className="mt-2 text-sm text-violet-200">E6 Live overlay: {e6LiveError}</div>}
+          </div>
+        </div>
+        {/* Collapse / expand toggle — pinned to the bottom edge of the controls toolbar, always visible */}
+        <button
+          onClick={() => setControlsCollapsed((value) => !value)}
+          title={controlsCollapsed ? 'Show controls' : 'Hide controls'}
+          className="absolute -bottom-3 left-1/2 z-30 flex h-6 w-6 -translate-x-1/2 items-center justify-center rounded-full border border-slate-700 bg-slate-800 text-slate-300 shadow-md transition-colors hover:bg-slate-600 hover:text-white"
+        >
+          {controlsCollapsed ? <ChevronDown className="w-3 h-3" /> : <ChevronUp className="w-3 h-3" />}
+        </button>
       </div>
 
       <div className={cn('flex-1 grid min-h-0 transition-[grid-template-columns] duration-300', sidebarCollapsed ? 'grid-cols-[minmax(0,1fr)_0px]' : 'grid-cols-[minmax(0,1fr)_320px]')}>
