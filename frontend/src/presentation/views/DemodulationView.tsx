@@ -90,6 +90,7 @@ const captureToDemodPayload = (
   capture: FingerprintingCaptureRecord,
   pipeline: string,
   manualSignalType: string,
+  decoderMode: string,
 ) => ({
   dataset_id: capture.capture_config.dataset_destination || capture.dataset_split || 'dataset_builder',
   sample_id: capture.capture_id,
@@ -105,6 +106,10 @@ const captureToDemodPayload = (
   device_profile: capture.transmitter.transmitter_id || capture.transmitter.profile_key || capture.capture_config.sdr_model,
   pipeline: pipeline === 'auto' ? undefined : pipeline,
   manual_signal_type: manualSignalType || undefined,
+  decoder_mode: pipeline === 'wifi_80211' ? decoderMode : undefined,
+  hardware_center_frequency_hz: capture.capture_config.center_frequency_hz,
+  channel_center_frequency_hz: capture.capture_config.center_frequency_hz,
+  channel_width_hz: capture.capture_config.effective_bandwidth_hz,
 });
 
 const outputFilename = (value?: string | null) => {
@@ -138,18 +143,18 @@ const detectLiveBandProfiles = (band: { center: number; bandwidth: number } | nu
     const channel = Math.round((centerMhz - 2407) / 5);
     detections.push({
       pipeline: 'wifi_80211',
-      label: `Wi-Fi 802.11 2.4 GHz CH${channel}`,
-      detail: 'Use the Wi-Fi pipeline for 20 MHz DSSS/OFDM channel captures.',
-      confidence: 'high',
+      label: `Wi-Fi channel-profile match: 2.4 GHz CH${channel}`,
+      detail: 'Suggested IEEE 802.11 decoder based on channel geometry only; Wi-Fi is not confirmed without a valid preamble and PHY header.',
+      confidence: 'medium',
     });
   }
   if (bandwidthMhz >= 10 && centerMhz >= 5000 && centerMhz <= 5900) {
     const channel = Math.round((centerMhz - 5000) / 5);
     detections.push({
       pipeline: 'wifi_80211',
-      label: `Wi-Fi 802.11 5 GHz CH${channel}`,
-      detail: 'Use the Wi-Fi pipeline for 20 MHz OFDM channel captures.',
-      confidence: 'high',
+      label: `Wi-Fi channel-profile match: 5 GHz CH${channel}`,
+      detail: 'Suggested IEEE 802.11 decoder based on channel geometry only; Wi-Fi is not confirmed without a valid preamble and PHY header.',
+      confidence: 'medium',
     });
   }
 
@@ -256,6 +261,8 @@ export const DemodulationView: React.FC = () => {
   const [pipelines, setPipelines] = useState<DemodulationPipeline[]>([]);
   const [selectedPipeline, setSelectedPipeline] = useState('auto');
   const [manualSignalType, setManualSignalType] = useState('');
+  const [wifiDecoderMode, setWifiDecoderMode] = useState('auto');
+  const [wifiJobProgress, setWifiJobProgress] = useState<string | null>(null);
 
   const selectedBand = useMemo(() => {
     if (markers.length < 2) return null;
@@ -273,7 +280,7 @@ export const DemodulationView: React.FC = () => {
   }, [markers]);
 
   const iotPipelines = useMemo(
-    () => pipelines.filter((pipeline) => pipeline.category === 'IoT Demodulation Pipelines'),
+    () => pipelines.filter((pipeline) => ['IoT Demodulation Pipelines', 'Wireless LAN decoders'].includes(pipeline.category || '')),
     [pipelines],
   );
 
@@ -373,6 +380,23 @@ export const DemodulationView: React.FC = () => {
     [datasetCaptures, selectedCaptureId],
   );
 
+  // Wi-Fi decoding runs a real GNU Radio subprocess that can take much longer than
+  // the other (fast, in-process) pipelines, and demodulate_dataset_capture runs
+  // synchronously inside the request handler -- calling it directly for wifi_80211
+  // would block the whole backend event loop (freezing spectrum/waterfall polling
+  // for every other view) for the duration of the decode. Route wifi_80211 through
+  // the same background-job endpoints Capture Lab uses instead, so this stays the
+  // one reusable Wi-Fi decode path across the platform.
+  const pollWifiJob = async (jobId: string): Promise<Record<string, any>> => {
+    for (;;) {
+      const job = await apiService.getWifiDemodulationJobStatus(jobId);
+      if (job.status === 'done') return job.result || {};
+      if (job.status === 'error') throw new Error(job.message || job.error || 'Wi-Fi demodulation job failed.');
+      setWifiJobProgress(job.message || 'Running worker...');
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+  };
+
   const applyDatasetDemodulation = async () => {
     if (!selectedCapture) {
       setError('Select a Dataset Builder capture first.');
@@ -380,15 +404,23 @@ export const DemodulationView: React.FC = () => {
     }
     setError(null);
     setIsDatasetRunning(true);
+    setWifiJobProgress(null);
+    const payload = captureToDemodPayload(selectedCapture, selectedPipeline, manualSignalType, wifiDecoderMode);
     try {
-      const result = await apiService.demodulateDatasetCapture(
-        captureToDemodPayload(selectedCapture, selectedPipeline, manualSignalType),
-      );
+      let result: DemodulationResult;
+      if (selectedPipeline === 'wifi_80211') {
+        const { job_id: jobId } = await apiService.startWifiDemodulationJob(payload);
+        setWifiJobProgress('Starting worker...');
+        result = (await pollWifiJob(jobId)) as DemodulationResult;
+      } else {
+        result = await apiService.demodulateDatasetCapture(payload);
+      }
       setResults((current) => [result, ...current]);
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
       setIsDatasetRunning(false);
+      setWifiJobProgress(null);
     }
   };
 
@@ -537,6 +569,20 @@ export const DemodulationView: React.FC = () => {
               </label>
             </div>
 
+            {selectedPipeline === 'wifi_80211' && (
+              <label className="flex max-w-md flex-col gap-1 text-xs text-slate-400">
+                Decoder mode
+                <select value={wifiDecoderMode} onChange={(event) => setWifiDecoderMode(event.target.value)} className="h-9 rounded-md border border-slate-700 bg-slate-950 px-2 text-sm text-slate-100 outline-none focus:border-blue-400">
+                  <option value="auto">Auto</option>
+                  <option value="legacy_ofdm">Legacy OFDM 802.11a/g</option>
+                  <option value="dsss_cck">DSSS/CCK 802.11b (not implemented)</option>
+                  <option value="phy_identification">HT/VHT/HE identification (not implemented)</option>
+                  <option value="current_scaffold">Current scaffold</option>
+                </select>
+                <span>V2 requires WIFI_DEMOD_V2=true; otherwise the current scaffold remains active.</span>
+              </label>
+            )}
+
             <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3 items-end">
               <label className="flex flex-col gap-1 text-xs text-slate-400">
                 Manual signal type override
@@ -558,9 +604,16 @@ export const DemodulationView: React.FC = () => {
                 )}
               >
                 <Play className="w-4 h-4 mr-2" />
-                {isDatasetRunning ? 'Running...' : 'Run Post-capture Pipeline'}
+                {isDatasetRunning
+                  ? (selectedPipeline === 'wifi_80211' ? (wifiJobProgress || 'Running worker...') : 'Running...')
+                  : 'Run Post-capture Pipeline'}
               </button>
             </div>
+            {selectedPipeline === 'wifi_80211' && (
+              <div className="rounded-md border border-indigo-800 bg-indigo-950/30 p-2 text-xs text-indigo-200">
+                Recovery is partial: this decoder does not recover every transmitted frame, even on a clean channel. Confirmed frames passed FCS; see receiver_internal_events.jsonl in the result outputs for the full diagnostic trace.
+              </div>
+            )}
 
             {selectedCapture ? (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

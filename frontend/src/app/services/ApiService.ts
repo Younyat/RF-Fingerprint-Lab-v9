@@ -672,6 +672,14 @@ export class ApiService {
     return Array.isArray(response.data) ? response.data : response.data.pipelines ?? [];
   }
 
+  async getWifi80211Channels(): Promise<{
+    channels_24ghz: { channel: number; frequency_hz: number }[];
+    channels_5ghz: { channel: number; frequency_hz: number }[];
+  }> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.DEMODULATION_WIFI_CHANNELS}`);
+    return response.data;
+  }
+
   async testBleAdvertisingChannels(payload: {
     durationSeconds: number;
     sampleRateHz?: number;
@@ -698,6 +706,16 @@ export class ApiService {
 
   async demodulateDatasetCapture(payload: Record<string, unknown>): Promise<DemodulationResult> {
     const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.DEMODULATION_DATASET_CAPTURE}`, payload);
+    return response.data;
+  }
+
+  async startWifiDemodulationJob(payload: Record<string, unknown>): Promise<{ job_id: string }> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.DEMODULATION_WIFI_JOB_START}`, payload);
+    return response.data;
+  }
+
+  async getWifiDemodulationJobStatus(jobId: string): Promise<Record<string, any>> {
+    const response = await axios.get(`${this.baseURL}${API_ENDPOINTS.DEMODULATION_WIFI_JOB_STATUS(jobId)}`);
     return response.data;
   }
 

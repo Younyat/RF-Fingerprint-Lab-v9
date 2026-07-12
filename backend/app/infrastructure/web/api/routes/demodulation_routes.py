@@ -35,6 +35,12 @@ class DatasetDemodulationBody(BaseModel):
     device_profile: str | None = None
     pipeline: str | None = None
     manual_signal_type: str | None = None
+    # Capture Lab captures are contiguous, temporally-ordered raw IQ recordings,
+    # so this defaults True for that source. Previously this had no top-level
+    # field and silently defaulted to False deep in _run_wifi_v2, which made
+    # WifiCaptureContract.validate() reject every wifi_80211 V2 request
+    # unconditionally -- a pre-existing bug, fixed here.
+    temporal_order_known: bool = True
     options: dict[str, Any] = {}
 
 
@@ -86,9 +92,27 @@ def build_demodulation_router(controller) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @router.post("/dataset-capture/wifi-job")
+    async def start_wifi_dataset_job(body: DatasetDemodulationBody):
+        try:
+            return controller.start_wifi_dataset_job(body.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.get("/dataset-capture/wifi-job/{job_id}")
+    async def get_wifi_dataset_job(job_id: str):
+        try:
+            return controller.get_wifi_dataset_job(job_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @router.get("/pipelines")
     async def list_demodulation_pipelines():
         return {"pipelines": controller.list_pipelines()}
+
+    @router.get("/wifi-80211/channels")
+    async def list_wifi_channels():
+        return controller.list_wifi_channels()
 
     @router.post("/ble-advertising/test-channels")
     def test_ble_advertising_channels(body: BleChannelTestBody):

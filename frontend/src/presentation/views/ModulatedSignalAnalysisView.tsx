@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Database, Download, Play, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react';
+import { Database, Download, Play, RotateCcw, ShieldCheck, Trash2, Wifi } from 'lucide-react';
 import { ApiService } from '../../app/services/ApiService';
 import { useAnalyzerSettings, useAppActions, useMarkers, useSpectrumData } from '../../app/store/AppStore';
 import { MODULATION_HINTS } from '../../shared/constants';
@@ -1027,6 +1027,15 @@ function RfDiagnosticCard({
   );
 }
 
+const WIFI_JOB_POLL_INTERVAL_MS = 1500;
+
+type WifiJobState = {
+  status: 'idle' | 'running' | 'done' | 'error';
+  message?: string;
+  reportUrl?: string;
+  eventsUrl?: string;
+};
+
 function CaptureRow({
   capture,
   onDelete,
@@ -1036,6 +1045,7 @@ function CaptureRow({
   onDelete: (capture: ModulatedSignalCapture) => void;
   isDeleting: boolean;
 }) {
+  const [wifiJob, setWifiJob] = useState<WifiJobState>({ status: 'idle' });
   const iqUrl = apiService.getModulatedSignalIqUrl(capture.id);
   const metadataUrl = apiService.getModulatedSignalMetadataUrl(capture.id);
   const fileFormat = (capture.file_format || (capture.iq_file?.toLowerCase().endsWith('.iq') ? 'iq' : 'cfile')).toUpperCase();
@@ -1054,6 +1064,62 @@ function CaptureRow({
     snrDb: capture.preview_metrics?.live_preview_snr_db,
     canonicalizationEnabled: true,
   });
+
+  const demodulateWifi = async () => {
+    setWifiJob({ status: 'running', message: 'Starting worker...' });
+    try {
+      const { job_id: jobId } = await apiService.startWifiDemodulationJob({
+        sample_id: capture.id,
+        file_path: capture.iq_file,
+        file_format: capture.file_format,
+        // Capture Lab always writes complex64 (interleaved float32 I/Q) on disk
+        // regardless of file_format/iq_dtype label -- the wifi_80211 worker uses
+        // its own datatype vocabulary (cf32_le/ci16_le/cu8), so translate here.
+        datatype: 'cf32_le',
+        sample_rate_hz: capture.sample_rate_hz,
+        center_frequency_hz: capture.center_frequency_hz,
+        hardware_center_frequency_hz: capture.center_frequency_hz,
+        channel_center_frequency_hz: capture.center_frequency_hz,
+        bandwidth_hz: capture.bandwidth_hz,
+        channel_width_hz: capture.bandwidth_hz,
+        capture_duration: capture.duration_seconds,
+        source_dataset: 'capture_lab',
+        pipeline: 'wifi_80211',
+        temporal_order_known: true,
+      });
+
+      const poll = async () => {
+        try {
+          const job = await apiService.getWifiDemodulationJobStatus(jobId);
+          if (job.status === 'done') {
+            const report = job.result || {};
+            const framesConfirmed = report.frames_decoded ?? 0;
+            setWifiJob({
+              status: 'done',
+              message: `${framesConfirmed} frame(s) confirmed (partial recovery -- not every transmitted frame is recovered).`,
+              reportUrl: report.outputs?.report ? apiService.getDemodulationOutputUrl(report.id || capture.id, 'demodulation_report.json') : undefined,
+              eventsUrl: report.outputs?.receiver_internal_events
+                ? apiService.getDemodulationOutputUrl(report.id || capture.id, 'receiver_internal_events.jsonl')
+                : undefined,
+            });
+            return;
+          }
+          if (job.status === 'error') {
+            setWifiJob({ status: 'error', message: job.message || job.error || 'Demodulation job failed.' });
+            return;
+          }
+          setWifiJob({ status: 'running', message: job.message || 'Running worker...' });
+          setTimeout(poll, WIFI_JOB_POLL_INTERVAL_MS);
+        } catch (err) {
+          setWifiJob({ status: 'error', message: getErrorMessage(err) });
+        }
+      };
+      setTimeout(poll, WIFI_JOB_POLL_INTERVAL_MS);
+    } catch (err) {
+      setWifiJob({ status: 'error', message: getErrorMessage(err) });
+    }
+  };
+
   return (
     <div className="space-y-3 p-4">
       <div className="flex flex-wrap justify-between gap-3">
@@ -1074,6 +1140,15 @@ function CaptureRow({
             <Download className="mr-2 h-4 w-4" />
             JSON
           </a>
+          <button
+            type="button"
+            onClick={demodulateWifi}
+            disabled={wifiJob.status === 'running'}
+            className="inline-flex h-9 items-center rounded-md bg-indigo-600 px-3 text-sm font-medium hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Wifi className="mr-2 h-4 w-4" />
+            {wifiJob.status === 'running' ? 'Demodulating...' : 'Demodulate Wi-Fi'}
+          </button>
           <button
             type="button"
             onClick={() => onDelete(capture)}
@@ -1115,6 +1190,35 @@ function CaptureRow({
       </div>
 
       <RfDiagnosticCard diagnostic={postCaptureDiagnostic} titlePrefix="Post-capture intelligence" compact />
+
+      {wifiJob.status !== 'idle' && (
+        <div
+          className={cn(
+            'rounded-md border p-2 text-xs',
+            wifiJob.status === 'error'
+              ? 'border-rose-500/40 bg-rose-950/40 text-rose-100'
+              : wifiJob.status === 'done'
+                ? 'border-emerald-500/40 bg-emerald-950/40 text-emerald-100'
+                : 'border-slate-600/40 bg-slate-800/40 text-slate-200',
+          )}
+        >
+          <div>{wifiJob.message}</div>
+          {wifiJob.status === 'done' && (
+            <div className="mt-1 flex gap-3">
+              {wifiJob.reportUrl && (
+                <a href={wifiJob.reportUrl} className="underline hover:text-white">
+                  Demodulation report
+                </a>
+              )}
+              {wifiJob.eventsUrl && (
+                <a href={wifiJob.eventsUrl} className="underline hover:text-white">
+                  Receiver diagnostics (receiver_internal_events.jsonl)
+                </a>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {capture.external_iq_file && (
         <div className="rounded-md border border-amber-500/30 bg-amber-950/40 p-2 text-xs text-amber-100">

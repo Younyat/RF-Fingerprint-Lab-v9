@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
+import threading
 import uuid
 import wave
 from datetime import datetime, timezone
@@ -12,6 +14,7 @@ from time import perf_counter
 import numpy as np
 
 from app.config.settings import settings as app_settings
+from app.infrastructure.jobs import job_tracker
 from app.infrastructure.sdr.real_spectrum_stream import real_spectrum_stream
 from app.infrastructure.sdr.rf_safety import (
     DEFAULT_USRP_B200_LIMITS,
@@ -19,6 +22,9 @@ from app.infrastructure.sdr.rf_safety import (
     validate_sample_rate,
     validate_start_stop,
 )
+from app.modules.demodulation.wifi_80211 import WifiDecodeService, default_worker_command
+from app.modules.demodulation.wifi_80211.domain.models import WifiCaptureContract
+from app.modules.demodulation.wifi_80211.infrastructure.capture_adapter import sample_count, sha256_file
 
 
 class DemodulationController:
@@ -80,7 +86,7 @@ class DemodulationController:
             },
             {
                 "id": "ble_advertising",
-                "category": "IoT Demodulation Pipelines",
+                "category": "Wireless LAN decoders",
                 "family": "bluetooth_low_energy",
                 "label": "BLE advertising channels 37/38/39",
                 "status": "rf_activity_and_sync_scaffold",
@@ -91,8 +97,13 @@ class DemodulationController:
                 "category": "IoT Demodulation Pipelines",
                 "family": "wifi_80211",
                 "label": "Wi-Fi 802.11 2.4 / 5 GHz",
-                "status": "rf_activity_and_frame_scaffold",
-                "outputs": ["decoded_packets.json", "demodulation_report.json"],
+                "status": "v2_foundation_flagged" if self._wifi_demod_v2_enabled() else "current_scaffold",
+                "support": {
+                    "legacy_ofdm_80211ag": "external_worker_required",
+                    "dsss_cck_80211b": "not_implemented",
+                    "ht_vht_he": "identification_not_implemented",
+                },
+                "outputs": (["decoded_frames.json", "failed_frame_candidates.json", "capture_manifest.json", "demodulation_report.json"] if self._wifi_demod_v2_enabled() else ["decoded_packets.json", "demodulation_report.json"]),
             },
             {
                 "id": "generic_gfsk_iot",
@@ -347,7 +358,66 @@ class DemodulationController:
             "audio_url": f"/api/demodulation/audio/{demodulation_id}" if metadata.get("audio_file") else None,
             "metadata_url": f"/api/demodulation/results/{demodulation_id}",
         }
-        if mode in self.IOT_PIPELINES and metadata.get("iq_file"):
+        if mode == "wifi_80211" and metadata.get("iq_file") and self._wifi_demod_v2_enabled() and self._wifi_worker_available():
+            # Live captures are a single contiguous, temporally-ordered recording
+            # (same rationale as Capture Lab), and _live_capture_sample_rate_hz
+            # already forced sample_rate_hz to exactly 20 MS/s above when the
+            # worker is available, so this can feed the same real V3 decoder
+            # dataset captures use -- reusing _run_wifi_v2 keeps it one path.
+            live_payload = {
+                "sample_id": demodulation_id,
+                "dataset_id": "live_sdr",
+                "file_path": metadata["iq_file"],
+                "file_format": "cfile",
+                "datatype": "cf32_le",
+                "sample_rate_hz": sample_rate_hz,
+                "center_frequency_hz": center_frequency_hz,
+                "hardware_center_frequency_hz": center_frequency_hz,
+                "channel_center_frequency_hz": center_frequency_hz,
+                "channel_width_hz": 20_000_000.0,
+                "bandwidth_hz": bandwidth_hz,
+                "capture_duration": duration_seconds,
+                "source_dataset": "live_sdr",
+                "source": "live_sdr",
+                "signal_type": mode,
+                "pipeline": mode,
+                "temporal_order_known": True,
+            }
+            output_dir = self._output_dir / demodulation_id
+            output_dir.mkdir(parents=True, exist_ok=True)
+            wifi_v2 = self._run_wifi_v2(live_payload, Path(str(metadata["iq_file"])), output_dir)
+            if (wifi_v2.get("external_worker") or {}).get("fallback_to_current_scaffold"):
+                requested_iq_samples = max(1, int(float(sample_rate_hz) * float(duration_seconds)))
+                iq = self._read_complex_iq(Path(str(metadata["iq_file"])), "cf32_le", max_samples=requested_iq_samples)
+                wifi_report = self._run_iot_pipeline(iq, live_payload, mode, output_dir)
+                wifi_report["wifi_v2_worker_failure"] = wifi_v2.get("external_worker")
+                wifi_report["notes"] = [*(wifi_report.get("notes") or []), "Wi-Fi V2 worker failed or rejected its input; the current scaffold was used without affecting other pipelines."]
+            else:
+                wifi_report = wifi_v2
+            result.update(
+                {
+                    **wifi_report,
+                    "id": demodulation_id,
+                    "mode": "live_demodulation",
+                    "source": "live_sdr",
+                    "marker_left_hz": float(start_frequency_hz),
+                    "marker_right_hz": float(stop_frequency_hz),
+                    "center_frequency_hz": center_frequency_hz,
+                    "bandwidth_hz": bandwidth_hz,
+                    "sample_rate_hz": sample_rate_hz,
+                    "duration_seconds": duration_seconds,
+                    "iq_file": metadata["iq_file"],
+                    "output_dir": str(output_dir),
+                    "metadata_file": str(output_dir / "demodulation_report.json"),
+                    "metadata_url": f"/api/demodulation/results/{demodulation_id}",
+                    "rf_analysis_source": "computed_from_live_iq",
+                    "demodulation_source": "computed_from_live_iq",
+                }
+            )
+            result.setdefault("outputs", {})
+            result["outputs"]["report"] = str(output_dir / "demodulation_report.json")
+            Path(str(output_dir / "demodulation_report.json")).write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+        elif mode in self.IOT_PIPELINES and metadata.get("iq_file"):
             live_payload = {
                 "sample_id": demodulation_id,
                 "dataset_id": "live_sdr",
@@ -431,6 +501,18 @@ class DemodulationController:
                     "notes": [f"Unsupported RF input format: {path.suffix or normalized.get('file_format')}"],
                 }
             )
+            return self._finalize_dataset_result(report, output_dir)
+
+        if pipeline == "wifi_80211" and self._wifi_demod_v2_enabled() and self._wifi_worker_available():
+            wifi_v2 = self._run_wifi_v2(normalized, path, output_dir)
+            if (wifi_v2.get("external_worker") or {}).get("fallback_to_current_scaffold"):
+                iq = self._read_complex_iq(path, str(normalized["datatype"]))
+                fallback = self._run_iot_pipeline(iq, normalized, pipeline, output_dir)
+                fallback["wifi_v2_worker_failure"] = wifi_v2.get("external_worker")
+                fallback["notes"] = [*(fallback.get("notes") or []), "Wi-Fi V2 worker failed or rejected its input; the current scaffold was used without affecting other pipelines."]
+                report.update(fallback)
+            else:
+                report.update(wifi_v2)
             return self._finalize_dataset_result(report, output_dir)
 
         iq = self._read_complex_iq(path, str(normalized["datatype"]))
@@ -787,6 +869,31 @@ class DemodulationController:
         }
         return result
 
+    def start_wifi_dataset_job(self, payload: dict) -> dict:
+        """Runs demodulate_dataset_capture (unchanged) off the request thread so a
+        real V3 worker invocation -- which can take tens of seconds -- doesn't block
+        the HTTP handler. Capture Lab is the intended caller for wifi_80211 payloads,
+        but this wraps the same dataset-capture path any pipeline already uses."""
+        job_id = job_tracker.create_job("wifi_80211_decode", description=str(payload.get("sample_id", "")))
+
+        def _run() -> None:
+            job_tracker.update_job(job_id, 10, "Running worker...")
+            try:
+                result = self.demodulate_dataset_capture(payload)
+            except Exception as exc:  # noqa: BLE001 - report to the job, don't crash the thread
+                job_tracker.fail_job(job_id, str(exc))
+                return
+            job_tracker.complete_job(job_id, result)
+
+        threading.Thread(target=_run, daemon=True).start()
+        return {"job_id": job_id}
+
+    def get_wifi_dataset_job(self, job_id: str) -> dict:
+        job = job_tracker.get_job(job_id)
+        if job is None:
+            raise ValueError(f"Unknown job_id: {job_id}")
+        return job
+
     def _normalize_dataset_input(self, payload: dict) -> dict:
         normalized = dict(payload)
         path = self._resolve_sigmf_path(Path(str(normalized.get("file_path") or "")))
@@ -886,6 +993,70 @@ class DemodulationController:
             return raw[0::2] + 1j * raw[1::2]
         return np.array([], dtype=np.complex64)
 
+    @staticmethod
+    def _wifi_demod_v2_enabled() -> bool:
+        # Selecting the wifi_80211 pipeline should use the real (validated V3)
+        # decoder by default -- WIFI_DEMOD_V2 is now an opt-out, not an opt-in.
+        return os.environ.get("WIFI_DEMOD_V2", "true").strip().lower() not in {"0", "false", "no", "off"}
+
+    @staticmethod
+    def _wifi_worker_available() -> bool:
+        """WIFI_GR_IEEE80211_WORKER may be a single script path, or a full command
+        ("<interpreter> <script>") when the worker needs a pinned interpreter other
+        than this backend's own -- mirror WifiDecodeService.decode()'s shlex parsing
+        here instead of treating the whole value as one file path. With no override,
+        this resolves to the same validated V3 worker default decode() itself falls
+        back to, so the two checks never disagree about whether a worker is set."""
+        configured = os.environ.get("WIFI_GR_IEEE80211_WORKER", "").strip() or (default_worker_command() or "")
+        if not configured:
+            return False
+        try:
+            command = shlex.split(configured, posix=os.name != "nt")
+        except ValueError:
+            return False
+        if not command:
+            return False
+        if len(command) == 1:
+            return Path(command[0]).is_file()
+        return all(Path(token).is_file() for token in command if token.lower().endswith((".exe", ".py")))
+
+    def _run_wifi_v2(self, data: dict, path: Path, output_dir: Path) -> dict:
+        datatype = str(data.get("datatype") or "")
+        hardware_center = float(data.get("hardware_center_frequency_hz") or data.get("center_frequency_hz") or 0.0)
+        channel_center = float(data.get("channel_center_frequency_hz") or data.get("center_frequency_hz") or 0.0)
+        known_order = bool(data.get("temporal_order_known", False))
+        contract = WifiCaptureContract(
+            input_file=str(path), datatype=datatype,
+            sample_rate_hz=float(data.get("sample_rate_hz") or 0.0),
+            hardware_center_frequency_hz=hardware_center,
+            channel_center_frequency_hz=channel_center,
+            channel_width_hz=float(data.get("channel_width_hz") or data.get("bandwidth_hz") or 20_000_000.0),
+            capture_start_utc=data.get("capture_start_utc") or data.get("timestamp_utc"),
+            sample_count=sample_count(path, datatype),
+            gain_db=float(data["gain_db"]) if data.get("gain_db") is not None else None,
+            antenna=data.get("antenna") or data.get("antenna_port"),
+            device_model=data.get("device_model") or data.get("sdr_model"),
+            device_serial=data.get("device_serial") or data.get("sdr_serial"),
+            source=str(data.get("source") or "dataset"), input_iq_sha256=sha256_file(path),
+            overflow_count=int(data["overflow_count"]) if data.get("overflow_count") is not None else None,
+            gaps_detected=bool(data["gaps_detected"]) if data.get("gaps_detected") is not None else None,
+            dc_correction_applied=bool(data.get("dc_correction_applied", False)),
+            iq_correction_applied=bool(data.get("iq_correction_applied", False)),
+            filter_definition=dict(data.get("filter_definition") or {"applied": False, "stage": "raw_iq"}),
+            decoder_mode=str(data.get("decoder_mode") or "auto"), temporal_order_known=known_order,
+            metadata_evidence={
+                "sample_rate_hz": "known" if data.get("sample_rate_hz") else "unknown",
+                "datatype": "known" if data.get("datatype") else "unknown",
+                "hardware_center_frequency_hz": "inferred" if not data.get("hardware_center_frequency_hz") else "known",
+                "channel_center_frequency_hz": "inferred" if not data.get("channel_center_frequency_hz") else "known",
+                "overflow_count": "known" if data.get("overflow_count") is not None else "unknown",
+                "gaps_detected": "known" if data.get("gaps_detected") is not None else "unknown",
+                "capture_start_utc": "known" if data.get("capture_start_utc") or data.get("timestamp_utc") else "unknown",
+                "temporal_order_known": "known" if data.get("temporal_order_known") is not None else "unknown",
+            },
+        )
+        return WifiDecodeService().decode(contract, output_dir)
+
     def _summarize_iq_activity(self, iq: np.ndarray, sample_rate_hz: float) -> dict:
         power = np.abs(iq) ** 2
         mean_power = float(np.mean(power)) if power.size else 0.0
@@ -935,6 +1106,13 @@ class DemodulationController:
     def _live_capture_sample_rate_hz(self, mode: str, bandwidth_hz: float) -> float:
         configured_rate = float(self._settings.frequency.sample_rate_hz)
         if mode == "wifi_80211":
+            if self._wifi_demod_v2_enabled() and self._wifi_worker_available():
+                # The validated V3 worker requires an exact 20 MS/s channelized
+                # capture (legacy 802.11a/g channels are always 20 MHz wide) --
+                # capture at that fixed rate directly instead of deriving one
+                # from the marker span, so live captures can feed the real
+                # decoder the same way dataset/Capture Lab captures do.
+                return 20_000_000.0
             required_rate = max(
                 bandwidth_hz * 1.25,
                 DEFAULT_USRP_B200_LIMITS.min_sample_rate_hz,
@@ -985,6 +1163,15 @@ class DemodulationController:
             {"channel": channel, "frequency_hz": float((5000 + channel * 5) * 1_000_000)}
             for channel in channels
         ]
+
+    def _wifi_24ghz_channels(self) -> list[dict]:
+        return [
+            {"channel": channel, "frequency_hz": float((2407 + channel * 5) * 1_000_000)}
+            for channel in range(1, 14)
+        ]
+
+    def list_wifi_channels(self) -> dict:
+        return {"channels_24ghz": self._wifi_24ghz_channels(), "channels_5ghz": self._wifi_5ghz_channels()}
 
     def _base_dataset_report(self, demodulation_id: str, data: dict, pipeline: str, output_dir: Path) -> dict:
         return {
