@@ -18,6 +18,7 @@ import { settingsModule } from './settings/module';
 import { trainingModule } from './training/module';
 import { validationModule } from './validation/module';
 import { waterfallModule } from './waterfall/module';
+import { bleLabModule } from './ble-lab/module';
 import { LabModuleDefinition } from './types';
 
 export type { LabModuleDefinition } from './types';
@@ -40,6 +41,7 @@ export const labModules: LabModuleDefinition[] = [
   recordingsModule,
   demodulationModule,
   wifiDashboardModule,
+  bleLabModule,
   liveDemodulationModule,
   kiwiSdrMapModule,
   settingsModule,

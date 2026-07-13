@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Database, Download, Play, RotateCcw, ShieldCheck, Trash2, Wifi } from 'lucide-react';
+import { Bluetooth, Database, Download, Play, RotateCcw, ShieldCheck, Trash2, Wifi } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { ApiService } from '../../app/services/ApiService';
 import { useAnalyzerSettings, useAppActions, useMarkers, useSpectrumData } from '../../app/store/AppStore';
 import { MODULATION_HINTS } from '../../shared/constants';
@@ -17,6 +18,8 @@ const splitHelp = {
 
 const CAPTURE_LAB_MAX_BANDWIDTH_HZ = 10_000_000;
 const CAPTURE_LAB_MAX_DURATION_S = 120;
+const BLE_ANALYZER_ENABLED = import.meta.env.VITE_BLE_ANALYZER_V1 !== 'false';
+const BLE_DSP_UNAVAILABLE_REASON = 'IQ-based BLE analysis is unavailable because the DSP recovery gate has not been completed. Validated bitstream replay is available for platform-integration testing.';
 
 const getErrorMessage = (error: unknown) => {
   if (typeof error === 'object' && error !== null && 'response' in error) {
@@ -476,13 +479,10 @@ export const ModulatedSignalAnalysisView: React.FC = () => {
                 para `train`, `val` o `predict`, y la deja lista para que entrenamiento, validación o inferencia la detecten automáticamente.
               </p>
             </div>
-            <button
-              onClick={() => loadCaptures()}
-              className="inline-flex h-9 items-center rounded-md bg-slate-700 px-3 text-sm hover:bg-slate-600"
-            >
-              <RotateCcw className="mr-2 h-4 w-4" />
-              Refresh
-            </button>
+            <div className="flex flex-wrap gap-2">
+              {BLE_ANALYZER_ENABLED && <Link to="/ble-lab" className="inline-flex h-9 items-center rounded-md bg-cyan-700 px-3 text-sm font-semibold hover:bg-cyan-600"><Bluetooth className="mr-2 h-4 w-4" />Open BLE Lab</Link>}
+              <button onClick={() => loadCaptures()} className="inline-flex h-9 items-center rounded-md bg-slate-700 px-3 text-sm hover:bg-slate-600"><RotateCcw className="mr-2 h-4 w-4" />Refresh</button>
+            </div>
           </div>
         </section>
 
@@ -1140,6 +1140,11 @@ function CaptureRow({
             <Download className="mr-2 h-4 w-4" />
             JSON
           </a>
+          {BLE_ANALYZER_ENABLED && (
+            <button type="button" disabled title={BLE_DSP_UNAVAILABLE_REASON} aria-label={`Analyze in BLE Lab. ${BLE_DSP_UNAVAILABLE_REASON}`} className="inline-flex h-9 cursor-not-allowed items-center rounded-md border border-cyan-700 bg-cyan-950/40 px-3 text-sm font-medium text-cyan-200 opacity-60">
+              <Bluetooth className="mr-2 h-4 w-4" />Analyze in BLE Lab
+            </button>
+          )}
           <button
             type="button"
             onClick={demodulateWifi}

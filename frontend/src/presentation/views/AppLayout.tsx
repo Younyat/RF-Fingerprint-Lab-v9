@@ -42,7 +42,7 @@ export const AppLayout: React.FC = () => {
           {/* Navigation */}
           <nav className="flex-1 p-4 space-y-2">
             {navigationModules.map((item) => {
-              const isActive = location.pathname === item.path || (item.aliases ?? []).includes(location.pathname);
+              const isActive = location.pathname === item.path || location.pathname.startsWith(`${item.path}/`) || (item.aliases ?? []).includes(location.pathname);
               return (
                 <Link
                   key={item.id}
