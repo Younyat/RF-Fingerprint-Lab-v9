@@ -6,6 +6,11 @@ import { BleAdvertisement, BleAdvertiser, BleApiService, BleCapabilities, BleJob
 const api = new BleApiService();
 const replayNotice = 'This result was produced from a validated bitstream replay. No IQ demodulation or RF recovery was performed.';
 export const BLE_DSP_UNAVAILABLE_REASON = 'IQ-based BLE analysis is unavailable because the DSP recovery gate has not been completed. Validated bitstream replay is available for platform-integration testing.';
+const BLE_PRIMARY_CHANNELS = [
+  { channel: 37, frequencyMHz: 2402 },
+  { channel: 38, frequencyMHz: 2426 },
+  { channel: 39, frequencyMHz: 2480 },
+] as const;
 const surfaceStyle = { borderColor: 'var(--app-border)', background: 'var(--app-surface)' };
 const Panel: React.FC<React.PropsWithChildren<{ title: string; className?: string }>> = ({ title, className = '', children }) => <section className={`overflow-hidden rounded-lg border ${className}`} style={surfaceStyle}><div className="border-b px-4 py-3 text-sm font-semibold" style={{ borderColor: 'var(--app-border)' }}>{title}</div><div className="p-4">{children}</div></section>;
 const Metric = ({ label, display }: { label: string; display: React.ReactNode }) => <div className="rounded-lg border p-4" style={surfaceStyle}><div className="text-xs uppercase tracking-wide text-[var(--app-text-muted)]">{label}</div><div className="mt-1 break-all text-xl font-semibold">{display}</div></div>;
@@ -16,12 +21,48 @@ export const BleCapabilityStatus = ({ capabilities }: { capabilities: BleCapabil
   return <Panel title="Capability status"><dl className="grid gap-x-6 md:grid-cols-2">{rows.map(([label, key, fallback]) => <div key={key} className="flex justify-between border-b border-slate-800 py-2 text-sm"><dt>{label}</dt><dd className="font-semibold text-amber-300">{String(capabilities?.gates[key] ?? fallback).replaceAll('_', ' ')}</dd></div>)}<div className="flex justify-between border-b border-slate-800 py-2 text-sm"><dt>Normative conformance</dt><dd className="font-semibold text-amber-300">{(capabilities?.normative_conformance ?? 'not_established').replaceAll('_', ' ')}</dd></div></dl></Panel>;
 };
 
-export const BleJobLauncher = ({ enabled, onCreated }: { enabled: boolean; onCreated: (job: BleJob) => void }) => { const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const launch = async () => { setBusy(true); setError(''); try { onCreated(await api.createReplayJob()); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to create replay job'); } finally { setBusy(false); } }; return <Panel title="Run platform integration replay"><p className="mb-3 text-sm text-[var(--app-text-muted)]">Run the frozen Gate 1B campaign through the external worker and inspect the complete report.</p><div className="mb-3 rounded-md bg-black/10 px-3 py-2 text-xs"><span className="text-[var(--app-text-muted)]">Input mode</span><div className="mt-1 font-semibold">Validated bitstream replay</div></div><button onClick={() => void launch()} disabled={!enabled || busy} className="inline-flex h-9 items-center rounded-md bg-sky-600 px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"><Play className="mr-2 h-4 w-4" />{busy ? 'Creating job...' : 'Start replay job'}</button>{error && <p className="mt-2 text-sm text-red-400">{error}</p>}</Panel>; };
+export const BleJobLauncher = ({ enabled, onCreated }: { enabled: boolean; onCreated: (job: BleJob) => void }) => {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [channel, setChannel] = useState(37);
+  const [duration, setDuration] = useState(5);
+  const selected = BLE_PRIMARY_CHANNELS.find((item) => item.channel === channel) ?? BLE_PRIMARY_CHANNELS[0];
+  const launch = async () => { setBusy(true); setError(''); try { onCreated(await api.createReplayJob()); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to create replay job'); } finally { setBusy(false); } };
+  return <div className="contents">
+    <Panel title="Capture a BLE advertising channel">
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex flex-col gap-1 text-xs text-[var(--app-text-muted)]">PHY<select className="h-9 rounded-md border bg-transparent px-2 text-sm" style={{ borderColor: 'var(--app-border)' }} disabled><option>LE 1M</option></select></label>
+        <label className="flex flex-col gap-1 text-xs text-[var(--app-text-muted)]">Primary channel<select value={channel} onChange={(event) => setChannel(Number(event.target.value))} className="h-9 min-w-[13rem] rounded-md border bg-transparent px-2 text-sm" style={{ borderColor: 'var(--app-border)' }}>{BLE_PRIMARY_CHANNELS.map((item) => <option key={item.channel} value={item.channel}>CH{item.channel} — {item.frequencyMHz} MHz</option>)}</select></label>
+        <label className="flex flex-col gap-1 text-xs text-[var(--app-text-muted)]">Duration (s)<input type="number" min={1} max={60} value={duration} onChange={(event) => setDuration(Number(event.target.value))} className="h-9 w-20 rounded-md border bg-transparent px-2 text-sm" style={{ borderColor: 'var(--app-border)' }} /></label>
+        <button type="button" disabled title={BLE_DSP_UNAVAILABLE_REASON} className="inline-flex h-9 cursor-not-allowed items-center rounded-md bg-sky-600 px-4 text-sm font-semibold text-white opacity-50"><Bluetooth className="mr-2 h-4 w-4" />Start BLE Capture</button>
+      </div>
+      <div className="mt-3 rounded-md bg-black/10 px-3 py-2 text-xs"><b>Selected RF center:</b> {selected.frequencyMHz} MHz · CH{selected.channel} · {duration}s<div className="mt-1 text-amber-500">Unavailable — DSP recovery gate has not passed. No IQ job will be started.</div></div>
+    </Panel>
+    <Panel title="Analyze validated BLE traffic">
+      <p className="mb-3 text-sm text-[var(--app-text-muted)]">Run the frozen Gate 1B campaign and inspect CRC-valid PDUs, headers, payload bytes, addresses and Advertising Data structures.</p>
+      <div className="mb-3 rounded-md bg-black/10 px-3 py-2 text-xs"><span className="text-[var(--app-text-muted)]">Input mode</span><div className="mt-1 font-semibold">Validated bitstream replay · channels 37, 38 and 39</div></div>
+      <button onClick={() => void launch()} disabled={!enabled || busy} className="inline-flex h-9 items-center rounded-md bg-indigo-600 px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"><Play className="mr-2 h-4 w-4" />{busy ? 'Creating job...' : 'Analyze replay frames'}</button>
+      {error && <p className="mt-2 text-sm text-red-400">{error}</p>}
+    </Panel>
+  </div>;
+};
 
 export const BleJobSummary = ({ job }: { job: BleJob }) => { const s = job.result_summary; const metrics: [string, React.ReactNode][] = [['CRC-valid packets', summaryNumber(s, 'confirmed_packet_count', 'crc_valid_packets')], ['Parsed advertising PDUs', summaryNumber(s, 'parsed_packet_count', 'parsed_advertising_pdus')], ['Advertising Data structures', summaryNumber(s, 'ad_structure_count')], ['Observed advertiser addresses', summaryNumber(s, 'advertiser_count')], ['PDU types observed', summaryNumber(s, 'pdu_type_count')], ['Channels represented', summaryNumber(s, 'channel_count')], ['CRC-invalid diagnostic candidates', summaryNumber(s, 'crc_invalid_candidate_count')], ['Duplicate publications', summaryNumber(s, 'duplicate_publications')], ['Worker commit', String(job.worker?.worker_commit ?? job.worker?.commit ?? 'Unavailable')], ['Processing duration', job.processing_duration_seconds == null ? 'Unavailable' : `${job.processing_duration_seconds}s`], ['Input mode', 'Validated bitstream replay']]; return <Panel title="Job summary"><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{metrics.map(([label, display]) => <Metric key={label} label={label} display={display} />)}</div></Panel>; };
 
 export const BleChannelMap = ({ represented }: { represented: number[] }) => <Panel title="Channel overview"><div className="grid grid-cols-5 gap-2 sm:grid-cols-8 lg:grid-cols-10">{Array.from({ length: 40 }, (_, channel) => { const present = represented.includes(channel); return <div key={channel} title={present ? 'represented_in_test_vector' : 'not_represented_in_test_vector'} className={`rounded border p-2 text-center text-xs ${present ? 'border-cyan-400 bg-cyan-400/15' : 'border-slate-700 text-slate-500'} ${channel >= 37 ? 'ring-1 ring-amber-400' : ''}`}><b>{channel}</b><div>{present ? 'represented' : 'not represented'}</div></div>; })}</div></Panel>;
-export const BlePacketDetails = ({ packet }: { packet: BlePacket }) => <pre className="max-h-72 overflow-auto break-all rounded-md bg-black/10 p-3 text-xs">{JSON.stringify(packet, null, 2)}</pre>;
+export const BlePacketDetails = ({ packet }: { packet: BlePacket }) => {
+  const raw = packet as Record<string, unknown>;
+  return <div className="space-y-3">
+    <div className="grid grid-cols-2 gap-2 text-sm">
+      <div className="rounded-md bg-black/10 px-3 py-2"><div className="text-xs text-[var(--app-text-muted)]">Access Address</div><code>{String(raw.access_address ?? 'Unknown')}</code></div>
+      <div className="rounded-md bg-black/10 px-3 py-2"><div className="text-xs text-[var(--app-text-muted)]">PDU type</div><b>{String(packet.pdu_type ?? 'Unknown')}</b></div>
+      <div className="rounded-md bg-black/10 px-3 py-2"><div className="text-xs text-[var(--app-text-muted)]">Channel / frequency</div><b>CH{String(packet.channel_index ?? '?')} · {BLE_PRIMARY_CHANNELS.find((item) => item.channel === Number(packet.channel_index))?.frequencyMHz ?? 'Unknown'} MHz</b></div>
+      <div className="rounded-md bg-black/10 px-3 py-2"><div className="text-xs text-[var(--app-text-muted)]">CRC</div><b className="text-emerald-500">{packet.crc_valid ? 'Valid' : 'Invalid'}</b></div>
+    </div>
+    <div><div className="mb-1 text-xs uppercase tracking-wide text-[var(--app-text-muted)]">Complete Link Layer PDU</div><div className="max-h-32 overflow-auto break-all rounded-md bg-black/10 px-3 py-2 font-mono text-xs">{String(raw.pdu_hex ?? raw.payload_hex ?? 'Unavailable')}</div></div>
+    <details><summary className="cursor-pointer text-xs font-semibold text-sky-500">All packet metadata</summary><pre className="mt-2 max-h-72 overflow-auto break-all rounded-md bg-black/10 p-3 text-xs">{JSON.stringify(packet, null, 2)}</pre></details>
+  </div>;
+};
 export const BlePacketTable = ({ packets }: { packets: BlePacket[] }) => { const [selected, setSelected] = useState<BlePacket | null>(null); return <Panel title="Confirmed packets"><div className="overflow-auto"><table className="w-full text-left text-sm"><thead className="text-slate-400"><tr><th className="p-2">Packet ID</th><th>PDU type</th><th>Channel</th><th>CRC</th></tr></thead><tbody>{packets.map((packet, index) => <tr key={packet.packet_id ?? index} onClick={() => setSelected(packet)} className="cursor-pointer border-t border-slate-800"><td className="p-2">{packet.packet_id ?? `packet-${index + 1}`}</td><td>{packet.pdu_type ?? 'Unknown'}</td><td>{packet.channel_index ?? 'Unknown'}</td><td className={packet.crc_valid ? 'text-emerald-300' : 'text-rose-300'}>{String(packet.crc_valid)}</td></tr>)}</tbody></table></div>{selected && <BlePacketDetails packet={selected} />}</Panel>; };
 export const BleAdStructureViewer = ({ structures }: { structures: unknown[] }) => <pre className="max-h-64 overflow-auto rounded bg-slate-950 p-3 text-xs">{JSON.stringify(structures, null, 2)}</pre>;
 export const BleAdvertisementDetails = ({ advertisement }: { advertisement: BleAdvertisement }) => <div><p className="mb-2 text-xs text-amber-200">An observed address is not a permanent device identity.</p><BleAdStructureViewer structures={advertisement.ad_structures ?? []} /></div>;
