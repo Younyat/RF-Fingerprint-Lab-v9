@@ -15,10 +15,20 @@ const surfaceStyle = { borderColor: 'var(--app-border)', background: 'var(--app-
 const Panel: React.FC<React.PropsWithChildren<{ title: string; className?: string }>> = ({ title, className = '', children }) => <section className={`overflow-hidden rounded-lg border ${className}`} style={surfaceStyle}><div className="border-b px-4 py-3 text-sm font-semibold" style={{ borderColor: 'var(--app-border)' }}>{title}</div><div className="p-4">{children}</div></section>;
 const Metric = ({ label, display }: { label: string; display: React.ReactNode }) => <div className="rounded-lg border p-4" style={surfaceStyle}><div className="text-xs uppercase tracking-wide text-[var(--app-text-muted)]">{label}</div><div className="mt-1 break-all text-xl font-semibold">{display}</div></div>;
 const summaryNumber = (summary: Record<string, unknown> | undefined, ...keys: string[]) => Number(keys.map((key) => summary?.[key]).find((item) => item !== undefined) ?? 0);
+const JOB_PROGRESS: Record<string, number> = { created: 5, queued: 12, validating_input: 25, starting_worker: 38, running: 60, validating_artifacts: 85, cancel_requested: 90, completed: 100, completed_with_diagnostics: 100, failed: 100, timed_out: 100, cancelled: 100 };
+
+const BleJobProgress = ({ job }: { job: BleJob }) => {
+  const progress = JOB_PROGRESS[job.state] ?? 0;
+  const terminal = ['completed', 'completed_with_diagnostics', 'failed', 'timed_out', 'cancelled'].includes(job.state);
+  return <div className="mt-3 min-w-[18rem]">
+    <div className="mb-1 flex justify-between text-xs"><span>{terminal ? 'Finished' : 'Analysis progress'}</span><b>{progress}%</b></div>
+    <div className="h-2 overflow-hidden rounded-full bg-black/15"><div className={`h-full transition-all duration-500 ${job.state === 'failed' || job.state === 'timed_out' ? 'bg-red-500' : 'bg-sky-500'}`} style={{ width: `${progress}%` }} /></div>
+  </div>;
+};
 
 export const BleCapabilityStatus = ({ capabilities }: { capabilities: BleCapabilities | null }) => {
   const rows = [['Bit-true primitives', 'bit_true_gate', 'passed'], ['Link Layer bitstream decoder', 'link_layer_bitstream_gate', 'passed'], ['Advertising semantic parser', 'semantic_advertising_gate', 'passed'], ['Platform integration', 'platform_integration_gate', 'in_progress'], ['IQ/DSP recovery', 'dsp_gate', 'not_started'], ['OTA validation', 'ota_validated', 'not_performed']];
-  return <Panel title="Capability status"><dl className="grid gap-x-6 md:grid-cols-2">{rows.map(([label, key, fallback]) => <div key={key} className="flex justify-between border-b border-slate-800 py-2 text-sm"><dt>{label}</dt><dd className="font-semibold text-amber-300">{String(capabilities?.gates[key] ?? fallback).replaceAll('_', ' ')}</dd></div>)}<div className="flex justify-between border-b border-slate-800 py-2 text-sm"><dt>Normative conformance</dt><dd className="font-semibold text-amber-300">{(capabilities?.normative_conformance ?? 'not_established').replaceAll('_', ' ')}</dd></div></dl></Panel>;
+  return <Panel title="Decoder readiness — not a running job"><p className="mb-2 text-xs text-[var(--app-text-muted)]">These are validation gates for the BLE decoder. They do not mean an analysis is currently running.</p><dl className="grid gap-x-6 md:grid-cols-2">{rows.map(([label, key, fallback]) => <div key={key} className="flex justify-between border-b py-2 text-sm" style={{ borderColor: 'var(--app-border)' }}><dt>{label}</dt><dd className="font-semibold">{String(capabilities?.gates[key] ?? fallback).replaceAll('_', ' ')}</dd></div>)}<div className="flex justify-between border-b py-2 text-sm" style={{ borderColor: 'var(--app-border)' }}><dt>Normative conformance</dt><dd className="font-semibold">{(capabilities?.normative_conformance ?? 'not_established').replaceAll('_', ' ')}</dd></div></dl></Panel>;
 };
 
 export const BleJobLauncher = ({ enabled, onCreated }: { enabled: boolean; onCreated: (job: BleJob) => void }) => {
@@ -78,6 +88,11 @@ export const BleLabView: React.FC = () => {
   const { jobId } = useParams(); const navigate = useNavigate(); const [capabilities, setCapabilities] = useState<BleCapabilities | null>(null); const [job, setJob] = useState<BleJob | null>(null); const [packets, setPackets] = useState<BlePacket[]>([]); const [advertisements, setAdvertisements] = useState<BleAdvertisement[]>([]); const [advertisers, setAdvertisers] = useState<BleAdvertiser[]>([]); const [events, setEvents] = useState<BleJobEvent[]>([]); const [channels, setChannels] = useState<unknown>([]); const [diagnostics, setDiagnostics] = useState<unknown>([]); const [artifacts, setArtifacts] = useState<unknown>([]); const [error, setError] = useState('');
   const load = async () => { setError(''); try { setCapabilities(await api.capabilities()); if (!jobId) return; setJob(await api.job(jobId)); const results = await Promise.allSettled([api.packets(jobId), api.advertisements(jobId), api.advertisers(jobId), api.resource<unknown>(jobId, 'channels'), api.resource<BleJobEvent[]>(jobId, 'events'), api.resource<unknown>(jobId, 'diagnostics'), api.resource<unknown>(jobId, 'artifacts')]); const item = <T,>(index: number, fallback: T) => results[index].status === 'fulfilled' ? (results[index] as PromiseFulfilledResult<T>).value : fallback; setPackets(item(0, [])); setAdvertisements(item(1, [])); setAdvertisers(item(2, [])); setChannels(item(3, [])); setEvents(item(4, [])); setDiagnostics(item(5, [])); setArtifacts(item(6, [])); } catch (reason) { setError(reason instanceof Error ? reason.message : 'BLE API unavailable'); } };
   useEffect(() => { void load(); }, [jobId]);
+  useEffect(() => {
+    if (!jobId || !job || ['completed', 'completed_with_diagnostics', 'failed', 'timed_out', 'cancelled'].includes(job.state)) return;
+    const timer = window.setInterval(() => void load(), 750);
+    return () => window.clearInterval(timer);
+  }, [jobId, job?.state]);
   const represented = useMemo(() => (Array.isArray(channels) ? channels : []).map((entry) => typeof entry === 'number' ? entry : Number((entry as Record<string, unknown>).channel_index ?? (entry as Record<string, unknown>).channel)).filter(Number.isFinite), [channels]);
   const active = job && ['created', 'queued', 'validating_input', 'starting_worker', 'running', 'validating_artifacts', 'cancel_requested'].includes(job.state);
   return (
@@ -110,7 +125,7 @@ export const BleLabView: React.FC = () => {
         <section className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-lg border p-4" style={surfaceStyle}>
           <div className="flex items-center gap-3">
             <CheckCircle2 className={`h-5 w-5 ${job.state === 'completed' ? 'text-emerald-500' : 'text-amber-500'}`} />
-            <div><div className="text-xs uppercase tracking-wide text-[var(--app-text-muted)]">Current job</div><code className="font-semibold">{job.job_id}</code> <span className="ml-2 text-sm">{job.state.replaceAll('_', ' ')}</span></div>
+            <div><div className="text-xs uppercase tracking-wide text-[var(--app-text-muted)]">Current analysis</div><code className="font-semibold">{job.job_id}</code> <span className="ml-2 text-sm">{job.state.replaceAll('_', ' ')}</span><BleJobProgress job={job} /></div>
           </div>
           <div>{active && <button onClick={async () => setJob(await api.cancel(job.job_id))} className="mr-2 inline-flex h-9 items-center gap-2 rounded-md bg-red-600 px-3 text-sm font-semibold text-white"><Square className="h-4 w-4" />Cancel</button>}{['failed', 'timed_out', 'cancelled'].includes(job.state) && <button onClick={async () => { const next = await api.retry(job.job_id); navigate(`/ble-lab/jobs/${next.job_id}`); }} className="inline-flex h-9 items-center gap-2 rounded-md bg-amber-500 px-3 text-sm font-semibold text-slate-950"><RotateCcw className="h-4 w-4" />Retry</button>}</div>
         </section>
@@ -122,7 +137,7 @@ export const BleLabView: React.FC = () => {
         </div>
         <div className="mb-6 grid gap-6 xl:grid-cols-2"><BleReceiverPipeline events={events} /><BleDiagnostics diagnostics={diagnostics} /></div>
         <div className="mb-6"><BleArtifactDownloads jobId={job.job_id} artifacts={artifacts} /></div>
-      </> : <div className="mb-6 rounded-lg border border-dashed p-8 text-center text-sm text-[var(--app-text-muted)]" style={{ borderColor: 'var(--app-border)' }}>Start a validated replay job to see the full BLE report here.</div>}
+      </> : <div className="mb-6 rounded-lg border border-dashed p-8 text-center" style={{ borderColor: 'var(--app-border)' }}><div className="text-base font-semibold">No BLE analysis is running</div><div className="mt-1 text-sm text-[var(--app-text-muted)]">Choose a channel for the future IQ capture workflow, or press “Analyze replay frames” to launch the validated decoder test.</div></div>}
 
       <div className="grid gap-6 xl:grid-cols-2"><BleWorkerProvenance capabilities={capabilities} job={job ?? undefined} /><BleKnownLimitations /></div>
     </div>
