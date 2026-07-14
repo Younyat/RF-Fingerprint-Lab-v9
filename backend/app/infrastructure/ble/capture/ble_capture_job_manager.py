@@ -51,7 +51,8 @@ class BleCaptureJobManager:
 
     def _validate(self, payload: dict[str, Any]) -> dict[str, Any]:
         allowed = {"device_id", "ble_channel", "center_frequency_hz", "sample_rate_sps", "bandwidth_hz",
-                   "gain_mode", "gain_db", "duration_seconds", "sample_format", "description", "purpose"}
+                   "gain_mode", "gain_db", "antenna", "duration_seconds", "sample_format", "description", "purpose",
+                   "controlled_transmitter_state", "operator_confirmed", "confirmation_method", "capture_role"}
         unknown = set(payload) - allowed
         if unknown: raise ValueError("UNSUPPORTED_CAPTURE_FIELDS")
         channel = payload.get("ble_channel")
@@ -66,6 +67,12 @@ class BleCaptureJobManager:
         if bandwidth <= 0 or bandwidth > rate: raise ValueError("UNSUPPORTED_BANDWIDTH")
         if duration <= 0 or duration > self.max_duration_seconds: raise ValueError("INVALID_CAPTURE_DURATION")
         if fmt not in FORMATS: raise ValueError("UNSUPPORTED_SAMPLE_FORMAT")
+        if payload.get("controlled_transmitter_state") not in {None, "off", "on", "unknown"}: raise ValueError("INVALID_CONTROLLED_TRANSMITTER_STATE")
+        if "operator_confirmed" in payload and not isinstance(payload["operator_confirmed"], bool): raise ValueError("INVALID_OPERATOR_CONFIRMATION")
+        if payload.get("confirmation_method") not in {None, "physical_manual_verification"}: raise ValueError("INVALID_CONFIRMATION_METHOD")
+        if payload.get("capture_role") not in {None, "background_control_A", "controlled_transmitter_active_B"}: raise ValueError("INVALID_CAPTURE_ROLE")
+        antenna = payload.get("antenna")
+        if antenna and antenna not in (device.get("antenna_options") or []): raise ValueError("UNSUPPORTED_ANTENNA")
         def supported(value, capability):
             ranges = device.get(capability) or []
             return not ranges or any(float(item["minimum"]) <= value <= float(item["maximum"]) for item in ranges)
@@ -79,6 +86,7 @@ class BleCaptureJobManager:
         if free < expected + self.minimum_free_bytes: raise OSError("INSUFFICIENT_DISK_SPACE")
         return {**payload, "center_frequency_hz": center, "sample_rate_sps": rate, "bandwidth_hz": bandwidth,
                 "duration_seconds": duration, "sample_format": fmt, "gain_db": gain,
+                "device_serial_masked": device.get("serial_masked"),
                 "expected_size_bytes": expected, "purpose": payload.get("purpose", "interactive_experimental_capture")}
 
     def _execute(self, capture_id: str) -> None:

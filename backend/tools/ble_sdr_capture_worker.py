@@ -65,6 +65,8 @@ def probe() -> int:
                 "gain_elements": list(device.listGains(SoapySDR.SOAPY_SDR_RX, 0)),
                 "antenna_options": list(device.listAntennas(SoapySDR.SOAPY_SDR_RX, 0)),
                 "stream_formats": list(device.getStreamFormats(SoapySDR.SOAPY_SDR_RX, 0)),
+                "clock_sources": list(device.listClockSources()),
+                "time_sources": list(device.listTimeSources()),
             })
         except Exception:
             continue
@@ -121,12 +123,16 @@ def capture(request_path: Path, output: Path) -> int:
     partial = output / f"{capture_id}.partial"; final = output / f"{capture_id}.sigmf-data"
     meta_path = output / f"{capture_id}.sigmf-meta"
     target_samples = int(request["sample_rate_sps"] * request["duration_seconds"])
-    device = SoapySDR.Device(request["device_args"]); stream = None
+    matches = list(SoapySDR.Device.enumerate(request["device_args"]))
+    if not matches:
+        raise RuntimeError("SDR_DEVICE_NOT_FOUND_DURING_CAPTURE")
+    device = SoapySDR.Device(matches[0]); stream = None
     received = overflows = discontinuities = 0; started_at = utc_now()
     try:
         device.setSampleRate(SoapySDR.SOAPY_SDR_RX, 0, request["sample_rate_sps"])
         device.setFrequency(SoapySDR.SOAPY_SDR_RX, 0, request["center_frequency_hz"])
         device.setBandwidth(SoapySDR.SOAPY_SDR_RX, 0, request["bandwidth_hz"])
+        if request.get("antenna"): device.setAntenna(SoapySDR.SOAPY_SDR_RX, 0, request["antenna"])
         if request.get("gain_mode") == "automatic": device.setGainMode(SoapySDR.SOAPY_SDR_RX, 0, True)
         else: device.setGainMode(SoapySDR.SOAPY_SDR_RX, 0, False); device.setGain(SoapySDR.SOAPY_SDR_RX, 0, request["gain_db"])
         buffer, wire_format = output_buffer(fmt, min(262144, max(16384, int(request["sample_rate_sps"] // 20))))
@@ -150,16 +156,22 @@ def capture(request_path: Path, output: Path) -> int:
                     "captures": [{"core:sample_start": 0, "core:frequency": request["center_frequency_hz"], "core:datetime": started_at}], "annotations": []}
         atomic_json(meta_path, metadata)
         manifest = {"schema_version": "1.0", "capture_id": capture_id, "created_at_utc": started_at,
-                    "device_driver": request["device_args"].get("driver", "unknown"), "device_serial_masked": None,
+                    "device_driver": request["device_args"].get("driver", "unknown"),
+                    "device_serial_masked": request.get("device_serial_masked"),
                     "center_frequency_hz": request["center_frequency_hz"], "ble_channel": request.get("ble_channel"),
                     "sample_rate_sps": request["sample_rate_sps"], "bandwidth_hz": request["bandwidth_hz"], "sample_format": fmt,
                     "gain_configuration": {"mode": request.get("gain_mode"), "gain_db": request.get("gain_db")},
+                    "antenna": request.get("antenna"),
                     "requested_duration_seconds": request["duration_seconds"], "actual_samples": received,
                     "actual_duration_seconds": received/request["sample_rate_sps"], "expected_size_bytes": request["expected_size_bytes"],
                     "actual_size_bytes": final.stat().st_size, "dropped_samples": None, "overflow_count": overflows,
                     "input_discontinuities": discontinuities, "data_path": final.name, "metadata_path": meta_path.name,
                     "data_sha256": sha256(final), "metadata_sha256": sha256(meta_path), "capture_complete": True,
                     "scientific_corpus_membership": "none", "eligible_for_holdout": False, "purpose": request["purpose"],
+                    "controlled_transmitter_state": request.get("controlled_transmitter_state", "unknown"),
+                    "operator_confirmed": bool(request.get("operator_confirmed", False)),
+                    "confirmation_method": request.get("confirmation_method"),
+                    "capture_role": request.get("capture_role"),
                     "analysis_status": "not_requested", "iq_recovery_validated": False, "ota_validated": False}
         atomic_json(output / "capture_manifest.json", manifest)
         return 0

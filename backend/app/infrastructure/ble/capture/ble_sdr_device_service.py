@@ -58,7 +58,11 @@ class BleSdrDeviceService:
             args = {str(k): str(v) for k, v in raw.pop("device_args", {}).items()}
             identity = json.dumps(args, sort_keys=True, separators=(",", ":"))
             device_id = "sdr-" + hashlib.sha256(identity.encode()).hexdigest()[:16]
-            self._private_args[device_id] = args
+            # Enumeration metadata such as label/name/product is descriptive,
+            # not a stable set of constructor arguments. UHD reliably reopens
+            # the same physical receiver using its driver and serial.
+            connection_args = {"driver": args["driver"]} if args.get("driver") else {}
+            self._private_args[device_id] = connection_args or args
             raw["device_id"] = device_id
             raw["serial_masked"] = self._mask(raw.get("serial"))
             raw.pop("serial", None)

@@ -295,14 +295,20 @@ Completed recordings include relative paths, hashes, acquisition parameters,
 overflow/discontinuity counters and explicit exclusion from scientific and
 holdout corpora. `Capture and Decode BLE` remains hardcoded disabled.
 
-With an explicitly isolated RadioConda runtime, SoapySDR loads its HackRF
-module and factory correctly. `hackrf_info` nevertheless reports `No HackRF
-boards found`, so physical HackRF validation remains blocked below SoapySDR
-(connection, Windows USB visibility, driver, cable, firmware or hardware).
-The same controlled probe detects and probes a connected USRP B200, but that
-device has not been used as a silent substitute for the requested HackRF
-acceptance campaign. The capture flag remains disabled and no physical IQ or
-OTA claim has been made.
+The target and only physical SDR for this integration is the USRP B200;
+HackRF is out of scope. With an explicitly isolated RadioConda runtime,
+SoapySDR/UHD detects and probes the B200 successfully. The capture profile is
+derived from the enumerated device capabilities (RX formats, sample rates,
+bandwidth, antennas, gains, clock sources and time sources), not from a
+HackRF-specific assumption. The controlled CH37 campaign is recorded in
+`physical_capture_acceptance_usrp_b200.json`: capture A (controlled
+transmitter off) and capture B (controlled transmitter active) each preserved
+12,000,000 CF32 samples at 4 MS/s. A recorded seven overflows/discontinuities;
+B recorded zero. Both SigMF recordings and their visualization artifacts have
+verified hashes and reopen through the catalog. This accepts real-IQ capture
+and visualization as experimental infrastructure only. The flag remains
+disabled by default; Gate 2A.2 was not run, BLE packets were not decoded, and
+no IQ-recovery or OTA validation claim has been made.
 
 ### 2.6 Reference checkpoint
 
