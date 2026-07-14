@@ -11,6 +11,7 @@ import json
 import math
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,7 +26,16 @@ def atomic_json(path: Path, value) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     with temporary.open("w", encoding="utf-8", newline="\n") as handle:
         json.dump(value, handle, indent=2, sort_keys=True); handle.write("\n"); handle.flush(); os.fsync(handle.fileno())
-    os.replace(temporary, path)
+    # On Windows a browser/API reader can briefly hold live.json without
+    # delete sharing. Retry the atomic swap instead of aborting the RF stream.
+    for attempt in range(40):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            if attempt == 39:
+                raise
+            time.sleep(0.01)
 
 
 def sha256(path: Path) -> str:
@@ -127,7 +137,7 @@ def capture(request_path: Path, output: Path) -> int:
     if not matches:
         raise RuntimeError("SDR_DEVICE_NOT_FOUND_DURING_CAPTURE")
     device = SoapySDR.Device(matches[0]); stream = None
-    received = overflows = discontinuities = 0; started_at = utc_now()
+    received = overflows = discontinuities = telemetry_publish_failures = 0; started_at = utc_now()
     try:
         device.setSampleRate(SoapySDR.SOAPY_SDR_RX, 0, request["sample_rate_sps"])
         device.setFrequency(SoapySDR.SOAPY_SDR_RX, 0, request["center_frequency_hz"])
@@ -145,7 +155,12 @@ def capture(request_path: Path, output: Path) -> int:
                 if result.ret <= 0: raise RuntimeError(f"SDR_STREAM_READ_ERROR:{result.ret}")
                 samples = int(result.ret); payload = buffer[:samples if fmt == "cf32_le" else samples*2].tobytes(order="C")
                 handle.write(payload); received += samples
-                atomic_json(output / "live.json", live_metrics(complex_view(buffer, fmt, samples), request, received, handle.tell(), overflows, discontinuities))
+                try:
+                    atomic_json(output / "live.json", live_metrics(complex_view(buffer, fmt, samples), request, received, handle.tell(), overflows, discontinuities))
+                except PermissionError:
+                    # Telemetry is best-effort and must never terminate the
+                    # authoritative IQ recording when Windows has a reader open.
+                    telemetry_publish_failures += 1
             handle.flush(); os.fsync(handle.fileno())
         expected = received * {"ci8": 2, "ci16_le": 4, "cf32_le": 8}[fmt]
         if partial.stat().st_size != expected: raise RuntimeError("CAPTURE_SIZE_MISMATCH")
@@ -165,7 +180,8 @@ def capture(request_path: Path, output: Path) -> int:
                     "requested_duration_seconds": request["duration_seconds"], "actual_samples": received,
                     "actual_duration_seconds": received/request["sample_rate_sps"], "expected_size_bytes": request["expected_size_bytes"],
                     "actual_size_bytes": final.stat().st_size, "dropped_samples": None, "overflow_count": overflows,
-                    "input_discontinuities": discontinuities, "data_path": final.name, "metadata_path": meta_path.name,
+                    "input_discontinuities": discontinuities, "telemetry_publish_failures": telemetry_publish_failures,
+                    "data_path": final.name, "metadata_path": meta_path.name,
                     "data_sha256": sha256(final), "metadata_sha256": sha256(meta_path), "capture_complete": True,
                     "scientific_corpus_membership": "none", "eligible_for_holdout": False, "purpose": request["purpose"],
                     "controlled_transmitter_state": request.get("controlled_transmitter_state", "unknown"),

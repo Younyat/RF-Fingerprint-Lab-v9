@@ -7,6 +7,7 @@ import pytest
 from app.infrastructure.ble.capture.ble_capture_job_manager import BleCaptureJobManager
 from app.infrastructure.ble.capture.ble_capture_metadata import atomic_json, sha256_file
 from app.modules.ble_lab.module import BLE_CAPTURE_AND_DECODE_ENABLED
+from tools import ble_sdr_capture_worker
 
 
 class FakeDevices:
@@ -94,3 +95,22 @@ def test_cross_job_path_traversal_rejected(tmp_path):
 
 def test_capture_and_decode_is_hardcoded_disabled():
     assert BLE_CAPTURE_AND_DECODE_ENABLED is False
+
+
+def test_worker_atomic_live_json_retries_windows_reader_lock(tmp_path, monkeypatch):
+    target = tmp_path / "live.json"
+    real_replace = ble_sdr_capture_worker.os.replace
+    attempts = 0
+
+    def transient_lock(source, destination):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError(5, "file held by API reader")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(ble_sdr_capture_worker.os, "replace", transient_lock)
+    monkeypatch.setattr(ble_sdr_capture_worker.time, "sleep", lambda _: None)
+    ble_sdr_capture_worker.atomic_json(target, {"available": True})
+    assert attempts == 3
+    assert json.loads(target.read_text(encoding="utf-8")) == {"available": True}
