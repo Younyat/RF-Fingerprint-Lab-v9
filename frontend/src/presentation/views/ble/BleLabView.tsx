@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Bluetooth, CheckCircle2, Download, Play, RefreshCw, RotateCcw, Square } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { BleAdvertisement, BleAdvertiser, BleApiService, BleCapabilities, BleJob, BleJobEvent, BlePacket } from '../../../app/services/bleApi';
+import { BleAdvertisement, BleAdvertiser, BleApiService, BleCapabilities, BleGate2a2Candidate, BleGate2a2ConfirmedPacket, BleGate2a2Job, BleGate2a2Status, BleJob, BleJobEvent, BlePacket } from '../../../app/services/bleApi';
 
 const api = new BleApiService();
 const replayNotice = 'This result was produced from a validated bitstream replay. No IQ demodulation or RF recovery was performed.';
@@ -84,6 +84,171 @@ export const BleKnownLimitations = () => <Panel title="Known limitations"><ul cl
 export const BleArtifactDownloads = ({ jobId, artifacts }: { jobId: string; artifacts: unknown }) => <Panel title="Artifacts"><a href={api.bundleUrl(jobId)} className="inline-flex items-center gap-2 rounded bg-slate-700 px-3 py-2 text-sm"><Download className="h-4 w-4" />Download reproducible bundle</a><pre className="mt-3 max-h-44 overflow-auto text-xs">{JSON.stringify(artifacts, null, 2)}</pre></Panel>;
 export const BleWorkerProvenance = ({ capabilities, job }: { capabilities: BleCapabilities | null; job?: BleJob }) => <Panel title="Worker provenance"><div className="grid gap-2 text-sm md:grid-cols-2"><div>Frozen worker commit: <code>{capabilities?.worker_commit ?? 'Unavailable'}</code></div><div>Scientific status: <b>{capabilities?.scientific_status ?? 'BLE_P0_INCOMPLETE'}</b></div><div>Capability: <b>{capabilities?.capability_status ?? 'experimental'}</b></div><div>Job: <b>{job?.job_id ?? 'No job selected'}</b></div></div></Panel>;
 
+// ── Gate 2A.2 -- experimental IQ recovery, separate from Gate 1B above ──────
+// Every panel below must keep reading live status/results from the backend;
+// none of these numbers are hardcoded, and none of this is ever framed as
+// approved, frozen, or validated.
+
+const GATE2A2_CHANNELS = [37, 38, 39] as const;
+export const CAPTURE_IQ_DISABLED_REASON = 'Disabled because SDR capture is not yet implemented in this platform.';
+export const CAPTURE_AND_DECODE_DISABLED_REASON = 'Disabled because Receiver Candidate B is not frozen and OTA validation has not been completed.';
+const GATE2A2_JOB_TERMINAL = ['completed', 'cancelled', 'failed', 'timed_out'];
+
+export const Gate2a2StatusPanel = ({ status }: { status: BleGate2a2Status | null }) => {
+  if (!status) return <Panel title="Gate 2A.2 status">Loading…</Panel>;
+  if (!status.available) {
+    return <Panel title="Gate 2A.2 status"><p className="text-sm text-amber-500">Status unavailable: {status.reason ?? 'unknown'}</p></Panel>;
+  }
+  const sweep = status.development_timing_sweep;
+  const rows: [string, string][] = [
+    ['Gate 2A.1', status.gate_2a1_status ?? 'unknown'],
+    ['Gate 2A.2', status.gate_2a2_status ?? 'unknown'],
+    ['DSP gate', status.dsp_gate ?? 'unknown'],
+    ['Receiver candidate', status.receiver_candidate ?? 'unknown'],
+    ['Candidate frozen', String(status.candidate_frozen ?? false)],
+    ['Development timing sweep', `${sweep?.byte_exact ?? '?'} / ${sweep?.cases ?? '?'} (${sweep?.result ?? 'unknown'})`],
+    ['Residual failures', String(status.residual_failures ?? 'unknown')],
+    ['Holdout B created', String(status.holdout_b_created ?? false)],
+    ['IQ recovery validated', String(status.iq_recovery_validated ?? false)],
+    ['OTA validated', String(status.ota_validated ?? false)],
+    ['Worker repository commit', status.worker_repository_commit ?? 'unknown'],
+    ['Receiver commit', status.receiver_commit ?? 'unknown'],
+  ];
+  return (
+    <Panel title="Gate 2A.2 status — experimental, not approved">
+      <dl className="grid gap-x-6 md:grid-cols-2">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex justify-between border-b py-2 text-sm" style={{ borderColor: 'var(--app-border)' }}>
+            <dt>{label}</dt><dd className="break-all font-mono font-semibold">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="mt-3 text-xs text-amber-500">{status.disabled_reason}</p>
+    </Panel>
+  );
+};
+
+export const AnalyzeIqFilePanel = ({ enabled, disabledReason, onCreated }: { enabled: boolean; disabledReason?: string; onCreated: (job: BleGate2a2Job) => void }) => {
+  const [path, setPath] = useState('');
+  const [channel, setChannel] = useState<number>(38);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const launch = async () => {
+    if (!path.trim()) { setError('Enter a local cf32_le IQ file path first.'); return; }
+    setBusy(true); setError('');
+    try {
+      onCreated(await api.createGate2a2Job({ iq_file_path: path.trim(), channel_index: channel }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to start analysis');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Panel title="Analyze IQ file — experimental offline analysis">
+      <p className="mb-3 text-xs font-semibold text-amber-500">
+        Experimental offline IQ analysis. Receiver Candidate B is not frozen. Not validated for OTA reception. Results may contain decoding errors.
+      </p>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex min-w-[18rem] flex-1 flex-col gap-1 text-xs text-[var(--app-text-muted)]">
+          IQ file path (cf32_le, 4 MS/s)
+          <input value={path} onChange={(event) => setPath(event.target.value)} placeholder="C:\path\to\capture.cf32" className="h-9 rounded-md border bg-transparent px-2 text-sm" style={{ borderColor: 'var(--app-border)' }} />
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-[var(--app-text-muted)]">
+          Primary channel
+          <select value={channel} onChange={(event) => setChannel(Number(event.target.value))} className="h-9 rounded-md border bg-transparent px-2 text-sm" style={{ borderColor: 'var(--app-border)' }}>
+            {GATE2A2_CHANNELS.map((item) => <option key={item} value={item}>CH{item}</option>)}
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={() => void launch()}
+          disabled={!enabled || busy}
+          title={!enabled ? disabledReason : undefined}
+          className="inline-flex h-9 items-center rounded-md bg-sky-600 px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Play className="mr-2 h-4 w-4" />{busy ? 'Starting…' : 'Analyze IQ File'}
+        </button>
+      </div>
+      {!enabled && <p className="mt-2 text-xs text-amber-500">{disabledReason ?? 'Disabled.'}</p>}
+      {error && <p className="mt-2 text-sm text-red-400">{error}</p>}
+    </Panel>
+  );
+};
+
+export const Gate2a2CandidateTable = ({ candidates }: { candidates: BleGate2a2Candidate[] }) => {
+  const [selected, setSelected] = useState<BleGate2a2Candidate | null>(null);
+  return (
+    <Panel title={`Recovered candidates (${candidates.length})`}>
+      <div className="overflow-auto">
+        <table className="w-full text-left text-sm">
+          <thead className="text-slate-400"><tr><th className="p-2">Trace ID</th><th>Channel</th><th>Winning hypothesis</th><th>Hypotheses evaluated</th><th>CFO (Hz)</th></tr></thead>
+          <tbody>
+            {candidates.map((candidate, index) => (
+              <tr key={String(candidate.receiver_trace_id ?? index)} onClick={() => setSelected(candidate)} className="cursor-pointer border-t border-slate-800">
+                <td className="p-2 font-mono text-xs">{String(candidate.receiver_trace_id ?? index)}</td>
+                <td>{candidate.channel_index ?? 'Unknown'}</td>
+                <td>{candidate.winning_timing_hypothesis_id ?? 'Unknown'}</td>
+                <td>{candidate.timing_hypotheses_evaluated ?? 0}</td>
+                <td>{typeof candidate.estimated_cfo_hz === 'number' ? candidate.estimated_cfo_hz.toFixed(1) : 'Unknown'}</td>
+              </tr>
+            ))}
+            {candidates.length === 0 && <tr><td colSpan={5} className="p-4 text-center text-[var(--app-text-muted)]">No candidates recovered for this job.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {selected && (
+        <div className="mt-3 space-y-2 text-sm">
+          <div className="rounded-md bg-black/10 px-3 py-2">
+            <div className="text-xs text-[var(--app-text-muted)]">Winning hypothesis / evaluated / losing hypotheses</div>
+            <div className="break-all font-mono">{selected.winning_timing_hypothesis_id} / {selected.timing_hypotheses_evaluated} / {(selected.merged_timing_hypothesis_ids ?? []).join(', ') || 'none'}</div>
+          </div>
+          <div className="rounded-md bg-black/10 px-3 py-2">
+            <div className="text-xs text-[var(--app-text-muted)]">Estimated CFO / timing phase (input samples)</div>
+            <div className="font-mono">{selected.estimated_cfo_hz?.toFixed(1) ?? 'Unknown'} Hz / {selected.estimated_timing_phase?.toFixed(4) ?? 'Unknown'}</div>
+          </div>
+        </div>
+      )}
+    </Panel>
+  );
+};
+
+export const Gate2a2ConfirmedPacketsPanel = ({ packets }: { packets: BleGate2a2ConfirmedPacket[] }) => (
+  <Panel title={`Confirmed packets from this analysis (${packets.length})`}>
+    <p className="mb-2 text-xs text-[var(--app-text-muted)]">
+      These passed the same frozen Gate 1A/1B CRC check Gate 1B trusts — only the DSP front end that produced the candidate bits is experimental.
+    </p>
+    <table className="w-full text-left text-sm">
+      <thead className="text-slate-400"><tr><th className="p-2">PDU type</th><th>Channel</th><th>CRC</th></tr></thead>
+      <tbody>
+        {packets.map((packet, index) => (
+          <tr key={packet.packet_sha256 ?? index} className="border-t border-slate-800">
+            <td className="p-2">{packet.pdu_type_name ?? 'Unknown'}</td>
+            <td>{packet.channel_index ?? 'Unknown'}</td>
+            <td className={packet.crc_valid ? 'text-emerald-300' : 'text-rose-300'}>{String(packet.crc_valid)}</td>
+          </tr>
+        ))}
+        {packets.length === 0 && <tr><td colSpan={3} className="p-4 text-center text-[var(--app-text-muted)]">No confirmed packets.</td></tr>}
+      </tbody>
+    </table>
+  </Panel>
+);
+
+export const Gate2a2DisabledCaptureButtons = () => (
+  <Panel title="Not yet available">
+    <div className="flex flex-wrap gap-3">
+      <button type="button" disabled title={CAPTURE_IQ_DISABLED_REASON} className="inline-flex h-9 cursor-not-allowed items-center rounded-md bg-slate-700 px-4 text-sm font-semibold opacity-50">
+        <Bluetooth className="mr-2 h-4 w-4" />Capture IQ
+      </button>
+      <button type="button" disabled title={CAPTURE_AND_DECODE_DISABLED_REASON} className="inline-flex h-9 cursor-not-allowed items-center rounded-md bg-slate-700 px-4 text-sm font-semibold opacity-50">
+        <Bluetooth className="mr-2 h-4 w-4" />Capture and Decode BLE
+      </button>
+    </div>
+    <p className="mt-2 text-xs text-[var(--app-text-muted)]">{CAPTURE_IQ_DISABLED_REASON}</p>
+    <p className="text-xs text-[var(--app-text-muted)]">{CAPTURE_AND_DECODE_DISABLED_REASON}</p>
+  </Panel>
+);
+
 export const BleLabView: React.FC = () => {
   const { jobId } = useParams(); const navigate = useNavigate(); const [capabilities, setCapabilities] = useState<BleCapabilities | null>(null); const [job, setJob] = useState<BleJob | null>(null); const [packets, setPackets] = useState<BlePacket[]>([]); const [advertisements, setAdvertisements] = useState<BleAdvertisement[]>([]); const [advertisers, setAdvertisers] = useState<BleAdvertiser[]>([]); const [events, setEvents] = useState<BleJobEvent[]>([]); const [channels, setChannels] = useState<unknown>([]); const [diagnostics, setDiagnostics] = useState<unknown>([]); const [artifacts, setArtifacts] = useState<unknown>([]); const [error, setError] = useState('');
   const load = async () => { setError(''); try { setCapabilities(await api.capabilities()); if (!jobId) return; setJob(await api.job(jobId)); const results = await Promise.allSettled([api.packets(jobId), api.advertisements(jobId), api.advertisers(jobId), api.resource<unknown>(jobId, 'channels'), api.resource<BleJobEvent[]>(jobId, 'events'), api.resource<unknown>(jobId, 'diagnostics'), api.resource<unknown>(jobId, 'artifacts')]); const item = <T,>(index: number, fallback: T) => results[index].status === 'fulfilled' ? (results[index] as PromiseFulfilledResult<T>).value : fallback; setPackets(item(0, [])); setAdvertisements(item(1, [])); setAdvertisers(item(2, [])); setChannels(item(3, [])); setEvents(item(4, [])); setDiagnostics(item(5, [])); setArtifacts(item(6, [])); } catch (reason) { setError(reason instanceof Error ? reason.message : 'BLE API unavailable'); } };
@@ -95,6 +260,26 @@ export const BleLabView: React.FC = () => {
   }, [jobId, job?.state]);
   const represented = useMemo(() => (Array.isArray(channels) ? channels : []).map((entry) => typeof entry === 'number' ? entry : Number((entry as Record<string, unknown>).channel_index ?? (entry as Record<string, unknown>).channel)).filter(Number.isFinite), [channels]);
   const active = job && ['created', 'queued', 'validating_input', 'starting_worker', 'running', 'validating_artifacts', 'cancel_requested'].includes(job.state);
+
+  // ── Gate 2A.2 -- entirely separate state, never mixed with Gate 1B above ──
+  const [gate2a2Status, setGate2a2Status] = useState<BleGate2a2Status | null>(null);
+  const [gate2a2Job, setGate2a2Job] = useState<BleGate2a2Job | null>(null);
+  const [gate2a2Candidates, setGate2a2Candidates] = useState<BleGate2a2Candidate[]>([]);
+  const [gate2a2ConfirmedPackets, setGate2a2ConfirmedPackets] = useState<BleGate2a2ConfirmedPacket[]>([]);
+  const loadGate2a2Status = async () => { try { setGate2a2Status(await api.gate2a2Status()); } catch { setGate2a2Status({ available: false, reason: 'gate2a2_api_unavailable' }); } };
+  useEffect(() => { void loadGate2a2Status(); }, []);
+  useEffect(() => {
+    if (!gate2a2Job || GATE2A2_JOB_TERMINAL.includes(gate2a2Job.state)) return;
+    const timer = window.setInterval(async () => {
+      const next = await api.gate2a2Job(gate2a2Job.job_id);
+      setGate2a2Job(next);
+      if (GATE2A2_JOB_TERMINAL.includes(next.state) && next.state === 'completed') {
+        setGate2a2Candidates(await api.gate2a2Candidates(next.job_id));
+        setGate2a2ConfirmedPackets(await api.gate2a2ConfirmedPackets(next.job_id));
+      }
+    }, 750);
+    return () => window.clearInterval(timer);
+  }, [gate2a2Job?.job_id, gate2a2Job?.state]);
   return (
     <div className="h-full overflow-auto bg-[var(--app-bg)] p-6 text-[var(--app-text)]">
       <div className="mb-6 flex items-center justify-between gap-4">
@@ -111,10 +296,12 @@ export const BleLabView: React.FC = () => {
         </div>
       </div>
 
+      {error && <div className="mb-4 rounded-md border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">{error}</div>}
+
+      <div className="mb-3 text-sm font-semibold uppercase tracking-[0.18em] text-emerald-500">Validated bitstream replay — Gate 1B</div>
       <div className="mb-6 rounded-md border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-500">
         <AlertTriangle className="mr-2 inline h-4 w-4" />{replayNotice}
       </div>
-      {error && <div className="mb-4 rounded-md border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">{error}</div>}
 
       <div className="mb-6 grid grid-cols-1 gap-4 xl:grid-cols-2">
         <BleJobLauncher enabled={Boolean(capabilities?.enabled)} onCreated={(created) => navigate(`/ble-lab/jobs/${created.job_id}`)} />
@@ -139,7 +326,52 @@ export const BleLabView: React.FC = () => {
         <div className="mb-6"><BleArtifactDownloads jobId={job.job_id} artifacts={artifacts} /></div>
       </> : <div className="mb-6 rounded-lg border border-dashed p-8 text-center" style={{ borderColor: 'var(--app-border)' }}><div className="text-base font-semibold">No BLE analysis is running</div><div className="mt-1 text-sm text-[var(--app-text-muted)]">Choose a channel for the future IQ capture workflow, or press “Analyze replay frames” to launch the validated decoder test.</div></div>}
 
-      <div className="grid gap-6 xl:grid-cols-2"><BleWorkerProvenance capabilities={capabilities} job={job ?? undefined} /><BleKnownLimitations /></div>
+      <div className="mb-10 grid gap-6 xl:grid-cols-2"><BleWorkerProvenance capabilities={capabilities} job={job ?? undefined} /><BleKnownLimitations /></div>
+
+      <div className="mb-3 text-sm font-semibold uppercase tracking-[0.18em] text-sky-500">Experimental IQ recovery — Gate 2A.2</div>
+      <div className="mb-6 rounded-md border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-500">
+        <AlertTriangle className="mr-2 inline h-4 w-4" />
+        Experimental offline IQ analysis. Receiver Candidate B is not frozen. Not validated for OTA reception. Results may contain decoding errors.
+      </div>
+
+      <div className="mb-6 grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <Gate2a2StatusPanel status={gate2a2Status} />
+        <AnalyzeIqFilePanel
+          enabled={Boolean(gate2a2Status?.available)}
+          disabledReason={gate2a2Status?.disabled_reason ?? gate2a2Status?.reason}
+          onCreated={setGate2a2Job}
+        />
+      </div>
+
+      {gate2a2Job && (
+        <section className="mb-6 flex flex-wrap items-center justify-between gap-4 rounded-lg border p-4" style={surfaceStyle}>
+          <div className="flex items-center gap-3">
+            <CheckCircle2 className={`h-5 w-5 ${gate2a2Job.state === 'completed' ? 'text-emerald-500' : 'text-amber-500'}`} />
+            <div>
+              <div className="text-xs uppercase tracking-wide text-[var(--app-text-muted)]">Current offline analysis</div>
+              <code className="font-semibold">{gate2a2Job.job_id}</code> <span className="ml-2 text-sm">{gate2a2Job.state.replaceAll('_', ' ')}</span>
+              {gate2a2Job.error && <div className="mt-1 text-sm text-red-400">{gate2a2Job.error}</div>}
+            </div>
+          </div>
+          {!GATE2A2_JOB_TERMINAL.includes(gate2a2Job.state) && (
+            <button onClick={async () => setGate2a2Job(await api.cancelGate2a2Job(gate2a2Job.job_id))} className="inline-flex h-9 items-center gap-2 rounded-md bg-red-600 px-3 text-sm font-semibold text-white">
+              <Square className="h-4 w-4" />Cancel
+            </button>
+          )}
+        </section>
+      )}
+
+      {gate2a2Job?.state === 'completed' && (
+        <>
+          <div className="mb-6"><Gate2a2CandidateTable candidates={gate2a2Candidates} /></div>
+          <div className="mb-6"><Gate2a2ConfirmedPacketsPanel packets={gate2a2ConfirmedPackets} /></div>
+          <div className="mb-6">
+            <a href={api.gate2a2BundleUrl(gate2a2Job.job_id)} className="inline-flex items-center gap-2 rounded bg-slate-700 px-3 py-2 text-sm"><Download className="h-4 w-4" />Download reproducible bundle</a>
+          </div>
+        </>
+      )}
+
+      <div className="mb-6"><Gate2a2DisabledCaptureButtons /></div>
     </div>
   );
 };
