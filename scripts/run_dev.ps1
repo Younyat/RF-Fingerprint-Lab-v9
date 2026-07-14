@@ -13,7 +13,7 @@ param(
     [string]$BackendPythonPath = "",
     [string]$RadioCondaPythonPath = "C:\Users\Usuario\radioconda\python.exe",
     [object]$UseRealSdr = $false,
-    [object]$EnableBleIqCapture = $false
+    [object]$EnableBleIqCapture = $true
 )
 
 $ErrorActionPreference = "Stop"
