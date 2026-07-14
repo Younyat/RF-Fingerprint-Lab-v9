@@ -13,7 +13,9 @@ param(
     [string]$BackendPythonPath = "",
     [string]$RadioCondaPythonPath = "C:\Users\Usuario\radioconda\python.exe",
     [object]$UseRealSdr = $false,
-    [object]$EnableBleIqCapture = $true
+    [object]$EnableBleIqCapture = $true,
+    [object]$EnableBleReplay = $true,
+    [object]$EnableBleOfflineIqAnalysis = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -303,6 +305,8 @@ $AppSyncIntervalMs = [int](Get-RuntimeSetting -Name "VITE_APP_SYNC_INTERVAL_MS" 
 $SpectrumPollIntervalMs = [int](Get-RuntimeSetting -Name "VITE_SPECTRUM_POLL_INTERVAL_MS" -Fallback $SpectrumPollIntervalMs)
 $WaterfallPollIntervalMs = [int](Get-RuntimeSetting -Name "VITE_WATERFALL_POLL_INTERVAL_MS" -Fallback $WaterfallPollIntervalMs)
 $EnableBleIqCapture = Get-RuntimeSetting -Name "BLE_IQ_CAPTURE_EXPERIMENTAL_ENABLED" -Fallback $EnableBleIqCapture
+$EnableBleReplay = Get-RuntimeSetting -Name "BLE_ANALYZER_V1" -Fallback $EnableBleReplay
+$EnableBleOfflineIqAnalysis = Get-RuntimeSetting -Name "BLE_IQ_OFFLINE_EXPERIMENTAL_ENABLED" -Fallback $EnableBleOfflineIqAnalysis
 
 foreach ($RuntimeEnvKey in @(
     "UHD_DEVICE_ARGS",
@@ -410,6 +414,8 @@ if ($UseRealSdrEnabled) {
     $env:USE_REAL_SDR = "0"
 }
 $env:BLE_IQ_CAPTURE_EXPERIMENTAL_ENABLED = if (Convert-ToBool $EnableBleIqCapture) { "true" } else { "false" }
+$env:BLE_ANALYZER_V1 = if (Convert-ToBool $EnableBleReplay) { "true" } else { "false" }
+$env:BLE_IQ_OFFLINE_EXPERIMENTAL_ENABLED = if (Convert-ToBool $EnableBleOfflineIqAnalysis) { "true" } else { "false" }
 $env:BLE_CAPTURE_AND_DECODE_ENABLED = "false"
 
 $BackendProcess = Start-Process `

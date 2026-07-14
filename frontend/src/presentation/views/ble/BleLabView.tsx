@@ -31,22 +31,32 @@ export const BleCapabilityStatus = ({ capabilities }: { capabilities: BleCapabil
   return <Panel title="Decoder readiness — not a running job"><p className="mb-2 text-xs text-[var(--app-text-muted)]">These are validation gates for the BLE decoder. They do not mean an analysis is currently running.</p><dl className="grid gap-x-6 md:grid-cols-2">{rows.map(([label, key, fallback]) => <div key={key} className="flex justify-between border-b py-2 text-sm" style={{ borderColor: 'var(--app-border)' }}><dt>{label}</dt><dd className="font-semibold">{String(capabilities?.gates[key] ?? fallback).replaceAll('_', ' ')}</dd></div>)}<div className="flex justify-between border-b py-2 text-sm" style={{ borderColor: 'var(--app-border)' }}><dt>Normative conformance</dt><dd className="font-semibold">{(capabilities?.normative_conformance ?? 'not_established').replaceAll('_', ' ')}</dd></div></dl></Panel>;
 };
 
-export const BleJobLauncher = ({ enabled, onCreated }: { enabled: boolean; onCreated: (job: BleJob) => void }) => {
+export const BleJobLauncher = ({ enabled, captureCapabilities, captureBusy, onCreated, onCaptureCreated }: { enabled: boolean; captureCapabilities: BleCaptureCapabilities | null; captureBusy: boolean; onCreated: (job: BleJob) => void; onCaptureCreated: (job: BleCaptureJob) => void }) => {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [channel, setChannel] = useState(37);
   const [duration, setDuration] = useState(5);
   const selected = BLE_PRIMARY_CHANNELS.find((item) => item.channel === channel) ?? BLE_PRIMARY_CHANNELS[0];
   const launch = async () => { setBusy(true); setError(''); try { onCreated(await api.createReplayJob()); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to create replay job'); } finally { setBusy(false); } };
+  const captureDevice = captureCapabilities?.devices[0];
+  const launchCapture = async () => {
+    if (!captureDevice) return;
+    setBusy(true); setError('');
+    try {
+      const formats = captureDevice.stream_formats ?? [];
+      const sampleFormat = formats.includes('CF32') ? 'cf32_le' : formats.includes('CS16') ? 'ci16_le' : 'ci8';
+      onCaptureCreated(await api.createCapture({ device_id: captureDevice.device_id, ble_channel: selected.channel, center_frequency_hz: selected.frequencyMHz * 1e6, sample_rate_sps: 4_000_000, bandwidth_hz: 2_000_000, gain_mode: 'manual', gain_db: 20, antenna: captureDevice.antenna_options.includes('RX2') ? 'RX2' : captureDevice.antenna_options[0], duration_seconds: duration, sample_format: sampleFormat, description: 'USRP B200 real IQ capture — manual dashboard action', purpose: 'interactive_experimental_capture' }));
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to start real-IQ capture'); } finally { setBusy(false); }
+  };
   return <div className="contents">
     <Panel title="Capture a BLE advertising channel">
       <div className="flex flex-wrap items-end gap-3">
         <label className="flex flex-col gap-1 text-xs text-[var(--app-text-muted)]">PHY<select className="h-9 rounded-md border bg-transparent px-2 text-sm" style={{ borderColor: 'var(--app-border)' }} disabled><option>LE 1M</option></select></label>
         <label className="flex flex-col gap-1 text-xs text-[var(--app-text-muted)]">Primary channel<select value={channel} onChange={(event) => setChannel(Number(event.target.value))} className="h-9 min-w-[13rem] rounded-md border bg-transparent px-2 text-sm" style={{ borderColor: 'var(--app-border)' }}>{BLE_PRIMARY_CHANNELS.map((item) => <option key={item.channel} value={item.channel}>CH{item.channel} — {item.frequencyMHz} MHz</option>)}</select></label>
         <label className="flex flex-col gap-1 text-xs text-[var(--app-text-muted)]">Duration (s)<input type="number" min={1} max={60} value={duration} onChange={(event) => setDuration(Number(event.target.value))} className="h-9 w-20 rounded-md border bg-transparent px-2 text-sm" style={{ borderColor: 'var(--app-border)' }} /></label>
-        <button type="button" disabled title={BLE_DSP_UNAVAILABLE_REASON} className="inline-flex h-9 cursor-not-allowed items-center rounded-md bg-sky-600 px-4 text-sm font-semibold text-white opacity-50"><Bluetooth className="mr-2 h-4 w-4" />Start BLE Capture</button>
+        <button type="button" onClick={() => void launchCapture()} disabled={!captureCapabilities?.capture_enabled || !captureDevice || captureBusy || busy} title={!captureDevice ? 'No compatible SDR detected' : 'Starts a preserved real-IQ recording; it does not decode BLE'} className="inline-flex h-9 items-center rounded-md bg-sky-600 px-4 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"><Bluetooth className="mr-2 h-4 w-4" />{captureBusy ? 'Capturing IQ…' : 'Start Real IQ Capture'}</button>
       </div>
-      <div className="mt-3 rounded-md bg-black/10 px-3 py-2 text-xs"><b>Selected RF center:</b> {selected.frequencyMHz} MHz · CH{selected.channel} · {duration}s<div className="mt-1 text-amber-500">Unavailable — DSP recovery gate has not passed. No IQ job will be started.</div></div>
+      <div className="mt-3 rounded-md bg-black/10 px-3 py-2 text-xs"><b>Selected RF center:</b> {selected.frequencyMHz} MHz · CH{selected.channel} · {duration}s<div className="mt-1 text-cyan-500">Manual real-IQ capture only. No BLE decoding or Gate 2A.2 analysis starts automatically.</div></div>
     </Panel>
     <Panel title="Analyze validated BLE traffic">
       <p className="mb-3 text-sm text-[var(--app-text-muted)]">Run the frozen Gate 1B campaign and inspect CRC-valid PDUs, headers, payload bytes, addresses and Advertising Data structures.</p>
@@ -322,7 +332,7 @@ export const BleLabView: React.FC = () => {
       </div>
 
       <div className="mb-6 grid grid-cols-1 gap-4 xl:grid-cols-2">
-        <BleJobLauncher enabled={Boolean(capabilities?.enabled)} onCreated={(created) => navigate(`/ble-lab/jobs/${created.job_id}`)} />
+        <BleJobLauncher enabled={Boolean(capabilities?.enabled)} captureCapabilities={captureCapabilities} captureBusy={Boolean(captureJob&&!['completed','failed','cancelled','timed_out'].includes(captureJob.state))} onCreated={(created) => navigate(`/ble-lab/jobs/${created.job_id}`)} onCaptureCreated={setCaptureJob} />
         <BleCapabilityStatus capabilities={capabilities} />
       </div>
 
