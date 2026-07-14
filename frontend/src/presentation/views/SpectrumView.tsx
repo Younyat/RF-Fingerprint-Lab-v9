@@ -394,18 +394,16 @@ export const SpectrumView: React.FC = () => {
   const [liveInferenceResult, setLiveInferenceResult] = useState<Record<string, any> | null>(null);
   const [panOverlayPosition, setPanOverlayPosition] = useState({ x: 16, y: 16 });
 
-  // Tracks the controls toolbar's natural height so it can be collapsed to 0
-  // and back without a hardcoded cap -- the toolbar's own height is dynamic
-  // (flex-wrap reflows differently depending on window width).
+  // Track the full border-box/scroll height. ResizeObserver.contentRect omits
+  // padding and borders, which previously clipped the last control row and
+  // the diagnostic messages underneath it.
   useEffect(() => {
     const node = controlsRef.current;
     if (!node) return;
-    const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        setControlsHeight(entry.contentRect.height);
-      }
-    });
+    const syncHeight = () => setControlsHeight(Math.ceil(Math.max(node.scrollHeight, node.getBoundingClientRect().height)));
+    const observer = new ResizeObserver(syncHeight);
     observer.observe(node);
+    syncHeight();
     return () => observer.disconnect();
   }, []);
 
@@ -1568,7 +1566,7 @@ export const SpectrumView: React.FC = () => {
           className="overflow-hidden transition-all duration-300"
           style={{ maxHeight: controlsCollapsed ? '0px' : (controlsHeight !== undefined ? `${controlsHeight}px` : '2000px') }}
         >
-          <div ref={controlsRef} className="border-b border-slate-800 bg-slate-900 px-4 py-3">
+          <div ref={controlsRef} className="border-b border-slate-800 bg-slate-900 px-4 pb-6 pt-3">
         <div className="flex flex-wrap items-end gap-3">
           <button
             onClick={handleConnectDisconnect}

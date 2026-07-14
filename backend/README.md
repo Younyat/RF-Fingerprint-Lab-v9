@@ -108,6 +108,14 @@ $env:UHD_DEVICE_ARGS=""
 powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1 -UseRealSdr 1 -RadioCondaPythonPath "C:\path\to\radioconda\python.exe"
 ```
 
+To enable the accepted experimental BLE real-IQ recorder for the current lab
+process, add `-EnableBleIqCapture 1`. This does not enable automatic BLE
+decoding, Gate 2A.2, or OTA claims:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1 -UseRealSdr 1 -EnableBleIqCapture 1 -RadioCondaPythonPath "C:\path\to\radioconda\python.exe"
+```
+
 If running only the backend, make sure `RADIOCONDA_PYTHON` points to the Python executable that has GNU Radio and UHD:
 
 ```powershell
