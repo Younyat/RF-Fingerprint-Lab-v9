@@ -1,16 +1,50 @@
 import os, sys
 from pathlib import Path
+from fastapi import APIRouter
 from app.infrastructure.ble.ble_job_manager import BleJobManager
 from app.infrastructure.ble.ble_repository import BleRepository
 from app.infrastructure.ble.ble_worker_adapter import BleWorkerAdapter, WorkerConfig
+from app.infrastructure.ble.ble_gate2a2_job_manager import BleGate2a2JobManager, BleGate2a2WorkerAdapter, Gate2a2WorkerConfig
 from app.modules.ble_lab.routes import build_ble_router
+from app.modules.ble_lab.gate2a2_routes import build_ble_gate2a2_router
 from app.modules.types import BackendModuleDefinition
 from app.config.settings import settings
 
 def env_bool(name,default=False): return os.environ.get(name,str(default)).lower() in {"1","true","yes","on"}
+
+# Four independent BLE feature flags -- none of them reused for more than one
+# capability. BLE_ANALYZER_V1 controls only the frozen Gate 1B replay pipeline
+# (unchanged). BLE_IQ_OFFLINE_EXPERIMENTAL_ENABLED controls only the new,
+# separate Gate 2A.2 offline-IQ-file analysis flow below. SDR capture and
+# combined capture+decode have no implementation at all yet -- they are kept
+# as named, hardcoded False constants rather than env-configurable flags, so
+# there is no stray environment variable that could look like it turns on a
+# capability that does not exist.
+BLE_IQ_CAPTURE_EXPERIMENTAL_ENABLED = False
+BLE_CAPTURE_AND_DECODE_ENABLED = False
+
 def _build(context):
     root=settings.storage.storage_root
     backend=settings.storage.backend_root
     config=WorkerConfig(Path(os.environ.get("BLE_WORKER_REPOSITORY",r"C:\Users\Usuario\ble-worker-gate1b-frozen")),Path(os.environ.get("BLE_WORKER_PYTHON",sys.executable)),Path(os.environ.get("BLE_WORKER_ENTRY_POINT",backend/"tools"/"ble_gate1b_replay_worker.py")),float(os.environ.get("BLE_WORKER_TIMEOUT_SECONDS","60")))
-    return build_ble_router(BleJobManager(BleRepository(root/"ble"/"jobs"),BleWorkerAdapter(config),env_bool("BLE_ANALYZER_V1")))
+    gate1b_router = build_ble_router(BleJobManager(BleRepository(root/"ble"/"jobs"),BleWorkerAdapter(config),env_bool("BLE_ANALYZER_V1")))
+
+    gate2a2_config = Gate2a2WorkerConfig(
+        Path(os.environ.get("BLE_GATE2A2_REPOSITORY", r"C:\Users\Usuario\ble-worker-lab")),
+        Path(os.environ.get("BLE_GATE2A2_WORKER_PYTHON", sys.executable)),
+        Path(os.environ.get("BLE_GATE2A2_WORKER_ENTRY_POINT", backend/"tools"/"ble_gate2a2_offline_worker.py")),
+        float(os.environ.get("BLE_GATE2A2_WORKER_TIMEOUT_SECONDS", "120")),
+    )
+    gate2a2_manager = BleGate2a2JobManager(
+        BleRepository(root/"ble"/"gate2a2_jobs"),
+        BleGate2a2WorkerAdapter(gate2a2_config),
+        env_bool("BLE_IQ_OFFLINE_EXPERIMENTAL_ENABLED"),
+    )
+    gate2a2_router = build_ble_gate2a2_router(gate2a2_manager)
+
+    combined = APIRouter()
+    combined.include_router(gate1b_router)
+    combined.include_router(gate2a2_router)
+    return combined
+
 ble_lab_module=BackendModuleDefinition("ble-lab","BLE Lab",True,85,"Experimental BLE platform integration.",_build)
