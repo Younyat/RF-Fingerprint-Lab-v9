@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Bluetooth, CheckCircle2, Download, Play, RefreshCw, RotateCcw, Square } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { BleAdvertisement, BleAdvertiser, BleApiService, BleCapabilities, BleGate2a2Candidate, BleGate2a2ConfirmedPacket, BleGate2a2Job, BleGate2a2Status, BleJob, BleJobEvent, BlePacket } from '../../../app/services/bleApi';
+import { BleAdvertisement, BleAdvertiser, BleApiService, BleCapabilities, BleCaptureCapabilities, BleCaptureJob, BleCaptureLive, BleCaptureRecord, BleGate2a2Candidate, BleGate2a2ConfirmedPacket, BleGate2a2Job, BleGate2a2Status, BleJob, BleJobEvent, BlePacket } from '../../../app/services/bleApi';
 
 const api = new BleApiService();
 const replayNotice = 'This result was produced from a validated bitstream replay. No IQ demodulation or RF recovery was performed.';
@@ -90,7 +90,6 @@ export const BleWorkerProvenance = ({ capabilities, job }: { capabilities: BleCa
 // approved, frozen, or validated.
 
 const GATE2A2_CHANNELS = [37, 38, 39] as const;
-export const CAPTURE_IQ_DISABLED_REASON = 'Disabled because SDR capture is not yet implemented in this platform.';
 export const CAPTURE_AND_DECODE_DISABLED_REASON = 'Disabled because Receiver Candidate B is not frozen and OTA validation has not been completed.';
 const GATE2A2_JOB_TERMINAL = ['completed', 'cancelled', 'failed', 'timed_out'];
 
@@ -234,17 +233,29 @@ export const Gate2a2ConfirmedPacketsPanel = ({ packets }: { packets: BleGate2a2C
   </Panel>
 );
 
+const Trace = ({ values, color }: { values: number[]; color: string }) => { if(values.length<2)return <div className="flex h-32 items-center justify-center text-xs text-[var(--app-text-muted)]">Waiting for real SDR samples…</div>; const lo=Math.min(...values), hi=Math.max(...values), span=Math.max(1e-9,hi-lo); const points=values.map((v,i)=>`${i*100/(values.length-1)},${100-(v-lo)*100/span}`).join(' '); return <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-32 w-full bg-black/20"><polyline points={points} fill="none" stroke={color} strokeWidth="1" vectorEffect="non-scaling-stroke" /></svg>; };
+const LiveHistory = ({ live }: { live: BleCaptureLive|null }) => { const [rows,setRows]=useState<number[][]>([]),[power,setPower]=useState<number[]>([]); useEffect(()=>{if(!live?.spectrum_dbfs?.length)return;setRows(old=>[...old.slice(-39),live.spectrum_dbfs!]);if(typeof live.average_power_dbfs==='number')setPower(old=>[...old.slice(-119),live.average_power_dbfs!]);},[live?.timestamp_utc]); return <div className="grid gap-4 xl:grid-cols-2"><Panel title="Live waterfall — time / frequency / dBFS"><div className="h-40 overflow-hidden rounded bg-black">{rows.map((row,i)=><div key={i} className="flex h-1" title={live?.timestamp_utc}>{row.filter((_,x)=>x%4===0).map((v,x)=>{const level=Math.max(0,Math.min(1,(v+120)/120));return <span key={x} className="h-full flex-1" style={{backgroundColor:`hsl(${240-level*240} 90% ${15+level*45}%)`}}/>;})}</div>)}</div></Panel><Panel title="Temporal average power"><Trace values={power} color="#f59e0b" /></Panel></div>; };
+
+export const RealIqCapture = ({ capabilities, job, live, records, onJob, onOpen, onAnalysis, refresh }: { capabilities: BleCaptureCapabilities|null; job: BleCaptureJob|null; live: BleCaptureLive|null; records: BleCaptureRecord[]; onJob:(job:BleCaptureJob)=>void; onOpen:(id:string)=>Promise<void>; onAnalysis:(job:BleGate2a2Job)=>void; refresh:()=>Promise<void> }) => {
+  const [channel,setChannel]=useState(37),[duration,setDuration]=useState(10),[gain,setGain]=useState(24),[error,setError]=useState(''); const device=capabilities?.devices[0];
+  const start=async()=>{if(!device)return;setError('');try{const frequency=BLE_PRIMARY_CHANNELS.find(x=>x.channel===channel)?.frequencyMHz??2402;onJob(await api.createCapture({device_id:device.device_id,ble_channel:channel,center_frequency_hz:frequency*1e6,sample_rate_sps:8_000_000,bandwidth_hz:2_000_000,gain_mode:'manual',gain_db:gain,duration_seconds:duration,sample_format:'ci8',description:'Experimental BLE-channel IQ capture',purpose:'interactive_experimental_capture'}));}catch(reason){setError(reason instanceof Error?reason.message:'Capture failed');}};
+  const active=job&&!['completed','failed','cancelled','timed_out'].includes(job.state);
+  return <div className="space-y-4"><Panel title="Capture Real IQ — Experimental capture">
+    {!capabilities?.available&&<div className="mb-3 rounded bg-amber-500/10 p-3 text-sm text-amber-500"><b>{capabilities?.reason_code??'DETECTING_SDR'}</b> — {capabilities?.message??'Detecting compatible SDR.'}</div>}
+    <div className="flex flex-wrap items-end gap-3"><label className="text-xs">SDR<select disabled className="mt-1 block h-9 min-w-48 rounded border bg-transparent px-2"><option>{device?`${device.label} (${device.driver})`:'No compatible SDR'}</option></select></label><label className="text-xs">Channel<select value={channel} onChange={e=>setChannel(Number(e.target.value))} className="mt-1 block h-9 rounded border bg-transparent px-2">{BLE_PRIMARY_CHANNELS.map(x=><option key={x.channel} value={x.channel}>CH{x.channel} — {x.frequencyMHz} MHz</option>)}</select></label><label className="text-xs">Duration s<input type="number" min={1} max={60} value={duration} onChange={e=>setDuration(Number(e.target.value))} className="mt-1 block h-9 w-24 rounded border bg-transparent px-2" /></label><label className="text-xs">Gain dB<input type="number" value={gain} onChange={e=>setGain(Number(e.target.value))} className="mt-1 block h-9 w-24 rounded border bg-transparent px-2" /></label><button disabled={!capabilities?.capture_enabled||!device||Boolean(active)} onClick={()=>void start()} className="h-9 rounded bg-sky-600 px-4 text-sm font-semibold text-white disabled:opacity-40">Capture Real IQ</button>{active&&<button onClick={async()=>onJob(await api.cancelCapture(job.capture_id))} className="h-9 rounded bg-red-600 px-4 text-sm text-white">Stop</button>}<button onClick={()=>void refresh()} className="h-9 rounded border px-3 text-sm">Refresh</button></div>
+    <div className="mt-2 text-xs text-[var(--app-text-muted)]">Raw profile: ci8 · 8 MS/s · 2 MHz bandwidth. Capture is preserved before any optional analysis.</div>{job&&<div className="mt-2 text-sm"><code>{job.capture_id}</code> · {job.state} {job.error&&<span className="text-red-400">· {job.error}</span>}</div>}{error&&<div className="mt-2 text-red-400">{error}</div>}
+  </Panel><div className="grid gap-4 xl:grid-cols-3"><Panel title="Live spectrum (dBFS)"><Trace values={live?.spectrum_dbfs??[]} color="#38bdf8" /></Panel><Panel title="I component"><Trace values={live?.i_preview??[]} color="#34d399" /></Panel><Panel title="Q component"><Trace values={live?.q_preview??[]} color="#f472b6" /></Panel></div><LiveHistory live={live} />
+  <Panel title="Capture telemetry"><div className="grid gap-2 sm:grid-cols-4 lg:grid-cols-8">{[['Samples',live?.samples_received],['Bytes',live?.bytes_written],['Overflows',live?.stream_overflows],['Discontinuities',live?.input_discontinuities],['Average dBFS',live?.average_power_dbfs?.toFixed(2)],['Peak dBFS',live?.peak_power_dbfs?.toFixed(2)],['Clipping %',live?.clipping_percentage?.toFixed(3)],['UTC',live?.timestamp_utc]].map(([k,v])=><div key={String(k)} className="rounded border p-2 text-xs"><div className="text-[var(--app-text-muted)]">{k}</div><b>{String(v??'Unavailable')}</b></div>)}</div></Panel>
+  <Panel title="Real IQ Captures"><div className="overflow-auto"><table className="w-full text-left text-sm"><thead><tr><th>ID</th><th>UTC</th><th>Channel</th><th>Sample rate</th><th>Size</th><th>Integrity</th><th>Actions</th></tr></thead><tbody>{records.map(r=><tr key={r.capture_id} className="border-t"><td className="py-2 font-mono">{r.capture_id}</td><td>{r.created_at_utc}</td><td>CH{r.ble_channel??'?'}</td><td>{r.sample_rate_sps}</td><td>{r.actual_size_bytes}</td><td>{r.capture_complete?`complete · ${r.overflow_count} overflow`:'incomplete'}</td><td className="space-x-2"><button onClick={()=>void onOpen(r.capture_id)} className="text-cyan-500">Open</button><a href={api.captureMetaUrl(r.capture_id)} className="text-sky-500">Metadata</a><button onClick={async()=>window.alert(JSON.stringify(await api.verifyCapture(r.capture_id)))} className="text-emerald-500">Verify</button><button onClick={async()=>{try{onAnalysis(await api.analyzeCapture(r.capture_id));}catch(reason){window.alert(reason instanceof Error?reason.message:'Analysis unavailable');}}} className="text-amber-500">Analyze experimentally</button></td></tr>)}</tbody></table>{records.length===0&&<p className="p-4 text-center text-[var(--app-text-muted)]">No preserved real IQ captures.</p>}</div><p className="mt-2 text-xs text-amber-500">Real SDR IQ does not prove BLE. Offline decoding remains experimental; 8 MS/s ci8 requires an explicit derived 4 MS/s cf32 artifact before analysis.</p></Panel></div>;
+};
+
 export const Gate2a2DisabledCaptureButtons = () => (
-  <Panel title="Not yet available">
+  <Panel title="Automatic capture and decode remains unavailable">
     <div className="flex flex-wrap gap-3">
-      <button type="button" disabled title={CAPTURE_IQ_DISABLED_REASON} className="inline-flex h-9 cursor-not-allowed items-center rounded-md bg-slate-700 px-4 text-sm font-semibold opacity-50">
-        <Bluetooth className="mr-2 h-4 w-4" />Capture IQ
-      </button>
       <button type="button" disabled title={CAPTURE_AND_DECODE_DISABLED_REASON} className="inline-flex h-9 cursor-not-allowed items-center rounded-md bg-slate-700 px-4 text-sm font-semibold opacity-50">
         <Bluetooth className="mr-2 h-4 w-4" />Capture and Decode BLE
       </button>
     </div>
-    <p className="mt-2 text-xs text-[var(--app-text-muted)]">{CAPTURE_IQ_DISABLED_REASON}</p>
     <p className="text-xs text-[var(--app-text-muted)]">{CAPTURE_AND_DECODE_DISABLED_REASON}</p>
   </Panel>
 );
@@ -266,8 +277,12 @@ export const BleLabView: React.FC = () => {
   const [gate2a2Job, setGate2a2Job] = useState<BleGate2a2Job | null>(null);
   const [gate2a2Candidates, setGate2a2Candidates] = useState<BleGate2a2Candidate[]>([]);
   const [gate2a2ConfirmedPackets, setGate2a2ConfirmedPackets] = useState<BleGate2a2ConfirmedPacket[]>([]);
+  const [captureCapabilities,setCaptureCapabilities]=useState<BleCaptureCapabilities|null>(null),[captureJob,setCaptureJob]=useState<BleCaptureJob|null>(null),[captureLive,setCaptureLive]=useState<BleCaptureLive|null>(null),[captureRecords,setCaptureRecords]=useState<BleCaptureRecord[]>([]);
+  const loadCapture=async()=>{try{const [caps,records]=await Promise.all([api.captureCapabilities(),api.captures()]);setCaptureCapabilities(caps);setCaptureRecords(records);}catch{setCaptureCapabilities({available:false,capture_enabled:false,capture_and_decode_enabled:false,reason_code:'CAPTURE_API_UNAVAILABLE',message:'Capture API unavailable.',devices:[],default_duration_seconds:10,maximum_duration_seconds:60,supported_formats:[],ble_channels:{}});}};
   const loadGate2a2Status = async () => { try { setGate2a2Status(await api.gate2a2Status()); } catch { setGate2a2Status({ available: false, reason: 'gate2a2_api_unavailable' }); } };
   useEffect(() => { void loadGate2a2Status(); }, []);
+  useEffect(()=>{void loadCapture();},[]);
+  useEffect(()=>{if(!captureJob||['completed','failed','cancelled','timed_out'].includes(captureJob.state))return;const timer=window.setInterval(async()=>{const next=await api.captureJob(captureJob.capture_id);setCaptureJob(next);setCaptureLive(await api.captureLive(next.capture_id));if(['completed','failed','cancelled','timed_out'].includes(next.state))await loadCapture();},500);return()=>window.clearInterval(timer);},[captureJob?.capture_id,captureJob?.state]);
   useEffect(() => {
     if (!gate2a2Job || GATE2A2_JOB_TERMINAL.includes(gate2a2Job.state)) return;
     const timer = window.setInterval(async () => {
@@ -327,6 +342,9 @@ export const BleLabView: React.FC = () => {
       </> : <div className="mb-6 rounded-lg border border-dashed p-8 text-center" style={{ borderColor: 'var(--app-border)' }}><div className="text-base font-semibold">No BLE analysis is running</div><div className="mt-1 text-sm text-[var(--app-text-muted)]">Choose a channel for the future IQ capture workflow, or press “Analyze replay frames” to launch the validated decoder test.</div></div>}
 
       <div className="mb-10 grid gap-6 xl:grid-cols-2"><BleWorkerProvenance capabilities={capabilities} job={job ?? undefined} /><BleKnownLimitations /></div>
+
+      <div className="mb-3 text-sm font-semibold uppercase tracking-[0.18em] text-cyan-500">Real IQ capture and visualization</div>
+      <div className="mb-8"><RealIqCapture capabilities={captureCapabilities} job={captureJob} live={captureLive} records={captureRecords} onJob={setCaptureJob} onOpen={async(id)=>setCaptureLive(await api.captureLive(id))} onAnalysis={setGate2a2Job} refresh={loadCapture} /></div>
 
       <div className="mb-3 text-sm font-semibold uppercase tracking-[0.18em] text-sky-500">Experimental IQ recovery — Gate 2A.2</div>
       <div className="mb-6 rounded-md border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-500">

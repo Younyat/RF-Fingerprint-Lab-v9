@@ -280,6 +280,30 @@ that the repository-wide suite passes.
 The structured comparison is stored in
 `docs/technical-readmes/ble/backend_test_failure_reconciliation.json`.
 
+### Real IQ capture and visualization
+
+BLE Lab now has a separate experimental acquisition path:
+
+```text
+SoapySDR receiver -> preserved SigMF IQ recording -> visualization
+```
+
+It is controlled by `BLE_IQ_CAPTURE_EXPERIMENTAL_ENABLED`, defaults to off,
+and never starts Gate 2A.2 automatically. The backend records raw IQ directly
+to disk while the browser receives only reduced FFT and I/Q preview frames.
+Completed recordings include relative paths, hashes, acquisition parameters,
+overflow/discontinuity counters and explicit exclusion from scientific and
+holdout corpora. `Capture and Decode BLE` remains hardcoded disabled.
+
+With an explicitly isolated RadioConda runtime, SoapySDR loads its HackRF
+module and factory correctly. `hackrf_info` nevertheless reports `No HackRF
+boards found`, so physical HackRF validation remains blocked below SoapySDR
+(connection, Windows USB visibility, driver, cable, firmware or hardware).
+The same controlled probe detects and probes a connected USRP B200, but that
+device has not been used as a silent substitute for the requested HackRF
+acceptance campaign. The capture flag remains disabled and no physical IQ or
+OTA claim has been made.
+
 ### 2.6 Reference checkpoint
 
 ```text

@@ -32,6 +32,11 @@ export type BleGate2a2JobState = 'created' | 'queued' | 'starting_worker' | 'run
 export interface BleGate2a2Job { job_id: string; state: BleGate2a2JobState; request?: Record<string, unknown>; error?: string | null; updated_at_utc?: string }
 export interface BleGate2a2Candidate extends Record<string, unknown> { receiver_trace_id?: number | string; channel_index?: number; estimated_cfo_hz?: number; estimated_timing_phase?: number; winning_timing_hypothesis_id?: string; timing_hypotheses_evaluated?: number; merged_timing_hypothesis_ids?: string[]; detector_score?: number }
 export interface BleGate2a2ConfirmedPacket extends Record<string, unknown> { packet_sha256?: string; pdu_type_name?: string; channel_index?: number; crc_valid?: boolean; crc_computed?: number; crc_received?: number }
+export interface BleSdrDevice { device_id: string; driver: string; label: string; serial_masked?: string | null; rx_channels: number; frequency_ranges_hz: { minimum: number; maximum: number }[]; sample_rate_ranges_sps: { minimum: number; maximum: number }[]; bandwidth_ranges_hz: { minimum: number; maximum: number }[]; gain_elements: string[]; antenna_options: string[]; available: boolean }
+export interface BleCaptureCapabilities { available: boolean; capture_enabled: boolean; capture_and_decode_enabled: false; reason_code?: string; message?: string; devices: BleSdrDevice[]; default_duration_seconds: number; maximum_duration_seconds: number; supported_formats: string[]; ble_channels: Record<string, number> }
+export interface BleCaptureJob { capture_id: string; state: 'queued'|'running'|'cancel_requested'|'completed'|'cancelled'|'failed'|'timed_out'; updated_at_utc?: string; error?: string; request?: Record<string, unknown>; capture_complete?: boolean }
+export interface BleCaptureRecord extends Record<string, unknown> { capture_id: string; created_at_utc: string; device_driver: string; center_frequency_hz: number; ble_channel?: number; sample_rate_sps: number; bandwidth_hz: number; requested_duration_seconds: number; actual_size_bytes: number; overflow_count: number; capture_complete: boolean; analysis_status: string }
+export interface BleCaptureLive { available: boolean; timestamp_utc?: string; samples_received?: number; bytes_written?: number; stream_overflows?: number; input_discontinuities?: number; average_power_dbfs?: number; peak_power_dbfs?: number; clipping_percentage?: number; frequencies_hz?: number[]; spectrum_dbfs?: number[]; i_preview?: number[]; q_preview?: number[] }
 
 const unwrap = <T>(data: T | Record<string, T>): T => {
   if (data && typeof data === 'object' && !Array.isArray(data)) {
@@ -65,4 +70,14 @@ export class BleApiService {
   async gate2a2ConfirmedPackets(id: string) { const data = (await axios.get<Record<string, BleGate2a2ConfirmedPacket[]>>(`${this.baseURL}/api/ble/gate2a2/jobs/${encodeURIComponent(id)}/confirmed-packets`)).data; return data['confirmed-packets'] ?? []; }
   async gate2a2Resource<T>(id: string, name: 'semantic-packets' | 'events' | 'rejections' | 'known-limitations' | 'result-summary') { return (await axios.get<T>(`${this.baseURL}/api/ble/gate2a2/jobs/${encodeURIComponent(id)}/${name}`)).data; }
   gate2a2BundleUrl(id: string) { return `${this.baseURL}/api/ble/gate2a2/jobs/${encodeURIComponent(id)}/bundle`; }
+
+  async captureCapabilities() { return (await axios.get<BleCaptureCapabilities>(`${this.baseURL}/api/ble/capture/devices`)).data; }
+  async createCapture(payload: Record<string, unknown>) { return (await axios.post<BleCaptureJob>(`${this.baseURL}/api/ble/capture/jobs`, payload)).data; }
+  async captureJob(id: string) { return (await axios.get<BleCaptureJob>(`${this.baseURL}/api/ble/capture/jobs/${encodeURIComponent(id)}`)).data; }
+  async cancelCapture(id: string) { return (await axios.post<BleCaptureJob>(`${this.baseURL}/api/ble/capture/jobs/${encodeURIComponent(id)}/cancel`)).data; }
+  async captureLive(id: string) { return (await axios.get<BleCaptureLive>(`${this.baseURL}/api/ble/capture/jobs/${encodeURIComponent(id)}/live`)).data; }
+  async captures() { return (await axios.get<{ captures: BleCaptureRecord[] }>(`${this.baseURL}/api/ble/capture/recordings`)).data.captures; }
+  async verifyCapture(id: string) { return (await axios.get<{ data_valid: boolean; metadata_valid: boolean }>(`${this.baseURL}/api/ble/capture/recordings/${encodeURIComponent(id)}/verify`)).data; }
+  async analyzeCapture(id: string) { return (await axios.post<BleGate2a2Job>(`${this.baseURL}/api/ble/capture/recordings/${encodeURIComponent(id)}/analyze`)).data; }
+  captureMetaUrl(id: string) { return `${this.baseURL}/api/ble/capture/recordings/${encodeURIComponent(id)}/sigmf-meta`; }
 }
