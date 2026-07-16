@@ -49,7 +49,10 @@ def _build(context):
     capture_python = Path(os.environ.get("BLE_SDR_PYTHON_PATH", os.environ.get("RADIOCONDA_PYTHON", str(runtime_root / "python.exe") if runtime_root else sys.executable)))
     capture_tool = Path(os.environ.get("BLE_CAPTURE_SDR_TOOL", backend / "tools" / "ble_sdr_capture_worker.py"))
     device_service = BleSdrDeviceService(SdrProbeConfig(capture_python, capture_tool, runtime_root))
-    capture_service = BleIqCaptureService(CaptureWorkerConfig(capture_python, capture_tool, runtime_root))
+    # A 30–60 second cf32 capture can require substantial deterministic
+    # hashing and burst segmentation after the RF stream closes. This margin
+    # covers post-processing; it does not extend the requested RF duration.
+    capture_service = BleIqCaptureService(CaptureWorkerConfig(capture_python, capture_tool, runtime_root, 180.0))
     capture_manager = BleCaptureJobManager(
         root / "ble" / "iq_captures", device_service, capture_service,
         env_bool("BLE_IQ_CAPTURE_EXPERIMENTAL_ENABLED", True),

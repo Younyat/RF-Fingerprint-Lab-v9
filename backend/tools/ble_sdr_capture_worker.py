@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -45,12 +46,58 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def write_jsonl(path: Path, rows) -> None:
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        for row in rows: handle.write(json.dumps(row, sort_keys=True) + "\n")
+
+
+def detect_bursts(data_path: Path, sample_format: str, sample_rate: float, output: Path) -> list[dict]:
+    dtype = {"cf32_le": "<c8", "ci16_le": "<i2", "ci8": "i1"}[sample_format]
+    raw = np.memmap(data_path, dtype=dtype, mode="r")
+    if sample_format == "cf32_le": values = raw
+    else:
+        scale = 32768.0 if sample_format == "ci16_le" else 128.0
+        values = (raw[0::2].astype(np.float32) + 1j * raw[1::2].astype(np.float32)) / scale
+    block = max(64, int(sample_rate / 100_000))
+    count = len(values) // block
+    if count < 4: return []
+    power = np.mean(np.abs(np.asarray(values[:count * block]).reshape(count, block)) ** 2, axis=1)
+    noise = float(np.median(power)); mad = float(np.median(np.abs(power - noise)))
+    threshold = max(noise * 4.0, noise + 8.0 * mad, 1e-12)
+    active = np.flatnonzero(power > threshold)
+    groups = np.split(active, np.where(np.diff(active) > 2)[0] + 1) if active.size else []
+    segment_dir = output / "iq_bursts"; segment_dir.mkdir(exist_ok=True)
+    bursts = []
+    bytes_per_sample = {"cf32_le": 8, "ci16_le": 4, "ci8": 2}[sample_format]
+    with data_path.open("rb") as source:
+        for index, group in enumerate(groups, 1):
+            if not len(group): continue
+            start = max(0, (int(group[0]) - 2) * block); end = min(len(values), (int(group[-1]) + 3) * block)
+            source.seek(start * bytes_per_sample); payload = source.read((end - start) * bytes_per_sample)
+            segment = segment_dir / f"burst-{index:06d}.cf32" if sample_format == "cf32_le" else segment_dir / f"burst-{index:06d}.iq"
+            segment.write_bytes(payload)
+            bursts.append({"burst_id": f"burst-{index:06d}", "sample_start": start, "sample_end": end,
+                           "sample_count": end-start, "power_dbfs": float(10*np.log10(max(float(np.max(power[group])), 1e-12))),
+                           "noise_power_dbfs": float(10*np.log10(max(noise, 1e-12))), "threshold_dbfs": float(10*np.log10(threshold)),
+                           "iq_segment_path": str(segment.relative_to(output)), "iq_segment_sha256": sha256(segment),
+                           "classification": "energy_burst_candidate", "ble_packet_confirmed": False})
+    return bursts
+
+
 def ranges(values):
     result = []
     for value in values:
         minimum = float(value.minimum()); maximum = float(value.maximum())
         result.append({"minimum": minimum, "maximum": maximum})
     return result
+
+
+def uhd_version() -> str | None:
+    try:
+        result = subprocess.run(["uhd_config_info", "--version"], capture_output=True, text=True, timeout=10, check=True)
+        return result.stdout.strip().splitlines()[-1] or None
+    except Exception:
+        return None
 
 
 def probe() -> int:
@@ -137,7 +184,7 @@ def capture(request_path: Path, output: Path) -> int:
     if not matches:
         raise RuntimeError("SDR_DEVICE_NOT_FOUND_DURING_CAPTURE")
     device = SoapySDR.Device(matches[0]); stream = None
-    received = overflows = discontinuities = telemetry_publish_failures = 0; started_at = utc_now()
+    received = overflows = discontinuities = telemetry_publish_failures = chunks = 0; started_at = utc_now()
     try:
         device.setSampleRate(SoapySDR.SOAPY_SDR_RX, 0, request["sample_rate_sps"])
         device.setFrequency(SoapySDR.SOAPY_SDR_RX, 0, request["center_frequency_hz"])
@@ -154,25 +201,39 @@ def capture(request_path: Path, output: Path) -> int:
                 if result.ret == SoapySDR.SOAPY_SDR_OVERFLOW: overflows += 1; discontinuities += 1; continue
                 if result.ret <= 0: raise RuntimeError(f"SDR_STREAM_READ_ERROR:{result.ret}")
                 samples = int(result.ret); payload = buffer[:samples if fmt == "cf32_le" else samples*2].tobytes(order="C")
-                handle.write(payload); received += samples
-                try:
-                    atomic_json(output / "live.json", live_metrics(complex_view(buffer, fmt, samples), request, received, handle.tell(), overflows, discontinuities))
-                except PermissionError:
-                    # Telemetry is best-effort and must never terminate the
-                    # authoritative IQ recording when Windows has a reader open.
-                    telemetry_publish_failures += 1
+                handle.write(payload); received += samples; chunks += 1
+                if chunks % 5 == 0 or received == target_samples:
+                    try:
+                        atomic_json(output / "live.json", live_metrics(complex_view(buffer, fmt, samples), request, received, handle.tell(), overflows, discontinuities))
+                    except PermissionError:
+                        # Telemetry is best-effort and must never terminate the
+                        # authoritative IQ recording when Windows has a reader open.
+                        telemetry_publish_failures += 1
             handle.flush(); os.fsync(handle.fileno())
         expected = received * {"ci8": 2, "ci16_le": 4, "cf32_le": 8}[fmt]
         if partial.stat().st_size != expected: raise RuntimeError("CAPTURE_SIZE_MISMATCH")
         os.replace(partial, final)
-        hw = str(device.getHardwareKey())
+        hw = str(device.getHardwareKey()); hw_info = {str(k): str(v) for k, v in dict(device.getHardwareInfo()).items()}
         metadata = {"global": {"core:version": "1.2.6", "core:datatype": fmt, "core:sample_rate": request["sample_rate_sps"],
                     "core:hw": hw, "core:recorder": "RF-Fingerprint-Lab BLE Capture", "core:description": request.get("description", "Experimental BLE-channel IQ capture")},
                     "captures": [{"core:sample_start": 0, "core:frequency": request["center_frequency_hz"], "core:datetime": started_at}], "annotations": []}
         atomic_json(meta_path, metadata)
-        manifest = {"schema_version": "1.0", "capture_id": capture_id, "created_at_utc": started_at,
+        bursts = detect_bursts(final, fmt, request["sample_rate_sps"], output)
+        write_jsonl(output / "burst_candidates.jsonl", bursts)
+        receiver_events = [{"event": "capture_started", "timestamp_utc": started_at, "sample_index": 0},
+                           {"event": "capture_finished", "timestamp_utc": utc_now(), "sample_index": received,
+                            "overflow_count": overflows, "discontinuity_count": discontinuities}]
+        write_jsonl(output / "receiver_events.jsonl", receiver_events)
+        quality = {"schema_version": "ble-sdr-quality-v1", "capture_id": capture_id,
+                   "capture_complete": True, "overflow_count": overflows, "discontinuity_count": discontinuities,
+                   "burst_candidate_count": len(bursts), "silent_sample_loss_detected": discontinuities > 0,
+                   "fingerprinting_eligible": discontinuities == 0, "limitations": ["Energy bursts are candidates, not CRC-valid BLE packets."]}
+        atomic_json(output / "quality_report.json", quality)
+        manifest = {"schema_version": "ble-sdr-capture-manifest-v1", "capture_id": capture_id, "created_at_utc": started_at,
                     "device_driver": request["device_args"].get("driver", "unknown"),
-                    "device_serial_masked": request.get("device_serial_masked"),
+                    "device_serial": hw_info.get("serial") or request["device_args"].get("serial"),
+                    "device_serial_masked": request.get("device_serial_masked"), "hardware": hw,
+                    "uhd_version": hw_info.get("uhd_version") or hw_info.get("version") or uhd_version(), "capture_software_version": "ble-sdr-capture-v2",
                     "center_frequency_hz": request["center_frequency_hz"], "ble_channel": request.get("ble_channel"),
                     "sample_rate_sps": request["sample_rate_sps"], "bandwidth_hz": request["bandwidth_hz"], "sample_format": fmt,
                     "gain_configuration": {"mode": request.get("gain_mode"), "gain_db": request.get("gain_db")},
@@ -190,6 +251,7 @@ def capture(request_path: Path, output: Path) -> int:
                     "capture_role": request.get("capture_role"),
                     "analysis_status": "not_requested", "iq_recovery_validated": False, "ota_validated": False}
         atomic_json(output / "capture_manifest.json", manifest)
+        (output / "capture.sha256").write_text(f"{manifest['data_sha256']}  {final.name}\n{manifest['metadata_sha256']}  {meta_path.name}\n", encoding="ascii")
         return 0
     finally:
         if stream is not None:

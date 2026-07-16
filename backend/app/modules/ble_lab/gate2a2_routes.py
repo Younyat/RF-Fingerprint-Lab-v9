@@ -79,4 +79,24 @@ def build_ble_gate2a2_router(manager):
         archive = shutil.make_archive(target, "zip", root)
         return FileResponse(archive, filename=f"{job_id}.zip", media_type="application/zip")
 
+    @router.get("/hybrid/sessions")
+    def hybrid_sessions():
+        root = manager.repository.root.parent.parent / "ble_lab" / "sessions"
+        values = []
+        if root.is_dir():
+            for session in root.iterdir():
+                metrics = session / "correlation" / "metrics.json"
+                packets = session / "correlation" / "decoded_packets.jsonl"
+                if metrics.is_file() and packets.is_file():
+                    values.append({"session_id":session.name,"metrics":manager.repository._read_json(metrics) if hasattr(manager.repository,"_read_json") else __import__('json').loads(metrics.read_text())})
+        return {"sessions":sorted(values,key=lambda x:x["session_id"],reverse=True)}
+
+    @router.get("/hybrid/sessions/{session_id}/packets")
+    def hybrid_packets(session_id: str):
+        if any(x in session_id for x in ("/", "\\", "..")): raise HTTPException(400,"invalid_session_id")
+        path = manager.repository.root.parent.parent / "ble_lab" / "sessions" / session_id / "correlation" / "decoded_packets.jsonl"
+        if not path.is_file(): raise HTTPException(404,"hybrid_session_not_found")
+        import json
+        return {"session_id":session_id,"packets":[json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]}
+
     return router

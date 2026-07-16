@@ -24,7 +24,7 @@ class BleDeviceRegistry:
     def device_id(address: str) -> str:
         return "ble-native-" + hashlib.sha256(address.upper().encode()).hexdigest()[:16]
 
-    def observe(self, device: Any, advertisement: Any, parsed: dict[str, Any]) -> dict[str, Any]:
+    def observe(self, device: Any, advertisement: Any, parsed: dict[str, Any], scan_session_id: str | None = None) -> dict[str, Any]:
         now, address = utc_now(), str(device.address)
         device_id = self.device_id(address)
         manufacturer = {f"0x{int(company):04X}": bytes(payload).hex() for company, payload in (advertisement.manufacturer_data or {}).items()}
@@ -45,6 +45,21 @@ class BleDeviceRegistry:
                 "observation_count": int(previous.get("observation_count", 0)) + 1,
                 "data_mode": parsed["data_mode"], "parser_available": parsed["parser_available"],
                 "connection": previous.get("connection", "disconnected"),
+                "advertising_seen": True,
+                "advertised_connectable": getattr(advertisement, "connectable", None),
+                "windows_device_resolved": previous.get("windows_device_resolved", True),
+                "connection_attempted": previous.get("connection_attempted", False),
+                "connection_established": previous.get("connection_established", False),
+                "gatt_discovery_attempted": previous.get("gatt_discovery_attempted", False),
+                "gatt_discovery_succeeded": previous.get("gatt_discovery_succeeded", False),
+                "profile_recognized": previous.get("profile_recognized", False),
+                "sensor_parser_supported": previous.get("sensor_parser_supported", parsed["parser_available"]),
+                "measurement_available": bool(previous.get("measurements")),
+                "notification_supported": previous.get("notification_supported", False),
+                "native_state": previous.get("native_state", "DISCOVERED"),
+                "native_status": previous.get("native_status", "ADVERTISEMENT_ONLY"),
+                "gatt_diagnostics": previous.get("gatt_diagnostics", []),
+                "scan_session_id": scan_session_id or previous.get("scan_session_id"),
                 "measurements": previous.get("measurements", []), "gatt_services": previous.get("gatt_services", []),
             }
             self._devices[device_id] = value
@@ -61,7 +76,18 @@ class BleDeviceRegistry:
             values = self._devices[device_id].setdefault("measurements", [])
             values.append(measurement); del values[:-100]
             self._devices[device_id]["parser_available"] = True
+            self._devices[device_id]["sensor_parser_supported"] = True
+            self._devices[device_id]["measurement_available"] = True
+            self._devices[device_id]["native_state"] = "MEASUREMENT_AVAILABLE"
+            self._devices[device_id]["native_status"] = "MEASUREMENT_AVAILABLE"
             self._save()
+
+    def add_diagnostic(self, device_id: str, diagnostic: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            values = self._devices[device_id].setdefault("gatt_diagnostics", [])
+            values.append(diagnostic); del values[:-100]
+            self._save()
+            return dict(diagnostic)
 
     def get(self, device_id: str) -> dict[str, Any]:
         with self._lock:

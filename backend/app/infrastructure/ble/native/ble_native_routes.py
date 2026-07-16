@@ -15,7 +15,7 @@ def build_ble_native_router(manager):
     @router.get("/status")
     def status(): return call(manager.status)
     @router.post("/scan/start")
-    def start_scan(): return call(manager.start_scan)
+    def start_scan(body: dict | None = None): return call(lambda: manager.start_scan((body or {}).get("session_id")))
     @router.post("/scan/stop")
     def stop_scan(): return call(manager.stop_scan)
     @router.get("/devices")
@@ -28,6 +28,8 @@ def build_ble_native_router(manager):
     def disconnect(device_id: str): return call(lambda: manager.disconnect(device_id))
     @router.get("/devices/{device_id}/services")
     def services(device_id: str): return {"services": call(lambda: manager.services(device_id))}
+    @router.get("/devices/{device_id}/gatt-diagnostics")
+    def diagnostics(device_id: str): return call(lambda: manager.diagnostic_report(device_id))
     @router.post("/devices/{device_id}/characteristics/{characteristic_uuid}/read")
     def read(device_id: str, characteristic_uuid: str): return call(lambda: manager.read(device_id, characteristic_uuid))
     @router.post("/devices/{device_id}/characteristics/{characteristic_uuid}/subscribe")

@@ -246,26 +246,42 @@ export const Gate2a2CandidateTable = ({ candidates }: { candidates: BleGate2a2Ca
   );
 };
 
-export const Gate2a2ConfirmedPacketsPanel = ({ packets }: { packets: BleGate2a2ConfirmedPacket[] }) => (
-  <Panel title={`Confirmed packets from this analysis (${packets.length})`}>
+export const Gate2a2ConfirmedPacketsPanel = ({ packets }: { packets: BleGate2a2ConfirmedPacket[] }) => {
+  const [native,setNative]=useState<BleNativeDevice[]>([]);
+  useEffect(()=>{void api.nativeDevices().then(setNative).catch(()=>setNative([]));},[packets.length]);
+  const nativeMatch=(packet:BleGate2a2ConfirmedPacket)=>{
+    const persisted=packet.correlation as {status?:string}|undefined;if(persisted?.status)return persisted.status;
+    const device=native.find(item=>item.address.toUpperCase()===packet.address?.toUpperCase());
+    if(!device)return 'B200_ONLY';
+    const structures=(packet.ad_structures as Array<{ad_type_raw?:number;decoded_value?:{company_identifier?:number;vendor_payload_hex?:string}}> | undefined)??[];
+    const manufacturer=structures.find(item=>item.ad_type_raw===255)?.decoded_value;
+    if(!manufacturer||manufacturer.company_identifier==null||!manufacturer.vendor_payload_hex)return 'AMBIGUOUS';
+    const key=`0x${manufacturer.company_identifier.toString(16).padStart(4,'0')}`.toUpperCase();
+    const observed=Object.entries(device.manufacturer_data).find(([name])=>name.toUpperCase()===key)?.[1];
+    return observed?.toUpperCase()===manufacturer.vendor_payload_hex.toUpperCase()?'MATCHED_BY_BOTH':'AMBIGUOUS';
+  };
+  const manufacturer=(packet:BleGate2a2ConfirmedPacket)=>((packet.ad_structures as Array<{decoded_value?:{company?:{name?:string}}}>|undefined)??[]).find(Boolean)?.decoded_value?.company?.name??'not available';
+  return <Panel title={`B200 decoded packets (${packets.filter(packet=>packet.crc_valid).length})`}>
     <p className="mb-2 text-xs text-[var(--app-text-muted)]">
       These passed the same frozen Gate 1A/1B CRC check Gate 1B trusts — only the DSP front end that produced the candidate bits is experimental.
     </p>
     <table className="w-full text-left text-sm">
-      <thead className="text-slate-400"><tr><th className="p-2">PDU type</th><th>Channel</th><th>CRC</th></tr></thead>
+      <thead className="text-slate-400"><tr><th className="p-2">Time</th><th>Channel</th><th>PDU</th><th>Address</th><th>Address type</th><th>Manufacturer</th><th>Name</th><th>Payload</th><th>CRC</th><th>Power</th><th>SNR</th><th>Native match</th><th>Correlation rule</th></tr></thead>
       <tbody>
-        {packets.map((packet, index) => (
+        {packets.filter(packet=>packet.crc_valid).map((packet, index) => (
           <tr key={packet.packet_sha256 ?? index} className="border-t border-slate-800">
-            <td className="p-2">{packet.pdu_type_name ?? 'Unknown'}</td>
-            <td>{packet.channel_index ?? 'Unknown'}</td>
-            <td className={packet.crc_valid ? 'text-emerald-300' : 'text-rose-300'}>{String(packet.crc_valid)}</td>
+            <td className="p-2">{String(packet.timestamp??'not available')}</td><td>{packet.channel_index ?? 'Unknown'}</td><td>{packet.pdu_type_name ?? 'Unknown'}</td>
+            <td className="font-mono text-xs">{packet.address??'not available'}</td><td>{packet.address_type??'not available'}</td><td>{manufacturer(packet)}</td><td>{packet.local_name??'not available'}</td>
+            <td className="max-w-52 truncate font-mono text-xs" title={packet.payload_octets}>{packet.payload_octets??'not available'}</td>
+            <td className="text-emerald-300">valid</td><td>{packet.power_dbfs==null?'not available':`${packet.power_dbfs.toFixed(1)} dBFS`}</td>
+            <td>{packet.snr_db==null?'not available':`${packet.snr_db.toFixed(1)} dB`}</td><td>{nativeMatch(packet)}</td><td>{String((packet.correlation as {rule?:string}|undefined)?.rule??'not executed')}</td>
           </tr>
         ))}
-        {packets.length === 0 && <tr><td colSpan={3} className="p-4 text-center text-[var(--app-text-muted)]">No confirmed packets.</td></tr>}
+        {packets.filter(packet=>packet.crc_valid).length === 0 && <tr><td colSpan={13} className="p-4 text-center text-[var(--app-text-muted)]">No CRC-valid BLE packets.</td></tr>}
       </tbody>
     </table>
   </Panel>
-);
+};
 
 const Trace = ({ values, color }: { values: number[]; color: string }) => { if(values.length<2)return <div className="flex h-32 items-center justify-center text-xs text-[var(--app-text-muted)]">Waiting for real SDR samples…</div>; const lo=Math.min(...values), hi=Math.max(...values), span=Math.max(1e-9,hi-lo); const points=values.map((v,i)=>`${i*100/(values.length-1)},${100-(v-lo)*100/span}`).join(' '); return <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-32 w-full bg-black/20"><polyline points={points} fill="none" stroke={color} strokeWidth="1" vectorEffect="non-scaling-stroke" /></svg>; };
 const LiveHistory = ({ live }: { live: BleCaptureLive|null }) => { const [rows,setRows]=useState<number[][]>([]),[power,setPower]=useState<number[]>([]); useEffect(()=>{if(!live?.spectrum_dbfs?.length)return;setRows(old=>[...old.slice(-39),live.spectrum_dbfs!]);if(typeof live.average_power_dbfs==='number')setPower(old=>[...old.slice(-119),live.average_power_dbfs!]);},[live?.timestamp_utc]); return <div className="grid gap-4 xl:grid-cols-2"><Panel title="Live waterfall — time / frequency / dBFS"><div className="h-40 overflow-hidden rounded bg-black">{rows.map((row,i)=><div key={i} className="flex h-1" title={live?.timestamp_utc}>{row.filter((_,x)=>x%4===0).map((v,x)=>{const level=Math.max(0,Math.min(1,(v+120)/120));return <span key={x} className="h-full flex-1" style={{backgroundColor:`hsl(${240-level*240} 90% ${15+level*45}%)`}}/>;})}</div>)}</div></Panel><Panel title="Temporal average power"><Trace values={power} color="#f59e0b" /></Panel></div>; };
@@ -301,10 +317,11 @@ const NativeBleDevices = () => {
   return <div className="space-y-4"><Panel title="Live BLE Devices — native adapter"><div className="mb-4 flex flex-wrap items-center gap-3"><div className={`rounded-full px-3 py-1 text-xs font-semibold ${status?.available?'bg-emerald-500/15 text-emerald-300':'bg-amber-500/15 text-amber-300'}`}>{status?.available?'Native BLE adapter ready':status?.reason_code??'Checking adapter'}</div><button disabled={!status?.available||Boolean(status?.scanning)} onClick={()=>void start(30)} className="h-9 rounded bg-sky-600 px-4 text-sm font-semibold text-white disabled:opacity-40">Scan 30 seconds</button><button disabled={!status?.available||Boolean(status?.scanning)} onClick={()=>void start(60)} className="h-9 rounded border px-4 text-sm disabled:opacity-40">Scan 60 seconds</button>{status?.scanning&&<><div className="text-sm text-sky-300">Scanning… {remaining}s</div><button onClick={async()=>{await api.stopNativeScan();setRemaining(0);await refresh();}} className="h-9 rounded bg-red-600 px-3 text-sm text-white">Stop scan</button></>}<button onClick={()=>void refresh()} className="h-9 rounded border px-3 text-sm">Refresh</button></div>{status&&!status.available&&<p className="mb-3 text-sm text-amber-400">{status.message} {status.diagnostic&&<code className="ml-1 text-xs">{status.diagnostic}</code>}</p>}{error&&<p className="mb-3 text-sm text-red-400">{error}</p>}<div className="overflow-auto"><table className="w-full text-left text-sm"><thead><tr><th>Device</th><th>Address</th><th>RSSI</th><th>Last seen</th><th>Data mode</th><th>Connection</th><th>Profile</th><th>Parser</th><th>Measurements</th><th>Action</th></tr></thead><tbody>{devices.map(device=><tr key={device.device_id} className="border-t"><td className="py-2">{device.local_name||'Unnamed BLE device'} <span className="text-[10px] text-[var(--app-text-muted)]">· …{device.device_id.slice(-4)}</span></td><td className="font-mono text-xs">{device.address}</td><td>{device.rssi_dbm??'n/a'} dBm</td><td>{device.last_seen_utc}</td><td>{device.data_mode}</td><td>{device.connection}</td><td>{device.profile_label||'—'}</td><td>{device.parser_available?'available':'unavailable'}</td><td>{device.measurements?.length??0}</td><td className="space-x-2"><button onClick={()=>setSelected(device)} className="text-cyan-400">Inspect</button>{device.connection==='disconnected'?<button onClick={()=>void connect(device)} className="text-emerald-400">Connect GATT</button>:<button onClick={()=>void disconnect(device)} className="text-rose-400">Disconnect</button>}</td></tr>)}</tbody></table>{devices.length===0&&<p className="p-6 text-center text-sm text-[var(--app-text-muted)]">Press Scan with your sensors powered on. No scan starts automatically.</p>}</div></Panel>
   {selected&&<Panel title={`Device details — ${selected.local_name||selected.address} · …${selected.device_id.slice(-4)}`}>
     <div className="mb-3 flex items-center justify-between gap-3 text-sm">
-      <span>Connection: <b>{selected.connection}</b></span>
+      <span>Connection: <b>{selected.connection}</b></span><span>Native state: <b>{selected.native_state??'DISCOVERED'}</b></span><span>Diagnostic status: <b>{selected.native_status??'ADVERTISEMENT_ONLY'}</b></span>
       {selected.connection==='disconnected'?<button onClick={()=>void connect(selected)} className="rounded bg-emerald-600 px-3 py-1 text-xs font-semibold text-white">Connect GATT</button>:<button onClick={()=>void disconnect(selected)} className="rounded bg-rose-600 px-3 py-1 text-xs font-semibold text-white">Disconnect</button>}
     </div>
     <div className="grid gap-4 lg:grid-cols-3"><div className="rounded border p-3 text-xs"><b>Raw advertising</b><pre className="mt-2 max-h-44 overflow-auto whitespace-pre-wrap">{JSON.stringify({manufacturer_data:selected.manufacturer_data,service_data:selected.service_data,service_uuids:selected.service_uuids,tx_power_dbm:selected.tx_power_dbm},null,2)}</pre></div><div className="lg:col-span-2"><b className="text-sm">Real measurements</b><div className="mt-2 grid gap-3 sm:grid-cols-3">{selected.measurements?.slice(-6).reverse().map(measurement=><div key={measurement.measurement_id} className="rounded border p-3"><div className="text-xs capitalize text-[var(--app-text-muted)]">{measurement.measurement_type}</div><div className="text-xl font-semibold">{measurement.value} {measurement.unit}</div><div className="mt-2 text-[10px]">{measurement.observed_at_utc}<br/>{measurement.acquisition_mode} · {measurement.parser_id}<br/><code>{measurement.source_raw_hex}</code></div></div>)}{!selected.measurements?.length&&<p className="text-sm text-amber-400">Device detected. Raw BLE data available. Sensor value parser not yet supported, or GATT reading is required.</p>}</div></div></div>
+    <div className="rounded border p-3"><b className="text-sm">GATT diagnostics</b><div className="mt-2 overflow-auto"><table className="w-full text-left text-xs"><thead><tr><th>Operation</th><th>Attempt</th><th>Duration</th><th>Cache</th><th>Status</th><th>Technical error</th></tr></thead><tbody>{selected.gatt_diagnostics?.slice(-10).reverse().map((item,index)=><tr key={`${item.timestamp_utc}-${index}`} className="border-t"><td>{item.operation}</td><td>{item.attempt}</td><td>{item.duration_ms} ms</td><td>{item.cache_mode}</td><td>{item.status}</td><td>{item.exception_class?`${item.exception_class}: ${item.exception_message??''}`:'—'}</td></tr>)}</tbody></table>{!selected.gatt_diagnostics?.length&&<p className="py-2 text-[var(--app-text-muted)]">No GATT operation has been attempted yet.</p>}</div></div>
     {selected.profile_id===TI_SENSORTAG_PROFILE_ID&&<div className="mt-4 rounded border border-sky-500/30 p-4">
       <div className="mb-1 text-sm font-semibold text-sky-300">Texas Instruments CC2650 SensorTag</div>
       <div className="mb-3 text-xs text-[var(--app-text-muted)]">Profile: {selected.profile_label||'TI SensorTag-compatible'} · Identification source: {selected.profile_detection_source==='gatt_fingerprint'?'Connected GATT service fingerprint':'Unknown'} · Confidence: {selected.profile_detection_source==='gatt_fingerprint'?'High':'Low'}</div>
@@ -376,10 +393,12 @@ export const BleLabView: React.FC = () => {
   const [gate2a2Job, setGate2a2Job] = useState<BleGate2a2Job | null>(null);
   const [gate2a2Candidates, setGate2a2Candidates] = useState<BleGate2a2Candidate[]>([]);
   const [gate2a2ConfirmedPackets, setGate2a2ConfirmedPackets] = useState<BleGate2a2ConfirmedPacket[]>([]);
+  const [hybridPackets,setHybridPackets]=useState<BleGate2a2ConfirmedPacket[]>([]);
   const [captureCapabilities,setCaptureCapabilities]=useState<BleCaptureCapabilities|null>(null),[captureJob,setCaptureJob]=useState<BleCaptureJob|null>(null),[captureLive,setCaptureLive]=useState<BleCaptureLive|null>(null),[captureRecords,setCaptureRecords]=useState<BleCaptureRecord[]>([]);
   const loadCapture=async()=>{try{const [caps,records]=await Promise.all([api.captureCapabilities(),api.captures()]);setCaptureCapabilities(caps);setCaptureRecords(records);}catch{setCaptureCapabilities({available:false,capture_enabled:false,capture_and_decode_enabled:false,reason_code:'CAPTURE_API_UNAVAILABLE',message:'Capture API unavailable.',devices:[],default_duration_seconds:10,maximum_duration_seconds:60,supported_formats:[],ble_channels:{}});}};
   const loadGate2a2Status = async () => { try { setGate2a2Status(await api.gate2a2Status()); } catch { setGate2a2Status({ available: false, reason: 'gate2a2_api_unavailable' }); } };
   useEffect(() => { void loadGate2a2Status(); }, []);
+  useEffect(()=>{void api.latestHybridPackets().then(setHybridPackets).catch(()=>setHybridPackets([]));},[]);
   useEffect(()=>{void loadCapture();},[]);
   useEffect(()=>{if(!captureJob||['completed','failed','cancelled','timed_out'].includes(captureJob.state))return;const timer=window.setInterval(async()=>{const next=await api.captureJob(captureJob.capture_id);setCaptureJob(next);setCaptureLive(await api.captureLive(next.capture_id));if(['completed','failed','cancelled','timed_out'].includes(next.state))await loadCapture();},500);return()=>window.clearInterval(timer);},[captureJob?.capture_id,captureJob?.state]);
   useEffect(() => {
@@ -423,6 +442,7 @@ export const BleLabView: React.FC = () => {
       </div>
 
       <div className="mb-8"><NativeBleDevices /></div>
+      <div className="mb-8"><Gate2a2ConfirmedPacketsPanel packets={hybridPackets} /></div>
       <div className="mb-3 text-sm font-semibold uppercase tracking-[0.18em] text-cyan-500">Optional USRP B200 RF evidence</div>
       <RealIqCapture capabilities={captureCapabilities} job={captureJob} live={captureLive} records={captureRecords} onJob={setCaptureJob} onOpen={async(id)=>setCaptureLive(await api.captureLive(id))} refresh={loadCapture} />
     </div>

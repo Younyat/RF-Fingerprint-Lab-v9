@@ -157,11 +157,35 @@ def run(request_path: Path, output: Path, repository: Path) -> int:
     }
     validated = validate_iq_job(contract_payload)
 
-    result = run_offline_receiver(preread.samples, validated.receiver_config, source_iq_sha256=validated.source_sha256)
+    # Real OTA bursts may include detector margins and exceed the synthetic
+    # campaign's conservative 1,800-sample ceiling. Keep the existing decoder
+    # and make only its already-defined burst limits explicit and bounded.
+    minimum_burst_samples = int(request.get("minimum_burst_samples", validated.receiver_config.minimum_burst_samples))
+    maximum_burst_samples = int(request.get("maximum_burst_samples", validated.receiver_config.maximum_burst_samples))
+    if not 80 <= minimum_burst_samples <= maximum_burst_samples <= 8_192:
+        raise RuntimeError("invalid_burst_sample_limits")
+    receiver_config = dataclasses.replace(validated.receiver_config,
+        minimum_burst_samples=minimum_burst_samples, maximum_burst_samples=maximum_burst_samples)
 
-    write_jsonl(output / "candidates.jsonl", [normalized(c) for c in result.candidates])
-    write_jsonl(output / "confirmed_packets.jsonl", [normalized(p) for d in result.decoded_results for p in d.confirmed_packets])
-    write_jsonl(output / "semantic_packets.jsonl", [normalized(p) for p in result.semantic_packets])
+    result = run_offline_receiver(preread.samples, receiver_config, source_iq_sha256=validated.source_sha256)
+
+    candidate_rows = [normalized(c) for c in result.candidates]
+    semantic_rows = [normalized(p) for p in result.semantic_packets]
+    semantic_by_id = {item.get("packet_id"): item for item in semantic_rows}
+    confirmed_rows = []
+    for decoded in result.decoded_results:
+        for packet in decoded.confirmed_packets:
+            item = normalized(packet); semantic = semantic_by_id.get(item.get("packet_sha256"), {})
+            advertiser = (semantic.get("addresses") or {}).get("advertiser") or {}
+            advertising = semantic.get("advertising_data") or {}
+            item.update({"source": "usrp_b200", "frequency_hz": PRIMARY_CHANNEL_FREQUENCIES[channel_index],
+                "address": advertiser.get("address_canonical"), "address_type": advertiser.get("address_type_from_header"),
+                "advertising_data_hex": advertising.get("raw_hex"), "ad_structures": advertising.get("structures", []),
+                "local_name": None, "power_dbfs": None, "snr_db": None})
+            confirmed_rows.append(item)
+    write_jsonl(output / "candidates.jsonl", candidate_rows)
+    write_jsonl(output / "confirmed_packets.jsonl", confirmed_rows)
+    write_jsonl(output / "semantic_packets.jsonl", semantic_rows)
     write_jsonl(output / "dsp_stage_events.jsonl", [normalized(e) for e in result.events])
     write_jsonl(output / "rejections.jsonl", [{"reason": r} for r in result.rejection_reasons])
     write_json(output / "hashes.json", result.derived_stream_sha256)
