@@ -149,7 +149,7 @@ Validation-02 SHA-256: `c933b5aa0647c5a4c5b1a340f00f1453dbd1e916086a2cd90d8e23f3
 
 ## 14. Change history
 
-### 2026-07-16 — commit pending
+### 2026-07-17 — commit `4f9a32c`
 
 - Change: persistent native diagnostics, real B200 capture/segmentation, bounded OTA burst length, batch decoding, CRC-only table and conservative comparison.
 - Reason: deliver a visible real-IQ-to-packet path without a parallel decoder.
