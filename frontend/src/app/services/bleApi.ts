@@ -37,6 +37,16 @@ export interface BleCaptureCapabilities { available: boolean; capture_enabled: b
 export interface BleCaptureJob { capture_id: string; state: 'queued'|'running'|'cancel_requested'|'completed'|'cancelled'|'failed'|'timed_out'; updated_at_utc?: string; error?: string; request?: Record<string, unknown>; capture_complete?: boolean }
 export interface BleCaptureRecord extends Record<string, unknown> { capture_id: string; created_at_utc: string; device_driver: string; center_frequency_hz: number; ble_channel?: number; sample_rate_sps: number; bandwidth_hz: number; requested_duration_seconds: number; actual_size_bytes: number; overflow_count: number; capture_complete: boolean; analysis_status: string }
 export interface BleCaptureLive { available: boolean; timestamp_utc?: string; samples_received?: number; bytes_written?: number; stream_overflows?: number; input_discontinuities?: number; average_power_dbfs?: number; peak_power_dbfs?: number; clipping_percentage?: number; frequencies_hz?: number[]; spectrum_dbfs?: number[]; i_preview?: number[]; q_preview?: number[] }
+export interface BleNativeStatus { available: boolean; adapter_type: 'native_ble'; backend: string; scan_supported: boolean; gatt_supported: boolean; scanning: boolean; device_count: number; reason_code?: string; message?: string; diagnostic?: string }
+export interface BleNativeMeasurement { measurement_id: string; device_id: string; measurement_type: string; value: number; unit: string; observed_at_utc: string; acquisition_mode: 'advertisement'|'gatt_read'|'gatt_notify'; source_uuid: string; source_raw_hex: string; parser_id: string; parser_version: string; conversion: { endianness: string; signed: boolean; scale: number; offset: number }; quality: { parsed: boolean; crc_available: boolean } }
+export interface BleNativeCharacteristic { uuid: string; description?: string; properties: string[]; descriptors: { handle: number; uuid: string; description?: string }[] }
+export interface BleNativeService { service_uuid: string; description?: string; known_name?: string|null; characteristics: BleNativeCharacteristic[] }
+// TI CC2650 SensorTag -- environmental (AA20, humidity+temperature) and IR
+// temperature (AA00) sensor sub-state. "available" is set only by the
+// connected GATT fingerprint (phase 2); advertising alone never sets it.
+export interface TiSensorReading { temperature_c?: number; relative_humidity_percent?: number; object_temperature_c?: number; ambient_temperature_c?: number; observed_at_utc: string; source_raw_hex: string; stale: boolean }
+export interface TiSensorState { available: boolean; active: boolean; status?: 'available'|'unavailable'|'starting'|'starting_no_data_yet'|'active'|'disabled'|'disconnected'; data_uuid?: string; config_uuid?: string; period_uuid?: string; last_reading?: TiSensorReading | null }
+export interface BleNativeDevice { device_id: string; address: string; address_type: string; local_name?: string|null; rssi_dbm?: number|null; tx_power_dbm?: number|null; manufacturer_data: Record<string,string>; service_data: Record<string,string>; service_uuids: string[]; first_seen_utc: string; last_seen_utc: string; observation_count: number; data_mode: 'ADVERTISEMENT_VALUE'|'GATT_READ'|'GATT_NOTIFY'|'UNKNOWN_FORMAT'; parser_available: boolean; connection: string; measurements: BleNativeMeasurement[]; gatt_services: BleNativeService[]; profile_id?: string|null; profile_label?: string|null; profile_detection_source?: 'gatt_fingerprint'|null; environmental_sensor?: TiSensorState; ir_temperature_sensor?: TiSensorState }
 
 const unwrap = <T>(data: T | Record<string, T>): T => {
   if (data && typeof data === 'object' && !Array.isArray(data)) {
@@ -80,4 +90,19 @@ export class BleApiService {
   async verifyCapture(id: string) { return (await axios.get<{ data_valid: boolean; metadata_valid: boolean }>(`${this.baseURL}/api/ble/capture/recordings/${encodeURIComponent(id)}/verify`)).data; }
   async analyzeCapture(id: string) { return (await axios.post<BleGate2a2Job>(`${this.baseURL}/api/ble/capture/recordings/${encodeURIComponent(id)}/analyze`)).data; }
   captureMetaUrl(id: string) { return `${this.baseURL}/api/ble/capture/recordings/${encodeURIComponent(id)}/sigmf-meta`; }
+  async nativeStatus() { return (await axios.get<BleNativeStatus>(`${this.baseURL}/api/ble/native/status`)).data; }
+  async startNativeScan() { return (await axios.post(`${this.baseURL}/api/ble/native/scan/start`)).data; }
+  async stopNativeScan() { return (await axios.post(`${this.baseURL}/api/ble/native/scan/stop`)).data; }
+  async nativeDevices() { return (await axios.get<{devices:BleNativeDevice[]}>(`${this.baseURL}/api/ble/native/devices`)).data.devices; }
+  async nativeDevice(id:string) { return (await axios.get<BleNativeDevice>(`${this.baseURL}/api/ble/native/devices/${encodeURIComponent(id)}`)).data; }
+  async connectNative(id:string) { return (await axios.post<BleNativeDevice>(`${this.baseURL}/api/ble/native/devices/${encodeURIComponent(id)}/connect`)).data; }
+  async disconnectNative(id:string) { return (await axios.post<BleNativeDevice>(`${this.baseURL}/api/ble/native/devices/${encodeURIComponent(id)}/disconnect`)).data; }
+  async nativeServices(id:string) { return (await axios.get<{services:BleNativeService[]}>(`${this.baseURL}/api/ble/native/devices/${encodeURIComponent(id)}/services`)).data.services; }
+  async readNative(id:string,uuid:string) { return (await axios.post(`${this.baseURL}/api/ble/native/devices/${encodeURIComponent(id)}/characteristics/${encodeURIComponent(uuid)}/read`)).data; }
+  async subscribeNative(id:string,uuid:string) { return (await axios.post(`${this.baseURL}/api/ble/native/devices/${encodeURIComponent(id)}/characteristics/${encodeURIComponent(uuid)}/subscribe`)).data; }
+  async unsubscribeNative(id:string,uuid:string) { return (await axios.post(`${this.baseURL}/api/ble/native/devices/${encodeURIComponent(id)}/characteristics/${encodeURIComponent(uuid)}/unsubscribe`)).data; }
+  async startEnvironmental(id:string) { return (await axios.post<BleNativeDevice>(`${this.baseURL}/api/ble/native/devices/${encodeURIComponent(id)}/environmental/start`)).data; }
+  async stopEnvironmental(id:string) { return (await axios.post<BleNativeDevice>(`${this.baseURL}/api/ble/native/devices/${encodeURIComponent(id)}/environmental/stop`)).data; }
+  async startIrTemperature(id:string) { return (await axios.post<BleNativeDevice>(`${this.baseURL}/api/ble/native/devices/${encodeURIComponent(id)}/ir-temperature/start`)).data; }
+  async stopIrTemperature(id:string) { return (await axios.post<BleNativeDevice>(`${this.baseURL}/api/ble/native/devices/${encodeURIComponent(id)}/ir-temperature/stop`)).data; }
 }

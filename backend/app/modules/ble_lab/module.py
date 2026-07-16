@@ -11,6 +11,7 @@ from app.infrastructure.ble.capture.ble_capture_routes import build_ble_capture_
 from app.infrastructure.ble.capture.ble_capture_job_manager import BleCaptureJobManager
 from app.infrastructure.ble.capture.ble_iq_capture_service import BleIqCaptureService, CaptureWorkerConfig
 from app.infrastructure.ble.capture.ble_sdr_device_service import BleSdrDeviceService, SdrProbeConfig
+from app.infrastructure.ble.native import BleNativeJobManager, build_ble_native_router
 from app.modules.types import BackendModuleDefinition
 from app.config.settings import settings
 
@@ -19,9 +20,9 @@ def env_bool(name,default=False): return os.environ.get(name,str(default)).lower
 # Four independent BLE feature flags -- none of them reused for more than one
 # capability. BLE_ANALYZER_V1 controls only the frozen Gate 1B replay pipeline
 # (unchanged). BLE_IQ_OFFLINE_EXPERIMENTAL_ENABLED controls only the new,
-# separate Gate 2A.2 offline-IQ-file analysis flow below. SDR capture and
-# combined capture+decode remains unavailable. Real IQ capture is a separate
-# experimental capability, off by default, backed by the SoapySDR worker.
+# separate Gate 2A.2 offline-IQ-file analysis flow below. Combined
+# capture+decode remains unavailable. Real IQ capture is a separate
+# experimental capability, on by default, backed by the SoapySDR worker.
 BLE_CAPTURE_AND_DECODE_ENABLED = False
 
 def _build(context):
@@ -51,14 +52,16 @@ def _build(context):
     capture_service = BleIqCaptureService(CaptureWorkerConfig(capture_python, capture_tool, runtime_root))
     capture_manager = BleCaptureJobManager(
         root / "ble" / "iq_captures", device_service, capture_service,
-        env_bool("BLE_IQ_CAPTURE_EXPERIMENTAL_ENABLED"),
+        env_bool("BLE_IQ_CAPTURE_EXPERIMENTAL_ENABLED", True),
     )
     capture_router = build_ble_capture_router(capture_manager, gate2a2_manager)
+    native_router = build_ble_native_router(BleNativeJobManager(root / "ble" / "native"))
 
     combined = APIRouter()
     combined.include_router(gate1b_router)
     combined.include_router(gate2a2_router)
     combined.include_router(capture_router)
+    combined.include_router(native_router)
     return combined
 
 ble_lab_module=BackendModuleDefinition("ble-lab","BLE Lab",True,85,"Experimental BLE platform integration.",_build)

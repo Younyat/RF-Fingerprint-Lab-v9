@@ -288,8 +288,9 @@ BLE Lab now has a separate experimental acquisition path:
 SoapySDR receiver -> preserved SigMF IQ recording -> visualization
 ```
 
-It is controlled by `BLE_IQ_CAPTURE_EXPERIMENTAL_ENABLED`, defaults to off,
-and never starts Gate 2A.2 automatically. The backend records raw IQ directly
+It is controlled by `BLE_IQ_CAPTURE_EXPERIMENTAL_ENABLED`, defaults to on
+(set the variable to `false` to disable it explicitly), and never starts
+Gate 2A.2 automatically. The backend records raw IQ directly
 to disk while the browser receives only reduced FFT and I/Q preview frames.
 Completed recordings include relative paths, hashes, acquisition parameters,
 overflow/discontinuity counters and explicit exclusion from scientific and
@@ -309,6 +310,23 @@ verified hashes and reopen through the catalog. This accepts real-IQ capture
 and visualization as experimental infrastructure only. The flag remains
 disabled by default; Gate 2A.2 was not run, BLE packets were not decoded, and
 no IQ-recovery or OTA validation claim has been made.
+
+### Native BLE sensor values
+
+Operational sensor values use the conventional Windows BLE adapter through
+Bleak/WinRT, independently of the USRP and Gate 2A.2. The API exposes adapter
+status, manual scanning, raw advertising observations, explicit GATT
+connection/service discovery, property-checked read/notify operations, and
+measurements with parser/raw-byte provenance. Unknown manufacturer and service
+payloads remain `UNKNOWN_FORMAT`; no engineering value is inferred from RF
+power, spectrum, waterfall, or undocumented byte offsets.
+
+The first controlled 30-second inventory is preserved in
+`observed_sensor_inventory.json`. It detected 70 ambient BLE identities, ten
+with a local name, but no device yet has an accepted sensor parser. A concrete
+sensor must therefore be identified by the operator before GATT inspection or
+vendor-parser validation. This does not alter Gate 2A.2, Candidate B, IQ
+recovery, OTA status, or the disabled Capture-and-Decode capability.
 
 ### 2.6 Reference checkpoint
 
@@ -460,21 +478,23 @@ check, even though the DSP front end that produced its bits is unvalidated.
   separate router from Gate 1B's `routes.py`, combined into one
   `APIRouter` in `ble_lab/module.py`.
 - **Feature flags**, four independent, none reused: `BLE_ANALYZER_V1`
-  (unchanged, Gate 1B only), `BLE_IQ_OFFLINE_EXPERIMENTAL_ENABLED` (new, env
-  var, default off, gates §2.10's job routes only),
-  `BLE_IQ_CAPTURE_EXPERIMENTAL_ENABLED` / `BLE_CAPTURE_AND_DECODE_ENABLED`
-  (new, but deliberately **hardcoded `False` constants in
-  `ble_lab/module.py`, not env vars** — nothing implements SDR capture or
-  combined capture+decode yet, so making them togglable would create a flag
-  with no real behavior behind it).
+  (unchanged, Gate 1B only), `BLE_IQ_OFFLINE_EXPERIMENTAL_ENABLED` (env var,
+  default off, gates §2.10's job routes only), `BLE_IQ_CAPTURE_EXPERIMENTAL_ENABLED`
+  (env var, **default on** — real IQ capture via the SoapySDR/USRP B200 worker
+  is implemented; set to `false` to disable it explicitly), and
+  `BLE_CAPTURE_AND_DECODE_ENABLED` (still a **hardcoded `False` constant** in
+  `ble_lab/module.py`, not an env var — combined capture+decode is not
+  implemented, so making it togglable would create a flag with no real
+  behavior behind it).
 - **Frontend** (`frontend/src/presentation/views/ble/BleLabView.tsx`): the
   page is now explicitly split into a "Validated bitstream replay — Gate 1B"
   section (completely unchanged) and an "Experimental IQ recovery — Gate
   2A.2" section below it (`Gate2a2StatusPanel`, `AnalyzeIqFilePanel`,
-  `Gate2a2CandidateTable`, `Gate2a2ConfirmedPacketsPanel`,
-  `Gate2a2DisabledCaptureButtons`). The two permanently-disabled buttons
-  ("Capture IQ", "Capture and Decode BLE") each show a specific reason via
-  `title`/inline text, not a generic "not available".
+  `Gate2a2CandidateTable`, `Gate2a2ConfirmedPacketsPanel`). "Capture Real IQ"
+  is a real, functioning capability (enabled by default, gated only on SDR
+  detection) — not a disabled stub. "Capture and Decode BLE" remains
+  permanently disabled and shows a specific reason via `title`/inline text,
+  not a generic "not available".
 - **Verified end to end**: `pytest test_ble_platform_integration.py` passes
   unchanged (zero Gate 1B regressions); `GET /api/ble/gate2a2/status`
   reflects the live repo; a full job (`POST` → poll → `candidates`/

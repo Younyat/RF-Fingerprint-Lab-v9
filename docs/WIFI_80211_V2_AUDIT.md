@@ -1,3 +1,9 @@
+> **Superseded.** This audit predates the validated V3 worker integration
+> (real, FCS-confirmed frame recovery, live-capture routing, and the Wi-Fi
+> Dashboard). It is kept for historical reference only — for the current,
+> accurate state of Wi-Fi decoding see
+> [`docs/technical-readmes/wifi_80211/README.md`](technical-readmes/wifi_80211/README.md).
+
 # IEEE 802.11 decoder V2 audit and implementation status
 
 ## Safety and evidence boundary

@@ -1,7 +1,31 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Bluetooth, CheckCircle2, Download, Play, RefreshCw, RotateCcw, Square } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { BleAdvertisement, BleAdvertiser, BleApiService, BleCapabilities, BleCaptureCapabilities, BleCaptureJob, BleCaptureLive, BleCaptureRecord, BleGate2a2Candidate, BleGate2a2ConfirmedPacket, BleGate2a2Job, BleGate2a2Status, BleJob, BleJobEvent, BlePacket } from '../../../app/services/bleApi';
+import { BleAdvertisement, BleAdvertiser, BleApiService, BleCapabilities, BleCaptureCapabilities, BleCaptureJob, BleCaptureLive, BleCaptureRecord, BleGate2a2Candidate, BleGate2a2ConfirmedPacket, BleGate2a2Job, BleGate2a2Status, BleJob, BleJobEvent, BleNativeDevice, BleNativeService, BleNativeStatus, BlePacket, TiSensorState } from '../../../app/services/bleApi';
+
+const TI_SENSORTAG_PROFILE_ID = 'ti-sensortag-compatible-v1';
+const TI_SENSOR_STATUS_LABEL: Record<string, string> = { available: 'Disabled', unavailable: 'Unavailable', starting: 'Starting', starting_no_data_yet: 'Starting (no data yet)', active: 'Active', disabled: 'Disabled', disconnected: 'Disconnected' };
+const formatUpdated = (iso?: string) => (iso ? new Date(iso).toLocaleString() : 'Never');
+
+const TiSensorCard = ({ title, sensor, busy, onStart, onStop, children }: { title: string; sensor?: TiSensorState; busy: boolean; onStart: () => void; onStop: () => void; children?: React.ReactNode }) => {
+  if (!sensor?.available) {
+    return <div className="rounded border p-3 text-sm text-amber-400">{title}: measurement unavailable in discovered GATT profile</div>;
+  }
+  const statusLabel = TI_SENSOR_STATUS_LABEL[sensor.status ?? 'available'] ?? sensor.status;
+  return (
+    <div className="rounded border p-3 text-sm">
+      <div className="mb-2 flex items-center justify-between">
+        <b>{title}</b>
+        <span className={`rounded-full px-2 py-0.5 text-xs ${sensor.active ? 'bg-emerald-500/15 text-emerald-300' : 'bg-slate-500/15 text-slate-300'}`}>{statusLabel}</span>
+      </div>
+      {children}
+      <div className="mt-2 flex gap-2">
+        <button disabled={busy || sensor.active} onClick={onStart} className="rounded bg-sky-600 px-3 py-1 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40">Start {title}</button>
+        <button disabled={busy || !sensor.active} onClick={onStop} className="rounded border px-3 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40">Stop</button>
+      </div>
+    </div>
+  );
+};
 
 const api = new BleApiService();
 const replayNotice = 'This result was produced from a validated bitstream replay. No IQ demodulation or RF recovery was performed.';
@@ -246,6 +270,67 @@ export const Gate2a2ConfirmedPacketsPanel = ({ packets }: { packets: BleGate2a2C
 const Trace = ({ values, color }: { values: number[]; color: string }) => { if(values.length<2)return <div className="flex h-32 items-center justify-center text-xs text-[var(--app-text-muted)]">Waiting for real SDR samples…</div>; const lo=Math.min(...values), hi=Math.max(...values), span=Math.max(1e-9,hi-lo); const points=values.map((v,i)=>`${i*100/(values.length-1)},${100-(v-lo)*100/span}`).join(' '); return <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-32 w-full bg-black/20"><polyline points={points} fill="none" stroke={color} strokeWidth="1" vectorEffect="non-scaling-stroke" /></svg>; };
 const LiveHistory = ({ live }: { live: BleCaptureLive|null }) => { const [rows,setRows]=useState<number[][]>([]),[power,setPower]=useState<number[]>([]); useEffect(()=>{if(!live?.spectrum_dbfs?.length)return;setRows(old=>[...old.slice(-39),live.spectrum_dbfs!]);if(typeof live.average_power_dbfs==='number')setPower(old=>[...old.slice(-119),live.average_power_dbfs!]);},[live?.timestamp_utc]); return <div className="grid gap-4 xl:grid-cols-2"><Panel title="Live waterfall — time / frequency / dBFS"><div className="h-40 overflow-hidden rounded bg-black">{rows.map((row,i)=><div key={i} className="flex h-1" title={live?.timestamp_utc}>{row.filter((_,x)=>x%4===0).map((v,x)=>{const level=Math.max(0,Math.min(1,(v+120)/120));return <span key={x} className="h-full flex-1" style={{backgroundColor:`hsl(${240-level*240} 90% ${15+level*45}%)`}}/>;})}</div>)}</div></Panel><Panel title="Temporal average power"><Trace values={power} color="#f59e0b" /></Panel></div>; };
 
+const NativeBleDevices = () => {
+  const [status,setStatus]=useState<BleNativeStatus|null>(null),[devices,setDevices]=useState<BleNativeDevice[]>([]),[selected,setSelected]=useState<BleNativeDevice|null>(null),[services,setServices]=useState<BleNativeService[]>([]),[remaining,setRemaining]=useState(0),[error,setError]=useState(''),[sensorBusy,setSensorBusy]=useState(false);
+  const refresh=async()=>{try{const [nextStatus,nextDevices]=await Promise.all([api.nativeStatus(),api.nativeDevices()]);setStatus(nextStatus);setDevices(nextDevices);if(selected){const updated=nextDevices.find(item=>item.device_id===selected.device_id);if(updated)setSelected(updated);}}catch(reason){setError(reason instanceof Error?reason.message:'Native BLE API unavailable');}};
+  useEffect(()=>{void refresh();},[]);
+  useEffect(()=>{if(!status?.scanning)return;const timer=window.setInterval(()=>{void refresh();setRemaining(value=>Math.max(0,value-1));},1000);return()=>window.clearInterval(timer);},[status?.scanning,selected?.device_id]);
+  useEffect(()=>{if(status?.scanning&&remaining===0){void api.stopNativeScan().then(()=>refresh());}},[remaining,status?.scanning]);
+  const start=async(seconds:number)=>{setError('');try{await api.startNativeScan();setRemaining(seconds);await refresh();}catch(reason){setError(reason instanceof Error?reason.message:'Unable to start BLE scan');}};
+  const connect=async(device:BleNativeDevice)=>{setError('');try{const next=await api.connectNative(device.device_id);setSelected(next);setServices(await api.nativeServices(device.device_id));await refresh();}catch(reason){setError(reason instanceof Error?reason.message:'Unable to connect');}};
+  const disconnect=async(device:BleNativeDevice)=>{setError('');try{const next=await api.disconnectNative(device.device_id);if(selected?.device_id===device.device_id){setSelected(next);setServices([]);}await refresh();}catch(reason){setError(reason instanceof Error?reason.message:'Unable to disconnect');}};
+  const characteristicAction=async(uuid:string,action:'read'|'subscribe')=>{if(!selected)return;setError('');try{if(action==='read')await api.readNative(selected.device_id,uuid);else await api.subscribeNative(selected.device_id,uuid);setSelected(await api.nativeDevice(selected.device_id));}catch(reason){setError(reason instanceof Error?reason.message:'GATT operation failed');}};
+  // Live-poll while a TI sensor is actively streaming -- the scan-only poll
+  // above stops once scanning ends, but notifications keep arriving.
+  useEffect(()=>{
+    if(!selected)return;
+    const active=selected.environmental_sensor?.active||selected.ir_temperature_sensor?.active;
+    if(!active)return;
+    const timer=window.setInterval(async()=>{try{setSelected(await api.nativeDevice(selected.device_id));}catch{/* transient poll error, ignore */}},1000);
+    return()=>window.clearInterval(timer);
+  },[selected?.device_id,selected?.environmental_sensor?.active,selected?.ir_temperature_sensor?.active]);
+  const selectedRef=useRef<BleNativeDevice|null>(null);
+  useEffect(()=>{selectedRef.current=selected;},[selected]);
+  useEffect(()=>()=>{
+    // Cleanup on view close: stop any TI sensor left actively streaming.
+    const device=selectedRef.current;
+    if(device?.environmental_sensor?.active) void api.stopEnvironmental(device.device_id).catch(()=>undefined);
+    if(device?.ir_temperature_sensor?.active) void api.stopIrTemperature(device.device_id).catch(()=>undefined);
+  },[]);
+  const withSensorBusy=async(action:()=>Promise<BleNativeDevice>)=>{setSensorBusy(true);setError('');try{setSelected(await action());}catch(reason){setError(reason instanceof Error?reason.message:'Sensor operation failed');}finally{setSensorBusy(false);}};
+  return <div className="space-y-4"><Panel title="Live BLE Devices — native adapter"><div className="mb-4 flex flex-wrap items-center gap-3"><div className={`rounded-full px-3 py-1 text-xs font-semibold ${status?.available?'bg-emerald-500/15 text-emerald-300':'bg-amber-500/15 text-amber-300'}`}>{status?.available?'Native BLE adapter ready':status?.reason_code??'Checking adapter'}</div><button disabled={!status?.available||Boolean(status?.scanning)} onClick={()=>void start(30)} className="h-9 rounded bg-sky-600 px-4 text-sm font-semibold text-white disabled:opacity-40">Scan 30 seconds</button><button disabled={!status?.available||Boolean(status?.scanning)} onClick={()=>void start(60)} className="h-9 rounded border px-4 text-sm disabled:opacity-40">Scan 60 seconds</button>{status?.scanning&&<><div className="text-sm text-sky-300">Scanning… {remaining}s</div><button onClick={async()=>{await api.stopNativeScan();setRemaining(0);await refresh();}} className="h-9 rounded bg-red-600 px-3 text-sm text-white">Stop scan</button></>}<button onClick={()=>void refresh()} className="h-9 rounded border px-3 text-sm">Refresh</button></div>{status&&!status.available&&<p className="mb-3 text-sm text-amber-400">{status.message} {status.diagnostic&&<code className="ml-1 text-xs">{status.diagnostic}</code>}</p>}{error&&<p className="mb-3 text-sm text-red-400">{error}</p>}<div className="overflow-auto"><table className="w-full text-left text-sm"><thead><tr><th>Device</th><th>Address</th><th>RSSI</th><th>Last seen</th><th>Data mode</th><th>Connection</th><th>Profile</th><th>Parser</th><th>Measurements</th><th>Action</th></tr></thead><tbody>{devices.map(device=><tr key={device.device_id} className="border-t"><td className="py-2">{device.local_name||'Unnamed BLE device'} <span className="text-[10px] text-[var(--app-text-muted)]">· …{device.device_id.slice(-4)}</span></td><td className="font-mono text-xs">{device.address}</td><td>{device.rssi_dbm??'n/a'} dBm</td><td>{device.last_seen_utc}</td><td>{device.data_mode}</td><td>{device.connection}</td><td>{device.profile_label||'—'}</td><td>{device.parser_available?'available':'unavailable'}</td><td>{device.measurements?.length??0}</td><td className="space-x-2"><button onClick={()=>setSelected(device)} className="text-cyan-400">Inspect</button>{device.connection==='disconnected'?<button onClick={()=>void connect(device)} className="text-emerald-400">Connect GATT</button>:<button onClick={()=>void disconnect(device)} className="text-rose-400">Disconnect</button>}</td></tr>)}</tbody></table>{devices.length===0&&<p className="p-6 text-center text-sm text-[var(--app-text-muted)]">Press Scan with your sensors powered on. No scan starts automatically.</p>}</div></Panel>
+  {selected&&<Panel title={`Device details — ${selected.local_name||selected.address} · …${selected.device_id.slice(-4)}`}>
+    <div className="mb-3 flex items-center justify-between gap-3 text-sm">
+      <span>Connection: <b>{selected.connection}</b></span>
+      {selected.connection==='disconnected'?<button onClick={()=>void connect(selected)} className="rounded bg-emerald-600 px-3 py-1 text-xs font-semibold text-white">Connect GATT</button>:<button onClick={()=>void disconnect(selected)} className="rounded bg-rose-600 px-3 py-1 text-xs font-semibold text-white">Disconnect</button>}
+    </div>
+    <div className="grid gap-4 lg:grid-cols-3"><div className="rounded border p-3 text-xs"><b>Raw advertising</b><pre className="mt-2 max-h-44 overflow-auto whitespace-pre-wrap">{JSON.stringify({manufacturer_data:selected.manufacturer_data,service_data:selected.service_data,service_uuids:selected.service_uuids,tx_power_dbm:selected.tx_power_dbm},null,2)}</pre></div><div className="lg:col-span-2"><b className="text-sm">Real measurements</b><div className="mt-2 grid gap-3 sm:grid-cols-3">{selected.measurements?.slice(-6).reverse().map(measurement=><div key={measurement.measurement_id} className="rounded border p-3"><div className="text-xs capitalize text-[var(--app-text-muted)]">{measurement.measurement_type}</div><div className="text-xl font-semibold">{measurement.value} {measurement.unit}</div><div className="mt-2 text-[10px]">{measurement.observed_at_utc}<br/>{measurement.acquisition_mode} · {measurement.parser_id}<br/><code>{measurement.source_raw_hex}</code></div></div>)}{!selected.measurements?.length&&<p className="text-sm text-amber-400">Device detected. Raw BLE data available. Sensor value parser not yet supported, or GATT reading is required.</p>}</div></div></div>
+    {selected.profile_id===TI_SENSORTAG_PROFILE_ID&&<div className="mt-4 rounded border border-sky-500/30 p-4">
+      <div className="mb-1 text-sm font-semibold text-sky-300">Texas Instruments CC2650 SensorTag</div>
+      <div className="mb-3 text-xs text-[var(--app-text-muted)]">Profile: {selected.profile_label||'TI SensorTag-compatible'} · Identification source: {selected.profile_detection_source==='gatt_fingerprint'?'Connected GATT service fingerprint':'Unknown'} · Confidence: {selected.profile_detection_source==='gatt_fingerprint'?'High':'Low'}</div>
+      <div className="grid gap-3 md:grid-cols-2">
+        <TiSensorCard title="Environmental sensor" sensor={selected.environmental_sensor} busy={sensorBusy} onStart={()=>void withSensorBusy(()=>api.startEnvironmental(selected.device_id))} onStop={()=>void withSensorBusy(()=>api.stopEnvironmental(selected.device_id))}>
+          {selected.environmental_sensor?.last_reading?<div className="space-y-1">
+            <div>Temperature: <b>{selected.environmental_sensor.last_reading.temperature_c?.toFixed(2)} °C</b>{selected.environmental_sensor.last_reading.stale&&<span className="ml-2 text-amber-400">(stale)</span>}</div>
+            <div>Relative humidity: <b>{selected.environmental_sensor.last_reading.relative_humidity_percent?.toFixed(2)} %RH</b></div>
+            <div className="text-[10px] text-[var(--app-text-muted)]">Updated {formatUpdated(selected.environmental_sensor.last_reading.observed_at_utc)} · GATT notification · Service TI Humidity Service AA20 · Data characteristic AA21 · Parser ti-cc2650-hdc1000-v1</div>
+            <div className="text-[10px]"><code>{selected.environmental_sensor.last_reading.source_raw_hex}</code></div>
+          </div>:<div className="text-xs text-[var(--app-text-muted)]">-- °C / -- %RH — no reading yet.</div>}
+        </TiSensorCard>
+        <TiSensorCard title="IR temperature sensor" sensor={selected.ir_temperature_sensor} busy={sensorBusy} onStart={()=>void withSensorBusy(()=>api.startIrTemperature(selected.device_id))} onStop={()=>void withSensorBusy(()=>api.stopIrTemperature(selected.device_id))}>
+          {selected.ir_temperature_sensor?.last_reading?<div className="space-y-1">
+            <div>Object temperature: <b>{selected.ir_temperature_sensor.last_reading.object_temperature_c?.toFixed(3)} °C</b>{selected.ir_temperature_sensor.last_reading.stale&&<span className="ml-2 text-amber-400">(stale)</span>}</div>
+            <div>Ambient temperature: <b>{selected.ir_temperature_sensor.last_reading.ambient_temperature_c?.toFixed(3)} °C</b></div>
+            <div className="text-[10px] text-[var(--app-text-muted)]">Updated {formatUpdated(selected.ir_temperature_sensor.last_reading.observed_at_utc)} · GATT notification · Service TI IR Temperature Service AA00 · Data characteristic AA01 · Parser ti-cc2650-tmp007-v1</div>
+          </div>:<div className="text-xs text-[var(--app-text-muted)]">-- °C — no reading yet.</div>}
+        </TiSensorCard>
+      </div>
+      <p className="mt-2 text-xs text-amber-400">Battery measurement unavailable in discovered GATT profile.</p>
+    </div>}
+    {services.length>0&&<div className="mt-4"><b className="text-sm">GATT services and characteristics</b><div className="mt-2 space-y-2">{services.map(service=><details key={service.service_uuid} className="rounded border p-3"><summary className="cursor-pointer text-sm">{service.known_name||service.description||'Vendor specific'} · <code>{service.service_uuid}</code></summary>{service.characteristics.map(char=><div key={char.uuid} className="mt-2 flex flex-wrap items-center gap-2 border-t pt-2 text-xs"><code className="mr-auto">{char.uuid}</code><span>{char.properties.join(', ')}</span>{char.properties.includes('read')&&<button onClick={()=>void characteristicAction(char.uuid,'read')} className="rounded bg-sky-600 px-2 py-1 text-white">Read</button>}{(char.properties.includes('notify')||char.properties.includes('indicate'))&&<button onClick={()=>void characteristicAction(char.uuid,'subscribe')} className="rounded bg-emerald-600 px-2 py-1 text-white">Subscribe</button>}</div>)}</details>)}</div></div>}
+  </Panel>}</div>;
+};
+
 export const RealIqCapture = ({ capabilities, job, live, records, onJob, onOpen, refresh }: { capabilities: BleCaptureCapabilities|null; job: BleCaptureJob|null; live: BleCaptureLive|null; records: BleCaptureRecord[]; onJob:(job:BleCaptureJob)=>void; onOpen:(id:string)=>Promise<void>; refresh:()=>Promise<void> }) => {
   const [channel,setChannel]=useState(37),[duration,setDuration]=useState(3),[gain,setGain]=useState(20),[rate,setRate]=useState(4_000_000),[bandwidth,setBandwidth]=useState(2_000_000),[format,setFormat]=useState('cf32_le'),[antenna,setAntenna]=useState('RX2'),[error,setError]=useState(''); const device=capabilities?.devices[0];
   useEffect(()=>{if(!device)return;const rates=device.sample_rate_ranges_sps.flatMap(x=>x.minimum===x.maximum?[x.minimum]:[x.minimum,x.maximum]);if(rates.length)setRate(rates.reduce((best,x)=>Math.abs(x-4_000_000)<Math.abs(best-4_000_000)?x:best));if(device.antenna_options.length)setAntenna(device.antenna_options.includes('RX2')?'RX2':device.antenna_options[0]);const formats=device.stream_formats??[];setFormat(formats.includes('CF32')?'cf32_le':formats.includes('CS16')?'ci16_le':'ci8');},[device?.device_id]);
@@ -315,28 +400,30 @@ export const BleLabView: React.FC = () => {
       <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
         <div>
           <div className="mb-2 flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.18em] text-sky-500"><Bluetooth className="h-4 w-4" />Real RF acquisition</div>
-          <h1 className="text-2xl font-semibold">Bluetooth LE Capture</h1>
-          <p className="mt-1 text-sm text-[var(--app-text-muted)]">USRP B200 · LE 1M advertising channels · manual operation</p>
+          <h1 className="text-2xl font-semibold">Bluetooth LE Sensors</h1>
+          <p className="mt-1 text-sm text-[var(--app-text-muted)]">Native BLE measurements first · USRP B200 RF capture optional</p>
         </div>
         <button type="button" onClick={() => void loadCapture()} className="inline-flex h-9 items-center gap-2 rounded-md border px-3 text-sm font-medium" style={{ borderColor: 'var(--app-border)' }}><RefreshCw className="h-4 w-4" />Refresh SDR</button>
       </div>
 
-      <Panel title="How to make a BLE-channel recording">
+      <Panel title="Recommended workflow">
         <ol className="grid gap-3 lg:grid-cols-5">
           {[
-            ['1', 'Prepare', 'Connect the USRP B200 and its RX antenna. Do not transmit through the B200.'],
-            ['2', 'Select', 'Choose advertising channel 37, 38 or 39, duration and conservative RX gain.'],
-            ['3', 'Capture', 'Press Capture Real IQ. Nothing starts before this manual action.'],
-            ['4', 'Monitor', 'Wait for completion while watching spectrum, I/Q, waterfall and telemetry.'],
-            ['5', 'Review', 'Open the saved recording and use Verify to check its data and metadata hashes.'],
+            ['1', 'Power sensors', 'Switch on the real BLE sensors and enable Bluetooth on this computer.'],
+            ['2', 'Scan', 'Run a 30 or 60 second native BLE scan and identify the sensor by name, address and raw advertising.'],
+            ['3', 'Inspect', 'If values are not in advertising, connect GATT and inspect readable or notifiable characteristics.'],
+            ['4', 'Read values', 'Use Read or Subscribe only on supported characteristics. Every displayed value keeps parser and raw-byte provenance.'],
+            ['5', 'Optional RF evidence', 'Use the USRP B200 section to preserve IQ on CH37/38/39. IQ visualization is separate from sensor values.'],
           ].map(([number,title,description])=><li key={number} className="rounded-lg border p-4" style={{ borderColor:'var(--app-border)' }}><div className="mb-2 flex h-7 w-7 items-center justify-center rounded-full bg-sky-600 text-sm font-bold text-white">{number}</div><div className="font-semibold">{title}</div><p className="mt-1 text-xs leading-5 text-[var(--app-text-muted)]">{description}</p></li>)}
         </ol>
       </Panel>
 
       <div className="my-6 rounded-md border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
-        <AlertTriangle className="mr-2 inline h-4 w-4" /><b>Current scope:</b> this page records and visualizes real IQ. It does not yet present RF activity as decoded BLE frames. Automatic Capture and Decode remains unavailable until its receiver and OTA validation are complete.
+        <AlertTriangle className="mr-2 inline h-4 w-4" /><b>Measurement rule:</b> temperature, humidity and battery come only from parsed advertising or GATT bytes. They are never inferred from spectrum, RSSI or waterfall. Unknown formats remain raw and unsupported.
       </div>
 
+      <div className="mb-8"><NativeBleDevices /></div>
+      <div className="mb-3 text-sm font-semibold uppercase tracking-[0.18em] text-cyan-500">Optional USRP B200 RF evidence</div>
       <RealIqCapture capabilities={captureCapabilities} job={captureJob} live={captureLive} records={captureRecords} onJob={setCaptureJob} onOpen={async(id)=>setCaptureLive(await api.captureLive(id))} refresh={loadCapture} />
     </div>
   );
