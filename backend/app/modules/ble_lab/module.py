@@ -12,6 +12,10 @@ from app.infrastructure.ble.capture.ble_capture_job_manager import BleCaptureJob
 from app.infrastructure.ble.capture.ble_iq_capture_service import BleIqCaptureService, CaptureWorkerConfig
 from app.infrastructure.ble.capture.ble_sdr_device_service import BleSdrDeviceService, SdrProbeConfig
 from app.infrastructure.ble.native import BleNativeJobManager, build_ble_native_router
+from app.infrastructure.ble.ble_hybrid_campaign_manager import BleHybridCampaignManager
+from app.modules.ble_lab.hybrid_routes import build_ble_hybrid_router
+from app.infrastructure.ble.dataset_studio_manager import BleDatasetStudioManager
+from app.modules.ble_lab.dataset_routes import build_ble_dataset_router
 from app.modules.types import BackendModuleDefinition
 from app.config.settings import settings
 
@@ -58,13 +62,23 @@ def _build(context):
         env_bool("BLE_IQ_CAPTURE_EXPERIMENTAL_ENABLED", True),
     )
     capture_router = build_ble_capture_router(capture_manager, gate2a2_manager)
-    native_router = build_ble_native_router(BleNativeJobManager(root / "ble" / "native"))
+    native_manager = BleNativeJobManager(root / "ble" / "native")
+    native_router = build_ble_native_router(native_manager)
+    hybrid_manager = BleHybridCampaignManager(
+        root / "ble_lab" / "sessions", capture_manager, native_manager, capture_python,
+        backend / "tools" / "ble_decode_burst_directory.py", backend / "tools" / "ble_correlate_session.py",
+        Path(os.environ.get("BLE_GATE2A2_REPOSITORY", r"C:\Users\Usuario\ble-worker-lab")),
+    )
+    hybrid_router = build_ble_hybrid_router(hybrid_manager)
+    dataset_router = build_ble_dataset_router(BleDatasetStudioManager(root/"ble_lab"/"datasets",root/"ble_lab"/"sessions",root/"ble"/"iq_captures",backend/"app"/"modules"/"ble_lab"/"definitions"))
 
     combined = APIRouter()
     combined.include_router(gate1b_router)
     combined.include_router(gate2a2_router)
     combined.include_router(capture_router)
     combined.include_router(native_router)
+    combined.include_router(hybrid_router)
+    combined.include_router(dataset_router)
     return combined
 
 ble_lab_module=BackendModuleDefinition("ble-lab","BLE Lab",True,85,"Experimental BLE platform integration.",_build)

@@ -27,11 +27,28 @@ class BleCaptureJobManager:
         root.mkdir(parents=True, exist_ok=True)
         self._lock, self._active, self._cancel = threading.RLock(), None, set()
 
-    def capabilities(self) -> dict[str, Any]:
-        probe = self.devices.list_devices()
+    def capabilities(self, force_probe: bool = False) -> dict[str, Any]:
+        try:
+            probe = self.devices.list_devices(force_probe=force_probe)
+        except TypeError:
+            # Test and third-party adapters may still implement the original
+            # zero-argument device enumeration protocol.
+            probe = self.devices.list_devices()
         return {**probe, "capture_enabled": self.enabled, "capture_and_decode_enabled": False,
                 "default_duration_seconds": 10, "maximum_duration_seconds": self.max_duration_seconds,
                 "supported_formats": list(FORMATS), "ble_channels": CHANNELS}
+
+    def resolve_device_id(self, requested_device_id: str | None = None) -> str:
+        if hasattr(self.devices, "resolve_device"):
+            return str(self.devices.resolve_device(requested_device_id)["device_id"])
+        cached = self.devices.cached_device(requested_device_id) if hasattr(self.devices, "cached_device") else None
+        if cached: return str(cached["device_id"])
+        probe = self.devices.list_devices()
+        devices = probe.get("devices", [])
+        exact = next((item for item in devices if item.get("device_id") == requested_device_id), None)
+        if exact: return str(exact["device_id"])
+        if len(devices) == 1: return str(devices[0]["device_id"])
+        raise ValueError(f"UNKNOWN_OR_UNAVAILABLE_SDR_DEVICE:{probe.get('reason_code','NO_COMPATIBLE_SDR')}")
 
     def create(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.enabled: raise PermissionError("BLE_IQ_CAPTURE_EXPERIMENTAL_DISABLED")
@@ -59,9 +76,15 @@ class BleCaptureJobManager:
         center = int(payload.get("center_frequency_hz") or CHANNELS.get(channel, 0))
         rate, bandwidth = int(payload.get("sample_rate_sps", 0)), int(payload.get("bandwidth_hz", 0))
         duration, fmt = float(payload.get("duration_seconds", 0)), payload.get("sample_format", "ci8")
-        probe = self.devices.list_devices()
-        device = next((item for item in probe.get("devices", []) if item.get("device_id") == payload.get("device_id")), None)
-        if device is None: raise ValueError("UNKNOWN_OR_UNAVAILABLE_SDR_DEVICE")
+        resolved_id = self.resolve_device_id(payload.get("device_id"))
+        payload = {**payload, "device_id": resolved_id}
+        if hasattr(self.devices, "resolve_device"):
+            device = self.devices.resolve_device(resolved_id)
+        else:
+            device = self.devices.cached_device(resolved_id) if hasattr(self.devices, "cached_device") else None
+            if not device:
+                probe = self.devices.list_devices()
+                device = next(item for item in probe.get("devices", []) if item.get("device_id") == resolved_id)
         if channel not in (*CHANNELS, None) or not 70_000_000 <= center <= 6_000_000_000: raise ValueError("INVALID_FREQUENCY")
         if rate < 1_000_000 or rate > 20_000_000: raise ValueError("UNSUPPORTED_SAMPLE_RATE")
         if bandwidth <= 0 or bandwidth > rate: raise ValueError("UNSUPPORTED_BANDWIDTH")

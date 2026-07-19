@@ -5,6 +5,8 @@ import json
 import logging
 import os
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,11 @@ class BleSdrDeviceService:
     def __init__(self, config: SdrProbeConfig) -> None:
         self.config = config
         self._private_args: dict[str, dict[str, str]] = {}
+        self._public_devices: dict[str, dict[str, Any]] = {}
+        self._last_successful_probe_monotonic = 0.0
+        self._last_probe_monotonic = 0.0
+        self._last_probe_response: dict[str, Any] | None = None
+        self._probe_lock = threading.RLock()
         self.last_diagnostics: dict[str, Any] = {}
 
     def _environment(self) -> dict[str, str]:
@@ -33,7 +40,30 @@ class BleSdrDeviceService:
             environment["SOAPY_SDR_PLUGIN_PATH"] = str(root / "Library" / "lib" / "SoapySDR" / "modules0.8")
         return environment
 
-    def list_devices(self) -> dict[str, Any]:
+    @staticmethod
+    def _copy_response(value: dict[str, Any]) -> dict[str, Any]:
+        # Device capability payloads contain only JSON values. A JSON roundtrip
+        # prevents callers from mutating the cache shared by concurrent views.
+        return json.loads(json.dumps(value))
+
+    def list_devices(self, force_probe: bool = False, maximum_age_seconds: float = 30.0) -> dict[str, Any]:
+        """Return one recent enumeration unless a physical refresh is requested.
+
+        UHD opens and initializes a B200 while enumerating it. The BLE dashboard
+        has more than one consumer of this endpoint, so probing for every read
+        needlessly resets the receiver and floods the operator log. The cache is
+        deliberately short and every capture still performs a fresh preflight.
+        """
+        with self._probe_lock:
+            recent = time.monotonic() - self._last_probe_monotonic <= maximum_age_seconds
+            if not force_probe and recent and self._last_probe_response is not None:
+                return self._copy_response(self._last_probe_response)
+            response = self._probe_devices()
+            self._last_probe_monotonic = time.monotonic()
+            self._last_probe_response = self._copy_response(response)
+            return self._copy_response(response)
+
+    def _probe_devices(self) -> dict[str, Any]:
         if not self.config.python_executable.is_file() or not self.config.tool_path.is_file():
             return self._unavailable("SDR_RUNTIME_UNAVAILABLE", "The configured SDR runtime is unavailable.")
         try:
@@ -56,12 +86,13 @@ class BleSdrDeviceService:
         self._private_args.clear()
         for raw in raw_devices:
             args = {str(k): str(v) for k, v in raw.pop("device_args", {}).items()}
-            identity = json.dumps(args, sort_keys=True, separators=(",", ":"))
+            stable_identity = {key: args[key] for key in ("driver", "serial") if args.get(key)} or args
+            identity = json.dumps(stable_identity, sort_keys=True, separators=(",", ":"))
             device_id = "sdr-" + hashlib.sha256(identity.encode()).hexdigest()[:16]
             # Enumeration metadata such as label/name/product is descriptive,
             # not a stable set of constructor arguments. UHD reliably reopens
             # the same physical receiver using its driver and serial.
-            connection_args = {"driver": args["driver"]} if args.get("driver") else {}
+            connection_args = {key: args[key] for key in ("driver", "serial") if args.get(key)}
             self._private_args[device_id] = connection_args or args
             raw["device_id"] = device_id
             raw["serial_masked"] = self._mask(raw.get("serial"))
@@ -70,7 +101,36 @@ class BleSdrDeviceService:
             devices.append(raw)
         if not devices:
             return self._unavailable("NO_COMPATIBLE_SDR", "No compatible SDR receiver was detected.")
+        self._public_devices = {item["device_id"]: dict(item) for item in devices}
+        self._last_successful_probe_monotonic = time.monotonic()
         return {"available": True, "devices": devices}
+
+    def cached_device(self, device_id: str, maximum_age_seconds: float = 10.0) -> dict[str, Any] | None:
+        if time.monotonic() - self._last_successful_probe_monotonic > maximum_age_seconds:
+            return None
+        value = self._public_devices.get(device_id)
+        return dict(value) if value else None
+
+    def resolve_device(self, requested_device_id: str | None = None, maximum_age_seconds: float = 10.0) -> dict[str, Any]:
+        """Resolve one receiver from one probe/cache snapshot.
+
+        Browser-visible IDs are hints, never hardware authority. When exactly
+        one SDR is present it is safe to select it even if a previous probe
+        produced another ID. Multiple receivers still require an exact ID.
+        """
+        recent = time.monotonic() - self._last_successful_probe_monotonic <= maximum_age_seconds
+        devices = list(self._public_devices.values()) if recent else []
+        if not devices:
+            probe = self.list_devices(force_probe=True)
+            devices = list(probe.get("devices", []))
+            if not devices:
+                raise ValueError(f"UNKNOWN_OR_UNAVAILABLE_SDR_DEVICE:{probe.get('reason_code','NO_COMPATIBLE_SDR')}")
+        exact = next((item for item in devices if item.get("device_id") == requested_device_id), None)
+        if exact:
+            return dict(exact)
+        if len(devices) == 1:
+            return dict(devices[0])
+        raise ValueError("UNKNOWN_OR_UNAVAILABLE_SDR_DEVICE:MULTIPLE_RECEIVERS_REQUIRE_EXACT_ID")
 
     def private_args(self, device_id: str) -> dict[str, str]:
         if device_id not in self._private_args:

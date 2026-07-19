@@ -60,6 +60,22 @@ def test_no_sdr_detected_is_safe(tmp_path):
     caps=manager(tmp_path,devices=False).capabilities(); assert caps["available"] is False; assert caps["capture_and_decode_enabled"] is False
 
 
+def test_stale_device_id_resolves_to_only_available_receiver(tmp_path):
+    request=manager(tmp_path)._validate(payload(device_id="sdr-from-previous-probe"))
+    assert request["device_id"] == "sdr-test"
+
+
+def test_recent_verified_probe_is_reused_without_second_usb_enumeration(tmp_path):
+    class CachedDevices(FakeDevices):
+        def cached_device(self, device_id):
+            assert device_id == "sdr-test"
+            return {"device_id":"sdr-test","driver":"fake-test-only","frequency_ranges_hz":[{"minimum":2_000_000_000,"maximum":3_000_000_000}],"sample_rate_ranges_sps":[{"minimum":4_000_000,"maximum":20_000_000}],"bandwidth_ranges_hz":[{"minimum":1_000_000,"maximum":10_000_000}]}
+        def list_devices(self):
+            raise AssertionError("a recent verified B200 must not be probed twice")
+    service=BleCaptureJobManager(tmp_path,CachedDevices(),FakeCapture(),True,minimum_free_bytes=0)
+    assert service._validate(payload())["device_id"] == "sdr-test"
+
+
 def test_feature_flag_disabled(tmp_path):
     with pytest.raises(PermissionError): manager(tmp_path,enabled=False).create(payload())
 

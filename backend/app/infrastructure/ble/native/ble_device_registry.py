@@ -77,9 +77,12 @@ class BleDeviceRegistry:
             values.append(measurement); del values[:-100]
             self._devices[device_id]["parser_available"] = True
             self._devices[device_id]["sensor_parser_supported"] = True
-            self._devices[device_id]["measurement_available"] = True
-            self._devices[device_id]["native_state"] = "MEASUREMENT_AVAILABLE"
-            self._devices[device_id]["native_status"] = "MEASUREMENT_AVAILABLE"
+            valid=measurement.get("value") is not None and measurement.get("validation",{}).get("status","VALID")=="VALID"
+            if valid:
+                self._devices[device_id]["measurement_available"] = True
+                self._devices[device_id]["native_state"] = "MEASUREMENT_AVAILABLE"
+                warnings=any(item.get("value") is None for item in values)
+                self._devices[device_id]["native_status"] = "MEASUREMENT_AVAILABLE_WITH_WARNINGS" if warnings else "MEASUREMENT_AVAILABLE"
             self._save()
 
     def add_diagnostic(self, device_id: str, diagnostic: dict[str, Any]) -> dict[str, Any]:

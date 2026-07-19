@@ -13,7 +13,7 @@ def build_ble_capture_router(manager, offline_manager=None):
         except RuntimeError as error: raise HTTPException(409, str(error)) from error
 
     @router.get("/devices")
-    def devices(): return manager.capabilities()
+    def devices(refresh: bool = False): return manager.capabilities(force_probe=refresh)
 
     @router.post("/jobs", status_code=202)
     def create(body: dict): return call(lambda: manager.create(body))

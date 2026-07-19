@@ -1,5 +1,6 @@
 param(
     [string]$RadioCondaPythonPath = "C:\Users\Usuario\radioconda\python.exe",
+    [string]$BackendPythonPath = "",
     [string]$RemoteUser = "assouyat",
     [string]$RemoteHost = "192.168.193.49",
     [int]$BackendPort = 8000,
@@ -12,6 +13,15 @@ param(
 $ErrorActionPreference = "Stop"
 $RootDir = Resolve-Path $PSScriptRoot
 $Runner = Join-Path $RootDir "scripts\run_dev.ps1"
+$ValidatedBackendPython = Join-Path $RootDir "backend\.venv-validation\Scripts\python.exe"
+
+# Keep one simple public command. The normal backend needs FastAPI + Bleak,
+# while radioconda remains the isolated GNU Radio/UHD runtime for the B200.
+# Prefer the already validated backend interpreter when present; run_dev.ps1
+# uses it as the base for backend\venv and installs the declared requirements.
+if (-not $BackendPythonPath -and (Test-Path -LiteralPath $ValidatedBackendPython)) {
+    $BackendPythonPath = $ValidatedBackendPython
+}
 
 if (-not (Test-Path $Runner)) {
     throw "No se encontro scripts\run_dev.ps1"
@@ -19,6 +29,7 @@ if (-not (Test-Path $Runner)) {
 
 & $Runner `
     -UseRealSdr 1 `
+    -BackendPythonPath $BackendPythonPath `
     -RadioCondaPythonPath $RadioCondaPythonPath `
     -RemoteUser $RemoteUser `
     -RemoteHost $RemoteHost `

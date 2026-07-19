@@ -105,10 +105,13 @@ def parse_ti_cc2650_ir_temperature(payload: bytes) -> TiIrTemperatureMeasurement
     """
     if len(payload) != 4:
         raise ValueError(f"TI IR temperature payload must contain 4 bytes; received {len(payload)}")
-    raw_object = int.from_bytes(payload[0:2], byteorder="little", signed=False)
-    raw_ambient = int.from_bytes(payload[2:4], byteorder="little", signed=False)
-    object_temperature_c = (raw_object >> 2) * 0.03125
-    ambient_temperature_c = (raw_ambient >> 2) * 0.03125
+    raw_object = int.from_bytes(payload[0:2], byteorder="little", signed=True)
+    raw_ambient = int.from_bytes(payload[2:4], byteorder="little", signed=True)
+    # On legacy TMP006 SensorTags the first word is thermopile voltage, not a
+    # temperature. It is retained only for provenance; the parser registry
+    # marks object temperature RAW_ONLY until calibrated nonlinear conversion.
+    object_temperature_c = float("nan")
+    ambient_temperature_c = raw_ambient / 128.0
     return TiIrTemperatureMeasurement(object_temperature_c, ambient_temperature_c, raw_object, raw_ambient, payload.hex())
 
 

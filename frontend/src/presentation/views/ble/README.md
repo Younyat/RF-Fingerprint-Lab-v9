@@ -181,3 +181,45 @@ Validation-02 SHA-256: `c933b5aa0647c5a4c5b1a340f00f1453dbd1e916086a2cd90d8e23f3
 ## 17. Next objective
 
 Repeat the passed hybrid procedure with `B0:B4:48:C0:36:06` while it is actively advertising and produce `MATCHED_BY_BOTH_STRONG` or `MATCHED_BY_BOTH_PAYLOAD`.
+## Propósito científico de las campañas híbridas
+
+El controlador principal y UC-02 comparten `campaignPolicy.ts` y envían el
+mismo contrato al backend:
+
+- `positive_target_validation`: bloqueada salvo que el objetivo figure como
+  `Visto ahora` en el escaneo nativo actual.
+- `negative_control`: exige objetivo, condición negativa declarada y
+  confirmación física del operador antes de iniciar.
+- `exploratory_target_search`: admite objetivos históricos, pero el resultado
+  no se etiqueta automáticamente como positivo ni como negativo.
+
+Los estados `B200_ONLY` conservan `target_relation: UNKNOWN` en Dataset Studio.
+Sólo un diseño experimental con identidad justificable puede asignar
+`NEGATIVE_FOR_TARGET`. Si una sesión contiene pérdidas sin intervalos exactos,
+todos sus ejemplos reciben `QUARANTINED_SESSION_LOSS`.
+
+## Telemetría operacional transversal
+
+Las operaciones largas publican progreso mediante `operationTelemetry.ts` sin
+escribir en la ruta DSP. El indicador global muestra operación, fase,
+porcentaje, tiempo transcurrido, tiempo restante cuando puede estimarse,
+objetivo IoT, duración configurada y contadores procesado/total. La captura B200
+calcula el porcentaje con muestras recibidas frente a
+`duration_seconds × sample_rate_sps`; la campaña híbrida pondera captura,
+decoder y correlación; Dataset Studio informa lectura, clasificación, datasheet
+y hashes. Si no existe una estimación honesta, se omite el ETA.
+
+En `BLE-EVIDENCE-DS01`, cada captura prevista dura 30 segundos. `Generar
+ejemplos` no captura nuevamente el SensorTag: transforma una sesión híbrida
+terminada.
+
+## Control negativo declarado
+
+El resultado del control y el nivel E0–E5 se presentan por separado.
+`PASSED_SINGLE_RUN` significa cero atribuciones al objetivo durante una única
+ejecución con condición física confirmada por el operador. No implica una tasa
+estadística de falsos positivos. Dataset Studio conserva E1/E2 y utiliza
+`NEGATIVE_BY_EXPERIMENTAL_CONTRACT`; esta etiqueta no identifica al transmisor
+ambiental. Si hubo pérdidas, todos esos ejemplos siguen en
+`QUARANTINED_SESSION_LOSS`. El control reforzado permanece pendiente hasta
+obtener una referencia positiva E3 de otro dispositivo y una captura limpia.

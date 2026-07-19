@@ -146,6 +146,77 @@ function Stop-ProcessTree {
     }
 }
 
+function Get-ListeningProcessIds {
+    param([int]$Port)
+    $Ids = @()
+    foreach ($Line in (netstat -ano -p tcp 2>$null)) {
+        if ($Line -match "^\s*TCP\s+\S+:$Port\s+\S+\s+LISTENING\s+(\d+)\s*$") {
+            $Ids += [int]$Matches[1]
+        }
+    }
+    return @($Ids | Select-Object -Unique)
+}
+
+function Stop-StaleSpectrumBackend {
+    param([int]$Port)
+    $Listeners = @(Get-ListeningProcessIds -Port $Port)
+    if (-not $Listeners.Count) { return }
+
+    $IsSpectrumLab = $false
+    try {
+        $OpenApi = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/openapi.json" -TimeoutSec 3
+        $Paths = @($OpenApi.paths.PSObject.Properties.Name)
+        $IsSpectrumLab = (
+            $OpenApi.info.title -eq "Spectrum Lab" -and
+            $Paths -contains "/api/ble/capture/devices" -and
+            $Paths -contains "/api/ble/hybrid/sessions"
+        )
+    } catch {}
+
+    # If a previous unified launcher is already shutting down, its listener
+    # can remain visible briefly after the HTTP server stops answering. Give
+    # that known race time to finish before classifying the port as foreign.
+    if (-not $IsSpectrumLab) {
+        $ShutdownDeadline = (Get-Date).AddSeconds(5)
+        while ((Get-ListeningProcessIds -Port $Port).Count -and (Get-Date) -lt $ShutdownDeadline) {
+            Start-Sleep -Milliseconds 250
+        }
+        if (-not (Get-ListeningProcessIds -Port $Port).Count) { return }
+    }
+
+    if (-not $IsSpectrumLab) {
+        throw "El puerto $Port esta ocupado por otro servicio. Cierre ese servicio o use -BackendPort con otro puerto."
+    }
+    Write-Host "Deteniendo backend Spectrum Lab anterior en el puerto $Port (PID: $($Listeners -join ', '))." -ForegroundColor Yellow
+    foreach ($Id in $Listeners) { Stop-ProcessTree -ProcessId $Id }
+    $Deadline = (Get-Date).AddSeconds(10)
+    while ((Get-ListeningProcessIds -Port $Port).Count -and (Get-Date) -lt $Deadline) { Start-Sleep -Milliseconds 250 }
+    if ((Get-ListeningProcessIds -Port $Port).Count) { throw "No se pudo liberar el puerto $Port." }
+}
+
+function Stop-StaleSpectrumFrontend {
+    param([int]$Port = 5173)
+
+    $Listeners = @(Get-ListeningProcessIds -Port $Port)
+    if (-not $Listeners.Count) { return }
+
+    $IsSpectrumLab = $false
+    try {
+        $Response = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/" -UseBasicParsing -TimeoutSec 3
+        $IsSpectrumLab = $Response.Content -match "Spectrum Lab - RF Signal Analyzer"
+    } catch {}
+
+    if (-not $IsSpectrumLab) {
+        throw "El puerto $Port esta ocupado por otra interfaz. Cierre ese servicio antes de iniciar Spectrum Lab."
+    }
+
+    Write-Host "Deteniendo frontend Spectrum Lab anterior en el puerto $Port (PID: $($Listeners -join ', '))." -ForegroundColor Yellow
+    foreach ($Id in $Listeners) { Stop-ProcessTree -ProcessId $Id }
+    $Deadline = (Get-Date).AddSeconds(10)
+    while ((Get-ListeningProcessIds -Port $Port).Count -and (Get-Date) -lt $Deadline) { Start-Sleep -Milliseconds 250 }
+    if ((Get-ListeningProcessIds -Port $Port).Count) { throw "No se pudo liberar el puerto $Port." }
+}
+
 function Get-PythonVersion {
     param(
         [string]$FilePath,
@@ -352,15 +423,36 @@ foreach ($RuntimeEnvKey in @(
 }
 
 Write-Step "Preparing backend"
+$UseProvidedBackendRuntime = $false
+if ($BackendPythonPath -and (Test-Path -LiteralPath $BackendPythonPath)) {
+    $VenvPython = (Resolve-Path -LiteralPath $BackendPythonPath).Path
+    $VenvDir = Split-Path -Parent (Split-Path -Parent $VenvPython)
+    $UseProvidedBackendRuntime = $true
+    Write-Host "Usando runtime backend validado: $VenvPython" -ForegroundColor Green
+}
 $ExistingVenvVersion = $null
+$VenvConfigPath = Join-Path $VenvDir "pyvenv.cfg"
+$ExistingVenvUsesWindowsApps = $false
 if (Test-Path $VenvPython) {
     $ExistingVenvVersion = Get-PythonVersion -FilePath $VenvPython
 }
+if (Test-Path -LiteralPath $VenvConfigPath) {
+    $ExistingVenvUsesWindowsApps = [bool]((Get-Content -LiteralPath $VenvConfigPath -Raw) -match "WindowsApps")
+}
 
-if ((Test-Path $VenvPython) -and (-not $ExistingVenvVersion -or $ExistingVenvVersion -lt [version]"3.10.0")) {
-    $VersionLabel = if ($ExistingVenvVersion) { "$ExistingVenvVersion" } else { "invalido o Microsoft Store/WindowsApps" }
+if ((Test-Path $VenvPython) -and ($ExistingVenvUsesWindowsApps -or -not $ExistingVenvVersion -or $ExistingVenvVersion -lt [version]"3.10.0")) {
+    $VersionLabel = if ($ExistingVenvUsesWindowsApps) { "Microsoft Store/WindowsApps no portable" } elseif ($ExistingVenvVersion) { "$ExistingVenvVersion" } else { "invalido" }
     Write-Host "El entorno virtual existente usa Python $VersionLabel. Se va a recrear: $VenvDir" -ForegroundColor Yellow
-    Remove-Item -LiteralPath $VenvDir -Recurse -Force
+    # Release imported .pyd files before removing the environment. The normal
+    # startup cleanup later is intentionally idempotent.
+    Stop-StaleSpectrumBackend -Port $BackendPort
+    Stop-StaleSpectrumFrontend -Port 5173
+    $ResolvedVenv = (Resolve-Path -LiteralPath $VenvDir).Path
+    $ResolvedBackend = (Resolve-Path -LiteralPath $BackendDir).Path
+    if (-not $ResolvedVenv.StartsWith($ResolvedBackend + [IO.Path]::DirectorySeparatorChar)) {
+        throw "Se rechazo eliminar un entorno virtual fuera del backend: $ResolvedVenv"
+    }
+    Remove-Item -LiteralPath $ResolvedVenv -Recurse -Force
 }
 
 if (-not (Test-Path $VenvDir)) {
@@ -374,7 +466,7 @@ if (-not (Test-Path $VenvPython)) {
     throw "No se encontro Python dentro del entorno virtual: $VenvPython"
 }
 
-if ($InstallDeps) {
+if ($InstallDeps -and -not $UseProvidedBackendRuntime) {
     Invoke-Native `
         -FilePath $VenvPython `
         -ArgumentList @("-m", "pip", "install", "--upgrade", "pip", "wheel", "setuptools<82") `
@@ -391,6 +483,11 @@ if ($InstallDeps) {
         -FilePath $VenvPython `
         -ArgumentList @("-m", "pip", "install", "-r", $RequirementsPath) `
         -ErrorMessage "No se pudieron instalar las dependencias del backend."
+} elseif ($UseProvidedBackendRuntime) {
+    & $VenvPython -c "import fastapi, uvicorn, bleak; print('Runtime backend validado: FastAPI + Uvicorn + Bleak')"
+    if ($LASTEXITCODE -ne 0) {
+        throw "BackendPythonPath no contiene las dependencias backend validadas."
+    }
 }
 
 Write-Step "Preparing frontend"
@@ -404,6 +501,11 @@ if ($InstallDeps) {
 }
 
 Write-Step "Starting backend on http://localhost:$BackendPort"
+# Stop the backend first. Its unified launcher will then stop its own Vite
+# child. Doing this in the opposite order creates a race where the old
+# launcher shuts down port 8000 while this new launcher is identifying it.
+Stop-StaleSpectrumBackend -Port $BackendPort
+Stop-StaleSpectrumFrontend -Port 5173
 if ($RadioCondaPythonPath) {
     $env:RADIOCONDA_PYTHON = $RadioCondaPythonPath
 }
@@ -420,10 +522,39 @@ $env:BLE_CAPTURE_AND_DECODE_ENABLED = "false"
 
 $BackendProcess = Start-Process `
     -FilePath $VenvPython `
-    -ArgumentList @("-m", "uvicorn", "app.main:app", "--reload", "--host", "0.0.0.0", "--port", "$BackendPort") `
+    -ArgumentList @("-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "$BackendPort") `
     -WorkingDirectory $BackendDir `
     -NoNewWindow `
     -PassThru
+
+$BackendReady = $false
+$BackendDeadline = (Get-Date).AddSeconds(30)
+while ((Get-Date) -lt $BackendDeadline -and -not $BackendProcess.HasExited) {
+    try {
+        $null = Invoke-RestMethod -Uri "http://127.0.0.1:$BackendPort/api/ble/dataset-studio/definitions" -TimeoutSec 2
+        $BackendReady = $true
+        break
+    } catch { Start-Sleep -Milliseconds 500 }
+    $BackendProcess.Refresh()
+}
+if (-not $BackendReady) {
+    if (-not $BackendProcess.HasExited) { Stop-ProcessTree -ProcessId $BackendProcess.Id }
+    throw "El backend arranco sin publicar Dataset Studio. Revise la salida de uvicorn; no se iniciara una interfaz conectada a una API obsoleta."
+}
+
+$SdrReady = $false
+try {
+    $SdrCapabilities = Invoke-RestMethod -Uri "http://127.0.0.1:$BackendPort/api/ble/capture/devices" -TimeoutSec 30
+    $SdrReady = [bool]$SdrCapabilities.available -and @($SdrCapabilities.devices).Count -gt 0
+    if ($SdrReady) {
+        $SdrLabel = $SdrCapabilities.devices[0].label
+        Write-Host "BLE Lab SDR verified: $SdrLabel" -ForegroundColor Green
+    } else {
+        Write-Host "BLE Lab SDR no disponible: $($SdrCapabilities.reason_code)" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host "No se pudo verificar el SDR durante el arranque: $($_.Exception.Message)" -ForegroundColor Yellow
+}
 
 Write-Step "Starting frontend on http://localhost:5173"
 $env:VITE_APP_SYNC_INTERVAL_MS = "$AppSyncIntervalMs"
@@ -440,7 +571,7 @@ if (-not $NpmCommand) {
 
 $FrontendProcess = Start-Process `
     -FilePath $NpmCommand `
-    -ArgumentList @("run", "dev", "--", "--host", $FrontendHost) `
+    -ArgumentList @("run", "dev", "--", "--host", $FrontendHost, "--strictPort") `
     -WorkingDirectory $FrontendDir `
     -NoNewWindow `
     -PassThru

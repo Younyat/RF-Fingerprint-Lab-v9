@@ -90,11 +90,13 @@ export const AppLayout: React.FC = () => {
                     <span className="h-2 w-2 rounded-full bg-emerald-300 shadow-[0_0_18px_rgba(110,231,183,0.85)]" />
                     <span className="truncate">{globalActivity.title}</span>
                   </div>
-                  {globalActivity.detail && <div className="mt-1 truncate text-xs text-slate-200/90">{globalActivity.detail}</div>}
+                  {globalActivity.phase&&<div className="mt-1 text-xs font-medium text-sky-200">{globalActivity.phase}{globalActivity.progressPercent!=null?` · ${globalActivity.progressPercent}%`:''}</div>}
+                  {globalActivity.detail && <div className="mt-1 text-xs text-slate-200/90">{globalActivity.detail}</div>}
+                  <div className="mt-1 flex flex-wrap gap-x-3 text-[11px] text-slate-300">{globalActivity.target&&<span>Objetivo: {globalActivity.target}</span>}{globalActivity.configuredDurationSeconds!=null&&<span>Captura: {globalActivity.configuredDurationSeconds}s</span>}{globalActivity.elapsedSeconds!=null&&<span>Transcurrido: {globalActivity.elapsedSeconds}s</span>}{globalActivity.estimatedRemainingSeconds!=null&&<span>Restante aprox.: {globalActivity.estimatedRemainingSeconds}s</span>}{globalActivity.totalItems!=null&&<span>{globalActivity.processedItems??0}/{globalActivity.totalItems}</span>}</div>
                 </div>
               </div>
               <div className="h-1 overflow-hidden bg-white/10">
-                <div className="h-full w-1/2 animate-[pulse_1.4s_ease-in-out_infinite] rounded-full bg-gradient-to-r from-amber-300 via-emerald-300 to-sky-300" />
+                <div className={`h-full rounded-full bg-gradient-to-r from-amber-300 via-emerald-300 to-sky-300 transition-all ${globalActivity.progressPercent==null?'w-1/2 animate-[pulse_1.4s_ease-in-out_infinite]':''}`} style={globalActivity.progressPercent==null?undefined:{width:`${globalActivity.progressPercent}%`}} />
               </div>
             </div>
           </div>
@@ -125,7 +127,7 @@ export const AppLayout: React.FC = () => {
                   {/* Status indicator */}
                   <div className="flex items-center space-x-2">
                     <div className="h-2 w-2 rounded-full bg-emerald-500"></div>
-                    <span className="text-sm app-muted-text">Shared backend active</span>
+                    <span className="text-sm app-muted-text">Backend compartido activo</span>
                   </div>
                 </div>
               </div>

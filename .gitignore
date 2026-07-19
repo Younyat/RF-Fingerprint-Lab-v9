@@ -10,7 +10,7 @@ dist/
 *.wav
 *.jsonl
 backend/venv/
-
+backend/.venv-validation/
 # Extra virtual environments
 */.venv/
 */venv/
@@ -19,7 +19,7 @@ backend/venv/
 */myenv/
 */virtualenv/
 */.virtualenv/
-
+.venv-validation/
 
 # RF capture storage
 spectrum-lab/backend/app/infrastructure/persistence/storage/recordings/modulated_signal_captures/*

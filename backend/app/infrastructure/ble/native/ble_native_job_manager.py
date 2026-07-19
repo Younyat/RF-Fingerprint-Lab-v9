@@ -24,6 +24,15 @@ from .ble_device_registry import BleDeviceRegistry
 
 
 class BleNativeJobManager:
+    LEGACY_SENSORS={
+        "accelerometer":{"data":"f000aa11-0451-4000-b000-000000000000","config":"f000aa12-0451-4000-b000-000000000000","period":"f000aa13-0451-4000-b000-000000000000","enable":b"\x01"},
+        "magnetometer":{"data":"f000aa31-0451-4000-b000-000000000000","config":"f000aa32-0451-4000-b000-000000000000","period":"f000aa33-0451-4000-b000-000000000000","enable":b"\x01"},
+        "barometer":{"data":"f000aa41-0451-4000-b000-000000000000","config":"f000aa42-0451-4000-b000-000000000000","calibration":"f000aa43-0451-4000-b000-000000000000","enable":b"\x01"},
+        "gyroscope":{"data":"f000aa51-0451-4000-b000-000000000000","config":"f000aa52-0451-4000-b000-000000000000","enable":b"\x07"},
+        "simple_keys":{"data":"0000ffe1-0000-1000-8000-00805f9b34fb"},
+        "ambient_light":{"data":"f000aa71-0451-4000-b000-000000000000","config":"f000aa72-0451-4000-b000-000000000000","period":"f000aa73-0451-4000-b000-000000000000","enable":b"\x01"},
+        "movement":{"data":"f000aa81-0451-4000-b000-000000000000","config":"f000aa82-0451-4000-b000-000000000000","period":"f000aa83-0451-4000-b000-000000000000","enable":b"\x7f\x00"},
+    }
     def __init__(self, root: Path) -> None:
         self.root = root; root.mkdir(parents=True, exist_ok=True)
         self.registry = BleDeviceRegistry(root / "device_registry.json")
@@ -32,6 +41,11 @@ class BleNativeJobManager:
         self._thread = threading.Thread(target=self._run_loop, daemon=True, name="ble-native-winrt")
         self._thread.start()
         self._scanner = None; self._clients: dict[str, Any] = {}; self._scanning = False
+        self._discovered_devices: dict[str, Any] = {}
+        self._connection_jobs: dict[str, dict[str, Any]] = {}
+        self._connection_futures: dict[str, Any] = {}
+        self._connection_by_device: dict[str, str] = {}
+        self._connection_lock = threading.RLock()
         self._last_error: str | None = None
         self._scan_session_id: str | None = None
         self._scan_session_dir: Path | None = None
@@ -62,7 +76,8 @@ class BleNativeJobManager:
     def status(self) -> dict[str, Any]:
         try: result = self._submit(self._adapter_status(), 10)
         except Exception as error: result = {"available": False, "adapter_type": "native_ble", "backend": "winrt", "scan_supported": False, "gatt_supported": False, "reason_code": "NO_NATIVE_BLE_ADAPTER", "message": "A conventional BLE adapter is required for device scanning and GATT access.", "diagnostic": f"{type(error).__name__}:{error}"}
-        return {**result, "scanning": self._scanning, "device_count": len(self.registry.list()), "last_error": self._last_error,
+        return {**result, "scanning": self._scanning, "scan_session_id": self._scan_session_id,
+                "device_count": len(self.registry.list()), "last_error": self._last_error,
                 "native_gate_status": "NATIVE-1_IMPLEMENTED_PENDING_RUNTIME_VALIDATION", "gatt_policy": self.gatt_policy}
 
     async def _start_scan(self, session_id: str | None = None) -> None:
@@ -79,7 +94,8 @@ class BleNativeJobManager:
         def callback(device, advertisement):
             manufacturer = {f"0x{int(key):04X}": bytes(value).hex() for key, value in (advertisement.manufacturer_data or {}).items()}
             services = {str(key).lower(): bytes(value).hex() for key, value in (advertisement.service_data or {}).items()}
-            self.registry.observe(device, advertisement, self.parsers.classify_advertisement(manufacturer, services), self._scan_session_id)
+            observed = self.registry.observe(device, advertisement, self.parsers.classify_advertisement(manufacturer, services), self._scan_session_id)
+            self._discovered_devices[observed["device_id"]] = device
             observation = {"schema_version":"ble-native-observation-v1","native_observation_id":"native-"+uuid.uuid4().hex,
                 "scan_session_id":self._scan_session_id,"timestamp_callback_utc":datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "timestamp_callback_monotonic_ns":time.monotonic_ns(),"address":str(device.address),"address_type":"unknown",
@@ -175,7 +191,15 @@ class BleNativeJobManager:
             "attempts": attempts,
         }
 
-    async def _connect(self, device_id: str) -> dict[str, Any]:
+    def _connection_stage(self, job_id: str | None, stage: str, step: int, attempt: int = 0) -> None:
+        if not job_id: return
+        with self._connection_lock:
+            job=self._connection_jobs[job_id]
+            job.update(current_stage=stage, step=step, attempt=attempt,
+                       elapsed_seconds=round(time.monotonic()-job["started_monotonic"], 3), updated_at_utc=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+
+    async def _connect(self, device_id: str, job_id: str | None = None) -> dict[str, Any]:
+        self._connection_stage(job_id, "WAITING_FOR_GATT_SLOT", 1)
         if self._gatt_semaphore is None: self._gatt_semaphore = asyncio.Semaphore(self.gatt_policy["max_concurrent_gatt_connections"])
         queued = time.monotonic()
         async with self._gatt_semaphore:
@@ -186,9 +210,9 @@ class BleNativeJobManager:
                     "attempt": 0, "duration_ms": 0, "queue_duration_ms": queue_duration_ms, "cache_mode": "not_applicable",
                     "status": "QUEUED", "exception_class": None, "exception_message": None, "winrt_code": None,
                     "gatt_communication_status": None, "protocol_error": None})
-            return await self._connect_serialized(device_id)
+            return await self._connect_serialized(device_id, job_id)
 
-    async def _connect_serialized(self, device_id: str) -> dict[str, Any]:
+    async def _connect_serialized(self, device_id: str, job_id: str | None = None) -> dict[str, Any]:
         from bleak import BleakClient, BleakScanner
         # Most BLE USB adapters only support one active native GATT
         # connection at a time -- connecting to a second device while a
@@ -199,6 +223,7 @@ class BleNativeJobManager:
             if other_id != device_id and other_client.is_connected:
                 await self._disconnect(other_id)
         record = self.registry.get(device_id)
+        self._connection_stage(job_id, "RESOLVING_DEVICE", 2)
         self.registry.update(device_id, connection_attempted=True, native_state="CONNECT_REQUESTED", native_status="ADVERTISEMENT_ONLY")
         client = self._clients.get(device_id)
         if client is None or not client.is_connected:
@@ -213,7 +238,12 @@ class BleNativeJobManager:
             for attempt in range(3):
                 started = time.monotonic()
                 try:
-                    client = BleakClient(record["address"])
+                    self._connection_stage(job_id, "CONNECTING", 3, attempt + 1)
+                    discovered = self._discovered_devices.get(device_id)
+                    if discovered is None:
+                        discovered = await BleakScanner.find_device_by_address(record["address"], timeout=10.0)
+                    if discovered is None: raise RuntimeError(f"BLE_DEVICE_NOT_DISCOVERABLE:{record['address']}")
+                    client = BleakClient(discovered)
                     await asyncio.wait_for(client.connect(), timeout=12.0)
                     self._diagnostic(device_id, "connect", attempt + 1, started, status="CONNECTED")
                     last_error = None
@@ -233,7 +263,9 @@ class BleNativeJobManager:
                 client = BleakClient(discovered)
                 await asyncio.wait_for(client.connect(), timeout=12.0)
         self._clients[device_id] = client
+        self._connection_stage(job_id, "DISCOVERING_SERVICES", 4)
         services = self._serialize_services(client.services)
+        self._connection_stage(job_id, "DISCOVERING_CHARACTERISTICS", 5)
         updates: dict[str, Any] = {"connection": "connected", "connection_established": True, "gatt_discovery_attempted": True, "gatt_discovery_succeeded": True, "native_state": "CHARACTERISTICS_DISCOVERED", "native_status": "NO_SENSOR_SERVICES", "data_mode": self._classify_services(services), "gatt_services": services, "notification_supported": any("notify" in char["properties"] or "indicate" in char["properties"] for service in services for char in service["characteristics"])}
 
         # Phase 2 detection: the connected device's OWN discovered GATT
@@ -245,6 +277,7 @@ class BleNativeJobManager:
         service_uuids = {item["service_uuid"] for item in services}
         characteristic_uuids = {char["uuid"] for item in services for char in item["characteristics"]}
         profile = self.parsers.detect_connected_vendor_profile(service_uuids, characteristic_uuids)
+        self._connection_stage(job_id, "CLASSIFYING_PROFILE", 6)
         previous_environmental = record.get("environmental_sensor") or {}
         previous_ir = record.get("ir_temperature_sensor") or {}
         if profile:
@@ -254,6 +287,9 @@ class BleNativeJobManager:
             updates["profile_id"] = profile["profile_id"]
             updates["profile_label"] = profile["profile_label"]
             updates["profile_detection_source"] = profile["profile_detection_source"]
+            updates["profile_confidence"] = profile["profile_confidence"]
+            updates["probable_platform"] = profile["probable_platform"]
+            updates["sensor_inventory"] = profile["sensor_inventory"]
             updates["environmental_sensor"] = {
                 **previous_environmental, "available": profile["environmental_available"], "active": False,
                 "status": "available" if profile["environmental_available"] else "unavailable",
@@ -265,9 +301,45 @@ class BleNativeJobManager:
                 "data_uuid": TI_IR_TEMPERATURE_DATA, "config_uuid": TI_IR_TEMPERATURE_CONFIG, "period_uuid": TI_IR_TEMPERATURE_PERIOD,
             }
         self.registry.update(device_id, **updates)
+        self._connection_stage(job_id, "CONNECTED", 7)
         return self.registry.get(device_id)
 
     def connect(self, device_id: str) -> dict[str, Any]: return self._submit(self._connect(device_id), 75)
+
+    def start_connection(self, device_id: str) -> dict[str, Any]:
+        self.registry.get(device_id)
+        with self._connection_lock:
+            existing_id=self._connection_by_device.get(device_id)
+            if existing_id and self._connection_jobs[existing_id]["status"] not in {"CONNECTED","FAILED","TIMED_OUT","CANCELLED_BY_USER","CANCELLED_BY_WINDOWS","OPERATION_ABORTED"}:
+                return {**self.connection_job(existing_id), "status": "already_in_progress"}
+            job_id="ble-connect-"+uuid.uuid4().hex
+            now=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            self._connection_jobs[job_id]={"connection_job_id":job_id,"device_id":device_id,"status":"RUNNING","current_stage":"WAITING_FOR_GATT_SLOT","step":1,"total_steps":7,"attempt":0,"max_attempts":3,"created_at_utc":now,"updated_at_utc":now,"started_monotonic":time.monotonic(),"elapsed_seconds":0.0,"error":None}
+            self._connection_by_device[device_id]=job_id
+            future=asyncio.run_coroutine_threadsafe(self._connect(device_id,job_id),self._loop); self._connection_futures[job_id]=future
+            def done(completed):
+                with self._connection_lock:
+                    job=self._connection_jobs[job_id]; job["elapsed_seconds"]=round(time.monotonic()-job["started_monotonic"],3); job["updated_at_utc"]=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                    if completed.cancelled(): job.update(status="CANCELLED_BY_USER",current_stage="CANCELLED_BY_USER")
+                    else:
+                        error=completed.exception()
+                        if error: job.update(status="TIMED_OUT" if "timeout" in f"{type(error).__name__}:{error}".lower() else "FAILED",current_stage="FAILED",error=f"{type(error).__name__}:{error}")
+                        else: job.update(status="CONNECTED",current_stage="CONNECTED",result=completed.result())
+            future.add_done_callback(done)
+            return self.connection_job(job_id)
+
+    def connection_job(self, job_id: str) -> dict[str, Any]:
+        with self._connection_lock:
+            if job_id not in self._connection_jobs: raise KeyError(job_id)
+            job=dict(self._connection_jobs[job_id]); job["elapsed_seconds"]=round(time.monotonic()-job["started_monotonic"],3) if job["status"] in {"RUNNING","already_in_progress"} else job["elapsed_seconds"]
+            job.pop("started_monotonic",None); return job
+
+    def cancel_connection(self, job_id: str) -> dict[str, Any]:
+        with self._connection_lock:
+            if job_id not in self._connection_jobs: raise KeyError(job_id)
+            future=self._connection_futures.get(job_id)
+            if future and not future.done(): future.cancel()
+        return self.connection_job(job_id)
 
     @staticmethod
     def _mark_stale(sensor: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -469,6 +541,51 @@ class BleNativeJobManager:
 
     def stop_ir_temperature_measurements(self, device_id: str) -> dict[str, Any]:
         return self._submit(self._stop_ir_temperature(device_id), 20)
+
+    async def _start_legacy_sensor(self, device_id: str, sensor_name: str) -> dict[str, Any]:
+        if sensor_name not in self.LEGACY_SENSORS: raise KeyError(sensor_name)
+        if device_id not in self._clients or not self._clients[device_id].is_connected: await self._connect(device_id)
+        profile=self.registry.get(device_id); inventory=profile.get("sensor_inventory",{})
+        if not inventory.get(sensor_name,{}).get("present"): raise PermissionError("SENSOR_NOT_PRESENT_IN_HARDWARE_PROFILE")
+        spec=dict(self.LEGACY_SENSORS[sensor_name]); client=self._clients[device_id]
+        if sensor_name=="barometer" and profile.get("probable_platform")=="CC2650":
+            spec={"data":"f000aa41-0451-4000-b000-000000000000","config":"f000aa42-0451-4000-b000-000000000000","period":"f000aa44-0451-4000-b000-000000000000","enable":b"\x01"}
+        states=dict(profile.get("sensor_states",{})); states[sensor_name]={"status":"configuring","active":False}; self.registry.update(device_id,sensor_states=states)
+        if sensor_name=="barometer" and spec.get("calibration"):
+            calibration=bytes(await client.read_gatt_char(spec["calibration"])); states[sensor_name]["calibration_raw_hex"]=calibration.hex(); states[sensor_name]["calibration_status"]="preserved_pending_validated_conversion"
+        def callback(_,data:bytearray):
+            measurements=self.parsers.parse_ti_legacy_sensor(device_id,sensor_name,spec["data"],bytes(data))
+            for item in measurements:self.registry.add_measurement(device_id,item)
+            current=dict(self.registry.get(device_id).get("sensor_states",{})); current[sensor_name]={**current.get(sensor_name,{}),"status":"active","active":True,"last_reading":measurements,"raw_hex":bytes(data).hex()}; self.registry.update(device_id,sensor_states=current)
+        try:
+            await client.start_notify(spec["data"],callback)
+            if spec.get("period"): await client.write_gatt_char(spec["period"],b"\x64",response=True)
+            if spec.get("config"): await client.write_gatt_char(spec["config"],spec["enable"],response=True)
+        except Exception as error:
+            states=dict(self.registry.get(device_id).get("sensor_states",{})); states[sensor_name]={**states.get(sensor_name,{}),"status":"failed","active":False,"error":f"{type(error).__name__}:{error}"}; self.registry.update(device_id,sensor_states=states); raise
+        states=dict(self.registry.get(device_id).get("sensor_states",{})); states[sensor_name]={**states.get(sensor_name,{}),"status":"starting","active":True}; self.registry.update(device_id,sensor_states=states)
+        return self.registry.get(device_id)
+
+    def start_legacy_sensor(self,device_id:str,sensor_name:str)->dict[str,Any]: return self._submit(self._start_legacy_sensor(device_id,sensor_name),30)
+
+    async def _stop_legacy_sensor(self,device_id:str,sensor_name:str)->dict[str,Any]:
+        record=self.registry.get(device_id); spec=dict(self.LEGACY_SENSORS[sensor_name]); client=self._clients.get(device_id)
+        if sensor_name=="barometer" and record.get("probable_platform")=="CC2650": spec={"data":"f000aa41-0451-4000-b000-000000000000","config":"f000aa42-0451-4000-b000-000000000000"}
+        if client and client.is_connected:
+            if spec.get("config"): await client.write_gatt_char(spec["config"],b"\x00",response=True)
+            await client.stop_notify(spec["data"])
+        states=dict(self.registry.get(device_id).get("sensor_states",{})); states[sensor_name]={**states.get(sensor_name,{}),"status":"disabled","active":False}; self.registry.update(device_id,sensor_states=states); return self.registry.get(device_id)
+
+    def stop_legacy_sensor(self,device_id:str,sensor_name:str)->dict[str,Any]: return self._submit(self._stop_legacy_sensor(device_id,sensor_name),20)
+
+    def start_supported_sensors(self,device_id:str)->dict[str,Any]:
+        results=[]
+        record=self.registry.get(device_id); present=record.get("sensor_inventory",{})
+        for name in self.LEGACY_SENSORS:
+            if not present.get(name,{}).get("present"): continue
+            try:self.start_legacy_sensor(device_id,name);results.append({"sensor":name,"status":"started"})
+            except Exception as error:results.append({"sensor":name,"status":"failed","error":f"{type(error).__name__}:{error}"})
+        return {"device":self.registry.get(device_id),"results":results,"active":sum(x["status"]=="started" for x in results),"failed":sum(x["status"]=="failed" for x in results)}
 
     def inventory(self) -> dict[str, Any]:
         return {"schema_version": "1.0", "source": "native_ble_winrt", "devices": [{**item, "vendor": "unknown", "model": "unknown", "values_in_advertising": item.get("data_mode") == "ADVERTISEMENT_VALUE", "gatt_required": item.get("data_mode") in {"GATT_READ", "GATT_NOTIFY"}, "next_action": "inspect_gatt_characteristics" if not item.get("parser_available") else "validate_parser_against_reference"} for item in self.registry.list()]}

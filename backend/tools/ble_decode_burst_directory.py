@@ -31,7 +31,8 @@ def main() -> int:
     confirmed, semantic, attempts = [], [], []
     all_segments = sorted(args.segments_dir.glob("*.cf32"))
     selected_segments = all_segments[args.start_index:args.end_index]
-    for segment in selected_segments:
+    write_json(args.output_dir / "progress.json", {"processed_segments": 0, "total_segments": len(selected_segments), "crc_valid_packets": 0})
+    for index, segment in enumerate(selected_segments, start=1):
         iq = read_iq_file(segment, IqReaderConfig("cf32_le", 262_144))
         config = ReceiverConfig(channel_index=args.channel, minimum_burst_samples=80, maximum_burst_samples=4096)
         result = run_offline_receiver(iq.samples, config, source_iq_sha256=iq.input_iq_sha256)
@@ -51,6 +52,8 @@ def main() -> int:
         for value in parsed: value["iq_segment"] = segment.name
         confirmed.extend(packets); semantic.extend(parsed)
         attempts.append({"iq_segment": segment.name, "confirmed_packets": len(packets), "semantic_packets": len(parsed)})
+        write_json(args.output_dir / "progress.json", {"processed_segments": index, "total_segments": len(selected_segments),
+            "crc_valid_packets": len(confirmed), "current_segment": segment.name})
     write_jsonl(args.output_dir / "decoded_packets.jsonl", confirmed)
     write_jsonl(args.output_dir / "semantic_packets.jsonl", semantic)
     write_json(args.output_dir / "batch_summary.json", {"segments": len(attempts), "start_index":args.start_index,"end_index":args.end_index,

@@ -8,6 +8,8 @@
     "build": "tsc && vite build",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "test:spectrum-tools": "tsc -p tsconfig.spectrum-tools-validation.json && node --test validation-tests/spectrum-tools.test.mjs",
+    "test:ble-targets": "tsc -p tsconfig.ble-validation.json && node --test validation-tests/ble-target-model.test.mjs validation-tests/ble-campaign-policy.test.mjs",
+    "test:ble-dataset": "tsc -p tsconfig.ble-validation.json && node --test validation-tests/ble-dataset-studio.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -115,6 +115,107 @@ operator presses that button, and it does not enable automatic BLE decoding,
 Gate 2A.2, or OTA claims. To disable the manual capability for a session, use
 `-EnableBleIqCapture 0`:
 
+### BLE operator dashboard and hybrid campaigns
+
+The BLE dashboard starts with an operator controller that reports the Windows
+BLE adapter and USRP B200 independently. It offers native, B200-only, and
+recommended hybrid modes; detailed native devices, packets, GATT diagnostics,
+evidence, and sessions remain available in tabs.
+
+`POST /api/ble/hybrid/sessions` starts one bounded CH37/38/39 campaign (1–60
+seconds) using the existing native scan, IQ capture, burst detector, Gate 2A.2
+decoder, and correlator. Poll `GET /api/ble/hybrid/sessions/{session_id}` for
+real step status and counters, stop via
+`POST /api/ble/hybrid/sessions/{session_id}/stop`, and list history via
+`GET /api/ble/hybrid/sessions`.
+
+Manual smoke test: select **Captura híbrida**, a detected target or **Cualquier
+dispositivo**, CH37, and 10 seconds. Press **Iniciar** and verify that native
+callbacks and B200 samples increase, followed by burst, CRC-valid packet, and
+correlation counters. Inspect the detail tabs for the preserved evidence.
+
+### TI SensorTag generations and GATT connection jobs
+
+Native GATT connection is asynchronous: `POST
+/api/ble/native/devices/{device_id}/connect` returns HTTP 202 with a stable
+`connection_job_id`. Poll `/api/ble/native/connection-jobs/{job_id}` or cancel
+it explicitly through `/api/ble/native/connection-jobs/{job_id}/cancel`.
+Repeated connection requests for the same device return the active job.
+
+Profile classification uses the complete discovered service topology. Legacy
+SensorTags with separate AA10 accelerometer, AA30 magnetometer, and AA50
+gyroscope services are reported as probable CC2541 generation. CC2650 devices
+are distinguished by AA70 optical and AA80 combined movement services. A
+legacy device without AA70 reports ambient light as not present in that
+hardware generation. TMP006 object temperature is retained as raw data until
+the calibrated nonlinear conversion is available; it is never exposed as a
+physically valid temperature merely by scaling the thermopile word.
+
+Completed hybrid sessions expose `/scientific-summary`, a derived and
+auditable result containing the evidence funnel, independent general/target
+outcomes, acquisition/decoder/correlation quality, E0–E4 evidence level,
+limitations, and SHA-256 metadata for preserved artifacts. The target is
+frozen in `session_manifest.json` at campaign start; refreshing the native BLE
+registry never changes a completed session's target.
+
+The dashboard target selector uses the same native registry as the device
+table. The CC2650 (`B0:B4:48:C0:36:06`) and legacy CC2541
+(`BC:6A:29:AB:DE:13`) SensorTags are prioritized but retain an honest current
+or historical state. A completed native scan invalidates both views while
+preserving the stable `device_id` selection. Run the selector regression with
+`npm run test:ble-targets` from `frontend`.
+
+### BLE-UC-02 — identificación híbrida de SensorTag
+
+La pestaña `UC-02 · Identificar SensorTag` guía la primera validación E4 sin
+alterar la cadena científica. Exige que uno de los SensorTag prioritarios sea
+observado en el scan actual, congela su identidad en el manifest y ejecuta una
+campaña híbrida completa de 30 segundos. El resultado general y el resultado
+del objetivo se evalúan independientemente. Si CH37 produce
+`TARGET_NATIVE_ONLY`, el operador puede repetir CH38 y CH39 manteniendo el
+mismo objetivo, duración, ganancia y disposición física.
+
+GATT se presenta sólo como evidencia lógica complementaria. No sustituye un
+paquete B200 con CRC válido ni una correlación dentro de ±250 ms. E4 se concede
+únicamente con `TARGET_MATCHED_STRONG` o `TARGET_MATCHED_BY_PAYLOAD`; E5 sigue
+reservado para experimentos reales de fingerprint RF entre unidades y
+sesiones. No debe crearse el commit de validación UC-02 hasta obtener evidencia
+real accesible y cumplir estos criterios.
+
+Estado de validación real (2026-07-17): la sesión
+`BLE-HYBRID-20260717T123917Z-1a3d21` demuestra funcionalmente UC-02/E4 para el
+CC2650 `B0:B4:48:C0:36:06` en CH37 (36 callbacks Windows, 4 paquetes objetivo
+con CRC válido y 1 coincidencia fuerte; mejor |Δt| 248.889 ms). La captura tuvo
+2 overflows y 2 discontinuidades: es válida para la demostración funcional,
+pero no es evidencia limpia de fingerprint RF. Reproducibilidad queda
+`PENDING`, fingerprinting `NOT_VALIDATED` e identidad física
+`NOT_DEMONSTRATED`. Faltan repeticiones controladas CC2650 CH37/38/39 y después
+CC2541, siempre con el objetivo observado en el scan inmediatamente anterior.
+
+### BLE Dataset Studio
+
+`Dataset Studio · Generador de datasets RF verificables` transforma sesiones
+híbridas terminadas; no duplica el escaneo, captura B200, decoder, correlador ni
+GATT. Cada versión vive en `storage/ble_lab/datasets/<dataset_id>/<version>` y
+contiene `campaign_protocol.json`, `dataset_manifest.json`, `examples.jsonl`,
+`devices.json`, `sessions.jsonl`, `quality_report.json`, `split_manifest.json`,
+`dataset_datasheet.md` y `checksums.sha256`. El protocolo se congela antes de
+ingerir datos y un cambio posterior requiere una versión derivada nueva.
+
+Cada ejemplo conserva sesión, captura, ráfaga, intervalo exacto
+`sample_start`/`sample_count`, canal, objetivo, unidad física, PDU, CRC,
+observación Windows, regla temporal, E0–E4, calidad y hashes. Las muestras no
+aceptadas permanecen en `examples.jsonl` como cuarentena con un estado y motivo;
+no se borran. Los splits agrupan por sesión, día, unidad física, canal,
+ubicación o receptor para evitar repartir ráfagas relacionadas entre train y
+test. E5 permanece `not_implemented_not_validated`: una dirección, payload,
+CRC, GATT o una captura aislada nunca se presenta como fingerprint físico.
+
+Las definiciones compartidas y versionadas están en
+`app/modules/ble_lab/definitions`. La API, el dashboard y las datasheets
+registran sus versiones mediante `glossary_schema_version`,
+`evidence_model_version` y `quality_model_version`.
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\run_dev.ps1 -UseRealSdr 1 -EnableBleIqCapture 0 -RadioCondaPythonPath "C:\path\to\radioconda\python.exe"
 ```
@@ -125,6 +226,14 @@ If running only the backend, make sure `RADIOCONDA_PYTHON` points to the Python 
 $env:RADIOCONDA_PYTHON="C:\path\to\radioconda\python.exe"
 cd backend
 .\venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+For the complete Windows application, use the single unified launcher. It
+automatically keeps the FastAPI/Bleak backend environment separate from the
+radioconda GNU Radio/UHD runtime used by the B200:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start_unified.ps1 -RemoteUser "assouyat" -RemoteHost "192.168.193.49"
 ```
 
 
@@ -722,6 +831,27 @@ labels = npz["labels"]
 
 Plain arrays; no ML framework required to load or run inference.
 
+## BLE hybrid campaign intent
+
+Every new hybrid campaign must declare exactly one `campaign_intent` before a
+session is created:
+
+- `positive_target_validation`: requires a specific target selected from the
+  current native scan (`Visto ahora`). Historical or manual targets are
+  rejected for a positive claim.
+- `negative_control`: requires a specific target, a documented
+  `negative_control_type`, and `operator_confirmation: true`. Supported types
+  are `target_powered_off`, `target_physically_absent`,
+  `other_device_substituted`, and `ambient_only`.
+- `exploratory_target_search`: permits a historical target but makes neither a
+  positive claim nor a negative-control claim.
+
+Legacy manifests without `campaign_intent` are interpreted conservatively as
+`exploratory_target_search`. `TARGET_NOT_OBSERVED` means only that evidence was
+insufficient during that campaign; it never proves physical absence. The
+versioned contract is published in
+`app/modules/ble_lab/definitions/campaign_manifest.schema.json`.
+
 ## Troubleshooting
 
 - Confirm the USRP-B200 is connected over USB.
@@ -732,3 +862,21 @@ Plain arrays; no ML framework required to load or run inference.
 - Confirm `RADIOCONDA_PYTHON` points to `C:\path\to\radioconda\python.exe`.
 - If `/api/spectrum/live` returns `real_sdr_pending`, wait for the first frame.
 - If it returns `real_sdr_error`, check the error field and the backend terminal output.
+
+## Declared BLE negative controls
+
+A predeclared negative control is evaluated independently from the E0–E5
+positive-evidence scale. `PASSED_SINGLE_RUN` means that one execution produced
+zero attributions to the target under the operator-confirmed physical
+condition. It is not a statistical false-positive estimate. The manifest
+records target observations, target CRC-valid packets, target strong matches,
+false target attributions, and the contract result.
+
+Dataset Studio assigns `NEGATIVE_BY_EXPERIMENTAL_CONTRACT` and an explicit
+`negative_ground_truth_source` to examples from that campaign. This relation
+means only “not the declared target under this contract”; it does not identify
+the ambient transmitter. E1/E2 remain unchanged. Sessions with any unlocalized
+overflow or discontinuity remain `QUARANTINED_SESSION_LOSS`, so the negative
+control can pass functionally while its IQ remains unavailable for training or
+fingerprinting. A reinforced negative control additionally requires a known
+second device with an E3 match and a clean capture.

@@ -21,6 +21,15 @@ interface AppState {
     kind: 'connecting' | 'capturing' | 'streaming' | 'processing';
     title: string;
     detail?: string;
+    operationId?: string;
+    phase?: string;
+    progressPercent?: number;
+    elapsedSeconds?: number;
+    estimatedRemainingSeconds?: number|null;
+    target?: string;
+    configuredDurationSeconds?: number;
+    processedItems?: number;
+    totalItems?: number;
   } | null;
 
   // Domain State
