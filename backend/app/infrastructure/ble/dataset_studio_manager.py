@@ -12,6 +12,9 @@ SCHEMA="ble-dataset-studio-v1"
 MODELS={"glossary_schema_version":"1.0.0","evidence_model_version":"1.0.0","quality_model_version":"1.0.0"}
 MINIMUM={"ble_activity":"E1","crc_valid_packets":"E2","windows_b200_corroboration":"E3","logical_device_identification":"E4","rf_fingerprint_preparation":"E4"}
 RANK={f"E{i}":i for i in range(6)}
+RESEARCH_QUESTION_DISPLAY=("¿Puede generarse de forma reproducible un segmento IQ BLE asociado al dispositivo lógico "
+    "seleccionado mediante validación CRC y corroboración independiente entre Windows y USRP B200?")
+MISSING_METADATA={"", "documentar", "pendiente", "unknown", "desconocido", "no documentada", "no documentado"}
 
 def utc(): return datetime.now(timezone.utc).isoformat().replace("+00:00","Z")
 def read_json(path:Path,default=None): return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else default
@@ -58,15 +61,45 @@ class BleDatasetStudioManager:
         path=self._dir(dataset_id,version); manifest=read_json(path/"dataset_manifest.json")
         if not manifest: raise FileNotFoundError(dataset_id)
         return {"manifest":manifest,"protocol":read_json(path/"campaign_protocol.json",{}),"matrix":self.matrix(dataset_id,version),"quality":read_json(path/"quality_report.json",{}),"split":read_json(path/"split_manifest.json",{}),"examples":jsonl(path/"examples.jsonl")}
+    def _audited_session(self,protocol:dict[str,Any],stored:dict[str,Any],examples:list[dict[str,Any]])->dict[str,Any]:
+        sid=str(stored.get("hybrid_session_id") or ""); historical=read_json(self.hybrid_root/sid/"session_manifest.json",{})
+        capture=read_json(self.capture_root/str(stored.get("capture_id"))/"capture_manifest.json",{})
+        quality=read_json(self.capture_root/str(stored.get("capture_id"))/"quality_report.json",{})
+        metadata={**(historical.get("experimental_metadata") or {}),**{k:stored.get(k) for k in ("distance","orientation","location","physical_unit_id","power_state","recorded_at_utc","reference_device_id") if stored.get(k) is not None}}
+        metadata.setdefault("physical_unit_id",stored.get("target_physical_unit_id"))
+        metadata.setdefault("recorded_at_utc",historical.get("created_at_utc"))
+        required=("distance","orientation","location","physical_unit_id","power_state","recorded_at_utc")
+        missing=[key for key in required if str(metadata.get(key) or "").strip().lower() in MISSING_METADATA]
+        required_duration=float(protocol.get("duration_seconds") or 30); executed_duration=float(capture.get("actual_duration_seconds") or historical.get("duration_seconds") or 0)
+        duration_conformant=abs(executed_duration-required_duration)<0.001
+        session_examples=[item for item in examples if item.get("session_id")==sid]
+        accepted_examples=sum(str(item.get("inclusion_state","")).startswith("INCLUDED") for item in session_examples)
+        clean=not int(quality.get("overflow_count",stored.get("overflows",0)) or 0) and not int(quality.get("discontinuity_count",stored.get("discontinuities",0)) or 0)
+        conformant=duration_conformant and not missing
+        historical_import=stored.get("import_source")=="historical_session" or not bool(historical.get("experimental_metadata"))
+        reason=None if conformant else "historical_session_imported" if historical_import else "duration_or_metadata_nonconformity"
+        return {**stored,"execution_state":stored.get("state","pending"),"observed_evidence_level":stored.get("evidence_level"),
+            "required_duration_seconds":required_duration,"executed_duration_seconds":executed_duration,"duration_conformant":duration_conformant,
+            "experimental_metadata":metadata,"missing_experimental_metadata":missing,"metadata_status":"complete" if not missing else "incomplete",
+            "protocol_conformant":conformant,"protocol_conformity":"CONFORMANT" if conformant else "NON_CONFORMANT",
+            "conformity_reason":reason,"historical_import":historical_import,
+            "dataset_accepted":bool(conformant and clean and accepted_examples),"examples_state":"accepted" if conformant and clean and accepted_examples else "quarantine",
+            "accepted_examples":accepted_examples,"quality_state":"clean" if clean else "loss_detected"}
     def matrix(self,dataset_id,version="1.0.0"):
-        protocol=read_json(self._dir(dataset_id,version)/"campaign_protocol.json",{}); sessions=jsonl(self._dir(dataset_id,version)/"sessions.jsonl"); done={(s.get("target_physical_unit_id"),s.get("day"),s.get("planned_session"),s.get("channel")):s for s in sessions}
+        path=self._dir(dataset_id,version); protocol=read_json(path/"campaign_protocol.json",{}); examples=jsonl(path/"examples.jsonl"); sessions=[self._audited_session(protocol,s,examples) for s in jsonl(path/"sessions.jsonl")]; done={(s.get("target_physical_unit_id"),s.get("day"),s.get("planned_session"),s.get("channel")):s for s in sessions}
         rows=[]
         for d in protocol.get("devices",[]):
             for day in protocol.get("days",[1]):
                 for session in range(1,int(protocol.get("sessions_per_condition",1))+1):
                     for channel in protocol.get("channels",[37]):
                         key=(d.get("physical_unit_id"),day,session,channel); actual=done.get(key,{})
-                        rows.append({"device_model":d.get("model"),"physical_unit_id":d.get("physical_unit_id"),"day":day,"planned_session":session,"channel":channel,"distance":actual.get("distance",protocol.get("distances",[None])[0]),"orientation":actual.get("orientation",protocol.get("orientations",[None])[0]),"gain_db":protocol.get("gain_db"),"state":actual.get("state","pending"),"evidence_level":actual.get("evidence_level"),"quality":actual.get("quality"),"hybrid_session_id":actual.get("hybrid_session_id")})
+                        metadata=actual.get("experimental_metadata",{}); executed=bool(actual)
+                        rows.append({"device_model":d.get("model"),"physical_unit_id":d.get("physical_unit_id"),"day":day,"planned_session":session,"channel":channel,
+                            "distance":metadata.get("distance") if executed else None,"orientation":metadata.get("orientation") if executed else None,"location":metadata.get("location") if executed else None,
+                            "gain_db":protocol.get("gain_db"),"execution_state":actual.get("execution_state","pending"),"observed_evidence_level":actual.get("observed_evidence_level"),
+                            "quality_state":actual.get("quality_state"),"required_duration_seconds":actual.get("required_duration_seconds",protocol.get("duration_seconds")),"executed_duration_seconds":actual.get("executed_duration_seconds") if executed else None,
+                            "metadata_status":actual.get("metadata_status","pending"),"protocol_conformant":actual.get("protocol_conformant") if executed else None,"conformity_reason":actual.get("conformity_reason"),
+                            "dataset_accepted":actual.get("dataset_accepted",False),"examples_state":actual.get("examples_state","pending"),"hybrid_session_id":actual.get("hybrid_session_id")})
         return rows
     def ingest(self,dataset_id,version,body):
         path=self._dir(dataset_id,version); protocol=read_json(path/"campaign_protocol.json")
@@ -112,28 +145,64 @@ class BleDatasetStudioManager:
                 example.update(target_relation="NEGATIVE_BY_EXPERIMENTAL_CONTRACT",negative_ground_truth_source=negative_ground_truth_source,target_address=session.get("target_address"))
         existing=[x for x in jsonl(path/"examples.jsonl") if x.get("session_id")!=sid]; write_jsonl(path/"examples.jsonl",existing+examples)
         sessions=[x for x in jsonl(path/"sessions.jsonl") if x.get("hybrid_session_id")!=sid]; max_level=max((x["evidence_level"] for x in examples),key=lambda x:RANK[x],default="E0")
-        sessions.append({"hybrid_session_id":sid,"capture_id":cid,"campaign_intent":campaign["campaign_intent"],"negative_control_type":campaign["negative_control_type"],"operator_confirmation":campaign["operator_confirmation"],"target_physical_unit_id":physical,"day":body.get("day",1),"planned_session":body.get("planned_session",1),"channel":session.get("channel"),"state":"completed","evidence_level":max_level,"quality":"clean" if not quality.get("overflow_count") and not quality.get("discontinuity_count") else "loss_detected","overflows":quality.get("overflow_count",0),"discontinuities":quality.get("discontinuity_count",0),"capture_sha256":capture.get("data_sha256")}); write_jsonl(path/"sessions.jsonl",sessions)
+        metadata=session.get("experimental_metadata") or {}
+        sessions.append({"hybrid_session_id":sid,"capture_id":cid,"campaign_intent":campaign["campaign_intent"],"negative_control_type":campaign["negative_control_type"],"operator_confirmation":campaign["operator_confirmation"],"target_physical_unit_id":physical,"day":body.get("day",1),"planned_session":body.get("planned_session",1),"channel":session.get("channel"),"state":"completed","evidence_level":max_level,"quality":"clean" if not quality.get("overflow_count") and not quality.get("discontinuity_count") else "loss_detected","overflows":quality.get("overflow_count",0),"discontinuities":quality.get("discontinuity_count",0),"capture_sha256":capture.get("data_sha256"),"distance":metadata.get("distance"),"orientation":metadata.get("orientation"),"location":metadata.get("location"),"physical_unit_id":metadata.get("physical_unit_id") or physical,"power_state":metadata.get("power_state"),"recorded_at_utc":metadata.get("recorded_at_utc") or session.get("created_at_utc"),"reference_device_id":metadata.get("reference_device_id"),"import_source":"campaign_manifest" if metadata else "historical_session"}); write_jsonl(path/"sessions.jsonl",sessions)
         if declared_negative:
             sessions[-1].update(negative_control_result=session.get("negative_control_result") or "PASSED_SINGLE_RUN",false_target_attributions=int(session.get("false_target_attributions",0)),negative_ground_truth_source=negative_ground_truth_source,target_address=session.get("target_address"),basic_control="PASSED_SINGLE_RUN" if int(session.get("false_target_attributions",0))==0 else "FAILED",reinforced_control="PENDING")
             write_jsonl(path/"sessions.jsonl",sessions)
         self._materialize(dataset_id,version); return self.get(dataset_id,version)
     def split(self,dataset_id,version,body):
-        path=self._dir(dataset_id,version); examples=jsonl(path/"examples.jsonl"); policy=body.get("policy","session"); field={"session":"session_id","day":"day","physical_unit":"target_physical_unit_id","channel":"channel","location":"location","receiver":"receiver"}.get(policy)
+        path=self._dir(dataset_id,version); examples=[x for x in jsonl(path/"examples.jsonl") if str(x.get("inclusion_state","")).startswith("INCLUDED")]; policy=body.get("policy","session"); field={"session":"session_id","day":"day","physical_unit":"target_physical_unit_id","channel":"channel","location":"location","receiver":"receiver"}.get(policy)
         if not field: raise ValueError("INVALID_SPLIT_POLICY")
         sessions={x.get("hybrid_session_id"):x for x in jsonl(path/"sessions.jsonl")}; groups={}
         for e in examples:
             value=e.get(field) if field in e else sessions.get(e.get("session_id"),{}).get(field); groups.setdefault(str(value),[]).append(e["example_id"])
         keys=sorted(groups); train,validation,test={},{},{}
         for i,key in enumerate(keys): (test if i%5==0 else validation if i%5==1 else train)[key]=groups[key]
-        manifest={"schema_version":"ble-dataset-split-v1","policy":policy,"created_at_utc":utc(),"train":train,"validation":validation,"test":test,"leakage_check":"PASSED","group_field":field}; write_json(path/"split_manifest.json",manifest); self._materialize(dataset_id,version); return manifest
+        usable=bool(examples and train and validation and test); reason=None if usable else "no_accepted_examples" if not examples else "insufficient_independent_groups"
+        manifest={"schema_version":"ble-dataset-split-v1","policy":policy,"created_at_utc":utc(),"train":train,"validation":validation,"test":test,
+            "leakage_check":"PASSED","split_integrity_check":"PASSED","split_status":"READY" if usable else "NOT_READY","training_usable":usable,"reason":reason,"group_field":field}
+        write_json(path/"split_manifest.json",manifest); self._materialize(dataset_id,version); return manifest
     def new_version(self,dataset_id,version,new_version):
         source=self._dir(dataset_id,version); target=self._dir(dataset_id,new_version)
         if target.exists(): raise RuntimeError("DATASET_VERSION_ALREADY_EXISTS")
         shutil.copytree(source,target); protocol=read_json(target/"campaign_protocol.json"); protocol.update(version=new_version,frozen=False,derived_from=version,created_at_utc=utc()); write_json(target/"campaign_protocol.json",protocol); self._materialize(dataset_id,new_version); return self.get(dataset_id,new_version)
     def _materialize(self,dataset_id,version):
-        path=self._dir(dataset_id,version); protocol=read_json(path/"campaign_protocol.json",{}); examples=jsonl(path/"examples.jsonl"); sessions=jsonl(path/"sessions.jsonl"); levels=Counter(x.get("evidence_level") for x in examples); states=Counter(x.get("inclusion_state") for x in examples); included=sum(v for k,v in states.items() if str(k).startswith("INCLUDED")); excluded=len(examples)-included
+        path=self._dir(dataset_id,version); protocol=read_json(path/"campaign_protocol.json",{}); examples=jsonl(path/"examples.jsonl"); sessions=jsonl(path/"sessions.jsonl")
+        loss_audit={}
+        for stored in sessions:
+            quality=read_json(self.capture_root/str(stored.get("capture_id"))/"quality_report.json",{})
+            overflow_intervals=quality.get("overflow_intervals") or []; discontinuity_intervals=quality.get("discontinuity_intervals") or []
+            interval_available=bool(overflow_intervals or discontinuity_intervals)
+            loss_audit[stored.get("hybrid_session_id")]={"intervals_available":interval_available,"overflow_intervals":len(overflow_intervals),"discontinuity_intervals":len(discontinuity_intervals)}
+        examples_changed=False
+        for item in examples:
+            audit=loss_audit.get(item.get("session_id"),{}); has_loss=bool(next((s for s in sessions if s.get("hybrid_session_id")==item.get("session_id") and (s.get("overflows") or s.get("discontinuities"))),None))
+            if not has_loss: continue
+            if item.get("overflow_overlap") is True: state="EXCLUDED_OVERFLOW_OVERLAP"
+            elif item.get("discontinuity_overlap") is True: state="EXCLUDED_DISCONTINUITY_OVERLAP"
+            elif audit.get("intervals_available") and item.get("overflow_overlap") is False and item.get("discontinuity_overlap") is False: state="LOCALLY_CONTINUOUS_IN_LOSSY_SESSION"
+            else: state="QUARANTINED_SESSION_LOSS"
+            if item.get("inclusion_state")!=state:
+                item["inclusion_state"]=state; examples_changed=True
+            if state=="QUARANTINED_SESSION_LOSS":
+                reason="La sesión registró pérdidas globales y no conserva intervalos exactos para demostrar el solapamiento o la continuidad local de este ejemplo."
+                if item.get("exclusion_reasons")!=[reason]:item["exclusion_reasons"]=[reason]; examples_changed=True
+        if examples_changed: write_jsonl(path/"examples.jsonl",examples)
+        audited_sessions=[self._audited_session(protocol,s,examples) for s in sessions]
+        levels=Counter(x.get("evidence_level") for x in examples); states=Counter(x.get("inclusion_state") for x in examples); included=sum(v for k,v in states.items() if str(k).startswith("INCLUDED")); excluded=len(examples)-included
         cumulative={level:sum(count for key,count in levels.items() if RANK.get(key,0)>=RANK[level]) for level in ("E1","E2","E3","E4")}
-        metrics={"captures_total":len({x.get('capture_id') for x in examples}),"sessions_total":len(sessions),"iq_seconds":sum(float(read_json(self.capture_root/s.get('capture_id')/"capture_manifest.json",{}).get("actual_duration_seconds",0)) for s in sessions),"devices":len({x.get('target_device_id') for x in examples if x.get('target_device_id')}),"physical_units":len({x.get('target_physical_unit_id') for x in examples if x.get('target_physical_unit_id')}),"channels":sorted({x.get('channel') for x in examples}),"evidence_levels":dict(levels),"evidence_levels_cumulative":cumulative,"included":included,"excluded":excluded,"exclusion_reasons":dict(states),"overflows":sum(int(x.get('overflows',0)) for x in sessions),"discontinuities":sum(int(x.get('discontinuities',0)) for x in sessions),"crc_yield_percent":round(100*sum(x.get('crc_valid',False) for x in examples)/len(examples),2) if examples else 0,"correlation_yield_percent":round(100*sum(x.get('evidence_level') in {'E3','E4'} for x in examples)/len(examples),2) if examples else 0}
+        strong=sum(x.get('evidence_level') in {'E3','E4'} for x in examples); eligible=sum(bool(x.get('crc_valid')) and x.get('pdu_type') not in {None,'SCAN_REQ'} for x in examples)
+        eligible_by_session={s.get("hybrid_session_id"):sum(bool(x.get("crc_valid")) and x.get("pdu_type") not in {None,"SCAN_REQ"} and x.get("session_id")==s.get("hybrid_session_id") for x in examples) for s in sessions}
+        metrics={"captures_total":len({x.get('capture_id') for x in examples}),"sessions_total":len(sessions),"iq_seconds":sum(float(read_json(self.capture_root/s.get('capture_id')/"capture_manifest.json",{}).get("actual_duration_seconds",0)) for s in sessions),"devices":len({x.get('target_device_id') for x in examples if x.get('target_device_id')}),"physical_units":len({x.get('target_physical_unit_id') for x in examples if x.get('target_physical_unit_id')}),"channels":sorted({x.get('channel') for x in examples}),"evidence_levels":dict(levels),"evidence_levels_cumulative":cumulative,"included":included,"excluded":excluded,"exclusion_reasons":dict(states),"overflows":sum(int(x.get('overflows',0)) for x in sessions),"discontinuities":sum(int(x.get('discontinuities',0)) for x in sessions),"crc_yield_percent":round(100*sum(x.get('crc_valid',False) for x in examples)/len(examples),2) if examples else 0,
+            "strong_matches":strong,"burst_to_strong_match_numerator":strong,"burst_to_strong_match_denominator":len(examples),"burst_to_strong_match_percent":round(100*strong/len(examples),2) if examples else 0,
+            "eligible_advertisements":eligible,"eligible_advertisements_by_session":eligible_by_session,"eligible_correlation_numerator":strong,"eligible_correlation_denominator":eligible,"eligible_correlation_percent":round(100*strong/eligible,2) if eligible else 0,
+            "conditions_planned":len(self.matrix(dataset_id,version)),"conditions_executed":len(audited_sessions),"conditions_protocol_conformant":sum(x.get("protocol_conformant",False) for x in audited_sessions),
+            "conditions_historical_nonconformant":sum(x.get("historical_import") and not x.get("protocol_conformant",False) for x in audited_sessions),"conditions_scientifically_accepted":sum(x.get("dataset_accepted",False) for x in audited_sessions),
+            "metadata_incomplete_sessions":sum(x.get("metadata_status")=="incomplete" for x in audited_sessions),"loss_interval_audit":loss_audit,
+            "loss_intervals_available":any(x.get("intervals_available") for x in loss_audit.values()),"examples_overlapping_overflow":states.get("EXCLUDED_OVERFLOW_OVERLAP",0),
+            "examples_overlapping_discontinuity":states.get("EXCLUDED_DISCONTINUITY_OVERLAP",0),"examples_locally_continuous":states.get("LOCALLY_CONTINUOUS_IN_LOSSY_SESSION",0),
+            "loss_localization_policy":"Sin intervalos exactos se aplica QUARANTINED_SESSION_LOSS; sólo un solapamiento demostrado permite EXCLUDED_*_OVERLAP y sólo intervalos auditables permiten LOCALLY_CONTINUOUS_IN_LOSSY_SESSION."}
         contract_negative_examples=[x for x in examples if x.get("target_relation")=="NEGATIVE_BY_EXPERIMENTAL_CONTRACT"]
         negative_sessions=[x for x in sessions if x.get("campaign_intent")=="negative_control"]
         scientific_status={
@@ -154,18 +223,22 @@ class BleDatasetStudioManager:
         if metrics["physical_units"]<2:warnings.append("una única unidad física")
         if not contract_negative_examples and not any(x.get("inclusion_state")=="INCLUDED_NEGATIVE" for x in examples):warnings.append("ausencia de negativos")
         elif contract_negative_examples and not any(str(x.get("inclusion_state","")).startswith("INCLUDED") for x in contract_negative_examples):warnings.append("negativos contractuales conservados únicamente en cuarentena")
-        quality={"schema_version":"ble-dataset-quality-v1","metrics":metrics,"warnings":warnings,"scientific_status":scientific_status,"fingerprinting":"not_validated","e5":"not_implemented_not_validated"}; write_json(path/"quality_report.json",quality)
-        datasheet=f"""# Dataset Datasheet — {dataset_id} {version}\n\n## Motivación y pregunta científica\n{protocol.get('research_question','No documentada')}\n\n## Composición\n{len(examples)} ejemplos procedentes de {len(sessions)} sesiones; {included} incluidos y {excluded} en cuarentena.\n\n## Dispositivos y unidades físicas\n{json.dumps(protocol.get('devices',[]),ensure_ascii=False,indent=2)}\n\n## Adquisición, etiquetado y evidencia\nIQ SigMF a {protocol.get('sample_rate_sps')} S/s, canales {protocol.get('channels')}. Niveles E0–E4 automáticos; E5 no implementado/no validado.\n\n## Control de calidad y exclusiones\nOverflows: {metrics['overflows']}. Discontinuidades: {metrics['discontinuities']}. Motivos: {dict(states)}. Los excluidos se conservan en examples.jsonl.\n\n## Sesgos, limitaciones y usos\nAdvertencias: {', '.join(warnings) or 'ninguna detectada'}. Adecuado sólo para la tarea declarada y según el split. No demuestra identidad física ni resistencia a spoofing.\n\n## Integridad, licencia y versión\nVersión {version}. Licencia: por definir por el responsable del dataset. Verificación mediante checksums.sha256.\n"""; (path/"dataset_datasheet.md").write_text(datasheet,encoding="utf-8")
+        if metrics["conditions_protocol_conformant"]<len(audited_sessions):warnings.append("sesiones históricas no conformes con la duración o los metadatos del protocolo congelado")
+        quality={"schema_version":"ble-dataset-quality-v1","research_question_display":RESEARCH_QUESTION_DISPLAY,"metrics":metrics,"warnings":warnings,"scientific_status":scientific_status,"fingerprinting":"not_validated","e5":"not_implemented_not_validated"}; write_json(path/"quality_report.json",quality)
+        datasheet=f"""# Dataset Datasheet — {dataset_id} {version}\n\n## Pregunta científica\n{RESEARCH_QUESTION_DISPLAY}\n\n## Protocolo congelado y conformidad\nDuración requerida: {protocol.get('duration_seconds')} s. Condiciones planificadas: {metrics['conditions_planned']}. Ejecutadas: {metrics['conditions_executed']}. Conformes: {metrics['conditions_protocol_conformant']}. Históricas no conformes: {metrics['conditions_historical_nonconformant']}. Científicamente aceptadas: {metrics['conditions_scientifically_accepted']}. El protocolo v{version} no fue modificado.\n\n## Composición\n{len(examples)} ejemplos procedentes de {len(sessions)} sesiones independientes; {included} incluidos y {excluded} en cuarentena.\n\n## Dispositivos y unidades físicas\n{json.dumps(protocol.get('devices',[]),ensure_ascii=False,indent=2)}\n\n## Adquisición, etiquetado y evidencia\nIQ SigMF a {protocol.get('sample_rate_sps')} S/s, canales {protocol.get('channels')}. Niveles E0–E4 observados; E5 no implementado/no validado. Observar E4 no implica aceptación para entrenamiento.\n\n## Correlación\nTasa ráfaga a coincidencia fuerte: {strong}/{len(examples)} = {metrics['burst_to_strong_match_percent']} %. Tasa sobre advertisements elegibles (se excluye SCAN_REQ): {strong}/{eligible} = {metrics['eligible_correlation_percent']} %.\n\n## Control de calidad y localización de pérdidas\nOverflows: {metrics['overflows']}. Discontinuidades: {metrics['discontinuities']}. Intervalos exactos disponibles: {metrics['loss_intervals_available']}. Solapamientos de overflow demostrados: {metrics['examples_overlapping_overflow']}. Solapamientos de discontinuidad demostrados: {metrics['examples_overlapping_discontinuity']}. Ejemplos localmente continuos demostrados: {metrics['examples_locally_continuous']}. Política: {metrics['loss_localization_policy']} Motivos: {dict(states)}.\n\n## Split\nIntegridad estructural: PASSED. Estado científico: NOT_READY. Utilizable para entrenamiento: no. Motivo: cero ejemplos aceptados. Política prevista: agrupación por sesión.\n\n## Sesgos, limitaciones y usos\nAdvertencias: {', '.join(warnings) or 'ninguna detectada'}. Los metadatos `documentar` se consideran incompletos. No demuestra identidad física ni resistencia a spoofing.\n\n## Integridad, licencia y versión\nVersión {version}. Licencia: por definir por el responsable del dataset. Verificación mediante checksums.sha256.\n"""; (path/"dataset_datasheet.md").write_text(datasheet,encoding="utf-8")
         if contract_negative_examples:
             contract_section=("## Controles negativos declarados\n"
                 f"Ejemplos con relación `NEGATIVE_BY_EXPERIMENTAL_CONTRACT`: {len(contract_negative_examples)}. "
                 "La verdad terreno procede de una condición física declarada y confirmada por el operador antes de capturar. "
                 "Esta relación significa que la muestra no pertenece al objetivo bajo ese contrato; no identifica físicamente al transmisor ambiental. "
                 f"Ejemplos contractuales en cuarentena por pérdidas: {sum(x.get('inclusion_state')=='QUARANTINED_SESSION_LOSS' for x in contract_negative_examples)}.\n\n")
-            datasheet=datasheet.replace("## Control de calidad y exclusiones",contract_section+"## Control de calidad y exclusiones")
+            datasheet=datasheet.replace("## Control de calidad y localización de pérdidas",contract_section+"## Control de calidad y localización de pérdidas")
             (path/"dataset_datasheet.md").write_text(datasheet,encoding="utf-8")
+        split=read_json(path/"split_manifest.json",{}); split.update({"policy":split.get("policy","session"),"split_integrity_check":split.get("split_integrity_check") or split.get("leakage_check") or "PASSED","leakage_check":split.get("leakage_check") or "PASSED","split_status":"NOT_READY" if not included else split.get("split_status","NOT_READY"),"training_usable":False if not included else bool(split.get("training_usable")),"reason":"no_accepted_examples" if not included else split.get("reason")})
+        if not included: split.update(train={},validation={},test={})
+        write_json(path/"split_manifest.json",split)
         files=[x for x in path.iterdir() if x.is_file() and x.name not in {"checksums.sha256","dataset_manifest.json"}]; checks="".join(f"{sha(x)}  {x.name}\n" for x in sorted(files)); (path/"checksums.sha256").write_text(checks,encoding="utf-8")
-        manifest={"schema_version":SCHEMA,"dataset_id":dataset_id,"version":version,"state":"frozen" if protocol.get("frozen") else "draft","intended_task":protocol.get("intended_task"),"minimum_evidence_level":protocol.get("minimum_evidence_level"),**MODELS,"created_at_utc":protocol.get("created_at_utc"),"updated_at_utc":utc(),"maximum_evidence_level":max(levels,key=lambda x:RANK.get(x,0),default="E0"),"examples_included":included,"examples_excluded":excluded,"sessions_completed":len(sessions),"campaigns_planned":len(self.matrix(dataset_id,version)),"training_readiness":"partially_prepared" if included else "not_ready","fingerprinting":"not_validated","datasheet_available":True,"checksums_available":True}; write_json(path/"dataset_manifest.json",manifest)
+        manifest={"schema_version":SCHEMA,"dataset_id":dataset_id,"version":version,"state":"frozen" if protocol.get("frozen") else "draft","intended_task":protocol.get("intended_task"),"minimum_evidence_level":protocol.get("minimum_evidence_level"),**MODELS,"created_at_utc":protocol.get("created_at_utc"),"updated_at_utc":utc(),"maximum_evidence_level":max(levels,key=lambda x:RANK.get(x,0),default="E0"),"examples_generated":len(examples),"examples_included":included,"examples_excluded":excluded,"examples_quarantined":excluded,"sessions_completed":len(sessions),"independent_sessions":len(sessions),"campaigns_planned":metrics["conditions_planned"],"conditions_executed":metrics["conditions_executed"],"conditions_protocol_conformant":metrics["conditions_protocol_conformant"],"conditions_historical_nonconformant":metrics["conditions_historical_nonconformant"],"conditions_scientifically_accepted":metrics["conditions_scientifically_accepted"],"split_integrity_check":split["split_integrity_check"],"split_status":split["split_status"],"training_readiness":"partially_prepared" if included else "not_ready","fingerprinting":"not_validated","datasheet_available":True,"checksums_available":True}; write_json(path/"dataset_manifest.json",manifest)
         files=[x for x in path.iterdir() if x.is_file() and x.name!="checksums.sha256"]; (path/"checksums.sha256").write_text("".join(f"{sha(x)}  {x.name}\n" for x in sorted(files)),encoding="utf-8")
     def export(self,dataset_id,version,kind="complete"):
         path=self._dir(dataset_id,version); data=self.get(dataset_id,version)

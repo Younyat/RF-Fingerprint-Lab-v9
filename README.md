@@ -11,6 +11,45 @@ FastAPI backend and a React/TypeScript frontend.
 > Spectrum Lab uses real SDR samples. The live spectrum, waterfall, captures,
 > triggered pre-buffer, demodulation, and dataset artifacts are not mock data.
 
+## BLE Dataset Studio Pilot v1
+
+`BLE Dataset Studio Pilot v1` is the frozen reproducible baseline for the BLE
+methodology implemented and verified in this repository. Its current state is:
+
+- Historical campaigns: 3.
+- Generated examples: 338.
+- Included examples: 0.
+- Quarantined examples: 338.
+- Positive E4 campaign: `PASSED_SINGLE_RUN`.
+- Exploratory E2 campaign: `PASSED`.
+- Declared negative control: `PASSED_SINGLE_RUN`.
+- Reinforced negative control: `PENDING`.
+- Clean captures: `PENDING`.
+- Training: `NOT_READY`.
+- Fingerprinting: `NOT_VALIDATED`.
+
+The frozen 30-second protocol and its hashes belong only to this BLE Dataset
+Studio pilot. They are not the definitive scientific protocol for the whole
+RF-Fingerprint-Lab platform. That global protocol remains pending until a
+consolidated scientific roadmap defines the research gap, questions,
+hypotheses, experimental design, datasets, baselines, metrics, controls, and
+acceptance criteria. No additional experimental BLE development is part of
+this baseline.
+
+Reproducibility anchors for the local historical evidence:
+
+- Frozen pilot protocol SHA-256:
+  `752bb3b437ccf6500376366774a330ea626cd06bc5b4429632b311997c3511f1`.
+- `BLE-IQ-ce737e9e9711` data SHA-256:
+  `9e24df1820de5d569578faa61a8dbe4a2fe59ee9bdcfbf1bdc88ec4f5181d2bf`.
+- `BLE-IQ-e5615d8d54cc` data SHA-256:
+  `1361b16462b05938c90fc37ae8353bee01d056156bec0145a6b4c94f96efda64`.
+- `BLE-IQ-cf8a55ff592f` data SHA-256:
+  `dd8c8daaa6eee968361abb9ee7aa52c10830f58f288affbe5d5f6006474914e9`.
+
+The RF artifacts remain in ignored local storage and are not embedded in Git.
+The hashes above bind them to this pilot baseline without modifying them.
+
 ## Contents
 
 - [Main capabilities](#main-capabilities)

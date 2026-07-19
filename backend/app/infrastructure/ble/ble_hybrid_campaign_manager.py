@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import hashlib, json, statistics, subprocess, threading, time, uuid
+import hashlib, json, re, statistics, subprocess, threading, time, uuid
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +32,13 @@ class BleHybridCampaignManager:
         channel=int(payload.get("channel",37)); duration=float(payload.get("duration_seconds",30)); target=payload.get("target") or {"kind":"any"}
         if channel not in (37,38,39) or not 1<=duration<=60 or not payload.get("device_id"): raise ValueError("INVALID_HYBRID_CONFIGURATION")
         contract=validate_campaign_contract(payload,target)
+        metadata=dict(payload.get("experimental_metadata") or {})
+        required=("distance","orientation","location","physical_unit_id","power_state")
+        missing=[key for key in required if str(metadata.get(key) or "").strip().lower() in {"","documentar","pendiente","unknown","desconocido"}]
+        if missing: raise ValueError("EXPERIMENTAL_METADATA_REQUIRED:"+",".join(missing))
+        if not re.search(r"\d+(?:[.,]\d+)?\s*(?:mm|cm|m)\b",str(metadata["distance"]).strip(),re.IGNORECASE): raise ValueError("EXPERIMENTAL_DISTANCE_REQUIRES_UNIT")
+        if contract["negative_control_type"]=="target_powered_off" and metadata["power_state"]!="powered_off": raise ValueError("NEGATIVE_CONTROL_POWER_STATE_MISMATCH")
+        metadata["recorded_at_utc"]=utc()
         payload={**payload,"device_id":self.capture.resolve_device_id(payload.get("device_id"))}
         with self._lock:
             if self._active: raise RuntimeError("HYBRID_CAMPAIGN_ALREADY_RUNNING")
@@ -44,6 +51,7 @@ class BleHybridCampaignManager:
             target_name_at_start=target.get("label"),target_selection_source=target.get("selection_source","any_device"),
             campaign_intent=contract["campaign_intent"],negative_control_type=contract["negative_control_type"],
             operator_confirmation=contract["operator_confirmation"],target_seen_before_start=contract["target_seen_before_start"],
+            experimental_metadata=metadata,
             steps={"hardware":"running","native_scan":"pending","b200_capture":"pending","burst_detection":"pending","decoding":"pending","correlation":"pending","results":"pending"},counters={})
         threading.Thread(target=self._run,args=(sid,request),daemon=True).start(); return self.get(sid)
     def _run(self,sid,request):

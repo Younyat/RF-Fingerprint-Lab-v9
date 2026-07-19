@@ -223,3 +223,16 @@ estadística de falsos positivos. Dataset Studio conserva E1/E2 y utiliza
 ambiental. Si hubo pérdidas, todos esos ejemplos siguen en
 `QUARANTINED_SESSION_LOSS`. El control reforzado permanece pendiente hasta
 obtener una referencia positiva E3 de otro dispositivo y una captura limpia.
+
+## Lectura correcta de Dataset Studio
+
+La interfaz separa condiciones ejecutadas, conformes al protocolo y aceptadas.
+Las sesiones históricas de 3 s no cuentan como conformes al protocolo congelado
+de 30 s, y los valores `documentar` se presentan como metadatos incompletos.
+La matriz separa ejecución, evidencia observada, calidad, conformidad y
+aceptación. Un E4 observado no implica aceptación para entrenamiento.
+
+Las dos tasas de correlación muestran numerador y denominador. La cuarentena
+local sólo se declara con intervalos exactos auditables. El split muestra por
+separado la comprobación estructural de fuga y la preparación científica; con
+cero ejemplos aceptados se presenta como `No preparado`.

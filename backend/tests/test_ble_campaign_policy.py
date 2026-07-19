@@ -1,5 +1,7 @@
 import pytest
+from pathlib import Path
 
+from app.infrastructure.ble.ble_hybrid_campaign_manager import BleHybridCampaignManager
 from app.infrastructure.ble.campaign_policy import (
     EXPLORATORY_TARGET_SEARCH,
     contract_from_session,
@@ -47,3 +49,9 @@ def test_persisted_uppercase_negative_contract_is_normalized():
     assert contract["campaign_intent"]=="negative_control"
     assert contract["negative_control_type"]=="target_powered_off"
     assert contract["operator_confirmation"] is True
+
+
+def test_new_hybrid_campaign_requires_complete_experimental_metadata(tmp_path):
+    manager=BleHybridCampaignManager(tmp_path/"sessions",object(),object(),Path("python"),Path("decoder"),Path("correlator"),tmp_path)
+    with pytest.raises(ValueError,match="EXPERIMENTAL_METADATA_REQUIRED"):
+        manager.start({"device_id":"b200","channel":37,"duration_seconds":30,"target":TARGET_NOW,"campaign_intent":"positive_target_validation"})

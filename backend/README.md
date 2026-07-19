@@ -880,3 +880,26 @@ overflow or discontinuity remain `QUARANTINED_SESSION_LOSS`, so the negative
 control can pass functionally while its IQ remains unavailable for training or
 fingerprinting. A reinforced negative control additionally requires a known
 second device with an E3 match and a clean capture.
+
+### Dataset Studio: execution is not protocol acceptance
+
+Dataset Studio keeps planned, executed, protocol-conformant, and scientifically
+accepted conditions separate. A 3-second historical capture does not complete
+a frozen 30-second condition. Missing distance, orientation, location,
+physical unit, power state, or timestamp also makes an execution non-conformant.
+
+Correlation reports both strong matches over all bursts and strong matches over
+eligible advertisements; `SCAN_REQ` is excluded from the second denominator.
+Loss is localized only when exact intervals exist. Otherwise the affected
+examples use `QUARANTINED_SESSION_LOSS`. Split integrity is independent from
+training readiness: with zero accepted examples `split_status` is `NOT_READY`
+and its reason is `no_accepted_examples`.
+
+### BLE Dataset Studio Pilot v1 baseline
+
+This implementation is frozen as `BLE Dataset Studio Pilot v1`. The 30-second
+protocol is the current versioned BLE pilot protocol only; it is not the global
+scientific protocol for RF-Fingerprint-Lab. The global research protocol and
+cross-domain roadmap remain pending. This baseline contains 3 historical
+campaigns and 338 quarantined examples, with zero accepted training examples,
+training `NOT_READY`, and fingerprinting `NOT_VALIDATED`.
