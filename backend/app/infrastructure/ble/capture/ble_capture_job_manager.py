@@ -121,7 +121,11 @@ class BleCaptureJobManager:
                 self._write_job(job_dir, "cancelled", capture_complete=False, partial_artifact_preserved=True); return
             self._verify_completed(job_dir)
             self._write_job(job_dir, "completed", capture_complete=True)
-        except TimeoutError as error: self._write_job(job_dir, "timed_out", error=str(error), failure_code="CAPTURE_TIMEOUT", capture_complete=False, partial_artifact_preserved=any(job_dir.glob("*.partial")))
+        except TimeoutError as error:
+            if self._recover_completed_capture(job_dir, f"{type(error).__name__}:{error}"):
+                self._write_job(job_dir, "completed", capture_complete=True, completion_diagnostic="CAPTURE_TIMEOUT_AFTER_IQ_COMPLETE_RECOVERED")
+            else:
+                self._write_job(job_dir, "timed_out", error=str(error), failure_code="CAPTURE_TIMEOUT", capture_complete=False, partial_artifact_preserved=any(job_dir.glob("*.partial")))
         except Exception as error: self._write_job(job_dir, "failed", error=str(error), failure_code=str(error).split(":",1)[0], capture_complete=False, partial_artifact_preserved=any(job_dir.glob("*.partial")))
         finally:
             with self._lock:
@@ -136,12 +140,65 @@ class BleCaptureJobManager:
         if sha256_file(data) != record.get("data_sha256"): raise ValueError("CAPTURE_DATA_HASH_MISMATCH")
         if sha256_file(meta) != record.get("metadata_sha256"): raise ValueError("CAPTURE_METADATA_HASH_MISMATCH")
 
+    def _recover_completed_capture(self, job_dir: Path, diagnostic: str) -> bool:
+        capture_id = job_dir.name
+        request_path = job_dir / "request.json"
+        data, meta, manifest_path = job_dir / f"{capture_id}.sigmf-data", job_dir / f"{capture_id}.sigmf-meta", job_dir / "capture_manifest.json"
+        if not request_path.is_file() or not data.is_file() or not meta.is_file(): return False
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        fmt = request.get("sample_format")
+        if fmt not in FORMATS: return False
+        expected_size = int(request.get("expected_size_bytes") or 0)
+        if expected_size <= 0:
+            expected_size = int(float(request["sample_rate_sps"]) * float(request["duration_seconds"]) * FORMATS[fmt])
+        if data.stat().st_size != expected_size: return False
+        metadata = json.loads(meta.read_text(encoding="utf-8"))
+        validate_sigmf(metadata)
+        if manifest_path.is_file():
+            self._verify_completed(job_dir)
+            return True
+        data_hash, meta_hash = sha256_file(data), sha256_file(meta)
+        samples = expected_size // FORMATS[fmt]
+        live_path = job_dir / "live.json"
+        live = json.loads(live_path.read_text(encoding="utf-8")) if live_path.is_file() else {}
+        started_at = ((metadata.get("captures") or [{}])[0].get("core:datetime") or request.get("created_at_utc") or utc_now())
+        manifest = {
+            "schema_version": "ble-sdr-capture-manifest-v1", "capture_id": capture_id,
+            "created_at_utc": started_at, "device_driver": request.get("device_args", {}).get("driver", "unknown"),
+            "device_serial": request.get("device_args", {}).get("serial"), "device_serial_masked": request.get("device_serial_masked"),
+            "hardware": metadata.get("global", {}).get("core:hw"), "uhd_version": None,
+            "capture_software_version": "ble-sdr-capture-v2", "center_frequency_hz": request["center_frequency_hz"],
+            "ble_channel": request.get("ble_channel"), "sample_rate_sps": request["sample_rate_sps"],
+            "bandwidth_hz": request["bandwidth_hz"], "sample_format": fmt,
+            "gain_configuration": {"mode": request.get("gain_mode"), "gain_db": request.get("gain_db")},
+            "antenna": request.get("antenna"), "requested_duration_seconds": request["duration_seconds"],
+            "actual_samples": samples, "actual_duration_seconds": samples / request["sample_rate_sps"],
+            "expected_size_bytes": expected_size, "actual_size_bytes": data.stat().st_size,
+            "dropped_samples": None, "overflow_count": live.get("stream_overflows"),
+            "input_discontinuities": live.get("input_discontinuities"),
+            "data_path": data.name, "metadata_path": meta.name, "data_sha256": data_hash, "metadata_sha256": meta_hash,
+            "capture_complete": True, "scientific_corpus_membership": "none", "eligible_for_holdout": False,
+            "purpose": request.get("purpose", "interactive_experimental_capture"),
+            "controlled_transmitter_state": request.get("controlled_transmitter_state", "unknown"),
+            "operator_confirmed": bool(request.get("operator_confirmed", False)),
+            "confirmation_method": request.get("confirmation_method"), "capture_role": request.get("capture_role"),
+            "analysis_status": "postprocessing_timeout_recovered", "iq_recovery_validated": True,
+            "ota_validated": False, "recovery_diagnostic": diagnostic,
+        }
+        atomic_json(manifest_path, manifest)
+        (job_dir / "capture.sha256").write_text(f"{data_hash}  {data.name}\n{meta_hash}  {meta.name}\n", encoding="ascii")
+        return True
+
     def _write_job(self, job_dir: Path, state: str, **fields: Any) -> None:
         with self._lock:
             previous = {}
             path = job_dir / "job.json"
             if path.exists(): previous = json.loads(path.read_text(encoding="utf-8"))
-            atomic_json(path, {**previous, **fields, "capture_id": job_dir.name, "state": state, "updated_at_utc": utc_now()})
+            next_job = {**previous, **fields, "capture_id": job_dir.name, "state": state, "updated_at_utc": utc_now()}
+            if state == "completed":
+                for key in ("error", "failure_code", "partial_artifact_preserved"):
+                    next_job.pop(key, None)
+            atomic_json(path, next_job)
 
     def get(self, capture_id: str) -> dict[str, Any]:
         return json.loads((self._job_dir(capture_id) / "job.json").read_text(encoding="utf-8"))

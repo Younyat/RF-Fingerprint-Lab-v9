@@ -71,6 +71,36 @@ class BleDeviceRegistry:
             if device_id not in self._devices: raise KeyError(device_id)
             self._devices[device_id].update(fields); self._save(); return dict(self._devices[device_id])
 
+    def merge_observed(self, observed: dict[str, Any]) -> dict[str, Any]:
+        device_id = str(observed.get("device_id") or self.device_id(str(observed["address"])))
+        with self._lock:
+            previous = self._devices.get(device_id, {})
+            count = int(previous.get("observation_count", 0)) + int(observed.get("observation_count", 1))
+            preserved = {
+                key: previous.get(key)
+                for key in (
+                    "connection", "connection_attempted", "connection_established",
+                    "gatt_discovery_attempted", "gatt_discovery_succeeded", "profile_recognized",
+                    "sensor_parser_supported", "measurement_available", "notification_supported",
+                    "native_state", "native_status", "gatt_diagnostics", "measurements",
+                    "gatt_services", "environmental_sensor", "ir_temperature_sensor",
+                    "sensor_inventory", "profile_id", "profile_label", "profile_detection_source",
+                    "profile_confidence", "probable_platform",
+                )
+                if key in previous
+            }
+            value = {
+                **previous,
+                **observed,
+                **preserved,
+                "device_id": device_id,
+                "first_seen_utc": previous.get("first_seen_utc", observed.get("first_seen_utc")),
+                "observation_count": count,
+            }
+            self._devices[device_id] = value
+            self._save()
+            return dict(value)
+
     def add_measurement(self, device_id: str, measurement: dict[str, Any]) -> None:
         with self._lock:
             values = self._devices[device_id].setdefault("measurements", [])

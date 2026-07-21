@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -17,7 +18,7 @@ class SdrProbeConfig:
     python_executable: Path
     tool_path: Path
     runtime_root: Path | None = None
-    timeout_seconds: float = 15.0
+    timeout_seconds: float = 90.0
 
 
 class BleSdrDeviceService:
@@ -66,14 +67,32 @@ class BleSdrDeviceService:
     def _probe_devices(self) -> dict[str, Any]:
         if not self.config.python_executable.is_file() or not self.config.tool_path.is_file():
             return self._unavailable("SDR_RUNTIME_UNAVAILABLE", "The configured SDR runtime is unavailable.")
+        pnp_response = self._probe_devices_with_windows_pnp()
+        if pnp_response is not None:
+            return pnp_response
+        if os.name == "nt":
+            return self._unavailable("NO_COMPATIBLE_SDR", "No compatible SDR receiver was detected.")
+        uhd_response = self._probe_devices_with_uhd()
+        if uhd_response is not None:
+            return uhd_response
         try:
             result = subprocess.run(
                 [str(self.config.python_executable), str(self.config.tool_path), "devices"],
                 capture_output=True, text=True, timeout=self.config.timeout_seconds, check=False, env=self._environment(),
             )
-        except Exception:
+        except Exception as error:
+            self.last_diagnostics = {"classification": "SDR_PROBE_EXCEPTION", "exception": repr(error)}
+            logging.getLogger(__name__).warning("SoapySDR probe could not be executed: %r", error)
             return self._unavailable("SDR_PROBE_FAILED", "The SDR probe could not be executed.")
         if result.returncode != 0:
+            self.last_diagnostics = {
+                "classification": "SDR_PROBE_NONZERO_EXIT",
+                "returncode": result.returncode,
+                "stderr": result.stderr[-8192:],
+                "stdout": result.stdout[-2048:],
+            }
+            if result.stderr:
+                logging.getLogger(__name__).warning("SoapySDR probe failed: %s", result.stderr[-8192:])
             return self._unavailable("SDR_PROBE_FAILED", "The SDR probe did not complete successfully.")
         try:
             response = json.loads(result.stdout); raw_devices = response.get("devices", [])
@@ -104,6 +123,121 @@ class BleSdrDeviceService:
         self._public_devices = {item["device_id"]: dict(item) for item in devices}
         self._last_successful_probe_monotonic = time.monotonic()
         return {"available": True, "devices": devices}
+
+    def _probe_devices_with_windows_pnp(self) -> dict[str, Any] | None:
+        if os.name != "nt":
+            return None
+        try:
+            result = subprocess.run(
+                ["pnputil", "/enum-devices", "/connected"],
+                capture_output=True,
+                text=True,
+                timeout=20.0,
+                check=False,
+            )
+        except FileNotFoundError:
+            return None
+        except Exception as error:
+            self.last_diagnostics = {"classification": "WINDOWS_PNP_PROBE_EXCEPTION", "exception": repr(error)}
+            logging.getLogger(__name__).warning("Windows PnP SDR probe could not be executed: %r", error)
+            return self._unavailable("SDR_PROBE_FAILED", "The SDR probe could not be executed.")
+        output = f"{result.stdout}\n{result.stderr}"
+        if result.returncode != 0:
+            self.last_diagnostics = {
+                "classification": "WINDOWS_PNP_PROBE_NONZERO_EXIT",
+                "returncode": result.returncode,
+                "stderr": result.stderr[-8192:],
+                "stdout": result.stdout[-2048:],
+            }
+            return self._unavailable("SDR_PROBE_FAILED", "The SDR probe did not complete successfully.")
+        serials = []
+        for match in re.finditer(r"USB\\VID_(?:2500|4C64)&PID_0020\\([^\r\n]+)", output, re.IGNORECASE):
+            serial = match.group(1).strip()
+            if serial and serial not in serials:
+                serials.append(serial)
+        devices = [self._b200_device(serial) for serial in serials]
+        self.last_diagnostics = {
+            "classification": "OK" if devices else "WINDOWS_PNP_ENUMERATION_EMPTY",
+            "runtime": {"sdr_runtime": "windows_pnputil", "device_probe_succeeded": bool(devices)},
+            "stderr": result.stderr[-8192:],
+        }
+        if not devices:
+            return self._unavailable("NO_COMPATIBLE_SDR", "No compatible SDR receiver was detected.")
+        self._private_args = {item["device_id"]: {"driver": "uhd", "serial": item["_serial"]} for item in devices}
+        for item in devices:
+            item.pop("_serial", None)
+        self._public_devices = {item["device_id"]: dict(item) for item in devices}
+        self._last_successful_probe_monotonic = time.monotonic()
+        return {"available": True, "devices": devices}
+
+    def _probe_devices_with_uhd(self) -> dict[str, Any] | None:
+        try:
+            result = subprocess.run(
+                ["uhd_find_devices"],
+                capture_output=True,
+                text=True,
+                timeout=min(self.config.timeout_seconds, 60.0),
+                check=False,
+                env=self._environment(),
+            )
+        except FileNotFoundError:
+            return None
+        except Exception as error:
+            self.last_diagnostics = {"classification": "UHD_PROBE_EXCEPTION", "exception": repr(error)}
+            logging.getLogger(__name__).warning("UHD probe could not be executed: %r", error)
+            return self._unavailable("SDR_PROBE_FAILED", "The SDR probe could not be executed.")
+        output = f"{result.stdout}\n{result.stderr}"
+        if result.returncode != 0 and "No UHD Devices Found" not in output:
+            self.last_diagnostics = {
+                "classification": "UHD_PROBE_NONZERO_EXIT",
+                "returncode": result.returncode,
+                "stderr": result.stderr[-8192:],
+                "stdout": result.stdout[-2048:],
+            }
+            return self._unavailable("SDR_PROBE_FAILED", "The SDR probe did not complete successfully.")
+        serials = [match.group(1).strip() for match in re.finditer(r"serial:\s*([^\r\n]+)", output, re.IGNORECASE)]
+        products = [match.group(1).strip() for match in re.finditer(r"product:\s*([^\r\n]+)", output, re.IGNORECASE)]
+        devices = []
+        self._private_args.clear()
+        for index, serial in enumerate(serials):
+            product = products[index] if index < len(products) else "B200"
+            args = {"driver": "uhd", "serial": serial}
+            device = self._b200_device(serial, product)
+            device_id = str(device["device_id"])
+            self._private_args[device_id] = args
+            device.pop("_serial", None)
+            devices.append(device)
+        self.last_diagnostics = {
+            "classification": "OK" if devices else "UHD_DEVICE_ENUMERATION_EMPTY",
+            "runtime": {"sdr_runtime": "uhd_find_devices", "device_probe_succeeded": bool(devices)},
+            "stderr": result.stderr[-8192:],
+        }
+        if not devices:
+            return self._unavailable("NO_COMPATIBLE_SDR", "No compatible SDR receiver was detected.")
+        self._public_devices = {item["device_id"]: dict(item) for item in devices}
+        self._last_successful_probe_monotonic = time.monotonic()
+        return {"available": True, "devices": devices}
+
+    def _b200_device(self, serial: str, product: str = "B200") -> dict[str, Any]:
+        args = {"driver": "uhd", "serial": serial}
+        device_id = "sdr-" + hashlib.sha256(json.dumps(args, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
+        return {
+            "_serial": serial,
+            "device_id": device_id,
+            "driver": "uhd",
+            "label": f"{product} {serial}".strip(),
+            "serial_masked": self._mask(serial),
+            "rx_channels": 1,
+            "frequency_ranges_hz": [{"minimum": 42_000_000.0, "maximum": 6_008_000_000.0}],
+            "sample_rate_ranges_sps": [{"minimum": 31_250.0, "maximum": 16_000_000.0}],
+            "bandwidth_ranges_hz": [{"minimum": 200_000.0, "maximum": 56_000_000.0}],
+            "gain_elements": ["PGA"],
+            "antenna_options": ["TX/RX", "RX2"],
+            "stream_formats": ["CS8", "CS16", "CF32", "CF64"],
+            "clock_sources": ["internal", "external", "gpsdo"],
+            "time_sources": ["none", "internal", "external", "gpsdo"],
+            "available": True,
+        }
 
     def cached_device(self, device_id: str, maximum_age_seconds: float = 10.0) -> dict[str, Any] | None:
         if time.monotonic() - self._last_successful_probe_monotonic > maximum_age_seconds:

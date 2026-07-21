@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import TimeoutError as FutureTimeoutError
 import json
 import os
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -49,6 +52,8 @@ class BleNativeJobManager:
         self._last_error: str | None = None
         self._scan_session_id: str | None = None
         self._scan_session_dir: Path | None = None
+        self._scan_process: subprocess.Popen | None = None
+        self._scan_stop_file: Path | None = None
         self._scan_file_lock = threading.Lock()
         self._gatt_semaphore = None
         self.gatt_policy = {"max_concurrent_gatt_connections": 1, "max_retries_per_device": 3,
@@ -59,7 +64,12 @@ class BleNativeJobManager:
         asyncio.set_event_loop(self._loop); self._loop.run_forever()
 
     def _submit(self, coroutine, timeout: float = 30):
-        return asyncio.run_coroutine_threadsafe(coroutine, self._loop).result(timeout=timeout)
+        future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+        try:
+            return future.result(timeout=timeout)
+        except FutureTimeoutError:
+            future.cancel()
+            raise
 
     async def _adapter_status(self) -> dict[str, Any]:
         try:
@@ -81,49 +91,96 @@ class BleNativeJobManager:
                 "native_gate_status": "NATIVE-1_IMPLEMENTED_PENDING_RUNTIME_VALIDATION", "gatt_policy": self.gatt_policy}
 
     async def _start_scan(self, session_id: str | None = None) -> None:
-        from bleak import BleakScanner
         if self._scanning: return
         self._scan_session_id = session_id or ("ble-scan-" + uuid.uuid4().hex)
         if any(token in self._scan_session_id for token in ("/", "\\", "..")): raise ValueError("INVALID_SCAN_SESSION_ID")
         self._scan_session_dir = self.root / "scans" / self._scan_session_id
         self._scan_session_dir.mkdir(parents=True, exist_ok=True)
+        self._scan_stop_file = self._scan_session_dir / "stop.requested"
+        if self._scan_stop_file.exists(): self._scan_stop_file.unlink()
         started_utc = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         (self._scan_session_dir / "scan_manifest.json").write_text(json.dumps({"schema_version":"ble-native-scan-v1",
             "scan_session_id":self._scan_session_id,"started_at_utc":started_utc,"started_monotonic_ns":time.monotonic_ns(),
             "backend_version":"ble-native-v1","bleak_version":"0.22.3","deduplication":False}, indent=2)+"\n", encoding="utf-8")
-        def callback(device, advertisement):
-            manufacturer = {f"0x{int(key):04X}": bytes(value).hex() for key, value in (advertisement.manufacturer_data or {}).items()}
-            services = {str(key).lower(): bytes(value).hex() for key, value in (advertisement.service_data or {}).items()}
-            observed = self.registry.observe(device, advertisement, self.parsers.classify_advertisement(manufacturer, services), self._scan_session_id)
-            self._discovered_devices[observed["device_id"]] = device
-            observation = {"schema_version":"ble-native-observation-v1","native_observation_id":"native-"+uuid.uuid4().hex,
-                "scan_session_id":self._scan_session_id,"timestamp_callback_utc":datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                "timestamp_callback_monotonic_ns":time.monotonic_ns(),"address":str(device.address),"address_type":"unknown",
-                "local_name":advertisement.local_name or getattr(device,"name",None),"rssi_dbm":getattr(advertisement,"rssi",None),
-                "tx_power_dbm":advertisement.tx_power,"connectable":getattr(advertisement,"connectable",None),
-                "manufacturer_data":manufacturer,"service_data":services,"service_uuids":[str(x).lower() for x in (advertisement.service_uuids or [])]}
-            line=json.dumps(observation,sort_keys=True)+"\n"
-            with self._scan_file_lock:
-                with (self._scan_session_dir / "advertisements.jsonl").open("a",encoding="utf-8",newline="\n") as handle:
-                    handle.write(line); handle.flush(); os.fsync(handle.fileno())
-        self._scanner = BleakScanner(detection_callback=callback)
-        await self._scanner.start(); self._scanning = True; self._last_error = None
+        backend_root = Path(__file__).resolve().parents[4]
+        worker = Path(os.environ.get("BLE_NATIVE_SCAN_WORKER", backend_root / "tools" / "ble_native_scan_worker.py"))
+        stdout = (self._scan_session_dir / "worker.stdout.log").open("ab")
+        stderr = (self._scan_session_dir / "worker.stderr.log").open("ab")
+        self._scan_process = subprocess.Popen(
+            [sys.executable, str(worker), "--scan-dir", str(self._scan_session_dir),
+             "--session-id", self._scan_session_id, "--stop-file", str(self._scan_stop_file)],
+            cwd=str(backend_root), stdout=stdout, stderr=stderr, shell=False, env=dict(os.environ),
+        )
+        status_path = self._scan_session_dir / "worker_status.json"
+        deadline = time.monotonic() + float(os.environ.get("BLE_NATIVE_WORKER_READY_TIMEOUT_SECONDS", "60"))
+        last_worker_status: dict[str, Any] | None = None
+        while time.monotonic() < deadline:
+            if status_path.exists():
+                status = json.loads(status_path.read_text(encoding="utf-8"))
+                last_worker_status = status
+                if status.get("state") == "running":
+                    self._scanning = True; self._last_error = None; return
+                if status.get("state") == "failed":
+                    raise RuntimeError(status.get("error") or "NATIVE_BLE_WORKER_FAILED")
+            if self._scan_process.poll() is not None:
+                raise RuntimeError(f"NATIVE_BLE_WORKER_EXITED:{self._scan_process.returncode}")
+            await asyncio.sleep(0.1)
+        detail = ""
+        if last_worker_status:
+            detail = ":" + json.dumps({k: last_worker_status.get(k) for k in ("state", "phase", "error", "updated_at_utc")}, sort_keys=True)
+        raise TimeoutError(f"NATIVE_BLE_WORKER_READY_TIMEOUT{detail}")
 
     def start_scan(self, session_id: str | None = None) -> dict[str, Any]:
-        try: self._submit(self._start_scan(session_id), 15)
+        timeout = float(os.environ.get("BLE_NATIVE_SCAN_START_TIMEOUT_SECONDS", "45"))
+        try: self._submit(self._start_scan(session_id), timeout)
         except Exception as error:
-            self._last_error = f"{type(error).__name__}:{error}"; raise RuntimeError("NATIVE_BLE_SCAN_FAILED") from error
+            self._last_error = f"{type(error).__name__}:{error}"
+            if self._scan_process is not None and self._scan_process.poll() is None:
+                self._scan_process.terminate()
+            self._scanner = None; self._scanning = False
+            raise RuntimeError(f"NATIVE_BLE_SCAN_FAILED:{self._last_error}") from error
         return {"state": "scanning", "started": True, "scan_session_id": self._scan_session_id}
 
+    def _write_scan_devices_snapshot(self) -> None:
+        if not self._scan_session_dir: return
+        worker_snapshot = self._scan_session_dir / "devices.json"
+        if worker_snapshot.exists():
+            try:
+                for item in json.loads(worker_snapshot.read_text(encoding="utf-8")).get("devices", []):
+                    self.registry.merge_observed(item)
+            except Exception as error:
+                self._last_error = f"{type(error).__name__}:{error}"
+        devices=[item for item in self.registry.list() if item.get("scan_session_id")==self._scan_session_id]
+        (self._scan_session_dir/"devices.json").write_text(json.dumps({"schema_version":"ble-native-devices-v1","devices":devices},indent=2)+"\n",encoding="utf-8")
+
     async def _stop_scan(self) -> None:
-        if self._scanner is not None: await self._scanner.stop()
-        if self._scan_session_dir:
-            devices=[item for item in self.registry.list() if item.get("scan_session_id")==self._scan_session_id]
-            (self._scan_session_dir/"devices.json").write_text(json.dumps({"schema_version":"ble-native-devices-v1","devices":devices},indent=2)+"\n",encoding="utf-8")
-        self._scanner = None; self._scanning = False
+        try:
+            if self._scan_stop_file is not None:
+                self._scan_stop_file.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
+            if self._scan_process is not None:
+                deadline = time.monotonic() + 10
+                while self._scan_process.poll() is None and time.monotonic() < deadline:
+                    await asyncio.sleep(0.1)
+                if self._scan_process.poll() is None:
+                    self._scan_process.terminate()
+                    await asyncio.sleep(1)
+                if self._scan_process.poll() is None:
+                    self._scan_process.kill()
+        finally:
+            self._write_scan_devices_snapshot()
+            self._scanner = None; self._scan_process = None; self._scan_stop_file = None; self._scanning = False
 
     def stop_scan(self) -> dict[str, Any]:
-        self._submit(self._stop_scan(), 15); return {"state": "idle", "stopped": True, "device_count": len(self.registry.list())}
+        if not self._scanning and self._scanner is None and self._scan_process is None:
+            self._write_scan_devices_snapshot()
+            return {"state": "idle", "stopped": False, "already_idle": True, "device_count": len(self.registry.list())}
+        try:
+            self._submit(self._stop_scan(), 15)
+        except Exception as error:
+            self._last_error = f"{type(error).__name__}:{error}"
+            self._scanner = None; self._scanning = False
+            return {"state": "idle", "stopped": False, "stop_error": self._last_error, "device_count": len(self.registry.list())}
+        return {"state": "idle", "stopped": True, "device_count": len(self.registry.list())}
 
     def devices(self) -> list[dict[str, Any]]: return self.registry.list()
     def device(self, device_id: str) -> dict[str, Any]: return self.registry.get(device_id)

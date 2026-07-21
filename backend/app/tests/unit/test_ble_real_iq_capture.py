@@ -33,6 +33,8 @@ class FakeCapture:
                 time.sleep(.005)
         data=output/f"{cid}.sigmf-data"; data.write_bytes(b"\x01\x02"*16)
         meta=output/f"{cid}.sigmf-meta"; atomic_json(meta,{"global":{"core:version":"1.2.6","core:datatype":"ci8","core:sample_rate":8_000_000,"core:hw":"Test fake","core:recorder":"Tests"},"captures":[{"core:sample_start":0,"core:frequency":2_402_000_000,"core:datetime":"2026-01-01T00:00:00Z"}],"annotations":[]})
+        if self.mode == "timeout_after_iq":
+            raise TimeoutError("CAPTURE_TIMEOUT")
         manifest={"schema_version":"1.0","capture_id":cid,"created_at_utc":"2026-01-01T00:00:00Z","data_path":data.name,"metadata_path":meta.name,"data_sha256":sha256_file(data),"metadata_sha256":sha256_file(meta),"capture_complete":True,"sample_rate_sps":8_000_000,"sample_format":"ci8","ble_channel":37}
         if self.mode == "bad_hash": manifest["data_sha256"]="0"*64
         atomic_json(output/"capture_manifest.json",manifest)
@@ -97,6 +99,15 @@ def test_real_capture_contract_preserves_sigmf_and_reopens(tmp_path):
 def test_hash_mismatch_fails_job(tmp_path):
     service=manager(tmp_path,mode="bad_hash"); created=service.create(payload()); finished=wait(service,created["capture_id"])
     assert finished["state"]=="failed"; assert "HASH_MISMATCH" in finished["error"]
+
+
+def test_timeout_after_complete_iq_is_recovered(tmp_path):
+    service=manager(tmp_path,mode="timeout_after_iq"); created=service.create(payload(sample_rate_sps=8_000_000,duration_seconds=0.000002))
+    finished=wait(service,created["capture_id"])
+    assert finished["state"]=="completed"
+    assert finished["capture_complete"] is True
+    assert finished["completion_diagnostic"]=="CAPTURE_TIMEOUT_AFTER_IQ_COMPLETE_RECOVERED"
+    assert service.verify(created["capture_id"])=={"data_valid":True,"metadata_valid":True}
 
 
 def test_concurrent_capture_and_cancellation(tmp_path):

@@ -13,6 +13,12 @@ def rows(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def append_jsonl(path: Path, rows: list[dict]) -> None:
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--segments-dir", type=Path, required=True)
@@ -28,9 +34,14 @@ def main() -> int:
     from ble_worker.dsp_models import ReceiverConfig
     from ble_worker.dsp_receiver import run_offline_receiver
     from ble_worker.iq_reader import IqReaderConfig, read_iq_file
-    confirmed, semantic, attempts = [], [], []
+    confirmed_count, semantic_count, attempts = 0, 0, []
     all_segments = sorted(args.segments_dir.glob("*.cf32"))
     selected_segments = all_segments[args.start_index:args.end_index]
+    decoded_packets_path = args.output_dir / "decoded_packets.jsonl"
+    semantic_packets_path = args.output_dir / "semantic_packets.jsonl"
+    if args.start_index == 0:
+        decoded_packets_path.write_text("", encoding="utf-8")
+        semantic_packets_path.write_text("", encoding="utf-8")
     write_json(args.output_dir / "progress.json", {"processed_segments": 0, "total_segments": len(selected_segments), "crc_valid_packets": 0})
     for index, segment in enumerate(selected_segments, start=1):
         iq = read_iq_file(segment, IqReaderConfig("cf32_le", 262_144))
@@ -50,15 +61,17 @@ def main() -> int:
                 packets.append(item)
         for value in packets: value["iq_segment"] = segment.name
         for value in parsed: value["iq_segment"] = segment.name
-        confirmed.extend(packets); semantic.extend(parsed)
+        append_jsonl(decoded_packets_path, packets)
+        append_jsonl(semantic_packets_path, parsed)
+        confirmed_count += len(packets); semantic_count += len(parsed)
         attempts.append({"iq_segment": segment.name, "confirmed_packets": len(packets), "semantic_packets": len(parsed)})
+        write_json(args.output_dir / "batch_summary.json", {"segments": index, "start_index":args.start_index,"end_index":args.end_index,
+            "crc_valid_packets": confirmed_count, "semantic_packets": semantic_count, "attempts": attempts, "partial": True})
         write_json(args.output_dir / "progress.json", {"processed_segments": index, "total_segments": len(selected_segments),
-            "crc_valid_packets": len(confirmed), "current_segment": segment.name})
-    write_jsonl(args.output_dir / "decoded_packets.jsonl", confirmed)
-    write_jsonl(args.output_dir / "semantic_packets.jsonl", semantic)
+            "crc_valid_packets": confirmed_count, "current_segment": segment.name})
     write_json(args.output_dir / "batch_summary.json", {"segments": len(attempts), "start_index":args.start_index,"end_index":args.end_index,
-        "crc_valid_packets": len(confirmed), "semantic_packets": len(semantic), "attempts": attempts})
-    print(json.dumps({"segments": len(attempts), "crc_valid_packets": len(confirmed)}))
+        "crc_valid_packets": confirmed_count, "semantic_packets": semantic_count, "attempts": attempts, "partial": False})
+    print(json.dumps({"segments": len(attempts), "crc_valid_packets": confirmed_count}))
     return 0
 
 

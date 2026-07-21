@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import hashlib, json, re, statistics, subprocess, threading, time, uuid
+import hashlib, json, os, re, statistics, subprocess, threading, time, uuid
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,11 +65,25 @@ class BleHybridCampaignManager:
             if job["state"]!="completed": raise RuntimeError(f"CAPTURE_{job['state'].upper()}")
             cap=self.capture._job_dir(cid); bursts=sum(1 for _ in (cap/"burst_candidates.jsonl").open(encoding="utf-8")); quality=json.loads((cap/"quality_report.json").read_text())
             decoded=cap/"decoded"; self._write(sid,state="decoding",capture_manifest=str(cap/"capture_manifest.json"),native_scan_path=str(self.native.root/"scans"/sid),steps={"hardware":"completed","native_scan":"completed","b200_capture":"completed","burst_detection":"completed","decoding":"running","correlation":"pending","results":"pending"},counters={"detected_bursts":bursts,"processed_bursts":0,"crc_valid_packets":0,"native_callbacks":self._native_count(sid),"overflows":quality["overflow_count"]})
-            subprocess.run([str(self.python),str(self.decoder),"--segments-dir",str(cap/"iq_bursts"),"--output-dir",str(decoded),"--worker-repository",str(self.worker_repo),"--channel",str(request["ble_channel"])],check=True,timeout=3600)
+            decode_timed_out=False
+            try:
+                subprocess.run([str(self.python),str(self.decoder),"--segments-dir",str(cap/"iq_bursts"),"--output-dir",str(decoded),"--worker-repository",str(self.worker_repo),"--channel",str(request["ble_channel"])],check=True,timeout=float(os.environ.get("BLE_HYBRID_DECODE_TIMEOUT_SECONDS","7200")))
+            except subprocess.TimeoutExpired:
+                decode_timed_out=True
+                progress_path=decoded/"progress.json"; packets_path=decoded/"decoded_packets.jsonl"; summary_path=decoded/"batch_summary.json"
+                progress=json.loads(progress_path.read_text(encoding="utf-8")) if progress_path.exists() else {}
+                if not packets_path.exists() or int(progress.get("crc_valid_packets") or 0) <= 0:
+                    raise
+                if not summary_path.exists():
+                    write_summary={"segments":int(progress.get("processed_segments") or 0),"start_index":0,"end_index":None,
+                        "crc_valid_packets":int(progress.get("crc_valid_packets") or 0),"semantic_packets":0,"attempts":[],"partial":True}
+                    summary_path.write_text(json.dumps(write_summary,indent=2)+"\n",encoding="utf-8")
             summary=json.loads((decoded/"batch_summary.json").read_text()); out=self._path(sid)/"correlation"
-            self._write(sid,state="correlating",steps={"hardware":"completed","native_scan":"completed","b200_capture":"completed","burst_detection":"completed","decoding":"completed","correlation":"running","results":"pending"})
+            decode_step="completed_partial_timeout" if decode_timed_out else "completed"
+            self._write(sid,state="correlating",steps={"hardware":"completed","native_scan":"completed","b200_capture":"completed","burst_detection":"completed","decoding":decode_step,"correlation":"running","results":"pending"},decode_timed_out=decode_timed_out)
             subprocess.run([str(self.python),str(self.correlator),"--capture-dir",str(cap),"--decoded",str(decoded),"--native",str(self.native.root/"scans"/sid),"--output",str(out),"--window-ms","250"],check=True,timeout=120)
-            metrics=json.loads((out/"metrics.json").read_text()); self._write(sid,state="completed",steps={k:"completed" for k in ("hardware","native_scan","b200_capture","burst_detection","decoding","correlation","results")},counters={"detected_bursts":bursts,"processed_bursts":summary["segments"],"crc_valid_packets":summary["crc_valid_packets"],"native_callbacks":self._native_count(sid),"overflows":quality["overflow_count"],"discontinuities":quality["discontinuity_count"],"strong_matches":metrics["strong_matches"],"payload_matches":metrics["payload_matches"],"ambiguous":metrics["ambiguous"]},result=metrics)
+            metrics=json.loads((out/"metrics.json").read_text()); final_steps={k:"completed" for k in ("hardware","native_scan","b200_capture","burst_detection","decoding","correlation","results")}; final_steps["decoding"]=decode_step
+            self._write(sid,state="completed",steps=final_steps,counters={"detected_bursts":bursts,"processed_bursts":summary["segments"],"crc_valid_packets":summary["crc_valid_packets"],"native_callbacks":self._native_count(sid),"overflows":quality["overflow_count"],"discontinuities":quality["discontinuity_count"],"strong_matches":metrics["strong_matches"],"payload_matches":metrics["payload_matches"],"ambiguous":metrics["ambiguous"]},result=metrics)
             self._write(sid,scientific_summary=self.scientific_summary(sid))
         except Exception as error: self._write(sid,state="cancelled" if sid in self._cancel else "failed",error=f"{type(error).__name__}:{error}")
         finally:
