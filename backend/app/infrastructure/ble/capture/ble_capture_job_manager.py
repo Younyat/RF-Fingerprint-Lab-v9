@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import threading
 import uuid
@@ -69,7 +70,9 @@ class BleCaptureJobManager:
     def _validate(self, payload: dict[str, Any]) -> dict[str, Any]:
         allowed = {"device_id", "ble_channel", "center_frequency_hz", "sample_rate_sps", "bandwidth_hz",
                    "gain_mode", "gain_db", "antenna", "duration_seconds", "sample_format", "description", "purpose",
-                   "controlled_transmitter_state", "operator_confirmed", "confirmation_method", "capture_role"}
+                   "controlled_transmitter_state", "operator_confirmed", "confirmation_method", "capture_role",
+                   "experimental_metadata", "disk_persistence_enabled", "frontend_preview_enabled", "ui_polling_mode",
+                   "diagnostic_step"}
         unknown = set(payload) - allowed
         if unknown: raise ValueError("UNSUPPORTED_CAPTURE_FIELDS")
         channel = payload.get("ble_channel")
@@ -104,11 +107,21 @@ class BleCaptureJobManager:
         if not supported(bandwidth, "bandwidth_ranges_hz"): raise ValueError("UNSUPPORTED_BANDWIDTH")
         gain = float(payload.get("gain_db", 0));
         if payload.get("gain_mode", "manual") not in {"manual", "automatic"} or not -20 <= gain <= 100: raise ValueError("INVALID_GAIN")
+        disk_persistence_enabled = bool(payload.get("disk_persistence_enabled", True))
+        frontend_preview_enabled = bool(payload.get("frontend_preview_enabled", True))
         expected = int(rate * duration * FORMATS[fmt])
         free = shutil.disk_usage(self.root).free
         if free < expected + self.minimum_free_bytes: raise OSError("INSUFFICIENT_DISK_SPACE")
+        experimental_metadata = payload.get("experimental_metadata") or {}
+        if experimental_metadata and not isinstance(experimental_metadata, dict):
+            raise ValueError("INVALID_EXPERIMENTAL_METADATA")
         return {**payload, "center_frequency_hz": center, "sample_rate_sps": rate, "bandwidth_hz": bandwidth,
                 "duration_seconds": duration, "sample_format": fmt, "gain_db": gain,
+                "disk_persistence_enabled": disk_persistence_enabled,
+                "frontend_preview_enabled": frontend_preview_enabled,
+                "ui_polling_mode": payload.get("ui_polling_mode", "normal"),
+                "diagnostic_step": payload.get("diagnostic_step"),
+                "experimental_metadata": experimental_metadata,
                 "device_serial_masked": device.get("serial_masked"),
                 "expected_size_bytes": expected, "purpose": payload.get("purpose", "interactive_experimental_capture")}
 
@@ -119,7 +132,10 @@ class BleCaptureJobManager:
             result = self.capture_service.capture(job_dir / "request.json", job_dir, lambda: capture_id in self._cancel)
             if result.get("cancelled"):
                 self._write_job(job_dir, "cancelled", capture_complete=False, partial_artifact_preserved=True); return
-            self._verify_completed(job_dir)
+            request = json.loads((job_dir / "request.json").read_text(encoding="utf-8"))
+            if bool(request.get("disk_persistence_enabled", True)):
+                self._verify_completed(job_dir)
+            self._augment_manifest(job_dir)
             self._write_job(job_dir, "completed", capture_complete=True)
         except TimeoutError as error:
             if self._recover_completed_capture(job_dir, f"{type(error).__name__}:{error}"):
@@ -136,6 +152,8 @@ class BleCaptureJobManager:
         data, meta, manifest = job_dir / f"{capture_id}.sigmf-data", job_dir / f"{capture_id}.sigmf-meta", job_dir / "capture_manifest.json"
         if not data.is_file() or not meta.is_file() or not manifest.is_file(): raise ValueError("INCOMPLETE_CAPTURE_ARTIFACTS")
         metadata, record = json.loads(meta.read_text(encoding="utf-8")), json.loads(manifest.read_text(encoding="utf-8"))
+        if record.get("disk_persistence_enabled") is False:
+            return
         validate_sigmf(metadata)
         if sha256_file(data) != record.get("data_sha256"): raise ValueError("CAPTURE_DATA_HASH_MISMATCH")
         if sha256_file(meta) != record.get("metadata_sha256"): raise ValueError("CAPTURE_METADATA_HASH_MISMATCH")
@@ -156,6 +174,7 @@ class BleCaptureJobManager:
         validate_sigmf(metadata)
         if manifest_path.is_file():
             self._verify_completed(job_dir)
+            self._augment_manifest(job_dir)
             return True
         data_hash, meta_hash = sha256_file(data), sha256_file(meta)
         samples = expected_size // FORMATS[fmt]
@@ -185,9 +204,98 @@ class BleCaptureJobManager:
             "analysis_status": "postprocessing_timeout_recovered", "iq_recovery_validated": True,
             "ota_validated": False, "recovery_diagnostic": diagnostic,
         }
+        manifest.update(self._protocol_fields(request, manifest))
         atomic_json(manifest_path, manifest)
         (job_dir / "capture.sha256").write_text(f"{data_hash}  {data.name}\n{meta_hash}  {meta.name}\n", encoding="ascii")
+        self._augment_quality_report(job_dir, manifest)
         return True
+
+    def _protocol_fields(self, request: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+        metadata = dict(request.get("experimental_metadata") or {})
+        protocol_duration = metadata.get("protocol_duration_seconds", request.get("duration_seconds"))
+        effective_duration = metadata.get("effective_duration_seconds", request.get("duration_seconds"))
+        expected_file_size = int(request.get("expected_size_bytes") or manifest.get("expected_size_bytes") or 0)
+        actual_file_size = int(manifest.get("actual_size_bytes") or 0)
+        expected_samples = int(float(request.get("sample_rate_sps", 0)) * float(protocol_duration or 0))
+        actual_samples = int(manifest.get("actual_samples") or 0)
+        overflow_count = int(manifest.get("overflow_count") or 0)
+        discontinuity_count = int(manifest.get("input_discontinuities") or 0)
+        disk_persistence_enabled = bool(request.get("disk_persistence_enabled", True))
+        hash_status = "VERIFIED" if manifest.get("data_sha256") and manifest.get("metadata_sha256") else "NOT_APPLICABLE" if not disk_persistence_enabled else "NOT_VERIFIED"
+        metadata_complete = all(manifest.get(key) not in {None, ""} for key in (
+            "capture_id", "center_frequency_hz", "sample_rate_sps", "bandwidth_hz", "sample_format", "antenna"
+        ))
+        return {
+            "experimental_metadata": metadata,
+            "protocol_duration_seconds": protocol_duration,
+            "effective_duration_seconds": effective_duration,
+            "duration_source": metadata.get("duration_source", "request_payload"),
+            "protocol_override": bool(metadata.get("protocol_override", False)),
+            "override_reason": metadata.get("override_reason"),
+            "protocol_revision": metadata.get("protocol_revision", "rev1"),
+            "expected_samples": expected_samples,
+            "expected_file_size": expected_file_size,
+            "expected_file_size_bytes": expected_file_size,
+            "actual_file_size_bytes": actual_file_size,
+            "discontinuity_count": discontinuity_count,
+            "short_read_count": 1 if (actual_samples and expected_samples and actual_samples != expected_samples) or (actual_file_size and expected_file_size and actual_file_size != expected_file_size) else 0,
+            "write_error_count": int(metadata.get("write_error_count") or 0),
+            "hash_status": hash_status,
+            "metadata_status": "COMPLETE" if metadata_complete else "INCOMPLETE",
+            "qualification_profile_id": metadata.get("qualification_profile_id"),
+            "receiver_serial": manifest.get("device_serial"),
+            "host_id": metadata.get("host_id") or os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME"),
+            "usb_path": metadata.get("usb_path") or "not_reported_by_backend",
+            "storage_target": metadata.get("storage_target") or str(self.root),
+            "capture_software_revision": metadata.get("capture_software_revision") or manifest.get("capture_software_version"),
+            "uhd_version": metadata.get("uhd_version") or manifest.get("uhd_version"),
+            "execution_purpose": metadata.get("execution_purpose") or metadata.get("stage"),
+            "scientific_campaign_member": bool(metadata.get("scientific_campaign_member", False)),
+            "dataset_eligible": bool(metadata.get("dataset_eligible", False)),
+            "qualification_only": bool(metadata.get("qualification_only", False)),
+            "decoder_online_enabled": bool(metadata.get("decoder_online_enabled", False)),
+            "correlation_online_enabled": bool(metadata.get("correlation_online_enabled", False)),
+            "disk_persistence_enabled": disk_persistence_enabled,
+            "frontend_preview_enabled": bool(request.get("frontend_preview_enabled", True)),
+            "ui_polling_mode": request.get("ui_polling_mode", "normal"),
+            "diagnostic_step": request.get("diagnostic_step") or metadata.get("diagnostic_step"),
+            "gap_handling_policy": metadata.get("gap_handling_policy", "overflow_counter_only_no_local_gap_reconstruction"),
+            "samples_lost_estimated": int(metadata.get("samples_lost_estimated") or overflow_count * 0),
+            "samples_inserted_or_repeated": int(metadata.get("samples_inserted_or_repeated") or 0),
+            "continuity_status": "PASSED" if overflow_count == 0 and discontinuity_count == 0 else "FAILED",
+        }
+
+    def _augment_manifest(self, job_dir: Path) -> None:
+        request_path, manifest_path = job_dir / "request.json", job_dir / "capture_manifest.json"
+        if not request_path.is_file() or not manifest_path.is_file(): return
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.update(self._protocol_fields(request, manifest))
+        atomic_json(manifest_path, manifest)
+        self._augment_quality_report(job_dir, manifest)
+
+    def _augment_quality_report(self, job_dir: Path, manifest: dict[str, Any]) -> None:
+        path = job_dir / "quality_report.json"
+        if not path.is_file(): return
+        try:
+            quality = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        loss_events = quality.get("loss_events")
+        if not isinstance(loss_events, list):
+            loss_events = []
+        quality.update({
+            "loss_events": loss_events,
+            "loss_intervals_available": bool(loss_events),
+            "loss_interval_policy": "exact_intervals_when_reported_by_backend_otherwise_counter_only",
+            "protocol_duration_seconds": manifest.get("protocol_duration_seconds"),
+            "effective_duration_seconds": manifest.get("effective_duration_seconds"),
+            "duration_source": manifest.get("duration_source"),
+            "protocol_override": manifest.get("protocol_override"),
+            "override_reason": manifest.get("override_reason"),
+            "protocol_revision": manifest.get("protocol_revision"),
+        })
+        atomic_json(path, quality)
 
     def _write_job(self, job_dir: Path, state: str, **fields: Any) -> None:
         with self._lock:
@@ -226,6 +334,8 @@ class BleCaptureJobManager:
 
     def verify(self, capture_id: str) -> dict[str, Any]:
         root = self._job_dir(capture_id); record = self.metadata(capture_id)
+        if record.get("disk_persistence_enabled") is False:
+            return {"data_valid": None, "metadata_valid": None, "diagnostic_only": True}
         data, meta = root / record["data_path"], root / record["metadata_path"]
         return {"data_valid": sha256_file(data) == record["data_sha256"],
                 "metadata_valid": sha256_file(meta) == record["metadata_sha256"]}

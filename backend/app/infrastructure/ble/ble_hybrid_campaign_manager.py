@@ -39,12 +39,22 @@ class BleHybridCampaignManager:
         if not re.search(r"\d+(?:[.,]\d+)?\s*(?:mm|cm|m)\b",str(metadata["distance"]).strip(),re.IGNORECASE): raise ValueError("EXPERIMENTAL_DISTANCE_REQUIRES_UNIT")
         if contract["negative_control_type"]=="target_powered_off" and metadata["power_state"]!="powered_off": raise ValueError("NEGATIVE_CONTROL_POWER_STATE_MISMATCH")
         metadata["recorded_at_utc"]=utc()
+        metadata.setdefault("protocol_duration_seconds", duration)
+        metadata.setdefault("effective_duration_seconds", duration)
+        metadata.setdefault("duration_source", "operator_parameter")
+        metadata.setdefault("protocol_override", False)
+        metadata.setdefault("override_reason", None)
+        metadata.setdefault("protocol_revision", "rev1")
+        metadata.setdefault("minimum_target_crc_packets", 1)
+        metadata.setdefault("minimum_target_strong_matches", 1)
+        metadata.setdefault("decoder_online_enabled", False)
+        metadata.setdefault("correlation_online_enabled", False)
         payload={**payload,"device_id":self.capture.resolve_device_id(payload.get("device_id"))}
         with self._lock:
             if self._active: raise RuntimeError("HYBRID_CAMPAIGN_ALREADY_RUNNING")
             sid="BLE-HYBRID-"+datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")+"-"+uuid.uuid4().hex[:6]
             self._active=sid
-        request={"device_id":payload["device_id"],"ble_channel":channel,"center_frequency_hz":{37:2402000000,38:2426000000,39:2480000000}[channel],"sample_rate_sps":4000000,"bandwidth_hz":2000000,"gain_mode":"manual","gain_db":float(payload.get("gain_db",20)),"antenna":"RX2","duration_seconds":duration,"sample_format":"cf32_le","purpose":"BLE hybrid dashboard campaign","controlled_transmitter_state":"unknown","operator_confirmed":False,"capture_role":"controlled_transmitter_active_B"}
+        request={"device_id":payload["device_id"],"ble_channel":channel,"center_frequency_hz":{37:2402000000,38:2426000000,39:2480000000}[channel],"sample_rate_sps":4000000,"bandwidth_hz":2000000,"gain_mode":"manual","gain_db":float(payload.get("gain_db",20)),"antenna":"RX2","duration_seconds":duration,"sample_format":"cf32_le","purpose":"BLE hybrid dashboard campaign","controlled_transmitter_state":"unknown","operator_confirmed":False,"capture_role":"controlled_transmitter_active_B","experimental_metadata":metadata}
         target_mode="any_device" if target.get("kind")=="any" else "specific_device"
         self._write(sid,state="initializing",created_at_utc=utc(),mode="hybrid",channel=channel,duration_seconds=duration,
             target=target,target_mode=target_mode,target_device_id=target.get("device_id"),target_address=target.get("address"),
@@ -172,18 +182,72 @@ class BleHybridCampaignManager:
         target_address=str(session.get("target_address") or "").upper(); target_native=[n for n in native if str(n.get("address","")).upper()==target_address]
         target_native_ids={n.get("native_observation_id") for n in target_native}; target_packets=[p for p in packets if str(p.get("address","")).upper()==target_address]
         target_related=[p for p in packets if (p.get("correlation") or {}).get("native_observation_id") in target_native_ids]
+        unique_packets={p.get("packet_sha256") or p.get("packet_id") or id(p):p for p in packets}
         target_strong=[p for p in {id(p):p for p in target_packets+target_related}.values() if (p.get("correlation") or {}).get("status")=="MATCHED_BY_BOTH_STRONG"]
         target_payload=[p for p in target_related if (p.get("correlation") or {}).get("payload_match") and p not in target_strong]
+        target_ambiguous=[p for p in {id(p):p for p in target_packets+target_related}.values() if str((p.get("correlation") or {}).get("status","")).startswith("AMBIGUOUS")]
         target_b200_packet_ids={p.get("packet_sha256") or p.get("packet_id") for p in target_packets+target_related}
         target_b200_packet_ids.discard(None)
         target_b200_crc_packets=len(target_b200_packet_ids)
+        environmental_crc_packets=sum(1 for key,p in unique_packets.items() if key not in target_b200_packet_ids and p.get("address") and str(p.get("address")).upper()!=target_address)
+        unattributed_crc_packets=max(0,len(packets)-target_b200_crc_packets-environmental_crc_packets)
         false_target_attributions=len(target_native)+target_b200_crc_packets
         general_ok=bool(strong); specific=session.get("target_mode")=="specific_device"
         target_status=("TARGET_MATCHED_STRONG" if target_strong else "TARGET_MATCHED_BY_PAYLOAD" if target_payload else "TARGET_NATIVE_ONLY" if target_native and not target_packets else "TARGET_B200_ONLY" if target_packets and not target_native else "TARGET_AMBIGUOUS" if target_native and target_packets else "TARGET_NOT_OBSERVED") if specific else "TARGET_NOT_EVALUATED"
         bursts=int(quality.get("burst_candidate_count",session.get("counters",{}).get("detected_bursts",0))); processed=int(batch.get("segments",0)); crc=len(packets)
-        fingerprint_ok=bool(quality.get("fingerprinting_eligible")) and int(capture.get("overflow_count",0))==0 and int(capture.get("input_discontinuities",0))==0
-        clean_capture=int(capture.get("overflow_count",0))==0 and int(capture.get("input_discontinuities",0))==0
-        evidence_level="E4" if specific and bool(target_strong) else "E3" if general_ok else "E2" if crc else "E1" if bursts else "E0"
+        metadata=dict(session.get("experimental_metadata") or {})
+        minimum_target_crc_packets=int(metadata.get("minimum_target_crc_packets") or 1)
+        minimum_target_strong_matches=int(metadata.get("minimum_target_strong_matches") or 1)
+        overflow_count=int(capture.get("overflow_count",0) or 0)
+        discontinuity_count=int(capture.get("input_discontinuities",0) or 0)
+        expected_samples=int(capture.get("expected_samples") or int((capture.get("requested_duration_seconds") or 0)*(capture.get("sample_rate_sps") or 0)))
+        expected_file_size=int(capture.get("expected_file_size") or capture.get("expected_size_bytes") or 0)
+        actual_samples=int(capture.get("actual_samples") or 0)
+        actual_file_size=int(capture.get("actual_size_bytes") or 0)
+        protocol_duration=float(capture.get("protocol_duration_seconds") or metadata.get("protocol_duration_seconds") or capture.get("requested_duration_seconds") or 0)
+        effective_duration=float(capture.get("effective_duration_seconds") or metadata.get("effective_duration_seconds") or capture.get("requested_duration_seconds") or 0)
+        protocol_override=bool(capture.get("protocol_override", metadata.get("protocol_override", False)))
+        duration_conformant=effective_duration==protocol_duration
+        artifact_verified=bool(capture.get("data_sha256")) and bool(capture.get("metadata_sha256"))
+        fingerprint_ok=bool(quality.get("fingerprinting_eligible")) and overflow_count==0 and discontinuity_count==0
+        clean_capture=overflow_count==0 and discontinuity_count==0
+        maximum_observed_evidence_level="E4" if specific and bool(target_strong) else "E3" if general_ok else "E2" if crc or bool(target_native) else "E1" if bursts else "E0"
+        acquisition_quality_status="PASSED" if clean_capture and capture.get("capture_complete") and actual_samples==expected_samples and actual_file_size==expected_file_size else "FAILED"
+        effective_claim_level=maximum_observed_evidence_level if acquisition_quality_status=="PASSED" else "E2" if crc or bool(target_native) else maximum_observed_evidence_level
+        final_target_status=target_status if acquisition_quality_status=="PASSED" else "TARGET_AMBIGUOUS" if specific else target_status
+        association_evidence_status="ACCEPTED" if effective_claim_level=="E4" and final_target_status=="TARGET_MATCHED_STRONG" else "CANDIDATE" if maximum_observed_evidence_level in {"E3","E4"} or target_b200_crc_packets or bool(target_native) else "NOT_OBSERVED"
+        ground_truth_status="PASSED_E4" if effective_claim_level=="E4" and final_target_status=="TARGET_MATCHED_STRONG" and target_b200_crc_packets>=minimum_target_crc_packets and len(target_strong)>=minimum_target_strong_matches else "INSUFFICIENT_FOR_ACCEPTED_E4"
+        metadata_status="COMPLETE" if metadata.get("condition_id") and metadata.get("operator_session_id") and metadata.get("physical_unit_id") else "INCOMPLETE"
+        protocol_conformance_status="PASSED" if duration_conformant and not protocol_override else "OVERRIDE_DECLARED"
+        artifact_integrity_status="VERIFIED" if artifact_verified else "NOT_VERIFIED"
+        summary_status="COMPLETE"
+        dataset_eligibility_status="ELIGIBLE" if (
+            session.get("state")=="completed"
+            and acquisition_quality_status=="PASSED"
+            and ground_truth_status=="PASSED_E4"
+            and protocol_conformance_status=="PASSED"
+            and metadata_status=="COMPLETE"
+            and artifact_integrity_status=="VERIFIED"
+            and summary_status=="COMPLETE"
+        ) else "NOT_ELIGIBLE"
+        reason_codes=[]
+        if overflow_count>0: reason_codes.append("ACQUISITION_OVERFLOW")
+        if discontinuity_count>0: reason_codes.append("ACQUISITION_DISCONTINUITY")
+        if crc==0: reason_codes.append("ZERO_CRC_VALID_PACKETS")
+        if final_target_status!="TARGET_MATCHED_STRONG": reason_codes.append("TARGET_ASSOCIATION_AMBIGUOUS")
+        if effective_claim_level!="E4": reason_codes.append("EVIDENCE_BELOW_ACCEPTED_E4")
+        ambiguity_reason_codes=[]
+        if overflow_count>0: ambiguity_reason_codes.append("ACQUISITION_OVERFLOW")
+        if discontinuity_count>0: ambiguity_reason_codes.append("ACQUISITION_DISCONTINUITY")
+        if (overflow_count>0 or discontinuity_count>0) and not quality.get("loss_events"): ambiguity_reason_codes.append("LOSS_INTERVALS_NOT_AVAILABLE")
+        if maximum_observed_evidence_level=="E4" and effective_claim_level!="E4": ambiguity_reason_codes.append("OBSERVED_E4_DEGRADED_BY_ACQUISITION_QUALITY")
+        if final_target_status=="TARGET_AMBIGUOUS": ambiguity_reason_codes.append("TARGET_ASSOCIATION_AMBIGUOUS")
+        if target_b200_crc_packets and association_evidence_status=="CANDIDATE": ambiguity_reason_codes.append("TARGET_OBSERVATIONS_CANDIDATE_NOT_ACCEPTED")
+        target_ambiguous_packet_ids={p.get("packet_sha256") or p.get("packet_id") for p in target_ambiguous}
+        target_ambiguous_packet_ids.discard(None)
+        target_ambiguous_match_count=len(target_ambiguous_packet_ids)
+        if final_target_status=="TARGET_AMBIGUOUS" and target_b200_crc_packets:
+            target_ambiguous_match_count=max(target_ambiguous_match_count,target_b200_crc_packets)
         best_target=min(target_strong+target_payload,key=lambda p:abs(float((p.get("correlation") or {}).get("time_difference_ms",float("inf")))),default=None)
         best_correlation=(best_target or {}).get("correlation") or {}
         match_evidence=None
@@ -192,15 +256,32 @@ class BleHybridCampaignManager:
             match_evidence={"packet_id":best_target.get("packet_id") or best_target.get("burst_id"),"pdu_type":best_target.get("pdu_type_name"),"address":best_target.get("address"),"advertising_data_hex":best_target.get("advertising_data_hex"),"payload_hex":best_target.get("payload_hex") or best_target.get("payload_octets"),"crc_received":best_target.get("crc_received"),"crc_computed":best_target.get("crc_computed"),"sdr_timestamp_utc":best_target.get("timestamp_utc") or best_target.get("timestamp"),"native_observation_id":best_correlation.get("native_observation_id"),"delta_ms":best_correlation.get("time_difference_ms"),"rule":best_correlation.get("rule"),"sample_start":best_target.get("sample_start"),"sample_end":best_target.get("sample_end"),"iq_artifact":{"available":bool(best_target.get("iq_segment")),"name":best_target.get("iq_segment"),"path":best_target.get("iq_segment_path"),"sha256":best_target.get("iq_segment_sha256")},"overlap_with_overflow":False if clean_capture else None,"overlap_with_discontinuity":False if clean_capture else None,"sample_continuity_verified":clean_capture}
         artifacts={name:self._artifact(path) for name,path in {"capture_manifest":cap/"capture_manifest.json" if cap else None,"quality_report":cap/"quality_report.json" if cap else None,"decoded_packets":self._path(sid)/"correlation"/"decoded_packets.jsonl","correlation_metrics":self._path(sid)/"correlation"/"metrics.json","correlation_matches":self._path(sid)/"correlation"/"matches.jsonl","native_observations":self.native.root/"scans"/sid/"advertisements.jsonl"}.items()}
         result={"schema_version":"ble-scientific-summary-v2","session_id":sid,"question":("¿Puede el dispositivo seleccionado ser observado y corroborado independientemente por el B200 y el adaptador Windows?" if specific else f"¿Puede el B200 recuperar paquetes BLE reales con CRC válido en CH{session.get('channel')} y corroborarlos mediante el adaptador Windows?"),
-            "general_result":"DEMONSTRATED" if general_ok else "NOT_DEMONSTRATED","success_criterion":"Al menos un evento MATCHED_BY_BOTH_STRONG", "evidence_level":evidence_level,
-            "funnel":{"iq_samples":capture.get("actual_samples"),"candidate_bursts":bursts,"processed_bursts":processed,"processing_coverage_percent":round(processed*100/bursts,2) if bursts else 0,"crc_valid_packets":crc,"crc_yield_percent":round(crc*100/processed,2) if processed else 0,"eligible_advertisements":len(eligible),"strong_matches":len(strong),"unique_correlated_devices":len({str(p.get('address')).upper() for p in packets if (p.get('correlation') or {}).get('status')=='MATCHED_BY_BOTH_STRONG' and p.get('address')})},
+            "general_result":"DEMONSTRATED" if general_ok else "NOT_DEMONSTRATED","success_criterion":"Al menos un evento MATCHED_BY_BOTH_STRONG", "evidence_level":effective_claim_level,"maximum_observed_evidence_level":maximum_observed_evidence_level,"association_evidence_status":association_evidence_status,"effective_claim_level":effective_claim_level,
+            "funnel":{"iq_samples":capture.get("actual_samples"),"candidate_bursts":bursts,"processed_bursts":processed,"processing_coverage_percent":round(processed*100/bursts,2) if bursts else 0,"crc_valid_packets":crc,"total_crc_valid_packets":crc,"target_crc_valid_packets":target_b200_crc_packets,"target_strong_matches":len(target_strong),"target_ambiguous_matches":target_ambiguous_match_count,"environmental_crc_valid_packets":environmental_crc_packets,"environmental_strong_matches":max(0,len(strong)-len(target_strong)),"environmental_matches":max(0,len(strong)-len(target_strong)),"unattributed_crc_valid_packets":unattributed_crc_packets,"crc_yield_percent":round(crc*100/processed,2) if processed else 0,"eligible_advertisements":len(eligible),"strong_matches":len(strong),"unique_correlated_devices":len({str(p.get('address')).upper() for p in packets if (p.get('correlation') or {}).get('status')=='MATCHED_BY_BOTH_STRONG' and p.get('address')})},
             "counts":{"crc_events":crc,"unique_b200_addresses":len(b200_addresses),"unique_windows_addresses":len(native_addresses),"addresses_seen_by_both":len(b200_addresses&native_addresses),"unique_payloads":len({p.get('advertising_data_hex') for p in eligible if p.get('advertising_data_hex')}),"repeated_advertisements":max(0,len(eligible)-len({(p.get('address'),p.get('advertising_data_hex')) for p in eligible}))},
-            "target":{"mode":session.get("target_mode"),"device_id":session.get("target_device_id"),"address":session.get("target_address"),"name":session.get("target_name_at_start"),"selection_source":session.get("target_selection_source"),"seen_before_start":session.get("target_seen_before_start"),"seen_during_campaign":bool(target_native),"seen_by_windows":bool(target_native),"windows_callbacks":len(target_native),"seen_by_b200":bool(target_packets or target_related),"b200_crc_packets":target_b200_crc_packets,"strong_matches":len(target_strong),"payload_matches":len(target_payload),"best_delta_ms":min((abs(float((p.get('correlation') or {}).get('time_difference_ms'))) for p in target_strong+target_payload if (p.get('correlation') or {}).get('time_difference_ms') is not None),default=None),"channel":session.get("channel"),"status":target_status,"match_evidence":match_evidence,"functional_e4_observed":evidence_level=="E4","clean_e4_evidence":evidence_level=="E4" and clean_capture},
-            "acquisition":{"channel":capture.get("ble_channel"),"frequency_hz":capture.get("center_frequency_hz"),"requested_duration_seconds":capture.get("requested_duration_seconds"),"actual_duration_seconds":capture.get("actual_duration_seconds"),"duration_difference_reason":None if capture.get("requested_duration_seconds")==capture.get("actual_duration_seconds") else "La captura terminó con una duración distinta de la solicitada.","sample_rate_sps":capture.get("sample_rate_sps"),"bandwidth_hz":capture.get("bandwidth_hz"),"gain_db":(capture.get("gain_configuration") or {}).get("gain_db"),"antenna":capture.get("antenna"),"expected_samples":int((capture.get("requested_duration_seconds") or 0)*(capture.get("sample_rate_sps") or 0)),"captured_samples":capture.get("actual_samples"),"bytes":capture.get("actual_size_bytes"),"overflows":capture.get("overflow_count"),"discontinuities":capture.get("input_discontinuities"),"lost_samples":capture.get("dropped_samples"),"sha256_verified":bool(capture.get("data_sha256")),"functional_validation":"suitable" if capture.get("capture_complete") and crc else "not_suitable","fingerprinting":"suitable" if fingerprint_ok else "not_suitable"},
+            "target":{"mode":session.get("target_mode"),"device_id":session.get("target_device_id"),"address":session.get("target_address"),"name":session.get("target_name_at_start"),"selection_source":session.get("target_selection_source"),"seen_before_start":session.get("target_seen_before_start"),"seen_during_campaign":bool(target_native),"seen_by_windows":bool(target_native),"windows_callbacks":len(target_native),"seen_by_b200":bool(target_packets or target_related),"b200_crc_packets":target_b200_crc_packets,"strong_matches":len(target_strong),"payload_matches":len(target_payload),"ambiguous_matches":target_ambiguous_match_count,"best_delta_ms":min((abs(float((p.get('correlation') or {}).get('time_difference_ms'))) for p in target_strong+target_payload if (p.get('correlation') or {}).get('time_difference_ms') is not None),default=None),"channel":session.get("channel"),"status":final_target_status,"observed_status":target_status,"match_evidence":match_evidence,"functional_e4_observed":maximum_observed_evidence_level=="E4","clean_e4_evidence":effective_claim_level=="E4" and clean_capture,"ambiguity_reason_codes":ambiguity_reason_codes},
+            "acquisition":{"channel":capture.get("ble_channel"),"frequency_hz":capture.get("center_frequency_hz"),"requested_duration_seconds":capture.get("requested_duration_seconds"),"protocol_duration_seconds":protocol_duration,"effective_duration_seconds":effective_duration,"duration_source":capture.get("duration_source") or metadata.get("duration_source"),"protocol_override":protocol_override,"override_reason":capture.get("override_reason") or metadata.get("override_reason"),"protocol_revision":capture.get("protocol_revision") or metadata.get("protocol_revision"),"actual_duration_seconds":capture.get("actual_duration_seconds"),"duration_difference_reason":None if capture.get("requested_duration_seconds")==capture.get("actual_duration_seconds") else "La captura terminó con una duración distinta de la solicitada.","sample_rate_sps":capture.get("sample_rate_sps"),"bandwidth_hz":capture.get("bandwidth_hz"),"gain_db":(capture.get("gain_configuration") or {}).get("gain_db"),"antenna":capture.get("antenna"),"expected_samples":expected_samples,"captured_samples":capture.get("actual_samples"),"expected_file_size":expected_file_size,"actual_file_size":actual_file_size,"bytes":capture.get("actual_size_bytes"),"overflows":overflow_count,"discontinuities":discontinuity_count,"lost_samples":capture.get("dropped_samples"),"loss_events":quality.get("loss_events") or [],"loss_intervals_available":bool(quality.get("loss_events")),"sha256_verified":bool(capture.get("data_sha256")),"functional_validation":"suitable" if capture.get("capture_complete") and crc else "not_suitable","fingerprinting":"suitable" if fingerprint_ok else "not_suitable"},
             "decoder":{"candidate_bursts":bursts,"processed_bursts":processed,"coverage_percent":round(processed*100/bursts,2) if bursts else 0,"crc_valid":crc,"crc_invalid":max(0,processed-crc),"parser_failures":None,"unsupported_pdu_types":None,"crc_yield_percent":round(crc*100/processed,2) if processed else 0},
             "correlation":{"native_callbacks":len(native),"eligible_native":len(native),"eligible_sdr":len(eligible),"strong_matches":eligible_status["MATCHED_BY_BOTH_STRONG"],"payload_matches":eligible_status["MATCHED_BY_PAYLOAD"],"ambiguous":eligible_status["AMBIGUOUS_TIME_MATCH"],"b200_only":eligible_status["B200_ONLY"],"category_sum":sum(eligible_status.values()),"excluded_non_advertising_pdus":len(packets)-len(eligible),"native_only":len(self._jsonl(self._path(sid)/"correlation"/"unmatched_native.jsonl")),"conflicts":0,"window_ms":session.get("result",{}).get("window_ms"),"median_delta_ms":round(statistics.median(deltas),3) if deltas else None,"p95_abs_delta_ms":round(sorted(abs(x) for x in deltas)[max(0,int(len(deltas)*.95)-1)],3) if deltas else None,"minimum_delta_ms":min(deltas) if deltas else None,"maximum_delta_ms":max(deltas) if deltas else None},
-            "conclusion":{"target_specific":"DEMONSTRATED" if specific and target_strong else "NOT_DEMONSTRATED","statement":f"El objetivo {session.get('target_address')} fue observado por Windows y B200 y alcanzó E4 en CH{session.get('channel')}." if specific and target_strong else "No se demostró E4 para el objetivo seleccionado.","functional_validation":"PASSED" if specific and target_strong else "NOT_PASSED","reproducibility":"PENDING","fingerprinting":"NOT_SUITABLE" if not fingerprint_ok else "SUITABLE","physical_identity":"NOT_DEMONSTRATED"},
-            "uc02":{"case_id":"BLE-UC-02","session_id":sid,"target_address":session.get("target_address"),"channel":session.get("channel"),"functional_result":"PASSED" if evidence_level=="E4" else "NOT_PASSED","evidence_level":evidence_level,"windows_callbacks":len(target_native),"target_crc_packets":len({p.get('packet_sha256') or p.get('packet_id') for p in target_packets+target_related}),"target_strong_matches":len(target_strong),"clean_capture":clean_capture,"reproducibility":"PENDING","fingerprinting":"NOT_VALIDATED","physical_identity":"NOT_DEMONSTRATED"},
+            "conclusion":{"target_specific":"DEMONSTRATED" if ground_truth_status=="PASSED_E4" else "NOT_DEMONSTRATED","statement":f"El objetivo {session.get('target_address')} fue observado por Windows y B200 y alcanzó E4 limpio en CH{session.get('channel')}." if ground_truth_status=="PASSED_E4" else "No se demostró E4 limpio para el objetivo seleccionado.","functional_validation":"PASSED" if ground_truth_status=="PASSED_E4" else "NOT_PASSED","reproducibility":"PENDING","fingerprinting":"NOT_SUITABLE" if not fingerprint_ok else "SUITABLE","physical_identity":"NOT_DEMONSTRATED"},
+            "uc02":{"case_id":"BLE-UC-02","session_id":sid,"target_address":session.get("target_address"),"channel":session.get("channel"),"functional_result":"PASSED" if effective_claim_level=="E4" else "NOT_PASSED","evidence_level":effective_claim_level,"effective_claim_level":effective_claim_level,"maximum_observed_evidence_level":maximum_observed_evidence_level,"windows_callbacks":len(target_native),"target_crc_packets":len({p.get('packet_sha256') or p.get('packet_id') for p in target_packets+target_related}),"target_strong_matches":len(target_strong),"clean_capture":clean_capture,"reproducibility":"PENDING","fingerprinting":"NOT_VALIDATED","physical_identity":"NOT_DEMONSTRATED"},
+            "terminal_status":"COMPLETED" if session.get("state")=="completed" else str(session.get("state","UNKNOWN")).upper(),
+            "acquisition_quality_status":acquisition_quality_status,
+            "signal_quality_status":acquisition_quality_status,
+            "ground_truth_status":ground_truth_status,
+            "target_result":final_target_status,
+            "observed_evidence_level":maximum_observed_evidence_level,
+            "maximum_observed_evidence_level":maximum_observed_evidence_level,
+            "association_evidence_status":association_evidence_status,
+            "effective_claim_level":effective_claim_level,
+            "ambiguity_reason_codes":ambiguity_reason_codes,
+            "protocol_conformance_status":protocol_conformance_status,
+            "metadata_status":metadata_status,
+            "artifact_integrity_status":artifact_integrity_status,
+            "summary_status":summary_status,
+            "dataset_eligibility_status":dataset_eligibility_status,
+            "final_reason_codes":reason_codes,
+            "protocol":{"protocol_duration_seconds":protocol_duration,"effective_duration_seconds":effective_duration,"duration_source":capture.get("duration_source") or metadata.get("duration_source"),"protocol_override":protocol_override,"override_reason":capture.get("override_reason") or metadata.get("override_reason"),"protocol_revision":capture.get("protocol_revision") or metadata.get("protocol_revision"),"minimum_target_crc_packets":minimum_target_crc_packets,"minimum_target_strong_matches":minimum_target_strong_matches},
             "artifacts":artifacts,"limitations":[f"Sólo se evaluó CH{session.get('channel')}.","No se validó fingerprint RF.","No se demostró cobertura completa de transmisiones.","La identidad física del transmisor no queda demostrada únicamente por dirección/payload."]}
         negative_control_passed=(intent==NEGATIVE_CONTROL and contract["operator_confirmation"] and bool(contract["negative_control_type"]) and false_target_attributions==0)
         result["schema_version"]="ble-scientific-summary-v3"
@@ -211,8 +292,12 @@ class BleHybridCampaignManager:
         }[intent]
         result["campaign"]={
             **contract,
-            "result":target_status,
-            "maximum_evidence":evidence_level,
+            "result":final_target_status,
+            "observed_result":target_status,
+            "maximum_evidence":maximum_observed_evidence_level,
+            "observed_evidence":maximum_observed_evidence_level,
+            "effective_claim_level":effective_claim_level,
+            "association_evidence_status":association_evidence_status,
             "positive_claim_allowed":intent==POSITIVE_TARGET_VALIDATION,
             "negative_claim_allowed":intent==NEGATIVE_CONTROL and contract["operator_confirmation"],
         }
@@ -252,7 +337,7 @@ class BleHybridCampaignManager:
             "burst_detector":{"status":"PASSED" if bursts else "NOT_DEMONSTRATED","label":"Validación del detector de ráfagas","detail":f"{bursts} ráfagas detectadas"},
             "ble_decoder":{"status":"PASSED_TO_E2" if crc else "NOT_DEMONSTRATED","label":"Validación del decoder BLE","detail":f"{crc} paquetes con CRC válido"},
             "hybrid_correlation":{"status":"DEMONSTRATED" if general_ok else "NOT_DEMONSTRATED","label":"Correlación híbrida Windows–B200","detail":f"{len(strong)} coincidencias fuertes"},
-            "target_validation":{"status":"DEMONSTRATED" if target_strong else "NEGATIVE_CONTROL_PASSED" if negative_control_passed else "NOT_DEMONSTRATED","label":"Validación del objetivo","detail":target_status},
+            "target_validation":{"status":"DEMONSTRATED" if ground_truth_status=="PASSED_E4" else "NEGATIVE_CONTROL_PASSED" if negative_control_passed else "NOT_DEMONSTRATED","label":"Validación del objetivo","detail":final_target_status},
             "fingerprinting":{"status":"SUITABLE" if fingerprint_ok else "NOT_SUITABLE","label":"Fingerprinting","detail":"Requiere captura limpia y validación multisensión"},
         }
         if intent==NEGATIVE_CONTROL:
@@ -277,7 +362,7 @@ class BleHybridCampaignManager:
                 "does_not_mean":["La ausencia RF demostró automáticamente que el objetivo estaba apagado.","Se conoce la identidad física de los transmisores ambientales."],
                 "possible_causes":[],
             }
-        elif target_strong:
+        elif ground_truth_status=="PASSED_E4":
             statement=f"El objetivo {session.get('target_address')} fue observado por Windows y B200 y alcanzó E4 en CH{session.get('channel')}."
         elif target_status=="TARGET_NOT_OBSERVED":
             statement=(f"El B200 procesó {processed} ráfagas y recuperó {crc} paquetes BLE con CRC válido en CH{session.get('channel')}. "
@@ -296,7 +381,9 @@ class BleHybridCampaignManager:
             result["limitations"].insert(2,"La condición negativa procede de la declaración física previa del operador; no fue inferida de la ausencia RF.")
             result["limitations"].insert(3,"El control negativo básico fue evaluado; la referencia positiva del correlador permanece pendiente si no hubo coincidencias E3 de otro dispositivo.")
         if session.get("state")=="completed":
-            persisted={"target_seen_during_campaign":bool(target_native),"target_native_callbacks":len(target_native),"scientific_summary":result}
+            persisted={"target_seen_during_campaign":bool(target_native),"target_native_callbacks":len(target_native),"scientific_summary":result,
+                "acquisition_quality_status":acquisition_quality_status,"signal_quality_status":acquisition_quality_status,"ground_truth_status":ground_truth_status,"target_result":final_target_status,
+                "evidence_level":effective_claim_level,"effective_claim_level":effective_claim_level,"observed_evidence_level":maximum_observed_evidence_level,"maximum_observed_evidence_level":maximum_observed_evidence_level,"association_evidence_status":association_evidence_status,"dataset_eligibility_status":dataset_eligibility_status,"final_reason_codes":reason_codes,"ambiguity_reason_codes":ambiguity_reason_codes}
             if intent==NEGATIVE_CONTROL:
                 persisted.update(campaign_intent="NEGATIVE_CONTROL",negative_control_type=str(contract["negative_control_type"]).upper(),operator_confirmation=contract["operator_confirmation"],target_native_observations=len(target_native),target_b200_crc_valid_packets=target_b200_crc_packets,target_strong_matches=len(target_strong),false_target_attributions=false_target_attributions,negative_control_result=negative_result)
             self._write(sid,**persisted)

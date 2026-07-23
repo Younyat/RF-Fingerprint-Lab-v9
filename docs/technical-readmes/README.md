@@ -26,6 +26,14 @@ When a technology's implementation changes meaningfully, update its README in
 the same change — this is documentation-as-audit-trail, not a one-time diary
 entry.
 
+Module-local rule: when a concrete code module is modified in a way that
+changes behavior, gates, evidence handling, acquisition policy, model policy,
+or scientific interpretation, that module must also contain or update a local
+technical `README.md`. The local README records the programmer-facing details:
+technical change, scientific reason, affected gate/status, verification
+artifacts, and remaining claim boundaries. The technology README remains the
+high-level map; the module README is the maintenance memory next to the code.
+
 ## Index
 
 | Technology | Status | Document |
