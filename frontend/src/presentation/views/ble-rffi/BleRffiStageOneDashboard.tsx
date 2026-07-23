@@ -32,6 +32,8 @@ const QUALIFICATION_CAPTURE_SECONDS = 10;
 const QUALIFICATION_REQUIRED_CLEAN = 3;
 const QUALIFICATION_EXPECTED_SAMPLES = 40_000_000;
 const QUALIFICATION_EXPECTED_FILE_SIZE = 320_000_000;
+const MINIMUM_RF_CONCURRENCY_OVERLAP_SECONDS = 9;
+const MINIMUM_RF_CONCURRENCY_OVERLAP_FRACTION = 0.90;
 const MINIMUM_TARGET_CRC_PACKETS = 1;
 const MINIMUM_TARGET_STRONG_MATCHES = 1;
 const terminalStates = new Set(['completed', 'failed', 'cancelled', 'timed_out']);
@@ -435,7 +437,7 @@ function isCleanQualificationCapture(capture: BleCaptureRecord, phase?: Qualific
   const actualSize = Number(capture.actual_file_size_bytes ?? capture.actual_size_bytes);
   const discontinuities = Number(capture.discontinuity_count ?? capture.input_discontinuities ?? 0);
   const stage = captureStage(capture);
-  return isQualificationCapture(capture)
+  const baseClean = isQualificationCapture(capture)
     && (!phase || stage === phase)
     && (!profileId || String(capture.qualification_profile_id ?? metadata.qualification_profile_id ?? '') === profileId)
     && capture.capture_complete === true
@@ -452,6 +454,18 @@ function isCleanQualificationCapture(capture: BleCaptureRecord, phase?: Qualific
     && Number(capture.write_error_count ?? 0) === 0
     && String(capture.hash_status ?? '') === 'VERIFIED'
     && String(capture.metadata_status ?? '') === 'COMPLETE';
+  if (!baseClean) return false;
+  if (stage !== 'HYBRID_CONCURRENCY_QUALIFICATION') return true;
+  const rfDuration = Number(capture.b200_rf_duration_seconds ?? metadata.b200_rf_duration_seconds);
+  const rfOverlapSeconds = Number(capture.rf_concurrency_overlap_seconds ?? metadata.rf_concurrency_overlap_seconds);
+  const rfOverlapFraction = Number(capture.rf_concurrency_overlap_fraction ?? metadata.rf_concurrency_overlap_fraction);
+  return rfDuration === QUALIFICATION_CAPTURE_SECONDS
+    && Number.isFinite(rfOverlapSeconds)
+    && Number.isFinite(rfOverlapFraction)
+    && rfOverlapSeconds >= MINIMUM_RF_CONCURRENCY_OVERLAP_SECONDS
+    && rfOverlapSeconds <= QUALIFICATION_CAPTURE_SECONDS
+    && rfOverlapFraction >= MINIMUM_RF_CONCURRENCY_OVERLAP_FRACTION
+    && rfOverlapFraction <= 1;
 }
 
 function qualificationStatus(captures: BleCaptureRecord[], phase: QualificationPhase, profileId: string): QualificationStatus {
@@ -1668,12 +1682,14 @@ function QualificationStep({ captures, b200Status, hybridStatus, profileMatchesC
       <div className="grid gap-2">
         {latestByTime(captures).slice(0, 6).map((capture) => {
           const stage = captureStage(capture) || undefined;
+          const clean = isCleanQualificationCapture(capture, stage, qualificationProfileId);
+          const hybrid = stage === 'HYBRID_CONCURRENCY_QUALIFICATION';
           return (
             <div key={capture.capture_id} className="rounded-md border border-slate-800 p-3 text-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="font-mono text-xs">{capture.capture_id}</span>
                 <Badge>{stage ?? 'QUALIFICATION'}</Badge>
-                <Badge>{isCleanQualificationCapture(capture, stage, qualificationProfileId) ? 'Cualificacion superada' : 'Cualificacion no superada: se detectaron perdidas'}</Badge>
+                <Badge>{clean ? 'Cualificacion superada' : 'Cualificacion no superada: revise perdidas, hash y solape RF'}</Badge>
               </div>
               <div className="mt-2 grid gap-2 md:grid-cols-4">
                 <Metric title="actual_samples" value={formatNumber(qualificationActualSamples(capture))} detail={`expected ${formatNumber(QUALIFICATION_EXPECTED_SAMPLES)}`} />
@@ -1684,6 +1700,8 @@ function QualificationStep({ captures, b200Status, hybridStatus, profileMatchesC
                 <Metric title="write_error_count" value={formatNumber(capture.write_error_count)} detail="debe ser 0" />
                 <Metric title="hash_status" value={statusText(capture.hash_status)} detail="debe ser VERIFIED" />
                 <Metric title="metadata_status" value={statusText(capture.metadata_status)} detail="debe ser COMPLETE" />
+                {hybrid && <Metric title="rf_overlap_seconds" value={formatNumber(capture.rf_concurrency_overlap_seconds ?? capture.experimental_metadata?.rf_concurrency_overlap_seconds)} detail={`minimo ${MINIMUM_RF_CONCURRENCY_OVERLAP_SECONDS}s; maximo ${QUALIFICATION_CAPTURE_SECONDS}s`} />}
+                {hybrid && <Metric title="rf_overlap_fraction" value={formatNumber(capture.rf_concurrency_overlap_fraction ?? capture.experimental_metadata?.rf_concurrency_overlap_fraction)} detail={`minimo ${MINIMUM_RF_CONCURRENCY_OVERLAP_FRACTION}`} />}
               </div>
             </div>
           );

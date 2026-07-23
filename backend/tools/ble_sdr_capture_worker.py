@@ -383,6 +383,8 @@ def capture(request_path: Path, output: Path) -> int:
         "writer_error": None,
     }
     started_at = utc_now()
+    b200_rf_started_at: str | None = None
+    b200_rf_finished_at: str | None = None
     capture_started_monotonic = time.monotonic()
     sampler = CpuSampler()
     sampler.start()
@@ -442,6 +444,11 @@ def capture(request_path: Path, output: Path) -> int:
             "schema_version": "ble-sdr-capture-manifest-v2",
             "capture_id": capture_id,
             "created_at_utc": started_at,
+            "b200_job_started_at": started_at,
+            "b200_job_finished_at": utc_now(),
+            "b200_rf_started_at": b200_rf_started_at,
+            "b200_rf_finished_at": b200_rf_finished_at,
+            "b200_rf_duration_seconds": received / request["sample_rate_sps"],
             "diagnostic_status": diagnostic_status,
             "manifest_status": manifest_status,
             "device_driver": request["device_args"].get("driver", "unknown"),
@@ -544,7 +551,8 @@ def capture(request_path: Path, output: Path) -> int:
         hw = str(device.getHardwareKey())
         hw_info = {str(k): str(v) for k, v in dict(device.getHardwareInfo()).items()}
         stream = device.setupStream(SoapySDR.SOAPY_SDR_RX, wire_format, [0])
-        receiver_events.append({"event_type": "capture_started", "event": "capture_started", "timestamp_utc": started_at, "sample_index": 0})
+        b200_rf_started_at = utc_now()
+        receiver_events.append({"event_type": "capture_started", "event": "capture_started", "timestamp_utc": b200_rf_started_at, "sample_index": 0})
         device.activateStream(stream)
         while received < target_samples:
             wanted = min(block_samples, target_samples - received)
@@ -582,6 +590,10 @@ def capture(request_path: Path, output: Path) -> int:
                     atomic_json(output / "live.json", live)
                 except PermissionError:
                     telemetry_publish_failures += 1
+        b200_rf_finished_at = utc_now()
+        receiver_events.append({"event_type": "capture_rf_finished", "event": "capture_rf_finished",
+                                "timestamp_utc": b200_rf_finished_at, "sample_index": received,
+                                "overflow_count": overflows, "discontinuity_count": discontinuities})
         if stream is not None:
             device.deactivateStream(stream)
             device.closeStream(stream)
@@ -599,7 +611,7 @@ def capture(request_path: Path, output: Path) -> int:
                 os.replace(partial, final)
             metadata = {"global": {"core:version": "1.2.6", "core:datatype": fmt, "core:sample_rate": request["sample_rate_sps"],
                         "core:hw": hw, "core:recorder": "RF-Fingerprint-Lab BLE Capture", "core:description": request.get("description", "Experimental BLE-channel IQ capture")},
-                        "captures": [{"core:sample_start": 0, "core:frequency": request["center_frequency_hz"], "core:datetime": started_at}], "annotations": []}
+                        "captures": [{"core:sample_start": 0, "core:frequency": request["center_frequency_hz"], "core:datetime": b200_rf_started_at or started_at}], "annotations": []}
             atomic_json(meta_path, metadata)
         analysis_enabled = bool(request.get("analysis_enabled", False))
         bursts = detect_bursts(final, fmt, request["sample_rate_sps"], output) if persist_iq and final.exists() and analysis_enabled else []

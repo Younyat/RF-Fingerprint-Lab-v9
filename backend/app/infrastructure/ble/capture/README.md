@@ -239,16 +239,59 @@ Windows-B200 correlation, dataset eligibility, or model readiness.
 Frozen acceptance threshold:
 
 ```text
-minimum_concurrency_overlap_seconds = 9.0
+minimum_rf_concurrency_overlap_seconds = 9.0
+minimum_rf_concurrency_overlap_fraction = 0.90
 ```
 
-All three hybrid runs passed:
+The original dashboard value `concurrency_overlap_seconds = 17.00` was a
+legacy job-interval overlap and included non-RF work such as setup, closing,
+hashing or manifest handling. It is not a valid RF overlap metric because a
+10-second acquisition cannot have more than 10 seconds of RF concurrency.
+
+The corrected metric separates:
+
+```text
+b200_job_started_at
+b200_job_finished_at
+b200_rf_started_at
+b200_rf_finished_at
+windows_scan_started_at
+windows_scan_finished_at
+```
+
+For future runs, `b200_rf_started_at` and `b200_rf_finished_at` are emitted by
+the SDR worker around the sample reception interval. For the three existing
+hybrid runs, the previous worker did not record the exact first-sample
+timestamp. The RF overlap is therefore reconstructed from sample count and the
+recorded scan envelope: Windows scanning started before the recorded B200 job
+interval and finished after it, so the 10-second RF interval is fully covered
+even though the exact first-sample timestamp was not present in the old
+artifacts.
+
+Corrected invariants:
+
+```text
+b200_rf_duration_seconds = actual_samples / sample_rate_sps = 10.0
+0 <= rf_concurrency_overlap_seconds <= 10.0
+0 <= rf_concurrency_overlap_fraction <= 1.0
+```
+
+All three hybrid runs pass the corrected RF-overlap gate:
 
 | Capture | Scan session | Samples | File size | Losses | Overlap | Windows callbacks / unique |
 |---|---|---:|---:|---|---:|---:|
-| `BLE-IQ-HYBQUAL-H1-6d97ec1435eb` | `BLE-HYBRID-QUAL-H1-6d97ec1435eb` | 40,000,000 | 320,000,000 | 0 overflow / 0 discontinuity | 17.00 s | 743 / 57 |
-| `BLE-IQ-HYBQUAL-H2-f77ffff0ceb5` | `BLE-HYBRID-QUAL-H2-f77ffff0ceb5` | 40,000,000 | 320,000,000 | 0 overflow / 0 discontinuity | 17.00 s | 687 / 55 |
-| `BLE-IQ-HYBQUAL-H3-e86f90fa5ab6` | `BLE-HYBRID-QUAL-H3-e86f90fa5ab6` | 40,000,000 | 320,000,000 | 0 overflow / 0 discontinuity | 17.00 s | 628 / 55 |
+| `BLE-IQ-HYBQUAL-H1-6d97ec1435eb` (`HCQ1`) | `BLE-HYBRID-QUAL-H1-6d97ec1435eb` | 40,000,000 | 320,000,000 | 0 overflow / 0 discontinuity | 10.00 s / 1.00 | 743 / 57 |
+| `BLE-IQ-HYBQUAL-H2-f77ffff0ceb5` (`HCQ2`) | `BLE-HYBRID-QUAL-H2-f77ffff0ceb5` | 40,000,000 | 320,000,000 | 0 overflow / 0 discontinuity | 10.00 s / 1.00 | 687 / 55 |
+| `BLE-IQ-HYBQUAL-H3-e86f90fa5ab6` (`HCQ3`) | `BLE-HYBRID-QUAL-H3-e86f90fa5ab6` | 40,000,000 | 320,000,000 | 0 overflow / 0 discontinuity | 10.00 s / 1.00 | 628 / 55 |
+
+`HCQ1`, `HCQ2`, and `HCQ3` are aliases for the qualification runs only. The
+old artifact identifiers are preserved. Future technical hybrid qualification
+runs must use `HCQ*` naming because `H1`--`H3` are reserved for confirmatory
+scientific hypotheses in the paper.
+
+Windows callback count and unique observations are diagnostics of scanner
+activity only. They are not target identity evidence, are not E4 evidence, and
+must not be used to unlock a negative control.
 
 Current gate interpretation:
 
@@ -264,6 +307,17 @@ TRAINING = BLOCKED
 The negative control remains blocked until a later S001-POS run is accepted
 and eligible. These hybrid qualification runs remain `qualification_only`,
 `scientific_campaign_member = false`, and `dataset_eligible = false`.
+
+This profile qualifies only the 10-second engineering qualification profile:
+
+```text
+QPROFILE-Z1B2-2402000000-4000000-2000000-cf32_le-RX2-G20-10S
+```
+
+The 120-second confirmatory campaign described in the paper is a different
+experimental profile. It requires a new `qualification_profile_id` and a full
+new acquisition plus hybrid concurrency requalification before it can be used
+for scientific campaign captures.
 
 ## Verification commands
 
