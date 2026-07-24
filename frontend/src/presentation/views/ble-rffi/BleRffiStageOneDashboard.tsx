@@ -1292,7 +1292,9 @@ export default function BleRffiStageOneDashboard() {
     const effectiveDurationSeconds = intent === 'negative_control' ? negativeDurationSeconds : captureSeconds;
     const existingConditionSessions = stageOneSessions.filter((session) => sessionConditionId(session) === currentCondition.condition_id);
     const protocolOverride = effectiveDurationSeconds !== DEFAULT_CAPTURE_SECONDS || (intent === 'negative_control' && effectiveDurationSeconds !== captureSeconds);
-    const protocolRevision = protocolOverride || existingConditionSessions.length ? `rev${existingConditionSessions.length + 1}` : intent === 'positive_target_validation' ? 'positive-pilot-gate-v2' : 'rev1';
+    const protocolRevision = intent === 'positive_target_validation'
+      ? 'positive-pilot-gate-v2'
+      : protocolOverride || existingConditionSessions.length ? `rev${existingConditionSessions.length + 1}` : 'rev1';
     const overrideReason = protocolOverride
       ? effectiveDurationSeconds !== DEFAULT_CAPTURE_SECONDS
         ? 'operator_duration_override'
