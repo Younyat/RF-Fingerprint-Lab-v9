@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .ble_capture_metadata import atomic_json, sha256_file, validate_sigmf
+from .ble_rf_diagnostics import BleRfDiagnosticService, diagnostic_profiles
 
 CHANNELS = {37: 2_402_000_000, 38: 2_426_000_000, 39: 2_480_000_000}
 FORMATS = {"ci8": 2, "ci16_le": 4, "cf32_le": 8}
@@ -350,6 +351,13 @@ class BleCaptureJobManager:
         data, meta = root / record["data_path"], root / record["metadata_path"]
         return {"data_valid": sha256_file(data) == record["data_sha256"],
                 "metadata_valid": sha256_file(meta) == record["metadata_sha256"]}
+
+    def rf_diagnostic(self, capture_id: str) -> dict[str, Any]:
+        root = self._job_dir(capture_id)
+        return BleRfDiagnosticService().analyze(root, self.metadata(capture_id))
+
+    def rf_diagnostic_profiles(self) -> dict[str, Any]:
+        return diagnostic_profiles()
 
     def data_path(self, capture_id: str) -> Path:
         root = self._job_dir(capture_id); return root / self.metadata(capture_id)["data_path"]

@@ -680,6 +680,23 @@ online_correlation_enabled = false
 cerrar y verificar el archivo I/Q. No habilita decoder ni correlacion online
 durante la adquisicion critica.
 
+Incidencia corregida el 2026-07-24: algunas rutas de UI podian iniciar
+`S001-POS` sin propagar `analysis_enabled` dentro de `experimental_metadata`,
+lo que hacia fallar el congelado con
+`PROTOCOL_FREEZE_MISMATCH:analysis_enabled` antes de usar hardware. La decision
+tecnica fue normalizar `analysis_enabled = true` en dos capas:
+
+```text
+frontend startHybrid payload normalizer
+backend _freeze_positive_pilot_protocol
+```
+
+La razon cientifica es que `analysis_enabled` no es un metadato editable ni una
+opcion del operador para `POSITIVE_PILOT`; es parte del contrato congelado que
+separa adquisicion critica de deteccion offline. La adquisicion sigue usando
+`frontend_preview_enabled = false`, `online_decoder_enabled = false` y
+`online_correlation_enabled = false`.
+
 Un dry-run sin modificar artefactos sobre `BLE-IQ-e8edc49b59a0` con la misma
 regla energetica del worker encontro eventos candidatos:
 
@@ -693,6 +710,67 @@ candidate_groups = 8047
 Por tanto, el siguiente paso preferente no es repetir hardware, sino ejecutar
 una reanalisis offline trazable del I/Q ya capturado o repetir S001-POS solo
 despues de congelar y commitear `analysis_enabled = true`.
+
+### Diagnostico RF recepcion-vs-deteccion
+
+El modulo incorpora un diagnostico offline independiente de campana para
+capturas preservadas:
+
+```text
+GET /api/ble/capture/recordings/{capture_id}/rf-diagnostic
+GET /api/ble/capture/rf-diagnostic-profiles
+```
+
+El diagnostico no escribe sobre la captura original y devuelve:
+
+```text
+actual_samples
+actual_file_size_bytes
+data_sha256 / metadata_sha256
+hash_status
+mean_power_dbfs
+maximum_block_power_dbfs
+noise_floor_dbfs
+clipping_percent
+psd.points alrededor de center_frequency_hz
+energy_time_series
+energy_excursion_count
+threshold_dbfs
+candidate_count
+candidate_preview antes del decoder
+diagnostic_conclusion.layer
+```
+
+La conclusion separa dos capas:
+
+```text
+CANDIDATES_AVAILABLE_FOR_DECODER_REPLAY
+  Hay energia/candidatos en el I/Q preservado. No repita hardware a ciegas:
+  ejecute replay detector/decoder y ajuste la segmentacion si procede.
+
+DETECTION_REPLAY_REQUIRED
+  Hay energia pero no candidatos segun la regla evaluada. Corrija detector
+  mediante replay, sin modificar el I/Q original.
+
+RF_VISIBILITY_REVIEW_REQUIRED
+  No hay energia candidata. Revise antena, RX2, sintonia, ganancia, driver y
+  flujo de muestras antes de repetir S001-POS.
+```
+
+El perfil `RFVIS-CH37-RX2-4M8M-BW4M-GAIN-SWEEP-v1` permite pruebas
+diagnosticas fuera de campana con 2402 MHz, RX2, 4/8 MS/s, 4 MHz de
+bandwidth y barrido de ganancia. Estas ejecuciones deben quedar marcadas como:
+
+```text
+execution_purpose = RF_VISIBILITY_DIAGNOSTIC
+scientific_campaign_member = false
+dataset_eligible = false
+qualification_only = true
+does_not_replace_qualification = true
+```
+
+Usar un resultado diagnostico para cambiar la campana cientifica requiere una
+revision explicita del perfil y recualificacion completa.
 
 ## Verification commands
 

@@ -36,6 +36,12 @@ def build_ble_capture_router(manager, offline_manager=None):
     @router.get("/recordings/{capture_id}/verify")
     def verify(capture_id: str): return call(lambda: manager.verify(capture_id))
 
+    @router.get("/recordings/{capture_id}/rf-diagnostic")
+    def rf_diagnostic(capture_id: str): return call(lambda: manager.rf_diagnostic(capture_id))
+
+    @router.get("/rf-diagnostic-profiles")
+    def rf_diagnostic_profiles(): return call(lambda: manager.rf_diagnostic_profiles())
+
     @router.get("/recordings/{capture_id}/sigmf-meta")
     def sigmf_meta(capture_id: str): return call(lambda: FileResponse(manager.meta_path(capture_id), filename=f"{capture_id}.sigmf-meta"))
 

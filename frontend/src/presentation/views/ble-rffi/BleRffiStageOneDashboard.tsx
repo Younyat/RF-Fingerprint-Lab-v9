@@ -12,6 +12,7 @@ import {
   BleHybridSession,
   BleNativeDevice,
   BleNativeStatus,
+  BleRfDiagnostic,
   BleSdrDevice,
   BleScientificSummary,
 } from '../../../app/services/bleApi';
@@ -630,6 +631,8 @@ export default function BleRffiStageOneDashboard() {
   const [devices, setDevices] = useState<BleNativeDevice[]>([]);
   const [sessions, setSessions] = useState<BleHybridSession[]>([]);
   const [captures, setCaptures] = useState<BleCaptureRecord[]>([]);
+  const [rfDiagnostic, setRfDiagnostic] = useState<BleRfDiagnostic | null>(null);
+  const [rfDiagnosticProfiles, setRfDiagnosticProfiles] = useState<Record<string, unknown> | null>(null);
   const [summaries, setSummaries] = useState<Record<string, BleScientificSummary>>({});
   const [dataset, setDataset] = useState<BleDatasetDetail | null>(null);
   const [datasetKnown, setDatasetKnown] = useState(false);
@@ -777,12 +780,59 @@ export default function BleRffiStageOneDashboard() {
         : !positiveAccepted ? 'positive'
           : !negativeAccepted ? 'negative'
             : 'repeat';
+  const latestPositivePilot = latestByTime(stageOneSessions)
+    .find((session) => session.campaign_intent === 'positive_target_validation' && session.experimental_metadata?.execution_purpose === 'POSITIVE_PILOT');
+  const latestPositivePilotCaptureId = latestPositivePilot?.capture_id ?? '';
+  const latestPositiveSummary = latestPositivePilot ? summaries[latestPositivePilot.session_id] : undefined;
+  const latestPositiveNeedsRfDiagnostic = latestPositivePilot?.state === 'completed'
+    && latestPositiveSummary?.target_result === 'TARGET_NATIVE_ONLY'
+    && Number(latestPositiveSummary?.funnel?.detected_bursts ?? latestPositivePilot.counters?.detected_bursts ?? 0) === 0;
+  const currentRfDiagnostic = rfDiagnostic?.capture_id === latestPositivePilotCaptureId ? rfDiagnostic : null;
 
   const logOperation = (phase: string, detail: string, state: OperationEvent['state'] = 'running') => {
     setOperationEvents((items) => [
       { id: `${Date.now()}:${Math.random().toString(16).slice(2)}`, at: new Date().toISOString(), phase, detail, state },
       ...items,
     ].slice(0, 30));
+  };
+
+  const runRfDiagnostic = async () => {
+    if (!latestPositivePilotCaptureId) {
+      setError('No hay captura positiva preservada para diagnosticar.');
+      return;
+    }
+    const operationId = `ble-rffi-rf-diagnostic:${latestPositivePilotCaptureId}:${Date.now()}`;
+    setBusy('rf-diagnostic');
+    setError('');
+    setMessage('');
+    logOperation('Diagnostico RF offline iniciado', `${latestPositivePilotCaptureId}: separar recepcion RF y detector de rafagas.`);
+    startOperation({
+      operationId,
+      kind: 'processing',
+      title: 'RF_RECEPTION_VS_DETECTION_DIAGNOSTIC',
+      phase: 'Analizando I/Q preservado',
+      progressPercent: 20,
+      target: latestPositivePilotCaptureId,
+      detail: 'Calculando potencia, clipping, PSD, energia temporal y candidatos previos al decoder.',
+    });
+    try {
+      const result = await api.rfDiagnostic(latestPositivePilotCaptureId);
+      setRfDiagnostic(result);
+      const candidates = Number(result.burst_detection_replay?.candidate_count ?? 0);
+      const layer = statusText(result.diagnostic_conclusion?.layer);
+      finishOperation(operationId, `${formatNumber(candidates)} candidatos energeticos; capa=${layer}.`);
+      logOperation('Diagnostico RF offline completado', `${formatNumber(candidates)} candidatos previos al decoder; ${layer}.`, 'done');
+      setMessage(candidates > 0
+        ? 'Existe energia candidata en el I/Q preservado. La siguiente accion tecnica es replay offline detector/decoder; no avance a negativa ni dataset.'
+        : 'No se observo energia candidata. Revise antena, RX2, sintonia, ganancia, driver y flujo de muestras antes de repetir S001-POS.');
+    } catch (reason) {
+      const text = `${apiErrorMessage(reason)}. No repita S001-POS hasta resolver el diagnostico RF.`;
+      setError(text);
+      failOperation(operationId, text);
+      logOperation('Diagnostico RF offline fallido', text, 'error');
+    } finally {
+      setBusy('');
+    }
   };
 
   const reportBleAction = (event: React.MouseEvent<HTMLElement>) => {
@@ -1028,13 +1078,14 @@ export default function BleRffiStageOneDashboard() {
 
   const load = async (forceSdr = false) => {
     setError('');
-    const [nextNative, nextCaps, nextDevices, nextSessions, nextCaptures, nextDatasets] = await Promise.all([
+    const [nextNative, nextCaps, nextDevices, nextSessions, nextCaptures, nextDatasets, nextRfProfiles] = await Promise.all([
       api.nativeStatus(),
       api.captureCapabilities(forceSdr),
       api.nativeDevices(),
       api.hybridSessions().catch(() => []),
       api.captures().catch(() => []),
       api.datasets().catch(() => []),
+      api.rfDiagnosticProfiles().catch(() => null),
     ]);
     const availableDatasetIds = new Set(nextDatasets.map((item) => item.dataset_id));
     const detailId = availableDatasetIds.has(datasetId) ? datasetId : availableDatasetIds.has('BLE-EVIDENCE-DS01') ? 'BLE-EVIDENCE-DS01' : '';
@@ -1044,6 +1095,7 @@ export default function BleRffiStageOneDashboard() {
     setDevices(nextDevices);
     setSessions(nextSessions);
     setCaptures(nextCaptures);
+    setRfDiagnosticProfiles(nextRfProfiles);
     setDataset(nextDataset);
     setDatasetKnown(availableDatasetIds.has(datasetId));
     const latestCompleted = latestByTime(nextSessions).filter((session) => session.state === 'completed').slice(0, 12);
@@ -1279,6 +1331,10 @@ export default function BleRffiStageOneDashboard() {
     }
     if (intent === 'positive_target_validation' && !targetPowerConfirmedAt) {
       setError(`S001-POS bloqueada. Accion: confirme en el asistente que ${selectedProfile.physical_unit_id} esta fisicamente encendido antes del preflight y la captura.`);
+      return;
+    }
+    if (intent === 'positive_target_validation' && latestPositiveNeedsRfDiagnostic && !currentRfDiagnostic) {
+      setError('S001-POS bloqueada temporalmente. La ultima positiva tuvo 0 rafagas B200 con Windows viendo el objetivo. Accion: ejecute primero Diagnostico RF offline sobre el I/Q preservado para separar recepcion y detector.');
       return;
     }
     if (intent === 'negative_control' && currentRow.positive.result !== 'POSITIVE_ACCEPTED') {
@@ -1675,6 +1731,16 @@ export default function BleRffiStageOneDashboard() {
           </div>
         ) : <Empty text="Todavia no hay ejecuciones terminales de la campana nueva" />}
       </Panel>}
+
+      {!diagnosticRequired && (latestPositiveNeedsRfDiagnostic || currentRfDiagnostic) && (
+        <RfDiagnosticPanel
+          captureId={latestPositivePilotCaptureId}
+          diagnostic={currentRfDiagnostic}
+          profiles={rfDiagnosticProfiles}
+          busy={busy}
+          onRun={() => void runRfDiagnostic()}
+        />
+      )}
 
       {!diagnosticRequired && <nav className="flex flex-wrap gap-2">
         {tabs.map((item) => (
@@ -2495,6 +2561,62 @@ function OperationAuditPanel({ activeSession, qualificationJob, qualificationLiv
             )) : <div className="py-2 text-slate-500">Todavia no hay eventos registrados en este dashboard.</div>}
           </div>
         </div>
+      </div>
+    </Panel>
+  );
+}
+
+function RfDiagnosticPanel({ captureId, diagnostic, profiles, busy, onRun }: { captureId: string; diagnostic: BleRfDiagnostic | null; profiles: Record<string, unknown> | null; busy: string; onRun: () => void }) {
+  const burst = diagnostic?.burst_detection_replay ?? {};
+  const power = diagnostic?.power ?? {};
+  const clipping = diagnostic?.clipping ?? {};
+  const integrity = diagnostic?.integrity ?? {};
+  const capture = diagnostic?.capture ?? {};
+  const psd = diagnostic?.psd ?? {};
+  const conclusion = diagnostic?.diagnostic_conclusion ?? {};
+  const profileList = Array.isArray(profiles?.profiles) ? profiles?.profiles as Record<string, unknown>[] : [];
+  const profile = profileList[0] ?? {};
+  const candidates = Number(burst.candidate_count ?? 0);
+  const energyPoints = Array.isArray(diagnostic?.energy_time_series) ? diagnostic?.energy_time_series.length : 0;
+  const psdPoints = Array.isArray(psd.points) ? psd.points.length : 0;
+  return (
+    <Panel title="Diagnostico RF previo a repetir S001-POS">
+      <div className="space-y-4">
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-amber-100">Separar recepcion RF y detector de rafagas</div>
+              <p className="mt-1 text-sm text-slate-300">No avance a S001-NEG, dataset ni entrenamiento. Analice primero el I/Q preservado: si hay energia y candidatos, el problema esta en la configuracion/replay del detector-decoder; si no hay energia, revise la cadena RF fisica.</p>
+            </div>
+            <button onClick={onRun} disabled={busy === 'rf-diagnostic' || !captureId} className="inline-flex h-10 items-center gap-2 rounded-md bg-amber-600 px-3 text-sm font-semibold text-white disabled:opacity-40">
+              <ScanSearch className="h-4 w-4" />Diagnosticar I/Q preservado
+            </button>
+          </div>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <Metric title="capture_id" value={captureId || '-'} detail="I/Q preservado" />
+          <Metric title="muestras reales" value={formatNumber(capture.actual_samples)} detail={`${formatNumber(capture.actual_file_size_bytes)} bytes`} />
+          <Metric title="hash e integridad" value={statusText(integrity.data_hash_status)} detail={`metadata ${statusText(integrity.metadata_hash_status)}`} />
+          <Metric title="noise floor" value={power.noise_floor_dbfs == null ? '-' : `${Number(power.noise_floor_dbfs).toFixed(2)} dBFS`} detail={`mean ${power.mean_power_dbfs == null ? '-' : Number(power.mean_power_dbfs).toFixed(2)} dBFS`} />
+          <Metric title="potencia maxima" value={power.maximum_block_power_dbfs == null ? '-' : `${Number(power.maximum_block_power_dbfs).toFixed(2)} dBFS`} detail={`amplitud ${formatNumber(power.maximum_amplitude)}`} />
+          <Metric title="clipping" value={clipping.clipping_percent == null ? '-' : `${Number(clipping.clipping_percent).toFixed(6)}%`} detail={statusText(clipping.status)} />
+          <Metric title="threshold detector" value={burst.threshold_dbfs == null ? '-' : `${Number(burst.threshold_dbfs).toFixed(2)} dBFS`} detail={`${formatNumber(burst.active_blocks)} bloques activos`} />
+          <Metric title="candidatos pre-decoder" value={formatNumber(burst.candidate_count)} detail={`${formatNumber(burst.energy_excursion_count)} excursiones`} />
+          <Metric title="PSD 2402 MHz" value={`${formatNumber(psdPoints)} puntos`} detail={`pico ${psd.peak_frequency_hz ? `${formatNumber(psd.peak_frequency_hz)} Hz` : '-'}`} />
+          <Metric title="energia vs tiempo" value={`${formatNumber(energyPoints)} puntos`} detail="serie temporal offline" />
+          <Metric title="capa localizada" value={statusText(conclusion.layer)} detail={statusText(conclusion.recommended_next_action)} />
+          <Metric title="decision" value={candidates > 0 ? 'REPLAY_DETECTOR_DECODER' : diagnostic ? 'RF_CHAIN_REVIEW' : 'PENDIENTE'} detail="fuera de campana/dataset" />
+        </div>
+        <div className="rounded-md border border-slate-800 p-3">
+          <div className="text-sm font-semibold">Perfil diagnostico independiente</div>
+          <div className="mt-2 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+            <Metric title="profile_id" value={statusText(profile.diagnostic_profile_id)} detail="no sustituye cualificacion" />
+            <Metric title="frecuencia" value={formatNumber(profile.center_frequency_hz)} detail="CH37 / 2402 MHz" />
+            <Metric title="sample rates" value={Array.isArray(profile.sample_rate_sps) ? profile.sample_rate_sps.map(formatNumber).join(' / ') : '-'} detail="4/8 MS/s" />
+            <Metric title="bandwidth / gain" value={`${formatNumber(profile.bandwidth_hz)} Hz`} detail={Array.isArray(profile.gain_db) ? `G${profile.gain_db.join('/G')}` : '-'} />
+          </div>
+        </div>
+        <p className="text-xs leading-5 text-slate-400">Estas capturas y replays son diagnosticos: `scientific_campaign_member=false`, `dataset_eligible=false`, `qualification_only=true`. Cambiar sample rate, bandwidth o ganancia para campana cientifica requiere `REQUALIFICATION_REQUIRED`.</p>
       </div>
     </Panel>
   );

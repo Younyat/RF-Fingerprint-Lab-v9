@@ -48,6 +48,7 @@ export interface BleCaptureCapabilities { available: boolean; capture_enabled: b
 export interface BleCaptureJob { capture_id: string; state: 'queued'|'running'|'cancel_requested'|'completed'|'cancelled'|'failed'|'timed_out'; updated_at_utc?: string; error?: string; request?: Record<string, unknown>; capture_complete?: boolean }
 export interface BleCaptureRecord extends Record<string, unknown> { capture_id: string; created_at_utc: string; device_driver: string; center_frequency_hz: number; ble_channel?: number; sample_rate_sps: number; bandwidth_hz: number; requested_duration_seconds: number; actual_size_bytes: number; overflow_count: number; capture_complete: boolean; analysis_status: string; experimental_metadata?: Record<string, unknown> }
 export interface BleCaptureLive { available: boolean; timestamp_utc?: string; samples_received?: number; bytes_written?: number; stream_overflows?: number; input_discontinuities?: number; average_power_dbfs?: number; peak_power_dbfs?: number; clipping_percentage?: number; frequencies_hz?: number[]; spectrum_dbfs?: number[]; i_preview?: number[]; q_preview?: number[] }
+export interface BleRfDiagnostic extends Record<string, unknown> { capture_id:string; capture:Record<string,unknown>; integrity:Record<string,unknown>; power:Record<string,unknown>; clipping:Record<string,unknown>; burst_detection_replay:Record<string,unknown>; psd:Record<string,unknown>; energy_time_series:Record<string,unknown>[]; diagnostic_conclusion:Record<string,unknown> }
 export interface BleNativeStatus { available: boolean; adapter_type: 'native_ble'; backend: string; scan_supported: boolean; gatt_supported: boolean; scanning: boolean; scan_session_id?: string|null; device_count: number; reason_code?: string; message?: string; diagnostic?: string; last_error?: string|null }
 export interface BleHybridSession { session_id:string; state:string; channel:number; duration_seconds:number; capture_id?:string; target_mode?:string; target_address?:string; target_name_at_start?:string; campaign_intent?:string; negative_control_type?:string|null; operator_confirmation?:boolean; negative_control_result?:string; experimental_metadata?:Record<string,unknown>; operational_visibility?:'operator'|'internal_validation'; created_at_utc?:string; steps:Record<string,string>; counters:Record<string,number>; decode_progress?:{processed_segments:number;total_segments:number;crc_valid_packets:number}; live?:{job?:BleCaptureJob;telemetry?:BleCaptureLive}|null; result?:Record<string,unknown>; error?:string }
 export interface BleHybridMatch { sdr_observation_id:string; native_observation_id?:string|null; status:string; rule:string; time_difference_ms?:number|null; address_match?:boolean; payload_match?:boolean; manufacturer_data_match?:boolean; candidate_count?:number }
@@ -75,6 +76,17 @@ const unwrap = <T>(data: T | Record<string, T>): T => {
   return data as T;
 };
 
+const normalizeHybridPayload = (payload: Record<string, unknown>) => {
+  const metadata = { ...((payload.experimental_metadata as Record<string, unknown> | undefined) ?? {}) };
+  if (metadata.execution_purpose === 'POSITIVE_PILOT') {
+    const protocolManifest = { ...((metadata.protocol_manifest as Record<string, unknown> | undefined) ?? {}) };
+    metadata.analysis_enabled = true;
+    protocolManifest.analysis_enabled = true;
+    metadata.protocol_manifest = protocolManifest;
+  }
+  return { ...payload, experimental_metadata: metadata };
+};
+
 export class BleApiService {
   constructor(private readonly baseURL = 'http://localhost:8000') {}
   async capabilities() { return (await axios.get<BleCapabilities>(`${this.baseURL}/api/ble/capabilities`)).data; }
@@ -98,7 +110,7 @@ export class BleApiService {
   async gate2a2Candidates(id: string) { const data = (await axios.get<Record<string, BleGate2a2Candidate[]>>(`${this.baseURL}/api/ble/gate2a2/jobs/${encodeURIComponent(id)}/candidates`)).data; return data.candidates ?? []; }
   async gate2a2ConfirmedPackets(id: string) { const data = (await axios.get<Record<string, BleGate2a2ConfirmedPacket[]>>(`${this.baseURL}/api/ble/gate2a2/jobs/${encodeURIComponent(id)}/confirmed-packets`)).data; return data['confirmed-packets'] ?? []; }
   async latestHybridPackets() { const sessions=(await axios.get<{sessions:{session_id:string}[]}>(`${this.baseURL}/api/ble/gate2a2/hybrid/sessions`)).data.sessions; if(!sessions.length)return []; return (await axios.get<{packets:BleGate2a2ConfirmedPacket[]}>(`${this.baseURL}/api/ble/gate2a2/hybrid/sessions/${encodeURIComponent(sessions[0].session_id)}/packets`)).data.packets; }
-  async startHybrid(payload:Record<string,unknown>) { return (await axios.post<BleHybridSession>(`${this.baseURL}/api/ble/hybrid/sessions`,payload)).data; }
+  async startHybrid(payload:Record<string,unknown>) { return (await axios.post<BleHybridSession>(`${this.baseURL}/api/ble/hybrid/sessions`,normalizeHybridPayload(payload))).data; }
   async hybridSession(id:string) { return (await axios.get<BleHybridSession>(`${this.baseURL}/api/ble/hybrid/sessions/${encodeURIComponent(id)}`)).data; }
   async stopHybrid(id:string) { return (await axios.post<BleHybridSession>(`${this.baseURL}/api/ble/hybrid/sessions/${encodeURIComponent(id)}/stop`)).data; }
   async hybridSessions() { return (await axios.get<{sessions:BleHybridSession[]}>(`${this.baseURL}/api/ble/hybrid/sessions`)).data.sessions; }
@@ -116,6 +128,8 @@ export class BleApiService {
   async captureLive(id: string) { return (await axios.get<BleCaptureLive>(`${this.baseURL}/api/ble/capture/jobs/${encodeURIComponent(id)}/live`)).data; }
   async captures() { return (await axios.get<{ captures: BleCaptureRecord[] }>(`${this.baseURL}/api/ble/capture/recordings`)).data.captures; }
   async verifyCapture(id: string) { return (await axios.get<{ data_valid: boolean; metadata_valid: boolean }>(`${this.baseURL}/api/ble/capture/recordings/${encodeURIComponent(id)}/verify`)).data; }
+  async rfDiagnostic(id: string) { return (await axios.get<BleRfDiagnostic>(`${this.baseURL}/api/ble/capture/recordings/${encodeURIComponent(id)}/rf-diagnostic`)).data; }
+  async rfDiagnosticProfiles() { return (await axios.get<Record<string, unknown>>(`${this.baseURL}/api/ble/capture/rf-diagnostic-profiles`)).data; }
   async analyzeCapture(id: string) { return (await axios.post<BleGate2a2Job>(`${this.baseURL}/api/ble/capture/recordings/${encodeURIComponent(id)}/analyze`)).data; }
   captureMetaUrl(id: string) { return `${this.baseURL}/api/ble/capture/recordings/${encodeURIComponent(id)}/sigmf-meta`; }
   async nativeStatus() { return (await axios.get<BleNativeStatus>(`${this.baseURL}/api/ble/native/status`)).data; }

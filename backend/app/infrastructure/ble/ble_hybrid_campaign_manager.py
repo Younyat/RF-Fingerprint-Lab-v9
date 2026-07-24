@@ -56,6 +56,13 @@ class BleHybridCampaignManager:
     def _freeze_positive_pilot_protocol(self,metadata:dict[str,Any],payload:dict[str,Any],channel:int,duration:float):
         if metadata.get("execution_purpose")!="POSITIVE_PILOT":
             return metadata
+        # POSITIVE_PILOT always runs offline burst segmentation after I/Q
+        # integrity verification. Treat this as a backend-enforced protocol
+        # invariant, not as a UI-controlled operator option.
+        metadata["analysis_enabled"]=True
+        protocol_manifest=dict(metadata.get("protocol_manifest") or {})
+        protocol_manifest["analysis_enabled"]=True
+        metadata["protocol_manifest"]=protocol_manifest
         actual_serial=None
         try:
             actual_serial=self.capture.devices.private_args(payload["device_id"]).get("serial")
