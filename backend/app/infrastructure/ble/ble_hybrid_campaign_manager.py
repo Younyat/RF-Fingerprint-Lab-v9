@@ -400,8 +400,18 @@ class BleHybridCampaignManager:
         reason_codes=[]
         if overflow_count>0: reason_codes.append("ACQUISITION_OVERFLOW")
         if discontinuity_count>0: reason_codes.append("ACQUISITION_DISCONTINUITY")
+        if bursts==0: reason_codes.append("ZERO_BURST_CANDIDATES")
         if crc==0: reason_codes.append("ZERO_CRC_VALID_PACKETS")
-        if final_target_status!="TARGET_MATCHED_STRONG": reason_codes.append("TARGET_ASSOCIATION_AMBIGUOUS")
+        if final_target_status=="TARGET_AMBIGUOUS" or target_association_ambiguous:
+            reason_codes.append("TARGET_ASSOCIATION_AMBIGUOUS")
+        elif specific and final_target_status=="TARGET_NATIVE_ONLY":
+            reason_codes.append("TARGET_NATIVE_ONLY_B200_NOT_CORROBORATED")
+        elif specific and final_target_status=="TARGET_B200_ONLY":
+            reason_codes.append("TARGET_B200_ONLY_WINDOWS_NOT_CORROBORATED")
+        elif specific and final_target_status=="TARGET_NOT_OBSERVED":
+            reason_codes.append("TARGET_NOT_OBSERVED")
+        elif specific and final_target_status!="TARGET_MATCHED_STRONG":
+            reason_codes.append("TARGET_ASSOCIATION_NOT_ACCEPTED")
         if e4_minimal_observed and not e4_dataset_accepted and unique_strong_only_target_crc_packets<minimum_unique_target_packets_for_dataset_acceptance: reason_codes.append("INSUFFICIENT_UNIQUE_TARGET_PACKETS")
         if not e4_dataset_accepted: reason_codes.append("EVIDENCE_BELOW_ACCEPTED_E4")
         if source_working_tree_status!="CLEAN": reason_codes.append("SOURCE_WORKING_TREE_NOT_CLEAN")
@@ -543,6 +553,15 @@ class BleHybridCampaignManager:
                 "Este resultado no demuestra que el objetivo estuviera ausente; Ãºnicamente indica que no fue observado bajo las condiciones y duraciÃ³n de esta ejecuciÃ³n.")
         else:
             statement="No se demostrÃ³ correlaciÃ³n E4 para el objetivo seleccionado bajo las condiciones de esta campaÃ±a."
+        if target_status=="TARGET_NATIVE_ONLY":
+            statement=(f"Windows observo {len(target_native)} eventos del objetivo {session.get('target_address')} durante la campana, "
+                f"pero el detector B200 produjo {bursts} rafagas candidatas y el decoder recupero {crc} paquetes BLE con CRC valido en CH{session.get('channel')}. "
+                "La captura I/Q fue limpia e integra, pero no hay evidencia RF decodificada suficiente para aceptar E4 ni para dataset.")
+            result["target"]["interpretation"]={
+                "meaning":"Windows observo el objetivo, pero el B200 no recupero paquetes BLE CRC validos atribuibles al objetivo.",
+                "does_not_mean":["El objetivo quedo identificado por RF.","Existe ground truth E4.","La sesion es apta para dataset.","El fallo es necesariamente de identidad del SensorTag."],
+                "possible_causes":["objetivo visible para Windows pero no para la cadena B200 en CH37","antena, orientacion, distancia o ganancia insuficientes","publicidad concentrada en CH38/CH39 durante la ventana de 10 s","umbral del detector de rafagas demasiado estricto","decoder offline no alineado con la forma de onda capturada","interferencia o SNR insuficiente sin perdida de adquisicion"],
+            }
         result["conclusion"].update(
             statement=statement,
             functional_validation=result["functional_validation"]["target_validation"]["status"],

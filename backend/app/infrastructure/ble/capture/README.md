@@ -613,6 +613,52 @@ qualification_only = false
 scientific_corpus_membership = positive_pilot_pending_gate
 ```
 
+### Intento S001-POS limpio pero sin evidencia B200
+
+El intento `BLE-HYBRID-20260724T104524Z-8b70f0` / `BLE-IQ-f25ccce7d158`
+cerro correctamente la adquisicion y el procesamiento, pero quedo en
+cuarentena cientifica:
+
+```text
+terminal_status = COMPLETED
+acquisition_quality_status = PASSED
+signal_quality_status = PASSED
+artifact_integrity_status = VERIFIED
+protocol_conformance_status = PASSED
+metadata_status = COMPLETE
+
+windows_target_observations = 56
+candidate_bursts = 0
+detected_bursts = 0
+total_crc_valid_packets = 0
+target_crc_valid_packets = 0
+unique_strong_only_target_crc_packets = 0
+target_result = TARGET_NATIVE_ONLY
+ground_truth_status = INSUFFICIENT_FOR_ACCEPTED_E4
+dataset_eligibility_status = NOT_ELIGIBLE
+```
+
+Este resultado significa que Windows BLE observo el objetivo durante la
+ventana de campana, pero la cadena B200 `detector -> decoder -> CRC` no
+produjo evidencia RF decodificable en CH37. No es una asociacion ambigua,
+porque no existen paquetes B200 que asociar. Los codigos correctos para este
+caso son:
+
+```text
+ZERO_BURST_CANDIDATES
+ZERO_CRC_VALID_PACKETS
+TARGET_NATIVE_ONLY_B200_NOT_CORROBORATED
+EVIDENCE_BELOW_ACCEPTED_E4
+```
+
+No debe desbloquearse `S001-NEG`, dataset ni entrenamiento. Antes de repetir
+una positiva como intento cientifico, conviene revisar la visibilidad RF del
+objetivo para el B200: antena RX2 conectada, posicion/orientacion/distancia,
+ganancia, presencia de energia alrededor de 2402 MHz, sensibilidad del
+detector de rafagas y alineacion del decoder offline con la forma de onda
+capturada. Si se cambia un parametro critico del perfil cualificado, debe
+declararse `REQUALIFICATION_REQUIRED`.
+
 ## Verification commands
 
 Compile the worker with the same Python runtime used for SoapySDR/UHD:
