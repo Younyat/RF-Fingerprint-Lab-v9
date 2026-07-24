@@ -540,6 +540,79 @@ modelo. Una positiva fallida nunca se convierte en negativa. Solo una
 positiva aceptada y elegible desbloquea `S001-NEG = UNLOCKED_NEXT_ONLY`;
 dataset y entrenamiento siguen bloqueados.
 
+### Intento S001-POS fallido por continuidad RF
+
+El intento `BLE-HYBRID-20260724T101703Z-7493e2` / `BLE-IQ-16cde3ef4a33`
+congelo correctamente el protocolo positivo piloto:
+
+```text
+freeze_validation_status = PASSED
+execution_purpose = POSITIVE_PILOT
+condition_id = C001
+session_id = S001-POS
+physical_unit_id = CC2650-UNIT-01
+quality_gate_version = ble-rffi-positive-pilot-gate-v2
+qualification_profile_id =
+QPROFILE-Z1B2-2402000000-4000000-2000000-cf32_le-RX2-G20-10S
+```
+
+El archivo I/Q alcanzo el tamano esperado, pero la adquisicion no es
+cientificamente valida:
+
+```text
+actual_samples = 40000000
+actual_file_size_bytes = 320000000
+hash_status = VERIFIED
+metadata_status = COMPLETE
+manifest_status = COMPLETE
+overflow_count = 1
+discontinuity_count = 1
+failure_reason_codes =
+  ACQUISITION_OVERFLOW
+  ACQUISITION_DISCONTINUITY
+```
+
+El primer evento fue `host_receive_overrun` en
+`sample_index_start = 1070667`, aproximadamente `0.268 s` despues del inicio
+RF a 4 MS/s. Los contadores del escritor no apoyan una atribucion al disco en
+ese intento:
+
+```text
+writer_queue_overrun_count = 0
+writer_error = null
+maximum_write_latency_ms ~= 2.5
+writer_queue_high_watermark_bytes = 1600000
+writer_queue_capacity_bytes = 67108864
+```
+
+Por tanto, el resultado se conserva como intento historico fallido y no
+elegible. No desbloquea negativa, dataset ni entrenamiento.
+
+Durante la revision se detecto una incongruencia de propagacion: el protocolo
+congelado declaraba `frontend_preview_enabled = false`, pero la peticion real
+al capturador heredaba el valor por defecto `frontend_preview_enabled = true`
+y `ui_polling_mode = normal`. El orquestador debe pasar siempre estos campos
+desde la metadata congelada hacia el worker de captura. Para S001-POS, la
+peticion efectiva debe mantener:
+
+```text
+frontend_preview_enabled = false
+ui_polling_mode = minimal
+online_decoder_enabled = false
+online_correlation_enabled = false
+```
+
+El intento positivo piloto no es una cualificacion tecnica. Aunque sea
+fallido y no elegible, su clasificacion documental debe ser:
+
+```text
+execution_purpose = POSITIVE_PILOT
+scientific_campaign_member = true
+dataset_eligible = false
+qualification_only = false
+scientific_corpus_membership = positive_pilot_pending_gate
+```
+
 ## Verification commands
 
 Compile the worker with the same Python runtime used for SoapySDR/UHD:
