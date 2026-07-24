@@ -56,8 +56,9 @@ class BleCaptureJobManager:
         request = self._validate(payload)
         with self._lock:
             if self._active: raise RuntimeError("CAPTURE_ALREADY_RUNNING")
-            capture_id = "BLE-IQ-" + uuid.uuid4().hex[:12]
+            capture_id = request.get("requested_capture_id") or "BLE-IQ-" + uuid.uuid4().hex[:12]
             job_dir = self.root / capture_id
+            if job_dir.exists(): raise FileExistsError("CAPTURE_ID_ALREADY_EXISTS")
             job_dir.mkdir()
             request.update(capture_id=capture_id, created_at_utc=utc_now(),
                            device_args=self.devices.private_args(request["device_id"]))
@@ -72,7 +73,7 @@ class BleCaptureJobManager:
                    "gain_mode", "gain_db", "antenna", "duration_seconds", "sample_format", "description", "purpose",
                    "controlled_transmitter_state", "operator_confirmed", "confirmation_method", "capture_role",
                    "experimental_metadata", "disk_persistence_enabled", "frontend_preview_enabled", "ui_polling_mode",
-                   "diagnostic_step"}
+                   "diagnostic_step", "requested_capture_id"}
         unknown = set(payload) - allowed
         if unknown: raise ValueError("UNSUPPORTED_CAPTURE_FIELDS")
         channel = payload.get("ble_channel")
@@ -97,6 +98,15 @@ class BleCaptureJobManager:
         if "operator_confirmed" in payload and not isinstance(payload["operator_confirmed"], bool): raise ValueError("INVALID_OPERATOR_CONFIRMATION")
         if payload.get("confirmation_method") not in {None, "physical_manual_verification"}: raise ValueError("INVALID_CONFIRMATION_METHOD")
         if payload.get("capture_role") not in {None, "background_control_A", "controlled_transmitter_active_B"}: raise ValueError("INVALID_CAPTURE_ROLE")
+        requested_capture_id = payload.get("requested_capture_id")
+        if requested_capture_id is not None:
+            requested_capture_id = str(requested_capture_id)
+            if not requested_capture_id.startswith("BLE-IQ-") or any(x in requested_capture_id for x in ("/", "\\", "..")):
+                raise ValueError("INVALID_REQUESTED_CAPTURE_ID")
+            requested_path = (self.root / requested_capture_id).resolve()
+            if requested_path.parent != self.root.resolve():
+                raise ValueError("INVALID_REQUESTED_CAPTURE_ID")
+            payload = {**payload, "requested_capture_id": requested_capture_id}
         antenna = payload.get("antenna")
         if antenna and antenna not in (device.get("antenna_options") or []): raise ValueError("UNSUPPORTED_ANTENNA")
         def supported(value, capability):
@@ -243,6 +253,7 @@ class BleCaptureJobManager:
             "hash_status": hash_status,
             "metadata_status": "COMPLETE" if metadata_complete else "INCOMPLETE",
             "qualification_profile_id": metadata.get("qualification_profile_id"),
+            "qualification_run_id": metadata.get("qualification_run_id"),
             "receiver_serial": manifest.get("device_serial"),
             "host_id": metadata.get("host_id") or os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME"),
             "usb_path": metadata.get("usb_path") or "not_reported_by_backend",

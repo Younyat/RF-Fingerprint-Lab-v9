@@ -211,7 +211,7 @@ All three passed:
 | `BLE-IQ-ACQQUAL-Q2-6e85a5ccc574` | 40,000,000 | 320,000,000 | 0 overflow / 0 discontinuity | VERIFIED |
 | `BLE-IQ-ACQQUAL-Q3-e3b8f324c709` | 40,000,000 | 320,000,000 | 0 overflow / 0 discontinuity | VERIFIED |
 
-Current gate interpretation:
+Intermediate gate interpretation immediately after B200-only qualification:
 
 ```text
 ACQUISITION_QUALIFICATION = PASSED_3_CONSECUTIVE
@@ -222,9 +222,8 @@ DATASET = BLOCKED
 TRAINING = BLOCKED
 ```
 
-Only the next hybrid concurrency qualification is unlocked. Do not jump
-directly to SensorTag search, positive capture, negative control, Dataset
-Studio, or training.
+At that intermediate point only the hybrid concurrency qualification was
+unlocked. The current state after hybrid qualification is documented below.
 
 ## Hybrid concurrency qualification result
 
@@ -318,6 +317,228 @@ The 120-second confirmatory campaign described in the paper is a different
 experimental profile. It requires a new `qualification_profile_id` and a full
 new acquisition plus hybrid concurrency requalification before it can be used
 for scientific campaign captures.
+
+## Estado cientifico y tecnico actual
+
+El objetivo final del modulo no es obtener una accuracy alta ni entrenar un
+clasificador aislado. El objetivo es construir una cadena BLE-RFFI trazable
+que permita evaluar, dentro de un alcance declarado, si una emision BLE
+capturada por el USRP B200 es compatible con la unidad fisica enrolada o con
+la poblacion alternativa evaluada.
+
+La cadena prevista es:
+
+```text
+unidad fisica registrada
+-> protocolo congelado
+-> receptor cualificado
+-> concurrencia Windows BLE-B200 cualificada
+-> ground truth valido
+-> capturas positivas aceptadas
+-> controles negativos aceptados
+-> dataset trazable
+-> splits sin fuga
+-> entrenamiento
+-> calibracion y umbral congelados
+-> validacion independiente
+-> decision con posibilidad de abstencion
+-> trazabilidad hasta el I/Q original
+-> despliegue controlado en Live Monitor
+```
+
+El modelo final debe usar solo informacion derivada del I/Q del B200. Windows
+BLE se usa para observacion logica, ground truth, asociacion temporal y
+etiquetado. No puede ser entrada del modelo: direccion BLE, `local_name`,
+GATT, payload, manufacturer data ni identidad reportada por Windows.
+
+Estado actual:
+
+```text
+ACQUISITION_DIAGNOSTIC = COMPLETED
+ACQUISITION_QUALIFICATION = PASSED_3_CONSECUTIVE
+HYBRID_CONCURRENCY_QUALIFICATION = PASSED_3_CONSECUTIVE
+qualification_profile_matches_campaign = true
+
+qualification_profile_id =
+QPROFILE-Z1B2-2402000000-4000000-2000000-cf32_le-RX2-G20-10S
+
+receiver_serial = E3R04Z1B2
+usb_mode = USB_3
+center_frequency_hz = 2402000000
+sample_rate_sps = 4000000
+analog_bandwidth_hz = 2000000
+cpu_format = cf32
+file_format = cf32_le
+antenna = RX2
+gain_db = 20
+duration_seconds = 10
+disk_persistence_enabled = true
+
+Etapa actual = PREPARATION_FOR_POSITIVE_PILOT
+CURRENT_STAGE = PREPARATION_FOR_POSITIVE_PILOT
+NEXT_OPERATOR_ACTION = PREPARE_AND_EXECUTE_S001_POS
+NEXT_HARDWARE_ACTION = POSITIVE_PILOT_ONLY
+Siguiente ejecucion de hardware = C001 / S001-POS
+execution_purpose = POSITIVE_PILOT
+S001-POS = UNLOCKED_NEXT_ONLY
+S001-NEG = BLOCKED
+DATASET = BLOCKED
+TRAINING = BLOCKED
+LIVE_MODEL = BLOCKED
+Campana de 120 s = NOT_QUALIFIED
+ROOT_CAUSE_PRIOR_LOSSES = NOT_FULLY_ISOLATED
+```
+
+Se ha demostrado solo para el perfil anterior que el B200 puede adquirir 10 s
+de I/Q por USB 3, persistir `cf32_le` con 40,000,000 muestras y 320,000,000
+bytes, cerrar sin overflows, discontinuidades, short reads, write errors ni
+queue overruns, verificar hashes, completar manifiestos y funcionar
+concurrentemente con Windows BLE con `rf_concurrency_overlap_seconds = 10.0`
+y `rf_concurrency_overlap_fraction = 1.0`.
+
+Estas cualificaciones no demuestran identidad del SensorTag, ground truth E4,
+fingerprinting valido, separacion target-background, dataset valido, modelo
+entrenable, rendimiento temporal, generalizacion, capturas estables de 120 s
+ni comparacion entre unidades del mismo modelo.
+
+### Objetivo de la siguiente etapa
+
+La positiva piloto `C001 / S001-POS` debe demostrar conjuntamente:
+
+- la unidad fisica correcta fue seleccionada;
+- el operador confirmo la preparacion fisica;
+- Windows BLE observo el objetivo;
+- el preflight seguia vigente al iniciar la captura;
+- el B200 realizo una adquisicion limpia;
+- el decoder obtuvo paquetes CRC validos;
+- la asociacion Windows-B200 produjo evidencia suficiente;
+- la identidad del objetivo no quedo ambigua;
+- los artefactos quedaron integros;
+- la sesion puede considerarse elegible para dataset.
+
+La positiva separa observacion minima E4 de aceptacion cientifica para
+dataset:
+
+```text
+E4_MINIMAL_OBSERVED =
+unique_target_crc_packets_with_strong_association >= 1
+
+E4_ACCEPTED_FOR_DATASET =
+unique_strong_only_target_crc_packets >= K_campaign
+y todos los demas gates de identidad, calidad e integridad aprobados
+
+minimum_unique_target_packets_for_e4_observation = 1
+minimum_unique_target_packets_for_dataset_acceptance = 3
+quality_gate_version = ble-rffi-positive-pilot-gate-v2
+```
+
+Tres paquetes unicos CRC validos con asociacion fuerte no conflictiva
+constituyen un minimo de redundancia para esta prueba piloto de 10 s. Este
+umbral es un criterio de ingenieria del piloto, no una estimacion estadistica
+de suficiencia general. No se reutiliza automaticamente para capturas de
+120 s, campanas same-model, paper definitivo, otras tasas de advertising,
+otras duraciones ni otros canales.
+
+Antes de iniciar hardware para `S001-POS`, el backend congela y registra el
+contrato exacto de ejecucion. Esta congelacion ocurre antes de crear la sesion
+activa y antes de arrancar Windows BLE o el B200. El manifiesto debe contener:
+
+```text
+source_repository_commit
+source_working_tree_status
+source_working_tree_dirty
+source_working_tree_diff_sha256
+protocol_manifest
+protocol_manifest_sha256
+protocol_hash
+protocol_frozen_at_utc
+execution_freeze
+quality_gate_version = ble-rffi-positive-pilot-gate-v2
+qualification_profile_id =
+QPROFILE-Z1B2-2402000000-4000000-2000000-cf32_le-RX2-G20-10S
+```
+
+Si el arbol de trabajo no esta limpio, no se oculta: se registra
+`source_working_tree_status = DIRTY_RECORDED` y se guarda el hash del diff
+tracked. Esto no sustituye a un commit limpio para publicacion definitiva,
+pero evita que una ejecucion piloto quede sin trazabilidad tecnica.
+
+Para `execution_purpose = POSITIVE_PILOT`, el backend rechaza cambios criticos
+con `REQUALIFICATION_REQUIRED` si no coinciden canal 37, 10 s, ganancia 20 dB,
+`quality_gate_version` o el `qualification_profile_id` cualificado. No se debe
+corregir manualmente un manifiesto despues de observar resultados.
+
+La interfaz de esta etapa debe funcionar como un asistente numerado para un
+operador sin conocimientos de BLE, SDR, RFFI, ground truth o procesamiento
+I/Q. Cada paso muestra:
+
+```text
+1. que esta comprobando la plataforma;
+2. que debe hacer fisicamente el usuario;
+3. que resultado se espera;
+4. que significa un fallo;
+5. cual es la unica accion disponible.
+```
+
+El asistente indica explicitamente cuando no debe encenderse el SensorTag,
+cuando debe colocarse, cuando debe encenderse, cuando debe esperar el preflight
+Windows BLE, cuando se inicia la captura de 10 s y cuando la plataforma esta
+procesando. Las fases futuras (`S001-NEG`, dataset, entrenamiento y live model)
+permanecen bloqueadas y explican por que. Despues de cualquier captura el flujo
+se detiene, muestra un resumen humano y conserva los detalles tecnicos
+expandibles; ninguna transicion cientifica ocurre automaticamente.
+
+No debe usarse el numero bruto de correlaciones fuertes como numero de
+paquetes. Un paquete con una asociacion fuerte y otra asociacion competidora
+incompatible no se considera strong-only para el gate cientifico. El resumen
+debe distinguir:
+
+```text
+windows_target_observations
+detected_bursts
+decoded_packets
+total_crc_valid_packets
+unique_crc_valid_packets
+target_crc_valid_packets
+environmental_crc_valid_packets
+unattributed_crc_valid_packets
+target_strong_correlation_edges
+target_ambiguous_correlation_edges
+unique_target_crc_packets_with_strong_association
+unique_strong_only_target_crc_packets
+unique_target_crc_packets_with_ambiguous_association
+unique_target_crc_packets_with_conflicting_association
+target_association_conflict_count
+```
+
+Estados esperados:
+
+```text
+Un solo paquete fuerte:
+maximum_observed_evidence_level = E4
+association_evidence_status = MINIMAL_OBSERVATION
+ground_truth_status = INSUFFICIENT_FOR_ACCEPTED_E4
+dataset_eligibility_status = NOT_ELIGIBLE
+reason_code = INSUFFICIENT_UNIQUE_TARGET_PACKETS
+
+Tres o mas paquetes strong-only y todos los gates aprobados:
+maximum_observed_evidence_level = E4
+association_evidence_status = ACCEPTED
+ground_truth_status = PASSED_E4
+dataset_eligibility_status = ELIGIBLE
+
+Caso ambiguo:
+maximum_observed_evidence_level = E4
+association_evidence_status = AMBIGUOUS
+ground_truth_status = INSUFFICIENT_FOR_ACCEPTED_E4
+dataset_eligibility_status = NOT_ELIGIBLE
+reason_code = TARGET_ASSOCIATION_AMBIGUOUS
+```
+
+La identidad reportada por Windows es ground truth auxiliar, no entrada del
+modelo. Una positiva fallida nunca se convierte en negativa. Solo una
+positiva aceptada y elegible desbloquea `S001-NEG = UNLOCKED_NEXT_ONLY`;
+dataset y entrenamiento siguen bloqueados.
 
 ## Verification commands
 

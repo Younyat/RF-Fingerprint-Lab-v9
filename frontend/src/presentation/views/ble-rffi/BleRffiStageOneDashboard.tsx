@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type React from 'react';
-import { AlertTriangle, Bluetooth, CheckCircle2, Database, Play, RefreshCw, ScanSearch, ShieldCheck, Square, XCircle } from 'lucide-react';
+import { AlertTriangle, Bluetooth, CheckCircle2, Database, Play, RefreshCw, ScanSearch, ShieldCheck, XCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import {
   BleApiService,
@@ -36,6 +36,10 @@ const MINIMUM_RF_CONCURRENCY_OVERLAP_SECONDS = 9;
 const MINIMUM_RF_CONCURRENCY_OVERLAP_FRACTION = 0.90;
 const MINIMUM_TARGET_CRC_PACKETS = 1;
 const MINIMUM_TARGET_STRONG_MATCHES = 1;
+const MINIMUM_UNIQUE_TARGET_PACKETS_FOR_E4_OBSERVATION = 1;
+const MINIMUM_UNIQUE_TARGET_PACKETS_FOR_DATASET_ACCEPTANCE = 3;
+const POSITIVE_PILOT_QUALITY_GATE_VERSION = 'ble-rffi-positive-pilot-gate-v2';
+const POSITIVE_PILOT_RECEIVER_SERIAL = 'E3R04Z1B2';
 const terminalStates = new Set(['completed', 'failed', 'cancelled', 'timed_out']);
 const inputClass = 'min-h-10 rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100 outline-none focus:border-cyan-500';
 const diagnosticSteps: { id: DiagnosticStepId; title: string; objective: string; user: string }[] = [
@@ -260,6 +264,9 @@ function protocolRows(profile: DeviceProfile) {
     ['qualification_duration_seconds', String(QUALIFICATION_CAPTURE_SECONDS)],
     ['minimum_target_crc_packets', String(MINIMUM_TARGET_CRC_PACKETS)],
     ['minimum_target_strong_matches', String(MINIMUM_TARGET_STRONG_MATCHES)],
+    ['minimum_unique_target_packets_for_e4_observation', String(MINIMUM_UNIQUE_TARGET_PACKETS_FOR_E4_OBSERVATION)],
+    ['minimum_unique_target_packets_for_dataset_acceptance', String(MINIMUM_UNIQUE_TARGET_PACKETS_FOR_DATASET_ACCEPTANCE)],
+    ['quality_gate_version', POSITIVE_PILOT_QUALITY_GATE_VERSION],
     ['principal_split', 'session_disjoint'],
   ];
 }
@@ -322,10 +329,13 @@ function positiveDecision(session?: BleHybridSession, summary?: BleScientificSum
   if (summary.target?.status === 'TARGET_NOT_OBSERVED') return { result: 'TARGET_NOT_OBSERVED', reason: 'Windows/B200 no corroboraron el objetivo declarado.', action: 'Despierte el SensorTag, confirme preflight y repita.' };
   const targetCrc = Number(summary.funnel?.target_crc_valid_packets ?? summary.target?.b200_crc_packets ?? 0);
   const targetStrongMatches = Number(summary.funnel?.target_strong_matches ?? summary.target?.strong_matches ?? session.counters?.strong_matches ?? 0);
+  const uniqueStrongOnlyTargetCrc = Number(summary.funnel?.unique_strong_only_target_crc_packets ?? summary.target?.unique_strong_only_target_crc_packets ?? summary.funnel?.unique_target_crc_packets_with_strong_association ?? summary.target?.unique_target_crc_packets_with_strong_association ?? targetStrongMatches);
+  const minimumDatasetAcceptance = Number(summary.protocol?.minimum_unique_target_packets_for_dataset_acceptance ?? MINIMUM_UNIQUE_TARGET_PACKETS_FOR_DATASET_ACCEPTANCE);
   const passed = summary.terminal_status === 'COMPLETED'
     && summary.ground_truth_status === 'PASSED_E4'
     && targetCrc >= Number(summary.protocol?.minimum_target_crc_packets ?? MINIMUM_TARGET_CRC_PACKETS)
     && targetStrongMatches >= Number(summary.protocol?.minimum_target_strong_matches ?? MINIMUM_TARGET_STRONG_MATCHES)
+    && uniqueStrongOnlyTargetCrc >= minimumDatasetAcceptance
     && summary.acquisition_quality_status === 'PASSED'
     && summary.protocol_conformance_status === 'PASSED'
     && summary.metadata_status === 'COMPLETE'
@@ -365,6 +375,8 @@ function positiveGateSummary(session?: BleHybridSession, summary?: BleScientific
   const associationEvidenceStatus = String(summary?.association_evidence_status ?? 'PENDING');
   const targetStrongMatches = Number(summary?.funnel?.target_strong_matches ?? summary?.target?.strong_matches ?? session?.counters?.strong_matches ?? 0);
   const targetCrcPackets = Number(summary?.funnel?.target_crc_valid_packets ?? summary?.target?.b200_crc_packets ?? 0);
+  const uniqueTargetStrongCrc = Number(summary?.funnel?.unique_target_crc_packets_with_strong_association ?? summary?.target?.unique_target_crc_packets_with_strong_association ?? targetStrongMatches);
+  const uniqueStrongOnlyTargetCrc = Number(summary?.funnel?.unique_strong_only_target_crc_packets ?? summary?.target?.unique_strong_only_target_crc_packets ?? uniqueTargetStrongCrc);
   const groundTruth = summary?.ground_truth_status ?? (effectiveClaimLevel === 'E4' && targetStrongMatches > 0 ? 'PASSED_E4' : summary ? 'INSUFFICIENT_FOR_ACCEPTED_E4' : session ? 'SUMMARY_PENDING' : 'PENDING');
   const summaryStatus = summary ? 'COMPLETE' : session?.state === 'completed' ? 'SUMMARY_PENDING' : session ? 'PROCESSING' : 'PENDING';
   const eligible = captureQuality === 'ACCEPTED' && groundTruth === 'PASSED_E4' && summaryStatus === 'COMPLETE';
@@ -379,9 +391,16 @@ function positiveGateSummary(session?: BleHybridSession, summary?: BleScientific
     target_result: summary?.target_result ?? summary?.target?.status ?? 'PENDING',
     reason_codes: summary?.final_reason_codes ?? [],
     maximum_observed_evidence_level: maximumObservedEvidenceLevel,
+    e4_observation_status: summary?.e4_observation_status ?? (uniqueTargetStrongCrc >= MINIMUM_UNIQUE_TARGET_PACKETS_FOR_E4_OBSERVATION ? 'E4_MINIMAL_OBSERVED' : 'NOT_OBSERVED'),
+    e4_dataset_acceptance_status: summary?.e4_dataset_acceptance_status ?? (uniqueStrongOnlyTargetCrc >= MINIMUM_UNIQUE_TARGET_PACKETS_FOR_DATASET_ACCEPTANCE ? 'E4_ACCEPTED_FOR_DATASET' : 'NOT_ACCEPTED_FOR_DATASET'),
     association_evidence_status: associationEvidenceStatus,
     effective_claim_level: effectiveClaimLevel,
     target_strong_matches: targetStrongMatches,
+    unique_target_crc_packets_with_strong_association: uniqueTargetStrongCrc,
+    unique_strong_only_target_crc_packets: uniqueStrongOnlyTargetCrc,
+    unique_target_crc_packets_with_ambiguous_association: Number(summary?.funnel?.unique_target_crc_packets_with_ambiguous_association ?? summary?.target?.unique_target_crc_packets_with_ambiguous_association ?? summary?.funnel?.target_ambiguous_matches ?? 0),
+    unique_target_crc_packets_with_conflicting_association: Number(summary?.funnel?.unique_target_crc_packets_with_conflicting_association ?? summary?.target?.unique_target_crc_packets_with_conflicting_association ?? 0),
+    target_association_conflict_count: Number(summary?.funnel?.target_association_conflict_count ?? summary?.target?.target_association_conflict_count ?? 0),
     target_ambiguous_matches: Number(summary?.funnel?.target_ambiguous_matches ?? summary?.target?.ambiguous_matches ?? 0),
     target_crc_valid_packets: targetCrcPackets,
     total_crc_valid_packets: Number(summary?.funnel?.total_crc_valid_packets ?? summary?.funnel?.crc_valid_packets ?? session?.counters?.crc_valid_packets ?? 0),
@@ -399,6 +418,20 @@ function positiveGateSummary(session?: BleHybridSession, summary?: BleScientific
     effective_duration_seconds: statusText(summary?.protocol?.effective_duration_seconds ?? metadata.effective_duration_seconds),
     protocol_revision: statusText(summary?.protocol?.protocol_revision ?? metadata.protocol_revision),
     protocol_override: statusText(summary?.protocol?.protocol_override ?? metadata.protocol_override),
+    capture_id: session?.capture_id ?? '-',
+    execution_id: session?.session_id ?? '-',
+    source_repository_commit: statusText(summary?.protocol?.source_repository_commit ?? metadata.source_repository_commit),
+    source_working_tree_status: statusText(summary?.protocol?.source_working_tree_status ?? metadata.source_working_tree_status),
+    source_working_tree_diff_sha256: statusText(summary?.protocol?.source_working_tree_diff_sha256 ?? metadata.source_working_tree_diff_sha256),
+    protocol_manifest_sha256: statusText(summary?.protocol?.protocol_manifest_sha256 ?? metadata.protocol_manifest_sha256),
+    quality_gate_version: statusText(summary?.quality_gate_version ?? summary?.protocol?.quality_gate_version ?? metadata.quality_gate_version),
+    qualification_profile_id: statusText(metadata.qualification_profile_id),
+    actual_samples: statusText(summary?.acquisition?.captured_samples ?? summary?.acquisition?.actual_samples),
+    actual_file_size_bytes: statusText(summary?.acquisition?.actual_file_size_bytes ?? summary?.acquisition?.bytes),
+    short_read_count: statusText(summary?.acquisition?.short_read_count ?? 0),
+    write_error_count: statusText(summary?.acquisition?.write_error_count ?? 0),
+    writer_queue_overrun_count: statusText(summary?.acquisition?.writer_queue_overrun_count ?? 0),
+    hash_status: statusText(summary?.acquisition?.hash_status ?? summary?.artifact_integrity_status),
   };
 }
 
@@ -614,6 +647,12 @@ export default function BleRffiStageOneDashboard() {
   const [captureDurationSeconds, setCaptureDurationSeconds] = useState(DEFAULT_CAPTURE_SECONDS);
   const [qualificationJob, setQualificationJob] = useState<BleCaptureJob | null>(null);
   const [qualificationLive, setQualificationLive] = useState<BleCaptureLive | null>(null);
+  const [positiveWizardStarted, setPositiveWizardStarted] = useState(false);
+  const [positiveDeviceConfirmed, setPositiveDeviceConfirmed] = useState(false);
+  const [positiveConditionSaved, setPositiveConditionSaved] = useState(false);
+  const [positivePositionPrepared, setPositivePositionPrepared] = useState(false);
+  const [positivePhysicalPrepared, setPositivePhysicalPrepared] = useState(false);
+  const [targetPowerConfirmedAt, setTargetPowerConfirmedAt] = useState<string | null>(null);
 
   const matrix = useMemo(() => campaignMatrix(), []);
   const effectiveMatrix = matrix.slice(0, 1).map((condition) => ({ ...condition, ...(conditionOverrides[condition.condition_id] ?? {}) }));
@@ -772,6 +811,9 @@ export default function BleRffiStageOneDashboard() {
     setQualificationJob(null);
     setQualificationLive(null);
     const hybrid = phase === 'HYBRID_CONCURRENCY_QUALIFICATION';
+    const qualificationRunId = hybrid ? `HCQ${index}` : `Q${index}`;
+    const captureIdPrefix = hybrid ? 'BLE-IQ-HYBQUAL' : 'BLE-IQ-ACQQUAL';
+    const requestedCaptureId = `${captureIdPrefix}-${qualificationRunId}-${Date.now().toString(36)}`;
     logOperation(hybrid ? 'Cualificacion concurrente iniciada' : 'Cualificacion B200-only iniciada', `Diagnostico ${index}/${QUALIFICATION_REQUIRED_CLEAN}: 10 s, 4 MS/s, cf32_le, CH37.`);
     startOperation({
       operationId,
@@ -787,6 +829,7 @@ export default function BleRffiStageOneDashboard() {
     try {
       if (hybrid) await api.startNativeScan();
       let job = await api.createCapture({
+        requested_capture_id: requestedCaptureId,
         device_id: sdr.device_id,
         ble_channel: 37,
         center_frequency_hz: 2_402_000_000,
@@ -804,7 +847,8 @@ export default function BleRffiStageOneDashboard() {
         experimental_metadata: {
           ...profile,
           stage: phase,
-          execution_purpose: 'ACQUISITION_QUALIFICATION',
+          execution_purpose: phase,
+          qualification_run_id: qualificationRunId,
           scientific_campaign_member: false,
           dataset_eligible: false,
           qualification_only: true,
@@ -1233,6 +1277,10 @@ export default function BleRffiStageOneDashboard() {
       setError('Preflight caducado o no valido. Accion: pulse Buscar y confirmar objetivo.');
       return;
     }
+    if (intent === 'positive_target_validation' && !targetPowerConfirmedAt) {
+      setError(`S001-POS bloqueada. Accion: confirme en el asistente que ${selectedProfile.physical_unit_id} esta fisicamente encendido antes del preflight y la captura.`);
+      return;
+    }
     if (intent === 'negative_control' && currentRow.positive.result !== 'POSITIVE_ACCEPTED') {
       setError(`Control negativo bloqueado. Antes debe existir una positiva terminal aceptada y elegible. Estado actual: ${currentRow.positive.result}. Accion: espere resumen, revise cuarentena o repita ${currentCondition.positive_session_id}.`);
       return;
@@ -1244,7 +1292,7 @@ export default function BleRffiStageOneDashboard() {
     const effectiveDurationSeconds = intent === 'negative_control' ? negativeDurationSeconds : captureSeconds;
     const existingConditionSessions = stageOneSessions.filter((session) => sessionConditionId(session) === currentCondition.condition_id);
     const protocolOverride = effectiveDurationSeconds !== DEFAULT_CAPTURE_SECONDS || (intent === 'negative_control' && effectiveDurationSeconds !== captureSeconds);
-    const protocolRevision = protocolOverride || existingConditionSessions.length ? `rev${existingConditionSessions.length + 1}` : 'rev1';
+    const protocolRevision = protocolOverride || existingConditionSessions.length ? `rev${existingConditionSessions.length + 1}` : intent === 'positive_target_validation' ? 'positive-pilot-gate-v2' : 'rev1';
     const overrideReason = protocolOverride
       ? effectiveDurationSeconds !== DEFAULT_CAPTURE_SECONDS
         ? 'operator_duration_override'
@@ -1283,6 +1331,7 @@ export default function BleRffiStageOneDashboard() {
           campaign_protocol_id: campaignId,
           campaign_id: campaignId,
           dataset_id: datasetId,
+          execution_purpose: intent === 'positive_target_validation' ? 'POSITIVE_PILOT' : 'NEGATIVE_CONTROL',
           device_profile_id: selectedProfile.device_profile_id,
           physical_unit_id: selectedProfile.physical_unit_id,
           display_name: selectedProfile.display_name,
@@ -1296,6 +1345,8 @@ export default function BleRffiStageOneDashboard() {
           location: currentCondition.location,
           location_id: currentCondition.location,
           power_state: intent === 'negative_control' ? 'powered_off' : 'powered_on',
+          operator_declared_target_powered_on: intent === 'positive_target_validation',
+          target_power_on_confirmed_at_utc: intent === 'positive_target_validation' ? targetPowerConfirmedAt : null,
           day_id: currentCondition.day_id,
           operator_session_id: intent === 'negative_control' ? currentCondition.negative_session_id : currentCondition.positive_session_id,
           session_id: intent === 'negative_control' ? currentCondition.negative_session_id : currentCondition.positive_session_id,
@@ -1314,14 +1365,65 @@ export default function BleRffiStageOneDashboard() {
           protocol_override: protocolOverride,
           override_reason: overrideReason,
           protocol_revision: protocolRevision,
+          protocol_manifest: {
+            protocol_id: BASE_PROTOCOL_ID,
+            protocol_revision: protocolRevision,
+            quality_gate_version: POSITIVE_PILOT_QUALITY_GATE_VERSION,
+            execution_purpose: intent === 'positive_target_validation' ? 'POSITIVE_PILOT' : 'NEGATIVE_CONTROL',
+            physical_unit_id: selectedProfile.physical_unit_id,
+            condition_id: currentCondition.condition_id,
+            session_id: intent === 'negative_control' ? currentCondition.negative_session_id : currentCondition.positive_session_id,
+            qualification_profile_id: campaignQualificationProfile.qualification_profile_id,
+            receiver_serial: POSITIVE_PILOT_RECEIVER_SERIAL,
+            usb_mode: 'USB_3',
+            center_frequency_hz: campaignQualificationProfile.center_frequency_hz,
+            sample_rate_sps: campaignQualificationProfile.sample_rate_sps,
+            bandwidth_hz: campaignQualificationProfile.bandwidth_hz,
+            analog_bandwidth_hz: campaignQualificationProfile.bandwidth_hz,
+            cpu_format: 'cf32',
+            file_format: campaignQualificationProfile.sample_format,
+            sample_format: campaignQualificationProfile.sample_format,
+            antenna: campaignQualificationProfile.antenna,
+            gain_db: campaignQualificationProfile.gain_db,
+            duration_seconds: effectiveDurationSeconds,
+            disk_persistence_enabled: true,
+            windows_ble_scan_enabled: true,
+            frontend_preview_enabled: false,
+            online_decoder_enabled: false,
+            online_correlation_enabled: false,
+            minimum_unique_target_packets_for_e4_observation: MINIMUM_UNIQUE_TARGET_PACKETS_FOR_E4_OBSERVATION,
+            minimum_unique_target_packets_for_dataset_acceptance: MINIMUM_UNIQUE_TARGET_PACKETS_FOR_DATASET_ACCEPTANCE,
+          },
           minimum_target_crc_packets: MINIMUM_TARGET_CRC_PACKETS,
           minimum_target_strong_matches: MINIMUM_TARGET_STRONG_MATCHES,
+          minimum_unique_target_packets_for_e4_observation: MINIMUM_UNIQUE_TARGET_PACKETS_FOR_E4_OBSERVATION,
+          minimum_unique_target_packets_for_dataset_acceptance: MINIMUM_UNIQUE_TARGET_PACKETS_FOR_DATASET_ACCEPTANCE,
+          quality_gate_version: POSITIVE_PILOT_QUALITY_GATE_VERSION,
           qualification_profile_id: campaignQualificationProfile.qualification_profile_id,
+          receiver_serial: POSITIVE_PILOT_RECEIVER_SERIAL,
+          host_id: campaignQualificationProfile.host_id,
+          usb_mode: 'USB_3',
+          usb_path: campaignQualificationProfile.usb_path,
+          storage_target: campaignQualificationProfile.storage_target,
+          center_frequency_hz: campaignQualificationProfile.center_frequency_hz,
+          sample_rate_sps: campaignQualificationProfile.sample_rate_sps,
+          bandwidth_hz: campaignQualificationProfile.bandwidth_hz,
+          analog_bandwidth_hz: campaignQualificationProfile.bandwidth_hz,
+          cpu_format: 'cf32',
+          file_format: campaignQualificationProfile.sample_format,
+          sample_format: campaignQualificationProfile.sample_format,
+          antenna: campaignQualificationProfile.antenna,
+          gain_db: campaignQualificationProfile.gain_db,
+          disk_persistence_enabled: true,
+          windows_ble_scan_enabled: true,
+          frontend_preview_enabled: false,
           qualification_profile_matches_campaign: qualificationProfileMatchesCampaign,
           qualification_requirement: 'ACQUISITION_QUALIFICATION_AND_HYBRID_CONCURRENCY_QUALIFICATION_PASSED',
           qualification_status: qualificationPassed ? 'PASSED' : 'REQUALIFICATION_REQUIRED',
           decoder_online_enabled: false,
           correlation_online_enabled: false,
+          online_decoder_enabled: false,
+          online_correlation_enabled: false,
           preflight_valid_at_capture_start: intent === 'positive_target_validation' ? preflightValid : absenceValid,
           preflight_age_at_capture_start_seconds: Number.isFinite(targetAgeMs) ? Math.round(targetAgeMs / 1000) : null,
           target_seen_during_capture: 'pending_processing',
@@ -1353,6 +1455,7 @@ export default function BleRffiStageOneDashboard() {
       setMessage('La adquisicion ya termino. No se cancela procesamiento desde este asistente porque no hay reanudacion segura garantizada.');
       return;
     }
+    if (!window.confirm('Cancelar S001-POS conserva los artefactos parciales como NOT_ELIGIBLE y no desbloquea la negativa. ¿Desea cancelar la captura activa?')) return;
     const operationId = `ble-rffi-stop:${activeSession.session_id}`;
     setBusy('stop');
     logOperation('Detencion solicitada', `Solicitando parar ${activeSession.session_id}.`);
@@ -1397,8 +1500,8 @@ export default function BleRffiStageOneDashboard() {
       : `Adquisicion ${activeOperatorId} completada - Procesando evidencia - ${activeSession?.state === 'decoding' ? 'Decoding CRC' : statusText(activeSession?.state)}.`
     : currentStep === 'device' ? 'Seleccione o registre una unidad BLE.'
       : currentStep === 'qualification' ? `Cualificacion: B200-only ${b200QualificationStatus.cleanConsecutive}/${QUALIFICATION_REQUIRED_CLEAN} y concurrencia ${hybridQualificationStatus.cleanConsecutive}/${QUALIFICATION_REQUIRED_CLEAN}.`
-      : currentStep === 'prepare' ? `Preparar ${currentCondition.condition_id}.`
-      : currentStep === 'positive' ? `Captura positiva ${currentCondition.positive_session_id} lista.`
+      : currentStep === 'prepare' ? `Etapa actual: Captura positiva piloto ${currentCondition.condition_id} / ${currentCondition.positive_session_id}.`
+      : currentStep === 'positive' ? `Etapa actual: Captura positiva piloto ${currentCondition.condition_id} / ${currentCondition.positive_session_id}.`
         : currentStep === 'negative' ? `Control negativo ${currentCondition.negative_session_id}.`
           : currentStep === 'repeat' ? `${currentCondition.condition_id} completada.`
             : 'Generar dataset.';
@@ -1406,8 +1509,8 @@ export default function BleRffiStageOneDashboard() {
     ? activeSession?.state === 'capturing' ? 'No cambie el objetivo ni la condicion durante la adquisicion.' : 'La captura I/Q ya fue preservada; espere a que termine el procesamiento.'
     : currentStep === 'device' ? 'Seleccione una unidad existente o registre una nueva antes de crear la campana.'
     : currentStep === 'qualification' ? (qualificationProfileMatchesCampaign ? 'Ejecute tres B200-only limpias y luego tres Windows-B200 concurrentes limpias antes de buscar objetivo.' : 'REQUALIFICATION_REQUIRED: la duracion/configuracion de campana no coincide con la cualificacion de 10 s.')
-    : currentStep === 'prepare' ? `Encienda ${selectedProfile.display_name || selectedProfile.physical_unit_id}, prepare la condicion y pulse Buscar y confirmar objetivo.`
-      : currentStep === 'positive' ? 'Mantenga el dispositivo encendido e inicie la captura positiva.'
+    : currentStep === 'prepare' ? `Accion unica: preparar ${currentCondition.positive_session_id}. Encienda ${selectedProfile.display_name || selectedProfile.physical_unit_id}, coloque la geometria declarada y valide PREFLIGHT.`
+      : currentStep === 'positive' ? 'Accion unica: ejecutar S001-POS. Debe demostrar adquisicion limpia, integridad, CRC valido, asociacion no ambigua y elegibilidad.'
         : currentStep === 'negative' && !absenceValid ? `Apague fisicamente ${selectedProfile.physical_unit_id} y verifique ausencia.`
           : currentStep === 'negative' && !operatorConfirmed ? `Confirme que ${selectedProfile.physical_unit_id} esta fisicamente apagado o retirado.`
             : currentStep === 'negative' ? 'Inicie el control negativo.'
@@ -1431,16 +1534,16 @@ export default function BleRffiStageOneDashboard() {
     {
       step: 'prepare' as CampaignStep,
       title: '3. Preparar condicion',
-      action: `Prepare ${currentCondition.condition_id}, revise metadatos y busque el objetivo en un escaneo live.`,
-      expected: 'El objetivo debe verse en el escaneo actual, no solo en el historico.',
-      blocked: 'Si no aparece ahora, puede estar apagado, fuera de alcance, con direccion BLE distinta o el adaptador BLE puede estar fallando.',
+      action: `Prepare ${currentCondition.condition_id} / ${currentCondition.positive_session_id}, con protocolo congelado y preflight vigente.`,
+      expected: 'La unidad fisica correcta debe estar seleccionada, encendida, colocada en la geometria declarada y observada por Windows BLE en el escaneo actual.',
+      blocked: 'Si no aparece ahora, no se inicia la positiva: puede estar apagada, fuera de alcance, con direccion BLE distinta o el adaptador BLE puede estar fallando.',
     },
     {
       step: 'positive' as CampaignStep,
       title: '4. Captura positiva',
-      action: `Capture ${currentCondition.positive_session_id} con el objetivo encendido.`,
-      expected: 'Se espera una asociacion E4 del objetivo y, de forma independiente, una captura conforme con los criterios de calidad.',
-      blocked: 'Si hay overflows, timeout o no hay corroboracion, no debe usarse como ejemplo positivo.',
+      action: `Ejecute solo ${currentCondition.positive_session_id} con el objetivo encendido.`,
+      expected: 'Debe cerrar con 40.000.000 muestras, 320.000.000 bytes, cero perdidas, hash verificado, CRC valido, asociacion Windows-B200 no ambigua y E4 aceptado.',
+      blocked: 'Si falla adquisicion, integridad, preflight, CRC o asociacion, la sesion se conserva como no elegible y no desbloquea el negativo.',
     },
     {
       step: 'negative' as CampaignStep,
@@ -1529,6 +1632,7 @@ export default function BleRffiStageOneDashboard() {
       />}
 
       <ProgressSteps current={currentStep} completed={completedRows.length} positives={acceptedPositiveRows.length} negatives={acceptedNegativeRows.length} total={effectiveMatrix.length} diagnosticRequired={diagnosticRequired} />
+      {!diagnosticRequired && <CurrentScientificStatePanel profile={selectedProfile} condition={currentCondition} qualificationProfileId={qualificationProfile10s.qualification_profile_id} b200Passed={b200QualificationStatus.passed} hybridPassed={hybridQualificationStatus.passed} profileMatchesCampaign={qualificationProfileMatchesCampaign} />}
       {diagnosticRequired ? <DiagnosticFlowStatus /> : <StageGuide stages={stageGuide} current={currentStep} />}
       <OperationAuditPanel activeSession={activeSession} qualificationJob={qualificationJob} qualificationLive={qualificationLive} busy={busy} events={operationEvents} />
 
@@ -1537,8 +1641,8 @@ export default function BleRffiStageOneDashboard() {
           {currentStep === 'device' && !active && <DeviceStep profile={selectedProfile} />}
           {currentStep === 'qualification' && !active && diagnosticRequired && <DiagnosticRecoveryStep status={b200QualificationStatus} diagnosticResults={diagnosticResults} currentDiagnosticStep={diagnosticCurrentStep} readyToRetry={diagnosticReadyToRetry} profile={qualificationProfile10s} captures={qualificationCaptures} busy={busy} onRunDiagnostic={(step) => void runAcquisitionDiagnostic(step)} onRetry={() => void runQualificationCapture('ACQUISITION_QUALIFICATION')} />}
           {currentStep === 'qualification' && !active && !diagnosticRequired && <QualificationStep captures={qualificationCaptures} b200Status={b200QualificationStatus} hybridStatus={hybridQualificationStatus} profileMatchesCampaign={qualificationProfileMatchesCampaign} qualificationProfileId={qualificationProfile10s.qualification_profile_id} campaignDurationSeconds={captureSeconds} busy={busy} job={qualificationJob} live={qualificationLive} onStartB200={() => void runQualificationCapture('ACQUISITION_QUALIFICATION')} onStartHybrid={() => void runQualificationCapture('HYBRID_CONCURRENCY_QUALIFICATION')} />}
-          {currentStep === 'prepare' && !active && <PrepareStep condition={currentCondition} profile={selectedProfile} target={target} targetAgeMs={targetAgeMs} preflightValid={preflightValid} native={native} busy={busy} onScan={() => void scanTarget()} onChange={setConditionOverrides} metadataMode={metadataMode} onMode={setMetadataMode} />}
-          {currentStep === 'positive' && !active && <PositiveStep condition={currentCondition} profile={selectedProfile} busy={busy} durationSeconds={captureSeconds} maxDurationSeconds={maxCaptureSeconds} onDuration={setCaptureDurationSeconds} onStart={() => void startCampaign('positive_target_validation')} onChange={setConditionOverrides} metadataMode={metadataMode} onMode={setMetadataMode} />}
+          {currentStep === 'prepare' && !active && <PrepareStep condition={currentCondition} profile={selectedProfile} target={target} targetAgeMs={targetAgeMs} preflightValid={preflightValid} native={native} busy={busy} started={positiveWizardStarted} deviceConfirmed={positiveDeviceConfirmed} conditionSaved={positiveConditionSaved} positionPrepared={positivePositionPrepared} physicalPrepared={positivePhysicalPrepared} targetPowerConfirmedAt={targetPowerConfirmedAt} onStartWizard={() => setPositiveWizardStarted(true)} onConfirmDevice={() => setPositiveDeviceConfirmed(true)} onSaveCondition={() => setPositiveConditionSaved(true)} onPositionPrepared={() => setPositivePositionPrepared(true)} onPhysicalPrepared={() => setPositivePhysicalPrepared(true)} onConfirmPower={() => setTargetPowerConfirmedAt(new Date().toISOString())} onScan={() => void scanTarget()} onChange={setConditionOverrides} metadataMode={metadataMode} onMode={setMetadataMode} />}
+          {currentStep === 'positive' && !active && <PositiveStep condition={currentCondition} profile={selectedProfile} busy={busy} durationSeconds={captureSeconds} maxDurationSeconds={maxCaptureSeconds} onStart={() => void startCampaign('positive_target_validation')} />}
           {currentStep === 'negative' && !active && <NegativeStep condition={currentCondition} profile={selectedProfile} absence={absence} absenceValid={absenceValid} confirmed={operatorConfirmed} busy={busy} durationSeconds={negativeDurationSeconds} maxDurationSeconds={maxCaptureSeconds} lockedDurationSeconds={negativeDurationSeconds} onDuration={setCaptureDurationSeconds} onVerify={() => void verifyAbsence()} onConfirm={setOperatorConfirmed} onStart={() => void startCampaign('negative_control')} onChange={setConditionOverrides} metadataMode={metadataMode} onMode={setMetadataMode} />}
           {currentStep === 'repeat' && !active && <RepeatStep profile={selectedProfile} completed={completedRows.length} total={effectiveMatrix.length} next={conditionRows.find((row) => row.positive.result !== 'POSITIVE_ACCEPTED' || row.negative.result !== 'NEGATIVE_ACCEPTED')?.condition} onRefresh={() => void load(false)} />}
           {currentStep === 'dataset' && !active && <DatasetStep datasetManifest={datasetManifest} datasetId={datasetId} datasetKnown={datasetKnown} />}
@@ -1848,6 +1952,48 @@ function ContextHelp({ doing, user, expected, failure, next }: { doing: string; 
   );
 }
 
+function CurrentScientificStatePanel({ profile, condition, qualificationProfileId, b200Passed, hybridPassed, profileMatchesCampaign }: { profile: DeviceProfile; condition: MatrixCondition; qualificationProfileId: string; b200Passed: boolean; hybridPassed: boolean; profileMatchesCampaign: boolean }) {
+  return (
+    <Panel title="Estado cientifico y tecnico actual">
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
+        <div className="rounded-md border border-slate-800 p-4">
+          <div className="text-sm font-semibold text-cyan-100">Objetivo final del modulo</div>
+          <p className="mt-2 text-sm text-slate-300">
+            Construir una cadena BLE-RFFI trazable para evaluar si una emision BLE capturada por el USRP B200 es compatible con la unidad fisica enrolada o con la poblacion alternativa declarada. El modelo final solo puede usar informacion derivada del I/Q del B200; Windows BLE se reserva para observacion logica, ground truth, asociacion temporal y etiquetado.
+          </p>
+          <p className="mt-2 text-xs text-slate-400">
+            Alcance limitado a unidades evaluadas, receptor, canal, configuracion, periodo experimental y poblacion alternativa declarada. No es identificacion universal de dispositivos BLE.
+          </p>
+        </div>
+        <div className="grid gap-2 md:grid-cols-2">
+          <Metric title="Etapa actual" value="PREPARATION_FOR_POSITIVE_PILOT" detail={`${condition.condition_id} / ${condition.positive_session_id}`} />
+          <Metric title="Accion unica" value="Preparar y ejecutar S001-POS" detail="no negativa, dataset ni training" />
+          <Metric title="ACQUISITION_DIAGNOSTIC" value="COMPLETED" detail="diagnostico A-E cerrado" />
+          <Metric title="ACQUISITION_QUALIFICATION" value={b200Passed ? 'PASSED_3_CONSECUTIVE' : 'BLOCKED'} detail="B200-only 10 s" />
+          <Metric title="HYBRID_CONCURRENCY_QUALIFICATION" value={hybridPassed ? 'PASSED_3_CONSECUTIVE' : 'BLOCKED'} detail="Windows BLE + B200 10 s" />
+          <Metric title="qualification_profile_matches_campaign" value={profileMatchesCampaign ? 'true' : 'REQUALIFICATION_REQUIRED'} detail="solo perfil de 10 s" />
+          <Metric title="S001-POS" value="UNLOCKED_NEXT_ONLY" detail={profile.physical_unit_id} />
+          <Metric title="S001-NEG / DATASET / TRAINING" value="BLOCKED" detail="hasta positiva aceptada y elegible" />
+          <Metric title="LIVE_MODEL" value="BLOCKED" detail="requiere dataset y entrenamiento verificados" />
+          <Metric title="NEXT_OPERATOR_ACTION" value="PREPARE_AND_EXECUTE_S001_POS" detail="wizard numerado" />
+          <Metric title="Campana 120 s" value="NOT_QUALIFIED" detail="requiere nuevo perfil" />
+          <Metric title="ROOT_CAUSE_PRIOR_LOSSES" value="NOT_FULLY_ISOLATED" detail="USB, writer e instrumentacion cambiaron juntos" />
+        </div>
+      </div>
+      <div className="mt-3 grid gap-2 md:grid-cols-4">
+        <Metric title="qualification_profile_id" value={qualificationProfileId} detail="perfil cualificado" />
+        <Metric title="receiver_serial" value="E3R04Z1B2" detail="USRP B200" />
+        <Metric title="configuracion RF" value="2402 MHz · 4 MS/s · 2 MHz" detail="cf32_le · RX2 · G20 · USB 3" />
+        <Metric title="E4_MINIMAL_OBSERVED" value={`${MINIMUM_UNIQUE_TARGET_PACKETS_FOR_E4_OBSERVATION} paquete`} detail="unique target CRC strong" />
+        <Metric title="E4_ACCEPTED_FOR_DATASET" value={`${MINIMUM_UNIQUE_TARGET_PACKETS_FOR_DATASET_ACCEPTANCE} paquetes`} detail="strong-only no conflictivos" />
+      </div>
+      <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+        Las cualificaciones prueban estabilidad tecnica de adquisicion y concurrencia para 10 s. No prueban identidad del SensorTag, ground truth E4, fingerprinting valido, dataset entrenable, generalizacion ni estabilidad de capturas de 120 s.
+      </div>
+    </Panel>
+  );
+}
+
 function QualificationOnlyPanel({ captures, diagnosticCaptures, historicalCleanCaptures }: { captures: BleCaptureRecord[]; diagnosticCaptures: BleCaptureRecord[]; historicalCleanCaptures: number }) {
   return (
     <Panel title="Historial de cualificacion">
@@ -1916,20 +2062,153 @@ function ConditionReview({ condition, mode, onMode, onChange }: { condition: Mat
   );
 }
 
-function PrepareStep({ condition, profile, target, targetAgeMs, preflightValid, native, busy, onScan, onChange, metadataMode, onMode }: { condition: MatrixCondition; profile: DeviceProfile; target: BleNativeDevice | null; targetAgeMs: number; preflightValid: boolean; native: BleNativeStatus | null; busy: string; onScan: () => void; onChange: React.Dispatch<React.SetStateAction<Record<string, Partial<MatrixCondition>>>>; metadataMode: 'matrix' | 'edit'; onMode: (mode: 'matrix' | 'edit') => void }) {
+function OperatorWizardBlock({ title, doing, user, expected, failure, actionLabel, onAction, disabled = false, children }: { title: string; doing: string; user: string; expected: string; failure: string; actionLabel: string; onAction?: () => void; disabled?: boolean; children?: React.ReactNode }) {
+  return (
+    <div className="rounded-md border border-slate-800 p-4">
+      <div className="text-sm font-semibold text-cyan-100">{title}</div>
+      <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <Metric title="Que comprueba" value={doing} detail="plataforma" />
+        <Metric title="Que debe hacer" value={user} detail="operador" />
+        <Metric title="Resultado esperado" value={expected} detail="para continuar" />
+        <Metric title="Si falla" value={failure} detail="accion segura" />
+      </div>
+      {children && <div className="mt-4">{children}</div>}
+      {onAction && (
+        <button onClick={onAction} disabled={disabled} className="mt-4 inline-flex h-11 items-center gap-2 rounded-md bg-cyan-700 px-4 text-sm font-semibold disabled:opacity-40">
+          <CheckCircle2 className="h-4 w-4" />{actionLabel}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function PrepareStep({ condition, profile, target, targetAgeMs, preflightValid, native, busy, started, deviceConfirmed, conditionSaved, positionPrepared, physicalPrepared, targetPowerConfirmedAt, onStartWizard, onConfirmDevice, onSaveCondition, onPositionPrepared, onPhysicalPrepared, onConfirmPower, onScan, onChange, metadataMode, onMode }: { condition: MatrixCondition; profile: DeviceProfile; target: BleNativeDevice | null; targetAgeMs: number; preflightValid: boolean; native: BleNativeStatus | null; busy: string; started: boolean; deviceConfirmed: boolean; conditionSaved: boolean; positionPrepared: boolean; physicalPrepared: boolean; targetPowerConfirmedAt: string | null; onStartWizard: () => void; onConfirmDevice: () => void; onSaveCondition: () => void; onPositionPrepared: () => void; onPhysicalPrepared: () => void; onConfirmPower: () => void; onScan: () => void; onChange: React.Dispatch<React.SetStateAction<Record<string, Partial<MatrixCondition>>>>; metadataMode: 'matrix' | 'edit'; onMode: (mode: 'matrix' | 'edit') => void }) {
+  const conditionValid = validateCondition(condition, profile, [condition]).length === 0;
   return (
     <div className="space-y-4">
-      <Instruction title="Preparar captura positiva" text={`Encienda ${profile.display_name || profile.physical_unit_id}, coloquelo a la distancia indicada y no lo mueva. ${profile.model.toLowerCase().includes('cc2650') ? 'Para el CC2650, asegurese de que no esta conectado mediante GATT.' : 'Si el dispositivo no usa GATT, mantengalo en su modo normal de advertising.'}`} />
-      <ConditionSummary condition={condition} profile={profile} />
-      <ConditionReview condition={condition} mode={metadataMode} onMode={onMode} onChange={onChange} />
-      <div className="grid gap-3 md:grid-cols-3">
-        <Metric title="objetivo encontrado" value={preflightValid ? 'si' : 'no'} detail={profile.logical_address || 'not_observed'} />
-        <Metric title="ultima observacion" value={target?.last_seen_utc ?? '-'} detail={target ? `${Math.max(0, Math.round(targetAgeMs / 1000))} s de antiguedad` : 'sin observacion'} />
-        <Metric title="preflight" value={preflightValid ? 'valido' : 'no valido'} detail={`scan ${native?.scan_session_id ?? '-'}`} />
-      </div>
-      <button onClick={onScan} disabled={Boolean(busy)} className="inline-flex h-11 items-center gap-2 rounded-md bg-sky-700 px-4 text-sm font-semibold disabled:opacity-40">
-        <ScanSearch className="h-4 w-4" />Buscar y confirmar objetivo
-      </button>
+      {!started && (
+        <OperatorWizardBlock
+          title="Paso 0 - Preparacion de la captura positiva piloto"
+          doing="Presenta el estado actual y bloquea fases futuras."
+          user="No encienda todavia el SensorTag."
+          expected="S001-POS sera la unica ejecucion permitida."
+          failure="Si intenta avanzar a negativa, dataset o training, el flujo queda bloqueado."
+          actionLabel="Comenzar preparacion de S001-POS"
+          onAction={onStartWizard}
+        >
+          <div className="grid gap-2 md:grid-cols-3">
+            <Metric title="Diagnostico de adquisicion" value="COMPLETADO" detail="A-E cerrado" />
+            <Metric title="Cualificacion B200" value="SUPERADA" detail="3 limpias consecutivas" />
+            <Metric title="Cualificacion Windows BLE-B200" value="SUPERADA" detail="3 limpias consecutivas" />
+            <Metric title="Captura positiva S001-POS" value="SIGUIENTE" detail="unica accion" />
+            <Metric title="Control negativo" value="BLOQUEADO" detail="hasta positiva aceptada" />
+            <Metric title="Dataset / Training" value="BLOQUEADO" detail="sin autoavance" />
+          </div>
+        </OperatorWizardBlock>
+      )}
+
+      {started && !deviceConfirmed && (
+        <OperatorWizardBlock
+          title="Paso 1 - Comprobacion automatica del sistema"
+          doing="Comprueba B200 disponible, Windows BLE disponible, perfil 10 s, gate v2 y ausencia de captura activa. El backend validara el commit limpio al iniciar."
+          user="Mantenga el B200 en el mismo USB 3. No cambie cable, puerto ni abra otra aplicacion SDR. No encienda aun el SensorTag."
+          expected="Sistema preparado para seleccionar la unidad fisica."
+          failure="Si falta B200, USB 3, Windows BLE o el arbol Git limpio, no se inicia la positiva."
+          actionLabel="Continuar a seleccion del dispositivo"
+          onAction={onConfirmDevice}
+          disabled={!native?.available}
+        >
+          <div className="grid gap-2 md:grid-cols-3">
+            <Metric title="B200" value="validado por backend" detail="serial exacto E3R04Z1B2" />
+            <Metric title="Windows BLE" value={native?.available ? 'disponible' : 'no disponible'} detail={native?.backend ?? '-'} />
+            <Metric title="Perfil" value="10 s / cf32_le / USB 3" detail="QPROFILE-Z1B2..." />
+            <Metric title="Git" value="validacion backend" detail="CLEAN requerido" />
+            <Metric title="Gate" value={POSITIVE_PILOT_QUALITY_GATE_VERSION} detail="v2" />
+            <Metric title="Captura activa" value="ninguna requerida" detail="si existe, backend bloquea" />
+          </div>
+        </OperatorWizardBlock>
+      )}
+
+      {started && deviceConfirmed && !conditionSaved && (
+        <OperatorWizardBlock
+          title="Paso 2 - Seleccion del dispositivo fisico"
+          doing="Carga la unidad fisica esperada y su identidad logica declarada."
+          user="Compruebe fisicamente la etiqueta del SensorTag. No use otro CC2650 ni otro BLE."
+          expected="El operador confirma CC2650-UNIT-01 como objetivo."
+          failure="Si no puede identificarlo, no continue: revise la etiqueta fisica o el registro."
+          actionLabel="Confirmo que el dispositivo fisico es CC2650-UNIT-01"
+          onAction={onSaveCondition}
+          disabled={profile.physical_unit_id !== 'CC2650-UNIT-01'}
+        >
+          <ConditionSummary condition={condition} profile={profile} />
+          <div className="mt-3 grid gap-2 md:grid-cols-3">
+            <Metric title="physical_unit_id" value={profile.physical_unit_id} detail="debe ser CC2650-UNIT-01" />
+            <Metric title="display_name" value={profile.display_name || 'TI SensorTag CC2650'} detail="referencia fisica" />
+            <Metric title="logical_address_expected" value={profile.logical_address || 'B0:B4:48:C0:36:06'} detail="se verificara en preflight" />
+          </div>
+        </OperatorWizardBlock>
+      )}
+
+      {started && deviceConfirmed && conditionSaved && !positionPrepared && (
+        <OperatorWizardBlock
+          title="Paso 3 - Condicion experimental C001"
+          doing="Prepara condition_id=C001 y session_id=S001-POS con metadatos trazables."
+          user="Confirme distancia, orientacion, ubicacion, posiciones y notas. Distancia es separacion SensorTag-antena; orientacion 0 deg es la referencia del protocolo."
+          expected="Metadatos obligatorios completos y coherentes."
+          failure="Si falta distancia con unidad, ubicacion o power_cycle_id, el backend rechaza la captura."
+          actionLabel="Guardar condicion C001"
+          onAction={onPositionPrepared}
+          disabled={!conditionValid}
+        >
+          <ConditionReview condition={condition} mode={metadataMode} onMode={onMode} onChange={onChange} />
+          {!conditionValid && <p className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">Complete distance_m con unidad, orientation_deg, location_id y power_cycle_id antes de continuar.</p>}
+        </OperatorWizardBlock>
+      )}
+
+      {started && deviceConfirmed && conditionSaved && positionPrepared && !physicalPrepared && (
+        <OperatorWizardBlock
+          title="Paso 4 - Preparacion fisica antes de encender"
+          doing="Comprueba que la escena fisica coincide con la condicion declarada antes de activar el objetivo."
+          user="Coloque el SensorTag en la posicion declarada, mantenga distancia y orientacion, aleje otros CC2650 controlados y confirme que el B200 sigue en USB 3. No encienda todavia el SensorTag."
+          expected="La posicion esta preparada sin trafico objetivo todavia."
+          failure="Si otro dispositivo controlado esta cerca o el objetivo se mueve, la asociacion puede quedar ambigua."
+          actionLabel="La posicion esta preparada"
+          onAction={onPhysicalPrepared}
+        />
+      )}
+
+      {started && deviceConfirmed && conditionSaved && positionPrepared && physicalPrepared && !targetPowerConfirmedAt && (
+        <OperatorWizardBlock
+          title="Paso 5 - Momento exacto de encender el SensorTag"
+          doing="Registra la declaracion fisica de que el objetivo se ha encendido para esta positiva."
+          user="Encienda ahora el SensorTag CC2650-UNIT-01. No pulse otros botones, no lo conecte mediante GATT y no lo mueva."
+          expected="operator_declared_target_powered_on=true con timestamp UTC."
+          failure="Si no puede confirmar que el objetivo correcto esta encendido, vuelva a la seleccion del dispositivo."
+          actionLabel="Confirmo que CC2650-UNIT-01 esta encendido"
+          onAction={onConfirmPower}
+        />
+      )}
+
+      {started && deviceConfirmed && conditionSaved && positionPrepared && physicalPrepared && targetPowerConfirmedAt && (
+        <OperatorWizardBlock
+          title="Paso 6 - Preflight Windows BLE"
+          doing="Ejecuta un escaneo BLE actual para comprobar que Windows observa la identidad logica esperada."
+          user="Espere sin mover ni apagar el SensorTag. No conecte el dispositivo con otra aplicacion BLE."
+          expected="Objetivo observado, direccion esperada y preflight vigente."
+          failure="Si no aparece, repita escaneo. Si aparece otra direccion, no se inicia B200."
+          actionLabel={preflightValid ? 'Preflight valido: pasar a revision final' : 'Iniciar comprobacion BLE'}
+          onAction={preflightValid ? undefined : onScan}
+          disabled={Boolean(busy)}
+        >
+          <div className="grid gap-3 md:grid-cols-3">
+            <Metric title="objetivo encontrado" value={preflightValid ? 'si' : 'no'} detail={profile.logical_address || 'not_observed'} />
+            <Metric title="ultima observacion" value={target?.last_seen_utc ?? '-'} detail={target ? `${Math.max(0, Math.round(targetAgeMs / 1000))} s de antiguedad` : 'sin observacion'} />
+            <Metric title="preflight" value={preflightValid ? 'VALIDO' : 'NO VALIDO'} detail={`scan ${native?.scan_session_id ?? '-'}`} />
+            <Metric title="encendido confirmado" value={targetPowerConfirmedAt} detail="operator_declared_target_powered_on" />
+          </div>
+          {preflightValid && <p className="mt-3 rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-100">Preflight valido. La siguiente pantalla mostrara la revision final no editable antes de iniciar S001-POS.</p>}
+        </OperatorWizardBlock>
+      )}
     </div>
   );
 }
@@ -1948,15 +2227,55 @@ function CaptureDurationControl({ value, max, onChange }: { value: number; max: 
   );
 }
 
-function PositiveStep({ condition, profile, busy, durationSeconds, maxDurationSeconds, onDuration, onStart, onChange, metadataMode, onMode }: { condition: MatrixCondition; profile: DeviceProfile; busy: string; durationSeconds: number; maxDurationSeconds: number; onDuration: (value: number) => void; onStart: () => void; onChange: React.Dispatch<React.SetStateAction<Record<string, Partial<MatrixCondition>>>>; metadataMode: 'matrix' | 'edit'; onMode: (mode: 'matrix' | 'edit') => void }) {
+function PositiveStep({ condition, profile, busy, durationSeconds, maxDurationSeconds, onStart }: { condition: MatrixCondition; profile: DeviceProfile; busy: string; durationSeconds: number; maxDurationSeconds: number; onStart: () => void }) {
   return (
     <div className="space-y-4">
-      <Instruction title="Captura positiva" text={`Mantenga ${profile.physical_unit_id} encendido y visible. Se espera una asociacion E4 del objetivo y, por separado, una captura conforme con los criterios de calidad.`} />
-      <ConditionSummary condition={condition} profile={profile} />
-      <ConditionReview condition={condition} mode={metadataMode} onMode={onMode} onChange={onChange} />
-      <CaptureDurationControl value={durationSeconds} max={maxDurationSeconds} onChange={onDuration} />
-      <button onClick={onStart} disabled={Boolean(busy)} className="inline-flex h-11 items-center gap-2 rounded-md bg-emerald-700 px-4 text-sm font-semibold disabled:opacity-40">
-        <Play className="h-4 w-4" />Confirmar e iniciar captura positiva
+      <OperatorWizardBlock
+        title="Paso 7 - Revision final antes de capturar"
+        doing="Congela el contrato y prepara la unica ejecucion permitida: C001 / S001-POS."
+        user="Durante los proximos 10 segundos no mueva, apague ni conecte el SensorTag. No cierre la pagina ni abra otras aplicaciones SDR."
+        expected="El backend validara contrato, commit limpio, perfil, gate v2 y receptor antes de arrancar hardware."
+        failure="Si aparece PROTOCOL_FREEZE_MISMATCH, no se captura: corrija el campo indicado y no modifique thresholds."
+        actionLabel="Iniciar S001-POS"
+        onAction={onStart}
+        disabled={Boolean(busy)}
+      >
+        <ConditionSummary condition={condition} profile={profile} />
+      </OperatorWizardBlock>
+      <div className="rounded-md border border-slate-800 p-4">
+        <div className="font-semibold">Resumen no editable del protocolo congelado</div>
+        <p className="mt-1 text-xs text-slate-400">No cambie duracion, sample rate, frecuencia, bandwidth, ganancia, antena ni formato antes de S001-POS. Cualquier cambio critico requiere REQUALIFICATION_REQUIRED.</p>
+        <div className="mt-3 grid gap-2 md:grid-cols-4">
+          <Metric title="Dispositivo" value={profile.physical_unit_id} detail={profile.logical_address || 'B0:B4:48:C0:36:06'} />
+          <Metric title="Finalidad" value="POSITIVE_PILOT" detail={`${condition.condition_id} / ${condition.positive_session_id}`} />
+          <Metric title="duration_seconds" value={`${durationSeconds} s`} detail={`max backend ${maxDurationSeconds}s`} />
+          <Metric title="BLE CH37" value="2402 MHz" detail="center_frequency_hz" />
+          <Metric title="sample_rate_sps" value="4 MS/s" detail="4000000" />
+          <Metric title="bandwidth_hz" value="2 MHz" detail="2000000" />
+          <Metric title="Formato" value="cf32_le" detail="cpu cf32" />
+          <Metric title="USB / RF" value="USB 3 / RX2 / G20" detail="perfil cualificado" />
+          <Metric title="expected_samples" value={formatNumber(QUALIFICATION_EXPECTED_SAMPLES)} detail="4 MS/s" />
+          <Metric title="expected_file_size_bytes" value={formatNumber(QUALIFICATION_EXPECTED_FILE_SIZE)} detail="cf32_le" />
+          <Metric title="E4_MINIMAL_OBSERVED" value={`${MINIMUM_UNIQUE_TARGET_PACKETS_FOR_E4_OBSERVATION}`} detail="paquete unico CRC fuerte" />
+          <Metric title="E4_ACCEPTED_FOR_DATASET" value={`${MINIMUM_UNIQUE_TARGET_PACKETS_FOR_DATASET_ACCEPTANCE}`} detail="strong-only sin conflicto" />
+        </div>
+      </div>
+      <div className="rounded-md border border-slate-800 p-4">
+        <div className="font-semibold">Criterios de aceptacion S001-POS</div>
+        <div className="mt-3 grid gap-2 md:grid-cols-3">
+          <Metric title="preflight_valid_at_capture_start" value="true requerido" detail="Windows BLE vio objetivo" />
+          <Metric title="adquisicion" value="PASSED requerido" detail="0 overflow/discontinuity/short/write/queue" />
+          <Metric title="artifact_integrity_status" value="VERIFIED requerido" detail="hash y manifiesto completos" />
+          <Metric title="ground_truth_status" value="PASSED_E4 requerido" detail="asociacion aceptada" />
+          <Metric title="dataset_eligibility_status" value="ELIGIBLE requerido" detail="solo si pasa todo" />
+          <Metric title="si falla" value="S001-NEG sigue BLOCKED" detail="una positiva fallida nunca es negativa" />
+        </div>
+        <p className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+          Un unico paquete fuerte puede producir E4_MINIMAL_OBSERVED, pero no acepta la sesion para dataset. La aceptacion cientifica del piloto exige {MINIMUM_UNIQUE_TARGET_PACKETS_FOR_DATASET_ACCEPTANCE} paquetes unicos CRC validos strong-only y cero conflictos.
+        </p>
+      </div>
+      <button onClick={() => window.history.back()} disabled={Boolean(busy)} className="inline-flex h-10 items-center gap-2 rounded-md border border-slate-600 px-3 text-sm disabled:opacity-40">
+        Cancelar y volver
       </button>
     </div>
   );
@@ -2197,34 +2516,54 @@ function ActiveSessionCard({ session, onStop, busy }: { session: BleHybridSessio
         <Metric title="execution_id" value={session.session_id} detail={session.state} />
       </div>
       {capturing && (
-        <div className="grid gap-3 md:grid-cols-2">
-          <Metric title="tiempo transcurrido" value={`${Math.min(session.duration_seconds, elapsed)}/${session.duration_seconds} s`} detail="adquisicion" />
-          <Metric title="Windows BLE" value={statusText(session.steps?.native_scan)} detail="ground truth" />
-          <Metric title="B200" value={statusText(session.steps?.b200_capture)} detail="I/Q" />
-          <Metric title="muestras capturadas" value={formatNumber(session.live?.telemetry?.samples_received)} detail="se calcula CRC despues" />
-        </div>
+        <OperatorWizardBlock
+          title="Paso 8 - Captura activa"
+          doing="Windows BLE esta observando y el B200 esta capturando I/Q persistente."
+          user="No toque el SensorTag, no desconecte el B200, no cierre la pagina y no abra otras aplicaciones SDR."
+          expected="Capturar exactamente 10 s sin mostrar aun E4 ni elegibilidad provisional."
+          failure="Si se cancela o falla la adquisicion, S001-POS queda NOT_ELIGIBLE y la negativa sigue bloqueada."
+          actionLabel="Cancelar captura"
+          onAction={onStop}
+          disabled={busy === 'stop'}
+        >
+          <div className="grid gap-3 md:grid-cols-2">
+            <Metric title="Capturando S001-POS" value={`${Math.min(session.duration_seconds, elapsed)}/${session.duration_seconds} s`} detail="0-10 s" />
+            <Metric title="Windows BLE" value={statusText(session.steps?.native_scan)} detail="ground truth" />
+            <Metric title="B200" value={statusText(session.steps?.b200_capture)} detail="I/Q" />
+            <Metric title="muestras capturadas" value={formatNumber(session.live?.telemetry?.samples_received)} detail="CRC se calcula despues" />
+          </div>
+        </OperatorWizardBlock>
       )}
-      {processing && <ProcessingPhases session={session} />}
+      {processing && (
+        <OperatorWizardBlock
+          title="Paso 9 - Procesamiento posterior"
+          doing="La captura termino; ahora se verifican integridad, CRC, deduplicacion, asociacion y elegibilidad."
+          user="Espere. Puede tardar mas que la captura. No inicie otra sesion."
+          expected="Resumen cientifico completo antes de mostrar COMPLETED."
+          failure="Si queda SUMMARY_PENDING, reanude procesamiento; no clasifique como negativa ni dataset."
+          actionLabel=""
+        >
+          <ProcessingPhases session={session} />
+        </OperatorWizardBlock>
+      )}
       {!capturing && !processing && <Metric title="estado" value={statusText(session.state)} detail={session.error ?? 'sin error activo'} />}
-      {capturing ? (
-        <button onClick={onStop} disabled={busy === 'stop'} className="inline-flex h-10 items-center gap-2 rounded-md bg-rose-700 px-3 text-sm font-semibold disabled:opacity-40">
-          <Square className="h-4 w-4" />Detener captura
-        </button>
-      ) : processing ? (
-        <p className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">La captura I/Q ya fue preservada. No se muestra detener captura durante procesamiento; espere a que termine CRC, correlacion y resumen.</p>
-      ) : null}
+      {processing && <p className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">La captura I/Q ya fue preservada. No se muestra detener captura durante procesamiento; espere a que termine CRC, correlacion y resumen.</p>}
     </div>
   );
 }
 
 function ProcessingPhases({ session }: { session: BleHybridSession }) {
   const phases = [
-    ['Integridad I/Q', session.steps?.b200_capture],
-    ['Deteccion de rafagas', session.steps?.burst_detection],
-    ['Decoding CRC', session.steps?.decoding],
-    ['Correlacion Windows-B200', session.steps?.correlation],
-    ['Evaluacion de calidad', session.steps?.results],
-    ['Decision', session.state === 'completed' ? 'completed' : 'pending'],
+    ['1. Cerrando archivo I/Q', session.steps?.b200_capture],
+    ['2. Verificando muestras y tamano', session.steps?.b200_capture],
+    ['3. Calculando SHA-256', session.steps?.b200_capture],
+    ['4. Completando manifiesto', session.steps?.b200_capture],
+    ['5. Detectando bursts BLE', session.steps?.burst_detection],
+    ['6. Decodificando paquetes', session.steps?.decoding],
+    ['7. Verificando CRC', session.steps?.decoding],
+    ['8. Eliminando duplicados', session.steps?.decoding],
+    ['9. Asociando Windows BLE y B200', session.steps?.correlation],
+    ['10. Evaluando evidencia y elegibilidad', session.steps?.results],
   ];
   return <div className="grid gap-2">{phases.map(([label, state]) => <GateCard key={label} label={label} state={state === 'completed' ? 'pass' : state === 'running' ? 'warn' : 'pending'} value={statusText(state)} />)}</div>;
 }
@@ -2366,12 +2705,42 @@ function EvidenceTab({ captures, cleanCaptures }: { captures: BleCaptureRecord[]
 
 function PositiveGateSummary({ session, summary }: { session: BleHybridSession; summary?: BleScientificSummary }) {
   const gates = positiveGateSummary(session, summary);
+  const lossFailure = Number(gates.overflows) > 0 || Number(gates.discontinuities) > 0 || Number(gates.short_read_count) > 0 || Number(gates.write_error_count) > 0 || Number(gates.writer_queue_overrun_count) > 0;
+  const human = gates.dataset_eligibility_status === 'ELIGIBLE'
+    ? { title: 'Captura positiva aceptada', text: 'La adquisicion termino sin perdidas y se observaron al menos tres paquetes unicos del objetivo con asociacion fuerte y sin conflictos.', state: 'ACCEPTED', action: 'Revisar resultado y preparar control negativo.' }
+    : gates.summary_status === 'SUMMARY_PENDING'
+      ? { title: 'Resumen pendiente', text: 'La captura termino, pero el analisis final todavia no esta completo.', state: 'SUMMARY_PENDING', action: 'Reanudar o esperar procesamiento; no clasificar todavia.' }
+      : lossFailure
+        ? { title: 'Perdida de adquisicion', text: 'El tamano del archivo puede ser correcto, pero la continuidad RF no esta garantizada.', state: 'NOT_ELIGIBLE', action: 'No usar para dataset; revisar USB 3, SDR concurrentes y writer.' }
+        : gates.provenance_status !== 'VERIFIED'
+          ? { title: 'Fallo de integridad o procedencia', text: 'No se pudo verificar completamente el archivo, manifiesto o resumen.', state: 'NOT_ELIGIBLE', action: 'Reintentar procesamiento o revisar almacenamiento antes de recapturar.' }
+          : Number(gates.target_association_conflict_count) > 0 || Number(gates.unique_target_crc_packets_with_conflicting_association) > 0
+            ? { title: 'Conflicto de identidad', text: 'Un paquete o intervalo quedo asociado con identidades incompatibles.', state: 'NOT_ELIGIBLE', action: 'Revisar relaciones de asociacion; no repetir automaticamente.' }
+            : gates.association_evidence_status === 'AMBIGUOUS'
+              ? { title: 'Asociacion ambigua', text: 'Se observaron paquetes compatibles, pero no pudieron atribuirse de forma inequivoca al objetivo.', state: 'NOT_ELIGIBLE', action: 'Alejar otros BLE controlados, repetir preflight y no cambiar thresholds.' }
+              : Number(gates.unique_strong_only_target_crc_packets) > 0 && Number(gates.unique_strong_only_target_crc_packets) < MINIMUM_UNIQUE_TARGET_PACKETS_FOR_DATASET_ACCEPTANCE
+                ? { title: 'Solo observacion minima', text: 'Se observo el objetivo, pero la evidencia no alcanza el minimo de tres paquetes target unicos strong-only.', state: 'NOT_ELIGIBLE', action: 'Revisar detalles o preparar una nueva positiva sin modificar K=3.' }
+                : { title: 'Objetivo no observado', text: 'No se obtuvo evidencia suficiente del dispositivo seleccionado durante la captura.', state: 'NOT_ELIGIBLE', action: 'Revisar preparacion fisica, direccion BLE, CH37 y preflight.' };
   return (
     <div className="mt-3 rounded-md border border-slate-800 p-3">
-      <div className="text-sm font-semibold">Resumen final/transitorio de la positiva</div>
+      <div className="text-sm font-semibold">Paso 10 - Resultado completo</div>
+      <div className={`mt-3 rounded-md border p-4 ${human.state === 'ACCEPTED' ? 'border-emerald-500/40 bg-emerald-500/10' : 'border-amber-500/30 bg-amber-500/10'}`}>
+        <div className="text-base font-semibold">{human.title}</div>
+        <p className="mt-2 text-sm text-slate-200">{human.text}</p>
+        <div className="mt-3 grid gap-2 md:grid-cols-3">
+          <Metric title="S001-POS" value={human.state === 'ACCEPTED' ? 'ACCEPTED' : 'NOT_ACCEPTED'} detail="revision humana requerida" />
+          <Metric title="ground_truth_status" value={statusText(gates.ground_truth_status)} detail="gate v2" />
+          <Metric title="dataset_eligibility_status" value={statusText(gates.dataset_eligibility_status)} detail="sin autoavance" />
+          <Metric title="Paquetes strong-only" value={formatNumber(gates.unique_strong_only_target_crc_packets)} detail={`umbral ${MINIMUM_UNIQUE_TARGET_PACKETS_FOR_DATASET_ACCEPTANCE}`} />
+          <Metric title="Conflictos" value={formatNumber(gates.target_association_conflict_count)} detail="debe ser 0" />
+          <Metric title="Accion permitida" value={human.action} detail="operador" />
+        </div>
+      </div>
       <div className="mt-3 grid gap-2 md:grid-cols-3 xl:grid-cols-5">
         <Metric title="acquisition_quality_status" value={statusText(gates.acquisition_quality_status)} detail={`overflows ${gates.overflows} / disc ${gates.discontinuities}`} />
         <Metric title="maximum_observed_evidence_level" value={statusText(gates.maximum_observed_evidence_level)} detail="candidato observado" />
+        <Metric title="e4_observation_status" value={statusText(gates.e4_observation_status)} detail="minimo tecnico" />
+        <Metric title="e4_dataset_acceptance_status" value={statusText(gates.e4_dataset_acceptance_status)} detail="gate cientifico" />
         <Metric title="association_evidence_status" value={statusText(gates.association_evidence_status)} detail={(gates.ambiguity_reason_codes as string[]).join(',') || 'sin ambiguedad'} />
         <Metric title="effective_claim_level" value={statusText(gates.effective_claim_level)} detail="nivel aceptable para claim" />
         <Metric title="ground_truth_status" value={statusText(gates.ground_truth_status)} detail="E4 solo si se acepta" />
@@ -2383,6 +2752,11 @@ function PositiveGateSummary({ session, summary }: { session: BleHybridSession; 
         <Metric title="target_ambiguous_matches" value={formatNumber(gates.target_ambiguous_matches)} detail="asociaciones ambiguas" />
         <Metric title="environmental_crc_valid_packets" value={formatNumber(gates.environmental_crc_valid_packets)} detail="no justifica E4 del objetivo" />
         <Metric title="target_strong_matches" value={formatNumber(gates.target_strong_matches)} detail="umbral objetivo" />
+        <Metric title="unique_target_crc_packets_with_strong_association" value={formatNumber(gates.unique_target_crc_packets_with_strong_association)} detail={`observacion minima >= ${MINIMUM_UNIQUE_TARGET_PACKETS_FOR_E4_OBSERVATION}`} />
+        <Metric title="unique_strong_only_target_crc_packets" value={formatNumber(gates.unique_strong_only_target_crc_packets)} detail={`aceptacion dataset >= ${MINIMUM_UNIQUE_TARGET_PACKETS_FOR_DATASET_ACCEPTANCE}`} />
+        <Metric title="unique_target_crc_packets_with_ambiguous_association" value={formatNumber(gates.unique_target_crc_packets_with_ambiguous_association)} detail="no strong-only" />
+        <Metric title="unique_target_crc_packets_with_conflicting_association" value={formatNumber(gates.unique_target_crc_packets_with_conflicting_association)} detail="excluye gate cientifico" />
+        <Metric title="target_association_conflict_count" value={formatNumber(gates.target_association_conflict_count)} detail="debe ser 0" />
         <Metric title="environmental_strong_matches" value={formatNumber(gates.environmental_strong_matches)} detail="trafico ambiental" />
         <Metric title="unattributed_crc_valid_packets" value={formatNumber(gates.unattributed_crc_valid_packets)} detail="CRC sin atribucion" />
         <Metric title="metadatos completos" value={statusText(gates.metadata_complete)} detail={statusText(gates.protocol_conformance_status)} />
@@ -2392,6 +2766,24 @@ function PositiveGateSummary({ session, summary }: { session: BleHybridSession; 
         <Metric title="preflight actual" value="no retrospectivo" detail="puede caducar despues" />
         <Metric title="objetivo durante captura" value={statusText(gates.target_seen_during_capture)} detail="concurrente obligatorio para E4" />
       </div>
+      <details className="mt-3 rounded-md border border-slate-800 p-3">
+        <summary className="cursor-pointer text-sm font-semibold">Ver detalles tecnicos</summary>
+        <div className="mt-3 grid gap-2 md:grid-cols-3 xl:grid-cols-5">
+          <Metric title="capture_id" value={gates.capture_id} detail="I/Q" />
+          <Metric title="execution_id" value={gates.execution_id} detail="sesion backend" />
+          <Metric title="source_repository_commit" value={gates.source_repository_commit} detail={gates.source_working_tree_status} />
+          <Metric title="source_working_tree_diff_sha256" value={gates.source_working_tree_diff_sha256} detail="solo si DIRTY_RECORDED" />
+          <Metric title="protocol_manifest_sha256" value={gates.protocol_manifest_sha256} detail="contrato congelado" />
+          <Metric title="qualification_profile_id" value={gates.qualification_profile_id} detail="perfil 10 s" />
+          <Metric title="quality_gate_version" value={gates.quality_gate_version} detail="gate v2" />
+          <Metric title="actual_samples" value={gates.actual_samples} detail="esperado 40000000" />
+          <Metric title="actual_file_size_bytes" value={gates.actual_file_size_bytes} detail="esperado 320000000" />
+          <Metric title="short_read_count" value={gates.short_read_count} detail="debe ser 0" />
+          <Metric title="write_error_count" value={gates.write_error_count} detail="debe ser 0" />
+          <Metric title="writer_queue_overrun_count" value={gates.writer_queue_overrun_count} detail="debe ser 0" />
+          <Metric title="hash_status" value={gates.hash_status} detail="integridad" />
+        </div>
+      </details>
     </div>
   );
 }
