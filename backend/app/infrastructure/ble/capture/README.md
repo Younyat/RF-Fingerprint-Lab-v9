@@ -659,6 +659,41 @@ detector de rafagas y alineacion del decoder offline con la forma de onda
 capturada. Si se cambia un parametro critico del perfil cualificado, debe
 declararse `REQUALIFICATION_REQUIRED`.
 
+Revision posterior: el worker de captura solo ejecuta `detect_bursts(...)`
+cuando la peticion contiene `analysis_enabled = true`. Los intentos positivos
+que conservaron 40,000,000 muestras pero terminaron con
+`ZERO_BURST_CANDIDATES` deben revisarse teniendo en cuenta si la deteccion
+offline estaba habilitada. Si `analysis_enabled = false`, el resultado
+significa que no se generaron segmentos para el decoder; no demuestra por si
+solo ausencia de energia BLE en el I/Q ni fallo de visibilidad RF.
+
+Para `execution_purpose = POSITIVE_PILOT`, el contrato congelado debe incluir:
+
+```text
+analysis_enabled = true
+frontend_preview_enabled = false
+online_decoder_enabled = false
+online_correlation_enabled = false
+```
+
+`analysis_enabled` activa la deteccion y segmentacion offline despues de
+cerrar y verificar el archivo I/Q. No habilita decoder ni correlacion online
+durante la adquisicion critica.
+
+Un dry-run sin modificar artefactos sobre `BLE-IQ-e8edc49b59a0` con la misma
+regla energetica del worker encontro eventos candidatos:
+
+```text
+noise_power_dbfs ~= -66.90
+threshold_dbfs ~= -60.88
+active_blocks = 58534
+candidate_groups = 8047
+```
+
+Por tanto, el siguiente paso preferente no es repetir hardware, sino ejecutar
+una reanalisis offline trazable del I/Q ya capturado o repetir S001-POS solo
+despues de congelar y commitear `analysis_enabled = true`.
+
 ## Verification commands
 
 Compile the worker with the same Python runtime used for SoapySDR/UHD:

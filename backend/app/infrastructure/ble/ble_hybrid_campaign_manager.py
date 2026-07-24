@@ -85,6 +85,7 @@ class BleHybridCampaignManager:
             "disk_persistence_enabled":True,
             "windows_ble_scan_enabled":True,
             "frontend_preview_enabled":False,
+            "analysis_enabled":True,
             "online_decoder_enabled":False,
             "online_correlation_enabled":False,
             "minimum_unique_target_packets_for_e4_observation":1,
@@ -114,6 +115,7 @@ class BleHybridCampaignManager:
             "disk_persistence_enabled":bool(metadata.get("disk_persistence_enabled")),
             "windows_ble_scan_enabled":bool(metadata.get("windows_ble_scan_enabled")),
             "frontend_preview_enabled":bool(metadata.get("frontend_preview_enabled")),
+            "analysis_enabled":bool(metadata.get("analysis_enabled")),
             "online_decoder_enabled":bool(metadata.get("online_decoder_enabled",metadata.get("decoder_online_enabled",True))),
             "online_correlation_enabled":bool(metadata.get("online_correlation_enabled",metadata.get("correlation_online_enabled",True))),
             "minimum_unique_target_packets_for_e4_observation":int(metadata.get("minimum_unique_target_packets_for_e4_observation") or 0),
@@ -187,11 +189,12 @@ class BleHybridCampaignManager:
         capture_disk_persistence = bool(metadata.get("disk_persistence_enabled", True))
         capture_frontend_preview = bool(metadata.get("frontend_preview_enabled", True))
         capture_ui_polling_mode = str(metadata.get("ui_polling_mode") or ("minimal" if not capture_frontend_preview else "normal"))
+        capture_analysis_enabled = bool(metadata.get("analysis_enabled", metadata.get("execution_purpose") in {"POSITIVE_PILOT", "NEGATIVE_CONTROL"}))
         with self._lock:
             if self._active: raise RuntimeError("HYBRID_CAMPAIGN_ALREADY_RUNNING")
             sid="BLE-HYBRID-"+datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")+"-"+uuid.uuid4().hex[:6]
             self._active=sid
-        request={"device_id":payload["device_id"],"ble_channel":channel,"center_frequency_hz":{37:2402000000,38:2426000000,39:2480000000}[channel],"sample_rate_sps":4000000,"bandwidth_hz":2000000,"gain_mode":"manual","gain_db":float(payload.get("gain_db",20)),"antenna":"RX2","duration_seconds":duration,"sample_format":"cf32_le","purpose":"BLE hybrid dashboard campaign","controlled_transmitter_state":"unknown","operator_confirmed":False,"capture_role":"controlled_transmitter_active_B","disk_persistence_enabled":capture_disk_persistence,"frontend_preview_enabled":capture_frontend_preview,"ui_polling_mode":capture_ui_polling_mode,"experimental_metadata":metadata}
+        request={"device_id":payload["device_id"],"ble_channel":channel,"center_frequency_hz":{37:2402000000,38:2426000000,39:2480000000}[channel],"sample_rate_sps":4000000,"bandwidth_hz":2000000,"gain_mode":"manual","gain_db":float(payload.get("gain_db",20)),"antenna":"RX2","duration_seconds":duration,"sample_format":"cf32_le","purpose":"BLE hybrid dashboard campaign","controlled_transmitter_state":"unknown","operator_confirmed":False,"capture_role":"controlled_transmitter_active_B","disk_persistence_enabled":capture_disk_persistence,"frontend_preview_enabled":capture_frontend_preview,"ui_polling_mode":capture_ui_polling_mode,"analysis_enabled":capture_analysis_enabled,"experimental_metadata":metadata}
         target_mode="any_device" if target.get("kind")=="any" else "specific_device"
         self._write(sid,state="initializing",created_at_utc=utc(),mode="hybrid",channel=channel,duration_seconds=duration,
             target=target,target_mode=target_mode,target_device_id=target.get("device_id"),target_address=target.get("address"),
