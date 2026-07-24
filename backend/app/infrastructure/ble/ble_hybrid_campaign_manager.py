@@ -19,6 +19,7 @@ def utc(): return datetime.now(timezone.utc).isoformat().replace("+00:00","Z")
 POSITIVE_PILOT_GATE_VERSION="ble-rffi-positive-pilot-gate-v2"
 POSITIVE_PILOT_PROFILE_ID="QPROFILE-Z1B2-2402000000-4000000-2000000-cf32_le-RX2-G20-10S"
 POSITIVE_PILOT_RECEIVER_SERIAL="E3R04Z1B2"
+SOURCE_CLEAN_IGNORE_PATHS=("backend/app/infrastructure/persistence/storage/kiwisdr/receiver_catalog.json",)
 
 class BleHybridCampaignManager:
     """Thin orchestration layer over the existing native/capture/DSP tools."""
@@ -41,8 +42,9 @@ class BleHybridCampaignManager:
             return None
     def _repository_state(self):
         commit=self._git_output("rev-parse","HEAD")
-        status=self._git_output("status","--porcelain=v1") or ""
-        diff=self._git_output("diff","--binary","HEAD","--") or ""
+        pathspec=["--",".",*(f":(exclude){path}" for path in SOURCE_CLEAN_IGNORE_PATHS)]
+        status=self._git_output("status","--porcelain=v1",*pathspec) or ""
+        diff=self._git_output("diff","--binary","HEAD",*pathspec) or ""
         dirty=bool(status.strip())
         return {
             "repository_commit":commit or "UNKNOWN",
