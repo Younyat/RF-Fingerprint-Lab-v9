@@ -16,8 +16,11 @@ from app.infrastructure.ble.ble_hybrid_campaign_manager import BleHybridCampaign
 from app.modules.ble_lab.hybrid_routes import build_ble_hybrid_router
 from app.infrastructure.ble.dataset_studio_manager import BleDatasetStudioManager
 from app.modules.ble_lab.dataset_routes import build_ble_dataset_router
+from app.infrastructure.ble.packet_analysis.ble_packet_analysis_job_manager import BlePacketAnalysisJobManager
+from app.infrastructure.ble.packet_analysis.ble_packet_analysis_routes import build_ble_packet_analysis_router
 from app.modules.types import BackendModuleDefinition
 from app.config.settings import settings
+from app.modules.ble_lab.shared_managers import set_shared_managers
 
 def env_bool(name,default=False): return os.environ.get(name,str(default)).lower() in {"1","true","yes","on"}
 
@@ -82,7 +85,18 @@ def _build(context):
         Path(os.environ.get("BLE_GATE2A2_REPOSITORY", r"C:\Users\Usuario\ble-worker-lab")),
     )
     hybrid_router = build_ble_hybrid_router(hybrid_manager)
+    set_shared_managers(capture_manager, native_manager, hybrid_manager)
     dataset_router = build_ble_dataset_router(BleDatasetStudioManager(root/"ble_lab"/"datasets",root/"ble_lab"/"sessions",root/"ble"/"iq_captures",backend/"app"/"modules"/"ble_lab"/"definitions"))
+
+    # BLE Packet Analysis Lab: strictly read-only over the offline-replay
+    # artifacts written above (capture_manager's iq_captures tree). It never
+    # writes into offline_replays/, never re-decodes, and shares no state
+    # with the campaign/replay managers besides reading their output.
+    packet_analysis_manager = BlePacketAnalysisJobManager(
+        root / "ble" / "iq_captures", root / "ble_lab" / "sessions",
+        root / "ble_lab" / "packet_analysis", root / "ble_lab" / "packet_analysis_jobs",
+    )
+    packet_analysis_router = build_ble_packet_analysis_router(packet_analysis_manager)
 
     combined = APIRouter()
     combined.include_router(gate1b_router)
@@ -91,6 +105,7 @@ def _build(context):
     combined.include_router(native_router)
     combined.include_router(hybrid_router)
     combined.include_router(dataset_router)
+    combined.include_router(packet_analysis_router)
     return combined
 
 ble_lab_module=BackendModuleDefinition("ble-lab","BLE Lab",True,85,"Experimental BLE platform integration.",_build)

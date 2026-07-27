@@ -39,6 +39,30 @@ def build_ble_capture_router(manager, offline_manager=None):
     @router.get("/recordings/{capture_id}/rf-diagnostic")
     def rf_diagnostic(capture_id: str): return call(lambda: manager.rf_diagnostic(capture_id))
 
+    @router.post("/recordings/{capture_id}/offline-replay", status_code=201)
+    def offline_replay(capture_id: str, body: dict | None = None):
+        return call(lambda: manager.offline_replay(capture_id, body or {}))
+
+    @router.get("/recordings/{capture_id}/offline-replay/latest")
+    def latest_offline_replay(capture_id: str):
+        return call(lambda: manager.latest_offline_replay(capture_id))
+
+    @router.post("/recordings/{capture_id}/offline-replay-jobs", status_code=202)
+    def start_offline_replay_job(capture_id: str, body: dict | None = None):
+        return call(lambda: manager.start_offline_replay(capture_id, body or {}))
+
+    @router.get("/recordings/{capture_id}/offline-replay-jobs/latest")
+    def latest_offline_replay_job(capture_id: str):
+        return call(lambda: manager.latest_offline_replay_job(capture_id))
+
+    @router.get("/recordings/{capture_id}/offline-replay-jobs/{replay_run_id}")
+    def offline_replay_job(capture_id: str, replay_run_id: str):
+        return call(lambda: manager.offline_replay_job(capture_id, replay_run_id))
+
+    @router.post("/recordings/{capture_id}/offline-replay-jobs/{replay_run_id}/cancel")
+    def cancel_offline_replay_job(capture_id: str, replay_run_id: str):
+        return call(lambda: manager.cancel_offline_replay(capture_id, replay_run_id))
+
     @router.get("/rf-diagnostic-profiles")
     def rf_diagnostic_profiles(): return call(lambda: manager.rf_diagnostic_profiles())
 

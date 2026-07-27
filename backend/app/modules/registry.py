@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from app.modules.capture_lab.module import capture_lab_module
 from app.modules.ble_lab.module import ble_lab_module
+from app.modules.ble_rffi_studio.module import ble_rffi_studio_module
 from app.modules.demodulation.module import demodulation_module
 from app.modules.live_demodulation.module import live_demodulation_module
 from app.modules.device.module import device_module
@@ -46,6 +47,7 @@ backend_modules: list[BackendModuleDefinition] = [
     live_demodulation_module,
     capture_lab_module,
     ble_lab_module,
+    ble_rffi_studio_module,
     fingerprinting_module,
     mlops_module,
     rf_intelligence_module,

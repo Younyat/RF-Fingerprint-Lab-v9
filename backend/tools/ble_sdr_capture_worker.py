@@ -216,6 +216,60 @@ class DedicatedWriter:
         }
 
 
+class LiveTelemetryPublisher:
+    """Writes live.json (the UI preview snapshot) on its own background
+    thread, off the real-time RX loop.
+
+    Root cause found by tracing a real, intermittent SOAPY_SDR_OVERFLOW: the
+    RX loop used to call atomic_json() -- which does an os.fsync() -- directly,
+    roughly every 250ms for the whole capture. fsync latency is unpredictable
+    (disk/OS scheduling), and the RX loop must call device.readStream() again
+    within one ~50ms block period or the USRP's internal ring buffer overruns.
+    Any slow fsync call directly caused a lost-samples overflow.
+
+    Only ever keeps the LATEST snapshot (maxsize=1, drop-oldest-on-full) --
+    submit() never blocks, so a slow or stalled disk write can delay how
+    fresh the UI preview is, but can never delay the RX loop itself.
+    """
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._queue: queue.Queue[dict | None] = queue.Queue(maxsize=1)
+        self._thread = threading.Thread(target=self._run, name="ble-live-telemetry-writer", daemon=True)
+        self.publish_failures = 0
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def submit(self, payload: dict) -> None:
+        try:
+            self._queue.put_nowait(payload)
+            return
+        except queue.Full:
+            pass
+        try:
+            self._queue.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            self._queue.put_nowait(payload)
+        except queue.Full:
+            pass
+
+    def close(self) -> None:
+        self._queue.put(None)
+        self._thread.join()
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                break
+            try:
+                atomic_json(self.path, item)
+            except Exception:
+                self.publish_failures += 1
+
+
 def write_jsonl(path: Path, rows) -> None:
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         for row in rows: handle.write(json.dumps(row, sort_keys=True) + "\n")
@@ -368,6 +422,7 @@ def capture(request_path: Path, output: Path) -> int:
     failure_reason_codes: list[str] = []
     loss_correlation = "unknown"
     writer: DedicatedWriter | None = None
+    telemetry_publisher: LiveTelemetryPublisher | None = None
     writer_metrics = {
         "writer_thread_mode": "disabled",
         "writer_queue_capacity_bytes": 0,
@@ -548,6 +603,10 @@ def capture(request_path: Path, output: Path) -> int:
             writer = DedicatedWriter(partial, capacity, write_block_size, fsync_on_close=True)
             writer.start()
             writer_metrics = writer.metrics(1e-9)
+        telemetry_enabled = request.get("ui_polling_mode", "normal") != "disabled"
+        if telemetry_enabled:
+            telemetry_publisher = LiveTelemetryPublisher(output / "live.json")
+            telemetry_publisher.start()
         hw = str(device.getHardwareKey())
         hw_info = {str(k): str(v) for k, v in dict(device.getHardwareInfo()).items()}
         stream = device.setupStream(SoapySDR.SOAPY_SDR_RX, wire_format, [0])
@@ -580,16 +639,16 @@ def capture(request_path: Path, output: Path) -> int:
                 break
             chunks += 1
             written = writer.bytes_written if writer is not None else 0
-            telemetry_enabled = request.get("ui_polling_mode", "normal") != "disabled"
             if telemetry_enabled and (chunks % 5 == 0 or received == target_samples):
-                try:
-                    live = live_metrics(complex_view(buffer, fmt, samples), request, received, written, overflows, discontinuities)
-                    if writer is not None:
-                        live["writer_queue_high_watermark_bytes"] = writer.high_watermark_bytes
-                        live["writer_queue_overrun_count"] = writer.queue_overrun_count
-                    atomic_json(output / "live.json", live)
-                except PermissionError:
-                    telemetry_publish_failures += 1
+                # live_metrics() reads `buffer` synchronously, before the next
+                # readStream() can overwrite it -- safe on this thread. Only
+                # the disk write (atomic_json's fsync) is handed off, since
+                # THAT was the real source of RX-loop stalls -> overflows.
+                live = live_metrics(complex_view(buffer, fmt, samples), request, received, written, overflows, discontinuities)
+                if writer is not None:
+                    live["writer_queue_high_watermark_bytes"] = writer.high_watermark_bytes
+                    live["writer_queue_overrun_count"] = writer.queue_overrun_count
+                telemetry_publisher.submit(live)
         b200_rf_finished_at = utc_now()
         receiver_events.append({"event_type": "capture_rf_finished", "event": "capture_rf_finished",
                                 "timestamp_utc": b200_rf_finished_at, "sample_index": received,
@@ -602,6 +661,9 @@ def capture(request_path: Path, output: Path) -> int:
         if writer is not None:
             writer.close()
             writer_metrics = writer.metrics(write_elapsed)
+        if telemetry_publisher is not None:
+            telemetry_publisher.close()
+            telemetry_publish_failures = telemetry_publisher.publish_failures
         if persist_iq:
             actual_partial = partial.stat().st_size if partial.exists() else 0
             expected = received * profile["bytes_per_file_sample"]
@@ -633,6 +695,9 @@ def capture(request_path: Path, output: Path) -> int:
             failure_reason_codes.append("WRITER_ERROR")
             writer_metrics = writer.metrics(max(time.monotonic() - capture_started_monotonic, 1e-9)) if writer is not None else writer_metrics
             writer_metrics["writer_error"] = str(writer_error)
+        if telemetry_publisher is not None:
+            telemetry_publisher.close()
+            telemetry_publish_failures = telemetry_publisher.publish_failures
         publish_terminal(False, "FAILED", f"{type(error).__name__}:{error}")
         return 2
     finally:

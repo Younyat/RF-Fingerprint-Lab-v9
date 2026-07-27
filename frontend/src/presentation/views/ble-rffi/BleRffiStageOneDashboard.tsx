@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import type React from 'react';
 import { AlertTriangle, Bluetooth, CheckCircle2, Database, Play, RefreshCw, ScanSearch, ShieldCheck, XCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -12,6 +12,9 @@ import {
   BleHybridSession,
   BleNativeDevice,
   BleNativeStatus,
+  BleOfflineReplay,
+  BleOfflineReplayJob,
+  BleOfflineReplayProgress,
   BleRfDiagnostic,
   BleSdrDevice,
   BleScientificSummary,
@@ -55,7 +58,7 @@ const tabs = ['Campana', 'Matriz experimental', 'Resultados', 'Evidencia', 'Conf
 type Tab = typeof tabs[number];
 type GateState = 'pass' | 'warn' | 'fail' | 'pending';
 type StageState = 'done' | 'active' | 'locked';
-type CampaignStep = 'device' | 'qualification' | 'prepare' | 'positive' | 'negative' | 'repeat' | 'dataset';
+type CampaignStep = 'device' | 'qualification' | 'prepare' | 'replay' | 'positive' | 'negative' | 'repeat' | 'dataset';
 type QualificationPhase = 'ACQUISITION_QUALIFICATION' | 'HYBRID_CONCURRENCY_QUALIFICATION';
 type DiagnosticStepId = 'A_RECEIVER_TRANSPORT' | 'B_STREAM_NO_DISK' | 'C_PERSISTENCE_MINIMAL' | 'D_INTERFACE_MONITORING' | 'E_ALT_FORMAT';
 type AbsenceVerification = { conditionId: string; checkedAt: string; targetSeen: boolean; validUntil: number };
@@ -159,6 +162,11 @@ function statusText(value: unknown) {
 function formatNumber(value: unknown) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric.toLocaleString() : '-';
+}
+
+function shortHash(value: string) {
+  if (!value || value === '-') return '-';
+  return value.length > 16 ? `${value.slice(0, 12)}...${value.slice(-6)}` : value;
 }
 
 function stableToken(value: unknown) {
@@ -618,7 +626,7 @@ function validateCondition(condition: MatrixCondition, profile: DeviceProfile, m
 }
 
 function stageOrder(step: CampaignStep) {
-  return ['device', 'qualification', 'prepare', 'positive', 'negative', 'repeat', 'dataset'].indexOf(step);
+  return ['device', 'qualification', 'prepare', 'replay', 'positive', 'negative', 'repeat', 'dataset'].indexOf(step);
 }
 
 export default function BleRffiStageOneDashboard() {
@@ -632,6 +640,8 @@ export default function BleRffiStageOneDashboard() {
   const [sessions, setSessions] = useState<BleHybridSession[]>([]);
   const [captures, setCaptures] = useState<BleCaptureRecord[]>([]);
   const [rfDiagnostic, setRfDiagnostic] = useState<BleRfDiagnostic | null>(null);
+  const [offlineReplay, setOfflineReplay] = useState<BleOfflineReplay | null>(null);
+  const [offlineReplayJob, setOfflineReplayJob] = useState<BleOfflineReplayJob | null>(null);
   const [rfDiagnosticProfiles, setRfDiagnosticProfiles] = useState<Record<string, unknown> | null>(null);
   const [summaries, setSummaries] = useState<Record<string, BleScientificSummary>>({});
   const [dataset, setDataset] = useState<BleDatasetDetail | null>(null);
@@ -772,14 +782,6 @@ export default function BleRffiStageOneDashboard() {
   const conditionLockedDuration = Number(currentRow.pair.positive?.experimental_metadata?.effective_duration_seconds ?? currentRow.pair.positive?.duration_seconds);
   const negativeDurationSeconds = Number.isFinite(conditionLockedDuration) && conditionLockedDuration > 0 ? Math.round(conditionLockedDuration) : captureSeconds;
 
-  const currentStep: CampaignStep = !selectedProfile?.physical_unit_id ? 'device'
-    : active ? (activeSession?.campaign_intent === 'negative_control' ? 'negative' : 'positive')
-    : !qualificationPassed ? 'qualification'
-    : completedRows.length === effectiveMatrix.length ? 'dataset'
-      : !preflightValid && !positiveAccepted ? 'prepare'
-        : !positiveAccepted ? 'positive'
-          : !negativeAccepted ? 'negative'
-            : 'repeat';
   const latestPositivePilot = latestByTime(stageOneSessions)
     .find((session) => session.campaign_intent === 'positive_target_validation' && session.experimental_metadata?.execution_purpose === 'POSITIVE_PILOT');
   const latestPositivePilotCaptureId = latestPositivePilot?.capture_id ?? '';
@@ -788,6 +790,25 @@ export default function BleRffiStageOneDashboard() {
     && latestPositiveSummary?.target_result === 'TARGET_NATIVE_ONLY'
     && Number(latestPositiveSummary?.funnel?.detected_bursts ?? latestPositivePilot.counters?.detected_bursts ?? 0) === 0;
   const currentRfDiagnostic = rfDiagnostic?.capture_id === latestPositivePilotCaptureId ? rfDiagnostic : null;
+  const currentOfflineReplay = offlineReplay?.capture_id === latestPositivePilotCaptureId ? offlineReplay : null;
+  const latestPositiveCaptureRecord = captures.find((capture) => capture.capture_id === latestPositivePilotCaptureId);
+  const rfCandidateCount = Number(currentRfDiagnostic?.burst_detection_replay?.candidate_count ?? 0);
+  // A replay that ran but did not reach pending_segments=0 must keep blocking
+  // hardware/dataset/training exactly like "never ran" -- a partial subset
+  // is not a closed scientific result (see README "Replay offline detector/
+  // decoder trazable").
+  const replayIncomplete = Boolean(currentOfflineReplay) && currentOfflineReplay?.scientific_completion_status !== 'COMPLETE';
+  const latestPositiveNeedsOfflineReplay = Boolean(latestPositivePilotCaptureId)
+    && (replayIncomplete || (!currentOfflineReplay && (latestPositiveNeedsRfDiagnostic || rfCandidateCount > 0)));
+  const currentStep: CampaignStep = !selectedProfile?.physical_unit_id ? 'device'
+    : active ? (activeSession?.campaign_intent === 'negative_control' ? 'negative' : 'positive')
+    : !qualificationPassed ? 'qualification'
+    : latestPositiveNeedsOfflineReplay ? 'replay'
+      : completedRows.length === effectiveMatrix.length ? 'dataset'
+        : !preflightValid && !positiveAccepted ? 'prepare'
+          : !positiveAccepted ? 'positive'
+            : !negativeAccepted ? 'negative'
+              : 'repeat';
 
   const logOperation = (phase: string, detail: string, state: OperationEvent['state'] = 'running') => {
     setOperationEvents((items) => [
@@ -832,6 +853,67 @@ export default function BleRffiStageOneDashboard() {
       logOperation('Diagnostico RF offline fallido', text, 'error');
     } finally {
       setBusy('');
+    }
+  };
+
+  const runOfflineReplay = async (resumeRunId?: string) => {
+    if (!latestPositivePilot || !latestPositivePilotCaptureId) {
+      setError('No hay ejecucion positiva preservada para replay.');
+      return;
+    }
+    const operationId = `ble-rffi-offline-replay:${latestPositivePilotCaptureId}`;
+    setBusy('offline-replay');
+    setError('');
+    setMessage('');
+    logOperation(resumeRunId ? 'Replay detector/decoder reanudado desde checkpoint' : 'Replay detector/decoder iniciado', `${latestPositivePilot.session_id} Â· ${latestPositivePilotCaptureId}`);
+    startOperation({
+      operationId,
+      kind: 'processing',
+      title: 'OFFLINE_DETECTOR_DECODER_REPLAY',
+      phase: resumeRunId ? 'Reanudando desde checkpoint' : 'Reanalizando I/Q preservado',
+      progressPercent: 15,
+      target: latestPositivePilotCaptureId,
+      detail: 'Regenera candidatos, ejecuta decoder offline y asocia solo observaciones Windows preservadas.',
+    });
+    try {
+      const job = await api.startOfflineReplayJob(latestPositivePilotCaptureId, {
+        execution_id: latestPositivePilot.session_id,
+        expected_iq_sha256: latestPositiveCaptureRecord?.data_sha256,
+        sample_format: 'cf32_le',
+        sample_rate_sps: 4_000_000,
+        center_frequency_hz: 2_402_000_000,
+        bandwidth_hz: 2_000_000,
+        ble_channel: 37,
+        analysis_configuration_id: 'ble-rffi-offline-detector-decoder-replay-v1',
+        ...(resumeRunId ? { replay_run_id: resumeRunId } : {}),
+      });
+      setOfflineReplayJob(job);
+      updateOperation(operationId, {
+        phase: 'Replay offline en ejecucion',
+        progressPercent: Math.max(1, Number(job.progress_percent ?? 1)),
+        detail: `${job.replay_run_id}: use Cancelar replay si necesita detenerlo de forma ordenada.`,
+      });
+      logOperation('Replay detector/decoder en ejecucion', `${job.replay_run_id} - progreso disponible por polling.`);
+      setMessage('Replay offline lanzado como job. No necesita encender el SensorTag; se analiza el I/Q preservado. Puede cancelarlo desde esta pantalla.');
+    } catch (reason) {
+      const text = `${apiErrorMessage(reason)}. No avance a hardware, negativa, dataset ni entrenamiento.`;
+      setError(text);
+      failOperation(operationId, text);
+      logOperation('Replay detector/decoder fallido', text, 'error');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const cancelOfflineReplay = async () => {
+    if (!latestPositivePilotCaptureId || !offlineReplayJob?.replay_run_id) return;
+    try {
+      const job = await api.cancelOfflineReplayJob(latestPositivePilotCaptureId, offlineReplayJob.replay_run_id);
+      setOfflineReplayJob(job);
+      logOperation('Cancelacion de replay solicitada', `${job.replay_run_id} - se preservara resultado parcial.`, 'error');
+      setMessage('Cancelacion solicitada. El backend cerrara el decoder y conservara los artefactos parciales.');
+    } catch (reason) {
+      setError(apiErrorMessage(reason));
     }
   };
 
@@ -931,7 +1013,7 @@ export default function BleRffiStageOneDashboard() {
           progressPercent: 5 + 90 * Math.min(1, samples / QUALIFICATION_EXPECTED_SAMPLES),
           processedItems: samples,
           totalItems: QUALIFICATION_EXPECTED_SAMPLES,
-          detail: `${formatNumber(samples)} muestras · ${formatNumber(live?.bytes_written)} bytes · overflows ${formatNumber(live?.stream_overflows)} · discontinuidades ${formatNumber(live?.input_discontinuities)}`,
+          detail: `${formatNumber(samples)} muestras Â· ${formatNumber(live?.bytes_written)} bytes Â· overflows ${formatNumber(live?.stream_overflows)} Â· discontinuidades ${formatNumber(live?.input_discontinuities)}`,
         });
         await new Promise((resolve) => window.setTimeout(resolve, 1000));
         job = await api.captureJob(job.capture_id);
@@ -1098,6 +1180,12 @@ export default function BleRffiStageOneDashboard() {
     setRfDiagnosticProfiles(nextRfProfiles);
     setDataset(nextDataset);
     setDatasetKnown(availableDatasetIds.has(datasetId));
+    const loadedPositivePilot = latestByTime(nextSessions)
+      .find((session) => session.campaign_intent === 'positive_target_validation' && session.experimental_metadata?.execution_purpose === 'POSITIVE_PILOT');
+    const loadedReplay = loadedPositivePilot?.capture_id ? await api.latestOfflineReplay(loadedPositivePilot.capture_id).catch(() => null) : null;
+    const loadedReplayJob = loadedPositivePilot?.capture_id ? await api.latestOfflineReplayJob(loadedPositivePilot.capture_id).catch(() => null) : null;
+    setOfflineReplay(loadedReplay);
+    setOfflineReplayJob(loadedReplayJob);
     const latestCompleted = latestByTime(nextSessions).filter((session) => session.state === 'completed').slice(0, 12);
     const loaded = await Promise.allSettled(latestCompleted.map((session) => api.hybridScientificSummary(session.session_id)));
     setSummaries(Object.fromEntries(loaded.flatMap((result) => result.status === 'fulfilled' ? [[result.value.session_id, result.value]] : [])));
@@ -1127,16 +1215,62 @@ export default function BleRffiStageOneDashboard() {
   }, [activeSession?.session_id, activeSession?.state]);
 
   useEffect(() => {
+    if (!latestPositivePilotCaptureId || !offlineReplayJob?.replay_run_id || terminalStates.has(offlineReplayJob.state)) return undefined;
+    const operationId = `ble-rffi-offline-replay:${latestPositivePilotCaptureId}`;
+    const timer = window.setInterval(async () => {
+      try {
+        const job = await api.offlineReplayJob(latestPositivePilotCaptureId, offlineReplayJob.replay_run_id);
+        setOfflineReplayJob(job);
+        const progress: Partial<BleOfflineReplayProgress> = job.progress ?? {};
+        const processed = Number(progress.processed_segments ?? 0);
+        const total = Number(progress.total_candidate_segments ?? 0);
+        const failed = Number(progress.failed_segments ?? 0);
+        ensureOperation({
+          operationId,
+          kind: 'processing',
+          title: 'OFFLINE_DETECTOR_DECODER_REPLAY',
+          phase: statusText(job.state),
+          progressPercent: Math.max(1, Math.min(99, Number(job.progress_percent ?? 1))),
+          target: latestPositivePilotCaptureId,
+          detail: `${formatNumber(processed)} / ${formatNumber(total)} segmentos (${formatNumber(failed)} fallidos).`,
+        });
+        updateOperation(operationId, {
+          phase: statusText(job.state),
+          progressPercent: Math.max(1, Math.min(99, Number(job.progress_percent ?? 1))),
+          detail: `${formatNumber(processed)} / ${formatNumber(total)} segmentos (${formatNumber(failed)} fallidos).`,
+        });
+        if (terminalStates.has(job.state)) {
+          setBusy('');
+          if (job.result) {
+            setOfflineReplay(job.result);
+            const funnel = job.result.candidate_funnel ?? {};
+            const decision = job.result.decision ?? {};
+            const incomplete = job.result.scientific_completion_status !== 'COMPLETE';
+            finishOperation(operationId, `${formatNumber(funnel.pre_decoder_candidate_regions)} regiones; CRC=${formatNumber(funnel.crc_valid_packets)}; decision=${statusText(decision.decision)}.`);
+            logOperation('Replay detector/decoder terminado', `${job.replay_run_id} - ${statusText(decision.decision)}.`, job.state === 'completed' && !incomplete ? 'done' : 'error');
+            setMessage(incomplete
+              ? `Replay detenido con checkpoint (${statusText(job.result.termination_reason)}). Quedan ${formatNumber(job.result.coverage?.pending_segments)} segmentos pendientes; use Continuar desde checkpoint. No se emite decision cientifica global todavia.`
+              : 'Replay offline cerrado con cobertura total. Revise embudo, descartes, CRC, asociacion temporal y elegibilidad antes de cualquier nueva captura.');
+          }
+        }
+      } catch (reason) {
+        setError(apiErrorMessage(reason));
+      }
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [latestPositivePilotCaptureId, offlineReplayJob?.replay_run_id, offlineReplayJob?.state]);
+
+  useEffect(() => {
     if (!activeSession) return;
     const id = `ble-rffi-stage1:${activeSession.session_id}`;
     const expectedSamples = Math.max(1, Number(activeSession.duration_seconds || 30) * 4_000_000);
     const samples = Number(activeSession.live?.telemetry?.samples_received ?? 0);
     const totalSegments = Number(activeSession.decode_progress?.total_segments ?? activeSession.counters?.detected_bursts ?? 0);
     const processedSegments = Number(activeSession.decode_progress?.processed_segments ?? activeSession.counters?.processed_bursts ?? 0);
-    const target = `${sessionOperatorId(activeSession)} · CH${activeSession.channel}`;
+    const target = `${sessionOperatorId(activeSession)} Â· CH${activeSession.channel}`;
 
     if (activeSession.state === 'completed') {
-      finishOperation(id, `${formatNumber(activeSession.counters?.crc_valid_packets)} CRC validos · ${formatNumber(activeSession.counters?.strong_matches)} coincidencias`);
+      finishOperation(id, `${formatNumber(activeSession.counters?.crc_valid_packets)} CRC validos Â· ${formatNumber(activeSession.counters?.strong_matches)} coincidencias`);
       logOperation('Sesion completada', `${activeSession.session_id} termino y pasa a decision cientifica.`, 'done');
       return;
     }
@@ -1155,7 +1289,7 @@ export default function BleRffiStageOneDashboard() {
       target,
       configuredDurationSeconds: activeSession.duration_seconds,
       estimatedTotalSeconds: activeSession.duration_seconds + 60,
-      detail: `${selectedProfile.physical_unit_id} · Windows BLE + B200`,
+      detail: `${selectedProfile.physical_unit_id} Â· Windows BLE + B200`,
     });
 
     let phase = 'Preparando hardware';
@@ -1193,7 +1327,7 @@ export default function BleRffiStageOneDashboard() {
       processedItems,
       totalItems,
       estimatedTotalSeconds,
-      detail: `${formatNumber(samples)} muestras · overflows ${formatNumber(activeSession.live?.telemetry?.stream_overflows ?? activeSession.counters?.overflows)} · discontinuidades ${formatNumber(activeSession.live?.telemetry?.input_discontinuities ?? activeSession.counters?.discontinuities)}`,
+      detail: `${formatNumber(samples)} muestras Â· overflows ${formatNumber(activeSession.live?.telemetry?.stream_overflows ?? activeSession.counters?.overflows)} Â· discontinuidades ${formatNumber(activeSession.live?.telemetry?.input_discontinuities ?? activeSession.counters?.discontinuities)}`,
     });
   }, [
     activeSession?.session_id,
@@ -1337,6 +1471,10 @@ export default function BleRffiStageOneDashboard() {
       setError('S001-POS bloqueada temporalmente. La ultima positiva tuvo 0 rafagas B200 con Windows viendo el objetivo. Accion: ejecute primero Diagnostico RF offline sobre el I/Q preservado para separar recepcion y detector.');
       return;
     }
+    if (intent === 'positive_target_validation' && latestPositiveNeedsOfflineReplay) {
+      setError('S001-POS bloqueada. Estado: OFFLINE_DETECTOR_DECODER_REPLAY_REQUIRED. Accion: ejecute primero Replay detector/decoder sobre el I/Q preservado.');
+      return;
+    }
     if (intent === 'negative_control' && currentRow.positive.result !== 'POSITIVE_ACCEPTED') {
       setError(`Control negativo bloqueado. Antes debe existir una positiva terminal aceptada y elegible. Estado actual: ${currentRow.positive.result}. Accion: espere resumen, revise cuarentena o repita ${currentCondition.positive_session_id}.`);
       return;
@@ -1360,14 +1498,14 @@ export default function BleRffiStageOneDashboard() {
     setError('');
     setMessage('');
     const operationId = `ble-rffi-request:${Date.now()}`;
-    logOperation('Solicitud de captura enviada', `${intent === 'negative_control' ? currentCondition.negative_session_id : currentCondition.positive_session_id} · ${selectedProfile.physical_unit_id}`);
+    logOperation('Solicitud de captura enviada', `${intent === 'negative_control' ? currentCondition.negative_session_id : currentCondition.positive_session_id} Â· ${selectedProfile.physical_unit_id}`);
     startOperation({
       operationId,
       kind: 'capturing',
       title: intent === 'negative_control' ? 'Solicitando control negativo BLE-RFFI' : 'Solicitando captura positiva BLE-RFFI',
       phase: 'Enviando contrato al backend',
       progressPercent: 5,
-      target: `${selectedProfile.physical_unit_id} · CH37`,
+      target: `${selectedProfile.physical_unit_id} Â· CH37`,
       configuredDurationSeconds: effectiveDurationSeconds,
       estimatedTotalSeconds: effectiveDurationSeconds + 60,
       detail: 'Se prepara Windows BLE + B200. La operacion larga continuara con telemetria de la sesion.',
@@ -1501,7 +1639,7 @@ export default function BleRffiStageOneDashboard() {
         ...campaignContract(intent, intent === 'negative_control' ? 'target_powered_off' : '', intent === 'negative_control'),
       });
       finishOperation(operationId, `Sesion creada: ${session.session_id}`);
-      logOperation('Sesion hibrida creada', `${session.session_id} · estado ${session.state}`, 'done');
+      logOperation('Sesion hibrida creada', `${session.session_id} Â· estado ${session.state}`, 'done');
       setActiveSession(session);
       setSessions((items) => [session, ...items]);
     } catch (reason) {
@@ -1520,7 +1658,7 @@ export default function BleRffiStageOneDashboard() {
       setMessage('La adquisicion ya termino. No se cancela procesamiento desde este asistente porque no hay reanudacion segura garantizada.');
       return;
     }
-    if (!window.confirm('Cancelar S001-POS conserva los artefactos parciales como NOT_ELIGIBLE y no desbloquea la negativa. ¿Desea cancelar la captura activa?')) return;
+    if (!window.confirm('Cancelar S001-POS conserva los artefactos parciales como NOT_ELIGIBLE y no desbloquea la negativa. Â¿Desea cancelar la captura activa?')) return;
     const operationId = `ble-rffi-stop:${activeSession.session_id}`;
     setBusy('stop');
     logOperation('Detencion solicitada', `Solicitando parar ${activeSession.session_id}.`);
@@ -1575,6 +1713,7 @@ export default function BleRffiStageOneDashboard() {
     : currentStep === 'device' ? 'Seleccione una unidad existente o registre una nueva antes de crear la campana.'
     : currentStep === 'qualification' ? (qualificationProfileMatchesCampaign ? 'Ejecute tres B200-only limpias y luego tres Windows-B200 concurrentes limpias antes de buscar objetivo.' : 'REQUALIFICATION_REQUIRED: la duracion/configuracion de campana no coincide con la cualificacion de 10 s.')
     : currentStep === 'prepare' ? `Accion unica: preparar ${currentCondition.positive_session_id}. Encienda ${selectedProfile.display_name || selectedProfile.physical_unit_id}, coloque la geometria declarada y valide PREFLIGHT.`
+      : currentStep === 'replay' ? 'Accion unica: ejecutar replay detector/decoder sobre el I/Q preservado. No usar hardware, negativa, dataset ni entrenamiento.'
       : currentStep === 'positive' ? 'Accion unica: ejecutar S001-POS. Debe demostrar adquisicion limpia, integridad, CRC valido, asociacion no ambigua y elegibilidad.'
         : currentStep === 'negative' && !absenceValid ? `Apague fisicamente ${selectedProfile.physical_unit_id} y verifique ausencia.`
           : currentStep === 'negative' && !operatorConfirmed ? `Confirme que ${selectedProfile.physical_unit_id} esta fisicamente apagado o retirado.`
@@ -1604,29 +1743,36 @@ export default function BleRffiStageOneDashboard() {
       blocked: 'Si no aparece ahora, no se inicia la positiva: puede estar apagada, fuera de alcance, con direccion BLE distinta o el adaptador BLE puede estar fallando.',
     },
     {
+      step: 'replay' as CampaignStep,
+      title: '4. Replay offline detector/decoder',
+      action: `Ejecute replay sobre ${latestPositivePilotCaptureId || 'el I/Q preservado'} enlazado a la ejecucion fuente, sin recapturar hardware.`,
+      expected: 'Debe mostrar embudo detector/decoder, descartes, CRC validos, asociacion Windows preservada, calidad de la sesion fuente y decision cientifica.',
+      blocked: 'Hasta cerrar este replay: NO S001-NEG, NO DATASET, NO TRAINING, NO LIVE MODEL y NO nueva S001-POS.',
+    },
+    {
       step: 'positive' as CampaignStep,
-      title: '4. Captura positiva',
+      title: '5. Captura positiva',
       action: `Ejecute solo ${currentCondition.positive_session_id} con el objetivo encendido.`,
       expected: 'Debe cerrar con 40.000.000 muestras, 320.000.000 bytes, cero perdidas, hash verificado, CRC valido, asociacion Windows-B200 no ambigua y E4 aceptado.',
       blocked: 'Si falla adquisicion, integridad, preflight, CRC o asociacion, la sesion se conserva como no elegible y no desbloquea el negativo.',
     },
     {
       step: 'negative' as CampaignStep,
-      title: '5. Control negativo',
+      title: '6. Control negativo',
       action: `Capture ${currentCondition.negative_session_id} con el objetivo fisicamente apagado o retirado.`,
       expected: 'Se espera trafico BLE ambiente sin atribucion al objetivo declarado.',
       blocked: 'Si el objetivo aparece durante el negativo, la etiqueta negativa queda contaminada y la condicion debe repetirse.',
     },
     {
       step: 'repeat' as CampaignStep,
-      title: '6. Revisar piloto',
+      title: '7. Revisar piloto',
       action: 'Pase a la siguiente condicion solo cuando el par positivo/negativo anterior este aceptado.',
       expected: 'La etapa actual se detiene tras C001 POS/NEG para revisar artefactos antes de habilitar mas condiciones.',
       blocked: 'Si falta una captura positiva o negativa, la condicion queda incompleta respecto a la matriz experimental y no constituye un par controlado aceptado.',
     },
     {
       step: 'dataset' as CampaignStep,
-      title: '7. Generar dataset',
+      title: '8. Generar dataset',
       action: 'Cree el dataset, ejecute QC, split por sesion y comparacion de modelos sobre el mismo split.',
       expected: datasetKnown ? 'El dataset de la unidad ya existe y puede revisarse.' : 'El dataset esta reservado y planificado; todavia no contiene ejemplos aceptados.',
       blocked: 'Entrenar antes de completar las condiciones rompe el contrato experimental y puede mezclar evidencia incompleta.',
@@ -1647,7 +1793,7 @@ export default function BleRffiStageOneDashboard() {
           <div>
             <div className="text-xs font-bold uppercase tracking-[.18em] text-cyan-300">BLE-RFFI etapa 1</div>
             <h1 className="mt-1 text-2xl font-semibold">Asistente de campana BLE-RFFI</h1>
-            <div className="mt-1 text-sm text-slate-400">Dispositivo: {selectedProfile.display_name || selectedProfile.physical_unit_id} · Dataset: {datasetId}</div>
+            <div className="mt-1 text-sm text-slate-400">Dispositivo: {selectedProfile.display_name || selectedProfile.physical_unit_id} Â· Dataset: {datasetId}</div>
             <div className="mt-2 text-lg font-semibold text-cyan-100">{headerText}</div>
             {active && <div className="mt-1 text-xs font-semibold uppercase tracking-[.18em] text-amber-300">Fase: {activePhase}</div>}
             <p className="mt-1 text-sm text-slate-300">{nextAction}</p>
@@ -1707,6 +1853,7 @@ export default function BleRffiStageOneDashboard() {
           {currentStep === 'qualification' && !active && diagnosticRequired && <DiagnosticRecoveryStep status={b200QualificationStatus} diagnosticResults={diagnosticResults} currentDiagnosticStep={diagnosticCurrentStep} readyToRetry={diagnosticReadyToRetry} profile={qualificationProfile10s} captures={qualificationCaptures} busy={busy} onRunDiagnostic={(step) => void runAcquisitionDiagnostic(step)} onRetry={() => void runQualificationCapture('ACQUISITION_QUALIFICATION')} />}
           {currentStep === 'qualification' && !active && !diagnosticRequired && <QualificationStep captures={qualificationCaptures} b200Status={b200QualificationStatus} hybridStatus={hybridQualificationStatus} profileMatchesCampaign={qualificationProfileMatchesCampaign} qualificationProfileId={qualificationProfile10s.qualification_profile_id} campaignDurationSeconds={captureSeconds} busy={busy} job={qualificationJob} live={qualificationLive} onStartB200={() => void runQualificationCapture('ACQUISITION_QUALIFICATION')} onStartHybrid={() => void runQualificationCapture('HYBRID_CONCURRENCY_QUALIFICATION')} />}
           {currentStep === 'prepare' && !active && <PrepareStep condition={currentCondition} profile={selectedProfile} target={target} targetAgeMs={targetAgeMs} preflightValid={preflightValid} native={native} busy={busy} started={positiveWizardStarted} deviceConfirmed={positiveDeviceConfirmed} conditionSaved={positiveConditionSaved} positionPrepared={positivePositionPrepared} physicalPrepared={positivePhysicalPrepared} targetPowerConfirmedAt={targetPowerConfirmedAt} onStartWizard={() => setPositiveWizardStarted(true)} onConfirmDevice={() => setPositiveDeviceConfirmed(true)} onSaveCondition={() => setPositiveConditionSaved(true)} onPositionPrepared={() => setPositivePositionPrepared(true)} onPhysicalPrepared={() => setPositivePhysicalPrepared(true)} onConfirmPower={() => setTargetPowerConfirmedAt(new Date().toISOString())} onScan={() => void scanTarget()} onChange={setConditionOverrides} metadataMode={metadataMode} onMode={setMetadataMode} />}
+          {currentStep === 'replay' && !active && <OfflineReplayStep session={latestPositivePilot} capture={latestPositiveCaptureRecord} diagnostic={currentRfDiagnostic} replay={currentOfflineReplay} job={offlineReplayJob} busy={busy} onRun={() => void runOfflineReplay()} onContinue={() => void runOfflineReplay(offlineReplayJob?.replay_run_id)} onCancel={() => void cancelOfflineReplay()} />}
           {currentStep === 'positive' && !active && <PositiveStep condition={currentCondition} profile={selectedProfile} busy={busy} durationSeconds={captureSeconds} maxDurationSeconds={maxCaptureSeconds} onStart={() => void startCampaign('positive_target_validation')} />}
           {currentStep === 'negative' && !active && <NegativeStep condition={currentCondition} profile={selectedProfile} absence={absence} absenceValid={absenceValid} confirmed={operatorConfirmed} busy={busy} durationSeconds={negativeDurationSeconds} maxDurationSeconds={maxCaptureSeconds} lockedDurationSeconds={negativeDurationSeconds} onDuration={setCaptureDurationSeconds} onVerify={() => void verifyAbsence()} onConfirm={setOperatorConfirmed} onStart={() => void startCampaign('negative_control')} onChange={setConditionOverrides} metadataMode={metadataMode} onMode={setMetadataMode} />}
           {currentStep === 'repeat' && !active && <RepeatStep profile={selectedProfile} completed={completedRows.length} total={effectiveMatrix.length} next={conditionRows.find((row) => row.positive.result !== 'POSITIVE_ACCEPTED' || row.negative.result !== 'NEGATIVE_ACCEPTED')?.condition} onRefresh={() => void load(false)} />}
@@ -1831,9 +1978,9 @@ function QualificationStep({ captures, b200Status, hybridStatus, profileMatchesC
         <Metric title="Windows-B200 consecutivas" value={`${hybridStatus.cleanConsecutive}/${QUALIFICATION_REQUIRED_CLEAN}`} detail={`${hybridStatus.totalForProfile} para este perfil`} />
         <Metric title="profile match" value={profileMatchesCampaign ? 'true' : 'REQUALIFICATION_REQUIRED'} detail={`campana ${campaignDurationSeconds}s / qual ${QUALIFICATION_CAPTURE_SECONDS}s`} />
         <Metric title="qualification_profile_id" value={qualificationProfileId} detail="configuracion critica congelada" />
-        <Metric title="expected_samples" value={formatNumber(QUALIFICATION_EXPECTED_SAMPLES)} detail="10 s · 4 MS/s" />
+        <Metric title="expected_samples" value={formatNumber(QUALIFICATION_EXPECTED_SAMPLES)} detail="10 s Â· 4 MS/s" />
         <Metric title="expected_file_size" value={`${formatNumber(QUALIFICATION_EXPECTED_FILE_SIZE)} bytes`} detail="cf32_le" />
-        <Metric title="online" value="decoder off · correlacion off" detail="fuera del hilo de adquisicion" />
+        <Metric title="online" value="decoder off Â· correlacion off" detail="fuera del hilo de adquisicion" />
       </div>
       {!profileMatchesCampaign && <p className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">REQUALIFICATION_REQUIRED: una cualificacion de 10 s no habilita una captura de {campaignDurationSeconds} s.</p>}
       {job && (
@@ -2058,7 +2205,7 @@ function CurrentScientificStatePanel({ profile, condition, qualificationProfileI
       <div className="mt-3 grid gap-2 md:grid-cols-4">
         <Metric title="qualification_profile_id" value={qualificationProfileId} detail="perfil cualificado" />
         <Metric title="receiver_serial" value="E3R04Z1B2" detail="USRP B200" />
-        <Metric title="configuracion RF" value="2402 MHz · 4 MS/s · 2 MHz" detail="cf32_le · RX2 · G20 · USB 3" />
+        <Metric title="configuracion RF" value="2402 MHz Â· 4 MS/s Â· 2 MHz" detail="cf32_le Â· RX2 Â· G20 Â· USB 3" />
         <Metric title="E4_MINIMAL_OBSERVED" value={`${MINIMUM_UNIQUE_TARGET_PACKETS_FOR_E4_OBSERVATION} paquete`} detail="unique target CRC strong" />
         <Metric title="E4_ACCEPTED_FOR_DATASET" value={`${MINIMUM_UNIQUE_TARGET_PACKETS_FOR_DATASET_ACCEPTANCE} paquetes`} detail="strong-only no conflictivos" />
       </div>
@@ -2367,7 +2514,7 @@ function NegativeStep({ condition, profile, absence, absenceValid, confirmed, bu
         <div className="rounded-md border border-slate-800 p-4">
           <div className="font-semibold">Duracion de captura B200</div>
           <p className="mt-1 text-xs text-slate-400">Bloqueada por la positiva de esta condicion. Positiva y negativa deben usar la misma duracion.</p>
-          <div className="mt-3"><Badge>{durationSeconds} s · protocol locked</Badge></div>
+          <div className="mt-3"><Badge>{durationSeconds} s Â· protocol locked</Badge></div>
         </div>
       ) : <CaptureDurationControl value={durationSeconds} max={maxDurationSeconds} onChange={onDuration} />}
       <div className="grid gap-3 md:grid-cols-3">
@@ -2556,13 +2703,117 @@ function OperationAuditPanel({ activeSession, qualificationJob, qualificationLiv
           <div className="max-h-44 overflow-auto text-xs">
             {events.length ? events.map((event) => (
               <div key={event.id} className={`border-t border-slate-800 py-2 ${event.state === 'error' ? 'text-rose-200' : event.state === 'done' ? 'text-emerald-200' : 'text-slate-300'}`}>
-                <span className="font-mono text-slate-500">{event.at}</span> · <b>{event.phase}</b> · {event.detail}
+                <span className="font-mono text-slate-500">{event.at}</span> Â· <b>{event.phase}</b> Â· {event.detail}
               </div>
             )) : <div className="py-2 text-slate-500">Todavia no hay eventos registrados en este dashboard.</div>}
           </div>
         </div>
       </div>
     </Panel>
+  );
+}
+
+function OfflineReplayStep({ session, capture, diagnostic, replay, job, busy, onRun, onContinue, onCancel }: { session?: BleHybridSession; capture?: BleCaptureRecord; diagnostic: BleRfDiagnostic | null; replay: BleOfflineReplay | null; job: BleOfflineReplayJob | null; busy: string; onRun: () => void; onContinue: () => void; onCancel: () => void }) {
+  const funnel = replay?.candidate_funnel ?? {};
+  const decision = replay?.decision ?? {};
+  const association = replay?.target_association_results ?? {};
+  const rejection = replay?.candidate_rejection_summary ?? {};
+  const diagnosticCandidates = Number(diagnostic?.burst_detection_replay?.candidate_count ?? 0);
+  const progress: Partial<BleOfflineReplayProgress> = job?.progress ?? replay?.coverage ?? {};
+  const jobRunning = Boolean(job && !terminalStates.has(job.state));
+  const cancelSupported = job?.cancel_supported !== false;
+  const incomplete = replay ? replay.scientific_completion_status !== 'COMPLETE' : false;
+  const resumeAvailable = Boolean(!jobRunning && (job?.resume_available || replay?.resume_available));
+  const coveragePercent = Number(progress.coverage_percentage ?? job?.progress_percent ?? 0);
+  return (
+    <div className="space-y-4">
+      <OperatorWizardBlock
+        title="Replay offline detector/decoder requerido"
+        doing="Reanaliza el I/Q ya preservado y localiza donde se descartan los candidatos RF."
+        user="No encienda ni apague nada para esta etapa. El SensorTag no interviene: no hay captura B200 nueva."
+        expected="Embudo completo, descartes, CRC validos, asociacion temporal Windows preservada y decision cientifica."
+        failure="Si falla procedencia, SHA o configuracion RF, el replay se rechaza sin modificar el I/Q original."
+        actionLabel={resumeAvailable ? 'Ejecutar nuevo replay (desde cero)' : 'Ejecutar replay detector/decoder'}
+        onAction={onRun}
+        disabled={!session?.capture_id || busy === 'offline-replay' || jobRunning}
+      />
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <Metric title="stage" value="OFFLINE_DETECTOR_DECODER_REPLAY_REQUIRED" detail="hardware bloqueado" />
+        <Metric title="execution_id" value={session?.session_id ?? '-'} detail="fuente unica de verdad" />
+        <Metric title="capture_id" value={session?.capture_id ?? '-'} detail="I/Q preservado" />
+        <Metric title="iq_sha256" value={shortHash(String(capture?.data_sha256 ?? replay?.iq_sha256 ?? '-'))} detail="esperado/verificado" />
+        <Metric title="campaign_id" value={statusText(session?.experimental_metadata?.campaign_id)} detail={statusText(session?.experimental_metadata?.condition_id)} />
+        <Metric title="session_role" value={statusText(session?.experimental_metadata?.session_id)} detail={statusText(session?.experimental_metadata?.execution_purpose)} />
+        <Metric title="pre_decoder_candidate_regions" value={formatNumber(diagnosticCandidates || funnel.pre_decoder_candidate_regions)} detail="no son paquetes BLE todavia" />
+        <Metric title="decision" value={statusText(decision.decision ?? 'PENDING')} detail={statusText(decision.dataset_eligibility_status ?? 'NO_DATASET')} />
+      </div>
+      {job && (
+        <div className="rounded-md border border-slate-800 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-slate-100">Replay job: {job.replay_run_id}</div>
+              <div className="mt-1 text-xs text-slate-400">
+                {statusText(job.state)} - {formatNumber(progress.processed_segments)} / {formatNumber(progress.total_candidate_segments)} segmentos - {formatNumber(progress.pending_segments)} pendientes - {formatNumber(progress.failed_segments)} fallidos
+              </div>
+            </div>
+            <div className="flex gap-2">
+              {jobRunning && cancelSupported && (
+                <button onClick={onCancel} className="inline-flex h-10 items-center gap-2 rounded-md border border-rose-500 px-3 text-sm font-semibold text-rose-100">
+                  <XCircle className="h-4 w-4" />Cancelar de forma ordenada
+                </button>
+              )}
+              {resumeAvailable && (
+                <button onClick={onContinue} disabled={busy === 'offline-replay'} className="inline-flex h-10 items-center gap-2 rounded-md bg-cyan-600 px-3 text-sm font-semibold text-white disabled:opacity-40">
+                  Continuar desde checkpoint
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="mt-3 h-2 overflow-hidden rounded bg-slate-800">
+            <div className="h-full bg-cyan-400" style={{ width: `${Math.max(0, Math.min(100, coveragePercent))}%` }} />
+          </div>
+          <div className="mt-1 text-xs text-slate-400">{coveragePercent.toFixed(2)}% cobertura - checkpoint #{formatNumber(progress.checkpoint_sequence)} - ultimo checkpoint {statusText(progress.last_checkpoint_at)}</div>
+          <p className="mt-2 text-xs text-slate-400">{cancelSupported ? 'Cancelar conserva los artefactos parciales, guarda checkpoint y no convierte esta captura en dataset ni en negativa.' : 'Este replay fue iniciado con el flujo sincronico anterior; muestra progreso, pero no puede cancelarse desde este job.'}</p>
+        </div>
+      )}
+      {replay && (
+        <div className="space-y-3">
+          {incomplete && (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">
+              <div className="font-semibold">Replay incompleto: decision cientifica no emitida</div>
+              <p className="mt-1 text-slate-200">
+                {statusText(replay.execution_status)} ({statusText(replay.termination_reason)}). Quedan {formatNumber(replay.coverage?.pending_segments)} de {formatNumber(replay.coverage?.total_candidate_segments)} segmentos pendientes.
+                Alcance de la decision: {statusText(replay.decision_scope)}. No avance a S001-NEG, dataset ni entrenamiento mientras pending_segments &gt; 0.
+              </p>
+            </div>
+          )}
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <Metric title="coverage_percentage" value={`${Number(replay.coverage?.coverage_percentage ?? 0).toFixed(2)}%`} detail={`${formatNumber(replay.coverage?.pending_segments)} pendientes`} />
+            <Metric title="energy_excursion_groups" value={formatNumber(funnel.energy_excursion_groups)} detail="energia agrupada" />
+            <Metric title="duration_filtered_candidates" value={formatNumber(funnel.duration_filtered_candidates)} detail="filtro duracion" />
+            <Metric title="gfsk_demodulation_attempts" value={formatNumber(funnel.gfsk_demodulation_attempts)} detail="hipotesis procesadas" />
+            <Metric title="crc_valid_packets" value={formatNumber(funnel.crc_valid_packets)} detail={`${formatNumber(funnel.unique_crc_valid_packets)} unicos`} />
+            <Metric title="target_address_candidates" value={formatNumber(funnel.target_address_candidates)} detail="direccion objetivo en paquete" />
+            <Metric title="strong_target_matches" value={formatNumber(funnel.strong_target_matches)} detail={`${formatNumber(funnel.conflicting_matches)} conflictos`} />
+            <Metric title="target callbacks" value={formatNumber(association.windows_target_callbacks_inside_window)} detail="solo ventana original" />
+            <Metric title="rejected_duration" value={formatNumber(rejection.rejected_duration)} detail="muestra acotada preservada" />
+            <Metric title="decoder_timeout / error" value={`${formatNumber(funnel.decoder_timeout_count)} / ${formatNumber(funnel.decoder_internal_error_count)}`} detail={`${formatNumber(funnel.worker_restart_count)} reinicios de worker`} />
+            <Metric title="replay_run_id" value={replay.replay_run_id} detail="artefacto nuevo" />
+            <Metric title="scientific_completion_status" value={statusText(replay.scientific_completion_status)} detail={statusText(replay.decision_scope)} />
+          </div>
+          <div className="rounded-md border border-slate-800 p-3 text-sm text-slate-300">
+            <div className="font-semibold text-slate-100">Siguiente accion permitida</div>
+            <p className="mt-1">{statusText(decision.next_operator_action ?? 'REVIEW_REPLAY_RESULT_BEFORE_ANY_HARDWARE')}</p>
+            <p className="mt-2 text-xs text-slate-400">El resultado original de S001-POS permanece preservado. Este replay no genera dataset ni desbloquea entrenamiento por si solo.</p>
+          </div>
+          {Number(funnel.crc_valid_packets) > 0 && (
+            <Link to="/ble-packet-lab" className="inline-flex h-10 items-center gap-2 rounded-md border border-cyan-500 px-3 text-sm font-semibold text-cyan-100 hover:bg-cyan-500/10">
+              ANALIZAR CAPTURA EN BLE PACKET LAB
+            </Link>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2700,7 +2951,7 @@ function ProcessingPhases({ session }: { session: BleHybridSession }) {
 }
 
 function ProgressSteps({ current, completed, positives, negatives, total, diagnosticRequired = false }: { current: CampaignStep; completed: number; positives: number; negatives: number; total: number; diagnosticRequired?: boolean }) {
-  const steps: [CampaignStep, string][] = [['device', 'Seleccionar dispositivo'], ['qualification', 'Cualificar B200'], ['prepare', 'Preparar'], ['positive', 'Captura positiva'], ['negative', 'Control negativo'], ['repeat', 'Revisar piloto'], ['dataset', 'Generar dataset']];
+  const steps: [CampaignStep, string][] = [['device', 'Seleccionar dispositivo'], ['qualification', 'Cualificar B200'], ['prepare', 'Preparar'], ['replay', 'Replay offline'], ['positive', 'Captura positiva'], ['negative', 'Control negativo'], ['repeat', 'Revisar piloto'], ['dataset', 'Generar dataset']];
   const currentIndex = steps.findIndex(([step]) => step === current);
   return (
     <section className="rounded-lg border border-slate-700 bg-slate-950 p-4">
@@ -2808,7 +3059,7 @@ function ResultsTab({ rows, historicalSessions, summaries }: { rows: ReturnType<
           <div className="font-semibold">Sesiones historicas separadas</div>
           <div className="mt-2 text-sm text-slate-400">{historicalSessions.length} sesiones no pertenecen al perfil activo o al protocolo base y no cuentan para la campana actual.</div>
           <div className="mt-2 max-h-40 overflow-auto text-xs text-slate-400">
-            {historicalSessions.slice(0, 12).map((session) => <div key={session.session_id}>{session.session_id} · {statusText(session.state)} · claim {statusText(summaries[session.session_id]?.effective_claim_level ?? summaries[session.session_id]?.evidence_level)}</div>)}
+            {historicalSessions.slice(0, 12).map((session) => <div key={session.session_id}>{session.session_id} Â· {statusText(session.state)} Â· claim {statusText(summaries[session.session_id]?.effective_claim_level ?? summaries[session.session_id]?.evidence_level)}</div>)}
           </div>
         </div>
       </div>
@@ -2926,7 +3177,7 @@ function AdvancedTab({ profile, caps, datasetManifest }: { profile: DeviceProfil
         <div className="grid gap-2 md:grid-cols-2">{protocolRows(profile).map(([key, value]) => <KeyValue key={key} name={key} value={value} />)}</div>
       </Panel>
       <Panel title="Configuracion SDR">
-        <div className="grid gap-2">{(caps?.devices ?? []).map((device) => <KeyValue key={device.device_id} name={device.label} value={`${device.serial_masked ?? '-'} · ${device.available ? 'disponible' : 'no disponible'}`} />)}</div>
+        <div className="grid gap-2">{(caps?.devices ?? []).map((device) => <KeyValue key={device.device_id} name={device.label} value={`${device.serial_masked ?? '-'} Â· ${device.available ? 'disponible' : 'no disponible'}`} />)}</div>
       </Panel>
       <Panel title="Modelos permitidos">
         <div className="space-y-2">{modelPlan.map(([stage, item]) => <KeyValue key={stage} name={stage} value={item} />)}</div>

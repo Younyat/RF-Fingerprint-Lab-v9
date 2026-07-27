@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .ble_capture_metadata import atomic_json, sha256_file, validate_sigmf
+from .ble_offline_replay import BleOfflineReplayService, read_replay_progress
 from .ble_rf_diagnostics import BleRfDiagnosticService, diagnostic_profiles
 
 CHANNELS = {37: 2_402_000_000, 38: 2_426_000_000, 39: 2_480_000_000}
@@ -28,6 +29,8 @@ class BleCaptureJobManager:
         self.max_duration_seconds, self.minimum_free_bytes = max_duration_seconds, minimum_free_bytes
         root.mkdir(parents=True, exist_ok=True)
         self._lock, self._active, self._cancel = threading.RLock(), None, set()
+        self._replay_active: str | None = None
+        self._replay_cancel: set[str] = set()
 
     def capabilities(self, force_probe: bool = False) -> dict[str, Any]:
         try:
@@ -74,7 +77,7 @@ class BleCaptureJobManager:
                    "gain_mode", "gain_db", "antenna", "duration_seconds", "sample_format", "description", "purpose",
                    "controlled_transmitter_state", "operator_confirmed", "confirmation_method", "capture_role",
                    "experimental_metadata", "disk_persistence_enabled", "frontend_preview_enabled", "ui_polling_mode",
-                   "diagnostic_step", "requested_capture_id"}
+                   "diagnostic_step", "requested_capture_id", "analysis_enabled"}
         unknown = set(payload) - allowed
         if unknown: raise ValueError("UNSUPPORTED_CAPTURE_FIELDS")
         channel = payload.get("ble_channel")
@@ -359,6 +362,144 @@ class BleCaptureJobManager:
     def rf_diagnostic_profiles(self) -> dict[str, Any]:
         return diagnostic_profiles()
 
+    def offline_replay(self, capture_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return BleOfflineReplayService(self.root).create(capture_id, payload)
+
+    def latest_offline_replay(self, capture_id: str) -> dict[str, Any]:
+        return BleOfflineReplayService(self.root).latest(capture_id)
+
+    def start_offline_replay(self, capture_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        capture_id = self._safe_capture_id(capture_id)
+        payload = dict(payload or {})
+        requested_run_id = str(payload.get("replay_run_id") or "")
+        with self._lock:
+            if self._replay_active:
+                raise RuntimeError("OFFLINE_REPLAY_ALREADY_RUNNING")
+            if requested_run_id:
+                replay_run_id = self._safe_replay_id(requested_run_id)
+                replay_dir = self._offline_replay_dir(capture_id, replay_run_id)
+                # Accept both checkpointed runs (replay_state.json) and
+                # pre-resumable-engine legacy runs (burst_candidates.jsonl
+                # only) -- BleOfflineReplayService migrates the latter in
+                # place on first resume instead of losing their progress.
+                has_checkpoint_state = (replay_dir / "replay_state.json").is_file()
+                has_legacy_artifacts = (replay_dir / "burst_candidates.jsonl").is_file()
+                if not has_checkpoint_state and not has_legacy_artifacts:
+                    raise FileNotFoundError("OFFLINE_REPLAY_JOB_NOT_FOUND")
+                previous_job = json.loads((replay_dir / "job.json").read_text(encoding="utf-8")) if (replay_dir / "job.json").is_file() else {}
+                if previous_job.get("state") not in TERMINAL and previous_job.get("state") is not None:
+                    raise RuntimeError("OFFLINE_REPLAY_ALREADY_RUNNING")
+            else:
+                replay_run_id = "BLE-RFFI-REPLAY-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
+                replay_dir = self._offline_replay_dir(capture_id, replay_run_id)
+                replay_dir.mkdir(parents=True, exist_ok=False)
+            request = {**payload, "replay_run_id": replay_run_id, "capture_id": capture_id, "created_at_utc": utc_now()}
+            atomic_json(replay_dir / "job.json", {
+                "schema_version": "ble-rffi-offline-replay-job-v1",
+                "capture_id": capture_id,
+                "replay_run_id": replay_run_id,
+                "state": "queued",
+                "resumed": bool(requested_run_id),
+                "cancel_supported": True,
+                "request": request,
+                "created_at_utc": request["created_at_utc"],
+                "updated_at_utc": request["created_at_utc"],
+            })
+            self._replay_active = replay_run_id
+        threading.Thread(target=self._execute_offline_replay, args=(capture_id, replay_run_id, request), daemon=True).start()
+        return self.offline_replay_job(capture_id, replay_run_id)
+
+    def _execute_offline_replay(self, capture_id: str, replay_run_id: str, request: dict[str, Any]) -> None:
+        replay_dir = self._offline_replay_dir(capture_id, replay_run_id)
+        try:
+            self._write_replay_job(replay_dir, "running")
+            result = BleOfflineReplayService(self.root).create(
+                capture_id,
+                request,
+                cancel_requested=lambda: replay_run_id in self._replay_cancel,
+            )
+            exit_status = result.get("exit_status")
+            state = "cancelled" if exit_status == "CANCELLED_WITH_CHECKPOINT" else "failed" if exit_status == "FAILED" else "completed"
+            self._write_replay_job(replay_dir, state, result=result, exit_status=exit_status)
+        except Exception as error:
+            self._write_replay_job(replay_dir, "failed", error=f"{type(error).__name__}:{error}")
+        finally:
+            with self._lock:
+                if self._replay_active == replay_run_id:
+                    self._replay_active = None
+                self._replay_cancel.discard(replay_run_id)
+
+    def offline_replay_job(self, capture_id: str, replay_run_id: str) -> dict[str, Any]:
+        replay_dir = self._offline_replay_dir(self._safe_capture_id(capture_id), self._safe_replay_id(replay_run_id))
+        job_path = replay_dir / "job.json"
+        summary_path = replay_dir / "replay_summary.json"
+        if job_path.is_file():
+            job = json.loads(job_path.read_text(encoding="utf-8"))
+        elif summary_path.is_file():
+            result = json.loads(summary_path.read_text(encoding="utf-8"))
+            job = {
+                "schema_version": "ble-rffi-offline-replay-job-v1",
+                "capture_id": capture_id,
+                "replay_run_id": replay_run_id,
+                "state": "cancelled" if result.get("exit_status") == "CANCELLED_WITH_CHECKPOINT" else "failed" if result.get("exit_status") == "FAILED" else "completed",
+                "cancel_supported": False,
+                "result": result,
+                "exit_status": result.get("exit_status"),
+                "updated_at_utc": result.get("completed_at"),
+            }
+        elif (replay_dir / "replay_state.json").is_file():
+            job = {
+                "schema_version": "ble-rffi-offline-replay-job-v1",
+                "capture_id": capture_id,
+                "replay_run_id": replay_run_id,
+                "state": "running",
+                "cancel_supported": False,
+                "legacy_sync_run": True,
+                "updated_at_utc": utc_now(),
+            }
+        else:
+            raise FileNotFoundError("OFFLINE_REPLAY_JOB_NOT_FOUND")
+        progress = read_replay_progress(replay_dir)
+        if progress is not None:
+            job["progress"] = progress
+            job["progress_percent"] = progress["coverage_percentage"]
+            job["resume_available"] = progress["resume_available"]
+        # A replay_summary.json on disk is only trustworthy as THIS job's
+        # result once job.json itself has reached a terminal state (written
+        # by _execute_offline_replay after its create() call returns). While
+        # job.json says queued/running, a summary_path left over from an
+        # earlier attempt on the same replay_run_id (e.g. the pre-resume
+        # legacy result being resumed right now) must never be reported as
+        # if it were the outcome of the run in progress.
+        if job.get("state") in TERMINAL and summary_path.is_file():
+            result = json.loads(summary_path.read_text(encoding="utf-8"))
+            job["result"] = result
+            job["exit_status"] = result.get("exit_status")
+            job["resume_available"] = result.get("resume_available", job.get("resume_available"))
+        return job
+
+    def latest_offline_replay_job(self, capture_id: str) -> dict[str, Any]:
+        capture_dir = self._job_dir(self._safe_capture_id(capture_id))
+        replay_root = capture_dir / "offline_replays"
+        if not replay_root.is_dir():
+            raise FileNotFoundError("OFFLINE_REPLAY_JOB_NOT_FOUND")
+        dirs = sorted((path for path in replay_root.iterdir() if path.is_dir()), key=lambda path: path.stat().st_mtime, reverse=True)
+        if not dirs:
+            raise FileNotFoundError("OFFLINE_REPLAY_JOB_NOT_FOUND")
+        return self.offline_replay_job(capture_id, dirs[0].name)
+
+    def cancel_offline_replay(self, capture_id: str, replay_run_id: str) -> dict[str, Any]:
+        replay_run_id = self._safe_replay_id(replay_run_id)
+        replay_dir = self._offline_replay_dir(self._safe_capture_id(capture_id), replay_run_id)
+        job = self.offline_replay_job(capture_id, replay_run_id)
+        if job.get("cancel_supported") is False:
+            raise RuntimeError("OFFLINE_REPLAY_CANCEL_NOT_AVAILABLE_FOR_LEGACY_SYNC_RUN")
+        if job.get("state") not in TERMINAL:
+            with self._lock:
+                self._replay_cancel.add(replay_run_id)
+            self._write_replay_job(replay_dir, "cancel_requested")
+        return self.offline_replay_job(capture_id, replay_run_id)
+
     def data_path(self, capture_id: str) -> Path:
         root = self._job_dir(capture_id); return root / self.metadata(capture_id)["data_path"]
 
@@ -366,8 +507,28 @@ class BleCaptureJobManager:
         root = self._job_dir(capture_id); return root / self.metadata(capture_id)["metadata_path"]
 
     def _job_dir(self, capture_id: str) -> Path:
-        if not capture_id.startswith("BLE-IQ-") or any(x in capture_id for x in ("/", "\\", "..")): raise ValueError("INVALID_CAPTURE_ID")
+        capture_id = self._safe_capture_id(capture_id)
         path = (self.root / capture_id).resolve()
         if path.parent != self.root.resolve() or path.is_symlink(): raise ValueError("INVALID_CAPTURE_PATH")
         if not path.is_dir(): raise FileNotFoundError(capture_id)
         return path
+
+    def _safe_capture_id(self, capture_id: str) -> str:
+        if not capture_id.startswith("BLE-IQ-") or any(x in capture_id for x in ("/", "\\", "..")): raise ValueError("INVALID_CAPTURE_ID")
+        return capture_id
+
+    def _safe_replay_id(self, replay_run_id: str) -> str:
+        if not replay_run_id.startswith("BLE-RFFI-REPLAY-") or any(x in replay_run_id for x in ("/", "\\", "..")): raise ValueError("INVALID_REPLAY_RUN_ID")
+        return replay_run_id
+
+    def _offline_replay_dir(self, capture_id: str, replay_run_id: str) -> Path:
+        capture_dir = self._job_dir(capture_id)
+        path = (capture_dir / "offline_replays" / replay_run_id).resolve()
+        if path.parent != (capture_dir / "offline_replays").resolve(): raise ValueError("INVALID_REPLAY_PATH")
+        return path
+
+    def _write_replay_job(self, replay_dir: Path, state: str, **fields: Any) -> None:
+        path = replay_dir / "job.json"
+        previous = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        next_job = {**previous, **fields, "state": state, "updated_at_utc": utc_now()}
+        atomic_json(path, next_job)

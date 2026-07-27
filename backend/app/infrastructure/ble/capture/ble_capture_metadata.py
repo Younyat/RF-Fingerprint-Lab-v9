@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,20 @@ def atomic_json(path: Path, value: Any) -> None:
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
-    os.replace(temporary, path)
+    # os.replace() can raise a transient PermissionError ([WinError 5]) when
+    # something else (antivirus real-time scan, search indexer, OneDrive/
+    # backup sync) briefly has the destination open -- observed directly in
+    # real, otherwise-successful long-running jobs. A short retry absorbs
+    # that without masking a genuine, persistent failure.
+    last_error: OSError | None = None
+    for attempt in range(6):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError as error:
+            last_error = error
+            time.sleep(0.05 * (2 ** attempt))
+    raise last_error
 
 
 def validate_sigmf(metadata: dict[str, Any]) -> None:

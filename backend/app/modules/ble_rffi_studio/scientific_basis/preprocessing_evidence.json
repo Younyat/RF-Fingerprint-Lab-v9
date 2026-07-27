@@ -1,0 +1,51 @@
+{
+  "schema_version": "ble-rffi-studio-preprocessing-evidence-v1",
+  "steps": [
+    {
+      "step_id": "cfo_correction",
+      "removes_variation": "Desplazamiento de frecuencia por offset de oscilador local (CFO) entre unidades y entre sesiones.",
+      "may_erase_physical_fingerprint": "El CFO en si mismo es una de las huellas fisicas mas citadas en literatura RFFI; corregirlo puede eliminar la senal que se quiere clasificar.",
+      "justified_by_technique_id": "ble-rffi-industry5-2026",
+      "default_enabled": false,
+      "requires_declared_profile_version": true,
+      "status": "OPT_IN_JUSTIFIED"
+    },
+    {
+      "step_id": "phase_normalization",
+      "removes_variation": "Offset de fase inicial entre capturas.",
+      "may_erase_physical_fingerprint": "Puede eliminar diferencias de fase relacionadas con el hardware de RF si estas fueran parte de la huella.",
+      "justified_by_technique_id": null,
+      "default_enabled": false,
+      "requires_declared_profile_version": true,
+      "status": "NOT_YET_JUSTIFIED"
+    },
+    {
+      "step_id": "amplitude_normalization",
+      "removes_variation": "Diferencias de ganancia/potencia recibida entre capturas.",
+      "may_erase_physical_fingerprint": "Puede eliminar variaciones de potencia de transmision especificas del hardware del emisor.",
+      "justified_by_technique_id": null,
+      "default_enabled": false,
+      "requires_declared_profile_version": true,
+      "status": "NOT_YET_JUSTIFIED"
+    },
+    {
+      "step_id": "temporal_alignment",
+      "removes_variation": "Jitter en el instante de inicio detectado del paquete/preambulo.",
+      "may_erase_physical_fingerprint": "Bajo riesgo si se alinea solo el instante de inicio (no la forma de la transitoria), pero debe declararse igualmente.",
+      "justified_by_technique_id": null,
+      "default_enabled": false,
+      "requires_declared_profile_version": true,
+      "status": "NOT_YET_JUSTIFIED"
+    },
+    {
+      "step_id": "transient_removal",
+      "removes_variation": "Muestras de la rampa de encendido del transmisor (turn-on transient).",
+      "may_erase_physical_fingerprint": "La transitoria de encendido es, junto al CFO, una de las huellas fisicas de RFFI mas estudiadas; eliminarla por defecto es de alto riesgo cientifico.",
+      "justified_by_technique_id": null,
+      "default_enabled": false,
+      "requires_declared_profile_version": true,
+      "status": "NOT_YET_JUSTIFIED"
+    }
+  ],
+  "policy": "Ningun paso de esta lista se activa por defecto en base_preprocessing_profile_id. Activarlo exige un PreprocessingStepJustification que referencie un technique_id de technique_registry.json con applicability_status != NOT_APPLICABLE, y una nueva version de perfil congelada."
+}

@@ -772,6 +772,337 @@ does_not_replace_qualification = true
 Usar un resultado diagnostico para cambiar la campana cientifica requiere una
 revision explicita del perfil y recualificacion completa.
 
+### Replay offline detector/decoder trazable
+
+Antes de repetir `S001-POS`, ejecutar `S001-NEG`, generar dataset o entrenar,
+el flujo exige cerrar el replay offline de la captura preservada que ya mostro
+energia candidata. La primera captura bajo este contrato es:
+
+```text
+source_execution_id = BLE-HYBRID-20260724T104524Z-8b70f0
+source_capture_id = BLE-IQ-f25ccce7d158
+source_iq_sha256 = df5fd832fa1a05027b6782d5e2f5734377ea9de08fca168a465aefc0e195c9ba
+analysis_configuration_id = ble-rffi-offline-detector-decoder-replay-v1
+```
+
+Endpoints:
+
+```text
+POST /api/ble/capture/recordings/{capture_id}/offline-replay
+GET  /api/ble/capture/recordings/{capture_id}/offline-replay/latest
+
+POST /api/ble/capture/recordings/{capture_id}/offline-replay-jobs
+GET  /api/ble/capture/recordings/{capture_id}/offline-replay-jobs/latest
+GET  /api/ble/capture/recordings/{capture_id}/offline-replay-jobs/{replay_run_id}
+POST /api/ble/capture/recordings/{capture_id}/offline-replay-jobs/{replay_run_id}/cancel
+```
+
+El replay no selecciona la ultima sesion global. Primero resuelve una unica
+fuente de verdad `execution_id -> capture_id -> iq_sha256`. Rechaza la
+ejecucion cuando el `capture_id` no pertenece al `execution_id`, el SHA-256 no
+coincide, faltan metadatos criticos o la configuracion RF no es:
+
+```text
+sample_format = cf32_le
+sample_rate_sps = 4000000
+center_frequency_hz = 2402000000
+bandwidth_hz = 2000000
+ble_channel = 37
+```
+
+Cada ejecucion crea un directorio nuevo bajo:
+
+```text
+BLE-IQ-*/offline_replays/{replay_run_id}
+```
+
+y preserva:
+
+```text
+replay_manifest.json
+replay_configuration.json
+replay_summary.json
+candidate_funnel.json
+candidate_rejection_summary.json
+crc_valid_packets.jsonl
+target_association_results.json
+worker_stdout.log
+worker_stderr.log
+input_iq_sha256.txt
+```
+
+Los replays largos deben ejecutarse mediante `offline-replay-jobs`. El endpoint
+sin sufijo `-jobs` se conserva por compatibilidad, pero bloquea la peticion HTTP
+hasta terminar o alcanzar timeout. El job escribe `job.json` y expone
+`decoded/progress.json` como progreso operativo:
+
+```text
+state
+replay_run_id
+progress.processed_segments
+progress.total_segments
+progress.crc_valid_packets
+progress_percent
+cancel_supported
+```
+
+La cancelacion de un job nuevo termina el proceso decoder, conserva los
+artefactos parciales y registra `CANCELLED_PARTIAL`. Un replay sincronico
+heredado puede mostrarse como `legacy_sync_run`, pero no puede cancelarse desde
+el nuevo job porque el proceso no fue creado con el callback de cancelacion.
+
+El operador no debe encender ni apagar el SensorTag durante un replay offline.
+No hay nueva captura B200 ni nuevo escaneo Windows BLE; solo se reanalizan el
+I/Q, los metadatos y las observaciones Windows ya preservados.
+
+La razon cientifica es separar capas:
+
+```text
+energia RF presente
+-> regiones candidatas pre-decoder
+-> intentos GFSK/decoder
+-> paquetes CRC validos
+-> asociacion Windows preservada en la ventana original
+-> elegibilidad de la sesion fuente
+```
+
+Las regiones energeticas no se denominan paquetes BLE hasta que exista
+estructura BLE y CRC valido. Si el decoder actual no expone internamente
+subcontadores de timing, preambulo o Access Address, el embudo informa
+`NOT_INSTRUMENTED_BY_CURRENT_DECODER` en vez de inventar ceros.
+
+Semantica de analisis no ejecutado:
+
+```text
+analysis_execution_status = NOT_EXECUTED
+burst_candidate_count = null
+crc_valid_packet_count = null
+burst_detection_status = NOT_EVALUATED
+crc_validation_status = NOT_EVALUATED
+```
+
+No se emiten `ZERO_BURST_CANDIDATES` ni `ZERO_CRC_VALID_PACKETS` salvo que la
+etapa correspondiente se haya ejecutado completamente y devuelto realmente
+cero.
+
+Mientras no exista replay terminado:
+
+```text
+stage = OFFLINE_DETECTOR_DECODER_REPLAY_REQUIRED
+next_operator_action = RUN_OFFLINE_DETECTOR_DECODER_REPLAY
+S001_POS = BLOCKED_PENDING_REPLAY
+S001_NEG = BLOCKED
+DATASET = BLOCKED
+TRAINING = BLOCKED
+```
+
+### Replay resumable por lotes con checkpoint (2026-07-24)
+
+El primer intento de replay sobre `BLE-IQ-e8edc49b59a0` (8,047 candidatos)
+demostro que un unico intento sincrono con un solo timeout global
+(`COMPLETED_PARTIAL_TIMEOUT`, 932/8,047 procesados) no es una base cientifica
+cerrable: cada reintento volvia a decodificar desde el candidato 0, perdiendo
+el trabajo previo, y un segmento lento podia bloquear miles de segmentos
+posteriores. `ble_offline_replay.py` se reescribio para eliminar ambos
+problemas sin tocar el repositorio externo `ble-worker-lab` (no frozen, fuera
+de este repo): solo se orquesta `backend/tools/ble_decode_burst_directory.py`,
+que ya soportaba `--start-index/--end-index` sobre segmentos pre-detectados.
+
+Identidad de candidato determinista, independiente del orden de la lista:
+
+```text
+candidate_id = sha256(source_iq_sha256 : start_sample : end_sample : analysis_configuration_id)[:24]
+```
+
+Cada replay persiste `candidate_manifest.jsonl` (un `candidate_id` por fila,
+`processing_status` en `PENDING|PROCESSED|FAILED_TIMEOUT|FAILED_DECODER_ERROR`,
+`attempt_count`, `processing_duration_ms`, `decoder_result`, `crc_status`,
+`rejection_reason`) y `replay_state.json` (identidad congelada del run:
+`source_iq_sha256`, `analysis_configuration_id`, `worker_version`,
+`decoder_version`, `candidate_manifest_sha256`, contadores de timeout/error/
+reinicio, `checkpoint_sequence`, `last_checkpoint_at`). `processed_candidate_ids`,
+`pending_candidate_ids` y `failed_candidate_ids` no se duplican como listas
+aparte: se derivan siempre de `candidate_manifest.jsonl`, que es la unica
+fuente de verdad, para evitar que un contador y una lista puedan desincronizarse.
+
+Motor de decodificacion por lotes con aislamiento ante un candidato lento:
+
+```text
+1. Se agrupan hasta batch_size candidatos PENDING contiguos.
+2. Se invoca el decoder existente sobre ese rango, acotado por batch_timeout_seconds.
+3. Si el lote termina completo: se marca PROCESSED cada candidato y se hace checkpoint.
+4. Si el lote se interrumpe (timeout o crash): los candidatos ya completados
+   dentro del lote quedan PROCESSED (checkpoint inmediato); el candidato en
+   curso se reintenta EN SOLITARIO, acotado por per_candidate_timeout_seconds.
+5. Si el candidato aislado tampoco termina: FAILED_TIMEOUT (o
+   FAILED_DECODER_ERROR si el proceso salio con codigo != 0). El resto del
+   backlog continua sin esperarlo.
+```
+
+Tres timeouts independientes, todos configurables por payload o variable de
+entorno (`BLE_RFFI_REPLAY_BATCH_SIZE`, `BLE_RFFI_REPLAY_BATCH_TIMEOUT_SECONDS`,
+`BLE_RFFI_REPLAY_PER_CANDIDATE_TIMEOUT_SECONDS`,
+`BLE_RFFI_OFFLINE_REPLAY_TIMEOUT_SECONDS` para `job_time_budget_seconds`):
+`per_candidate_timeout` acota un candidato aislado, `batch_timeout` acota un
+lote completo, `job_time_budget` acota cuanto puede correr una sola llamada
+`POST .../offline-replay-jobs` antes de checkpointear y devolver control al
+operador. Ningun timeout intenta procesar los 8,047 candidatos en una sola
+espera de horas.
+
+Reanudacion: `POST .../offline-replay-jobs` con `replay_run_id` en el cuerpo
+continua el mismo directorio en vez de crear uno nuevo. Antes de continuar se
+revalida que no cambiaron `source_iq_sha256`, `analysis_configuration_id`,
+`worker_version`, `decoder_version` ni `candidate_manifest_sha256`; si alguno
+cambio, se rechaza con `REPLAY_RESUME_CONFIGURATION_CHANGED:<campo>` en vez de
+continuar en silencio sobre un contexto distinto. Solo los candidatos
+`PENDING` se reprocesan; `PROCESSED`/`FAILED_*` nunca se repiten, por lo que
+"parcial + varias reanudaciones" produce el mismo `candidate_manifest.jsonl`
+final (mismo `crc_status`/`decoder_result` por candidato) que un unico intento
+corrido de una sola vez con presupuesto suficiente. Cada paquete CRC valido
+lleva ademas un `packet_id = sha256(candidate_id : packet_start_sample :
+payload_hex)` para trazabilidad estable independiente del reintento que lo
+produjo.
+
+Cancelacion ordenada: el `cancel_requested` callback se revisa entre lotes y
+dentro del poll del subproceso activo; al detectarse, el lote/candidato en
+curso se termina (SIGTERM, luego SIGKILL tras 5 s), lo ya decodificado se
+conserva, se hace un checkpoint final y el job termina en
+`CANCELLED_WITH_CHECKPOINT` con `resume_available=true`. La cancelacion nunca
+se reporta como resultado cientifico negativo.
+
+Separacion de estados cientifico vs de ejecucion en `replay_summary.json`:
+
+```text
+execution_status = PARTIAL | FULLY_PROCESSED | COMPLETED_WITH_FAILED_SEGMENTS | CANCELLED_WITH_CHECKPOINT | FAILED
+termination_reason = NONE | JOB_TIME_BUDGET_EXCEEDED | OPERATOR_CANCELLED | SOURCE_OR_WORKER_ERROR
+scientific_completion_status = COMPLETE | INCOMPLETE   (COMPLETE solo si pending_segments == 0)
+decision_scope = FULL_CAPTURE | PROCESSED_SUBSET_ONLY
+resume_available = bool
+coverage = {total_candidate_segments, processed_segments, failed_segments, pending_segments, coverage_percentage, checkpoint_sequence, last_checkpoint_at}
+```
+
+Mientras `scientific_completion_status = INCOMPLETE`, `decision.decision` nunca
+puede ser `E4_ACCEPTED_FOR_DATASET_CANDIDATE` (se degrada a
+`E4_CANDIDATE_REQUIRES_COMPLETE_REPLAY`) y `dataset_eligibility_status` queda
+forzado a `NOT_ELIGIBLE`, con `DECODER_REPLAY_INCOMPLETE` en `reason_codes`.
+El dashboard (`OfflineReplayStep`) refleja lo mismo: mientras el replay este
+incompleto, la etapa `replay` del asistente no avanza a `positive`/`dataset`
+aunque exista un `replay_summary.json` parcial, y solo se habilita
+`[CONTINUAR DESDE CHECKPOINT]`.
+
+Asociacion Windows-B200 por paquete: `target_association_results.
+packet_association_ledger` guarda, por cada paquete CRC valido, su
+`candidate_id`, `pdu_type`/`tx_add`/`rx_add` (del PDU decodificado),
+`advertiser_address_canonical`, el callback Windows mas cercano dentro de
+±250 ms si existe, `time_delta_ms`, y una razon explicita de no-asociacion
+(`ADDRESS_NOT_PRESENT_IN_PDU`, `ADDRESS_MISMATCH`,
+`MULTIPLE_NATIVE_CALLBACKS`, `TIME_DELTA_ABOVE_THRESHOLD`,
+`WINDOWS_TIMESTAMP_UNAVAILABLE`) en vez de solo un contador agregado. No se
+ajustaron umbrales de asociacion para forzar coincidencias; el motor de
+comparacion de direcciones sigue siendo canonico-contra-canonico (ver
+`address_parser.py` en `ble-worker-lab`: `address_canonical` ya invierte el
+orden on-air, por lo que `ADDRESS_BYTE_ORDER_MISMATCH` no es una causa
+plausible en este pipeline salvo error de captura).
+
+Limite conocido y declarado, no oculto: el decoder existente (`ble_worker.
+dsp_receiver.run_offline_receiver`) solo expone eventos de etapa agregados
+por ejecucion (`format_validation`, `burst_detection`, `bitstream_recovery`,
+`existing_gate1a_decoder`, `existing_gate1b_parser`), no subcontadores por
+candidato de timing, preambulo, Access Address, header o dewhitening. El
+embudo sigue informando `NOT_INSTRUMENTED_BY_CURRENT_DECODER` para esos
+campos en vez de inventar ceros; exponerlos exigiria instrumentar
+`ble-worker-lab`, que es un repositorio externo no congelado y esta
+deliberadamente fuera del alcance de este cambio.
+
+Pruebas: `backend/app/tests/unit/test_ble_offline_replay_resumable.py` cubre,
+contra un decoder falso (`backend/app/tests/unit/fixtures/
+fake_ble_decode_worker.py`) que respeta el mismo contrato CLI que el decoder
+real: reanudacion sin reprocesar candidatos `PROCESSED`, equivalencia entre
+"parcial + reanudacion" y un intento corrido de una sola vez, ausencia de
+`packet_id` duplicados, rechazo de reanudacion cuando cambia
+`source_iq_sha256` o `analysis_configuration_id`, un candidato lento que no
+bloquea el resto del lote (`FAILED_TIMEOUT` aislado), cancelacion ordenada con
+checkpoint y reanudacion posterior, y que `pending_segments > 0` fuerza
+`dataset_eligibility_status = NOT_ELIGIBLE` y `scientific_decision =
+INCOMPLETE_REPLAY`.
+
+### Migracion de runs pre-checkpoint y correcciones criticas de dispatch (2026-07-24)
+
+Al intentar reanudar el replay real `BLE-RFFI-REPLAY-20260724T161348Z-74cac1`
+(932/8,047 procesados, creado antes de que existiera el motor de checkpoint)
+contra el backend en ejecucion, la verificacion en vivo -- no solo pytest --
+encontro tres fallos reales que no habian aparecido en las pruebas unitarias
+porque estas llamaban a `BleOfflineReplayService.create()` directamente y se
+saltaban la capa `BleCaptureJobManager`/HTTP:
+
+```text
+1. Migracion de runs legacy.
+   El run real no tenia replay_state.json ni candidate_manifest.jsonl (solo
+   existian antes de este trabajo). _resume() ahora hace bootstrap en el
+   mismo directorio a partir de burst_candidates.jsonl y
+   decoded/batch_summary.json cuando falta el checkpoint, en vez de exigirlo
+   o de perder el progreso ya decodificado. BleCaptureJobManager.
+   start_offline_replay() se actualizo para aceptar tambien estos runs
+   legacy (antes exigia replay_state.json y rechazaba con
+   OFFLINE_REPLAY_JOB_NOT_FOUND).
+
+2. Bug critico de despacho fresh-vs-resume.
+   BleCaptureJobManager siempre inyecta replay_run_id en el payload que pasa
+   a BleOfflineReplayService.create() -- tanto para un run nuevo (ID recien
+   generado, para poder escribir job.json antes de lanzar el hilo) como para
+   una reanudacion real. El _run() anterior interpretaba "replay_run_id
+   presente" como "debe reanudar", así que CUALQUIER replay nuevo lanzado a
+   traves del job manager (es decir, el boton normal del dashboard) entraba
+   por error a _resume() sobre un directorio vacio y fallaba con
+   REPLAY_RUN_NOT_FOUND. Nunca se detecto en las pruebas porque estas
+   llamaban al servicio sin pasar por el job manager. La logica correcta -- y
+   ya corregida -- decide fresh vs resume por si el directorio ya tiene
+   progreso real en disco (replay_state.json o burst_candidates.jsonl), no
+   por si el llamador paso un ID.
+
+3. Bug de resultado obsoleto en el estado del job.
+   offline_replay_job() fusionaba replay_summary.json en la respuesta y
+   sobrescribia el estado "queued"/"running" a "completed" en cuanto ese
+   archivo existiera en disco, sin comprobar si pertenecia al intento EN
+   CURSO o a un intento anterior sobre el mismo replay_run_id. Al reanudar,
+   el resultado antiguo (pre-reanudacion) se mostraba de inmediato como si el
+   nuevo intento ya hubiera terminado. Corregido: el resultado en disco solo
+   se adjunta cuando job.json ya alcanzo un estado terminal escrito por el
+   propio hilo en ejecucion.
+```
+
+Verificacion: ademas de las pruebas nuevas
+(`test_ble_offline_replay_job_manager.py`, que reproduce ambos bugs con un
+`BleCaptureJobManager` real y un decoder falso), se ejecuto la reanudacion
+real contra el backend en ejecucion (`POST .../offline-replay-jobs` con el
+`replay_run_id` real) y se confirmo progreso genuino y creciente en
+`candidate_manifest.jsonl`/`replay_state.json` bajo
+`BLE-IQ-e8edc49b59a0/offline_replays/BLE-RFFI-REPLAY-20260724T161348Z-74cac1/`.
+Sin esta verificacion en vivo, el bug de despacho (punto 2) habria roto el
+boton "Ejecutar replay detector/decoder" para cualquier ejecucion nueva desde
+el dashboard, no solo para reanudaciones.
+
+Nombres de campo exactos anadidos a `coverage`/`candidate_funnel`/
+`replay_final_report.json` para separar "intentado" de "decodificado con
+exito":
+
+```text
+successfully_processed_segments
+failed_timeout_segments
+failed_decoder_error_segments
+pending_segments
+attempted_coverage = (successful + failed) / total
+successful_coverage = successful / total
+```
+
+`replay_final_report.json` es el informe obligatorio de cierre: incluye estas
+coberturas, CRC validos/unicos, candidatos de direccion objetivo, coincidencias
+fuertes/conflictivas, un resumen de razones de no-asociacion
+(`association_rejection_summary`, agregado desde `packet_association_ledger`),
+la calidad de adquisicion de la fuente y la decision cientifica. Mientras
+`pending_segments > 0` incluye `scope_note` explicando que el informe cubre
+solo el subconjunto procesado, no la captura completa.
+
 ## Verification commands
 
 Compile the worker with the same Python runtime used for SoapySDR/UHD:

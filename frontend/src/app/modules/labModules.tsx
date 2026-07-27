@@ -20,6 +20,8 @@ import { validationModule } from './validation/module';
 import { waterfallModule } from './waterfall/module';
 import { bleLabModule } from './ble-lab/module';
 import { bleRffiStageOneModule } from './ble-rffi-stage-one/module';
+import { blePacketAnalysisLabModule } from './ble-packet-analysis-lab/module';
+import { bleRffiStudioModule } from './ble-rffi-studio/module';
 import { LabModuleDefinition } from './types';
 
 export type { LabModuleDefinition } from './types';
@@ -44,6 +46,8 @@ export const labModules: LabModuleDefinition[] = [
   wifiDashboardModule,
   bleLabModule,
   bleRffiStageOneModule,
+  blePacketAnalysisLabModule,
+  bleRffiStudioModule,
   liveDemodulationModule,
   kiwiSdrMapModule,
   settingsModule,
