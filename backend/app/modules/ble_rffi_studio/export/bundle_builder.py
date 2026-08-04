@@ -58,6 +58,7 @@ class BundleBuilder:
         model_card_text: str,
         code_reference: dict[str, Any],
         created_at: str,
+        test_evaluation_provenance: str = "NOT_EVALUATED",
     ) -> tuple[ModelBundleManifest, list[str]]:
         bundle_dir = self.root / bundle_id
         bundle_dir.mkdir(parents=True, exist_ok=True)
@@ -109,22 +110,42 @@ class BundleBuilder:
             artifact_hashes[required_name] = sha256_file(bundle_dir / actual_name)
 
         bundle_sha256 = hashlib.sha256(json.dumps(artifact_hashes, sort_keys=True).encode("utf-8")).hexdigest()
-        approval_status, reasons = self._evaluate_acceptance(acceptance_criteria, evaluation_reports, dataset, split)
-        operational_use = "FORBIDDEN" if dataset.data_origin == "SYNTHETIC_TEST_ONLY" else "ALLOWED"
+        approval_status, reasons = self._evaluate_acceptance(acceptance_criteria, evaluation_reports, dataset, split, label_classes, training_run.scientific_task)
+        # Neither REJECTED nor TEST_NOT_EXECUTED may read as ALLOWED just
+        # because the data_origin happens to be real -- operational_use is a
+        # claim about whether this SPECIFIC bundle is fit to act on, not
+        # just about where its data came from. A rejected bundle failed its
+        # own frozen acceptance criteria; a TEST_NOT_EXECUTED bundle simply
+        # hasn't been verified against TEST yet -- neither is safe to rely
+        # on just because the IQ was real B200 (real, confirmed audit
+        # finding). Only an explicit TEST evaluation (opt-in or the single
+        # recommended-model guarantee) can move a bundle past this.
+        operational_use = "FORBIDDEN" if dataset.data_origin == "SYNTHETIC_TEST_ONLY" or approval_status in ("REJECTED", "TEST_NOT_EXECUTED") else "ALLOWED"
 
         manifest = ModelBundleManifest(
             bundle_id=bundle_id, training_run_id=training_run.training_run_id,
             data_origin=dataset.data_origin, operational_use=operational_use,
             artifact_hashes=artifact_hashes, bundle_sha256=bundle_sha256, approval_status=approval_status, created_at=created_at,
+            test_evaluation_provenance=test_evaluation_provenance,
         )
         write_json(bundle_dir / "bundle_manifest.json", manifest.model_dump(mode="json"))
         return manifest, reasons
 
     def _evaluate_acceptance(
         self, acceptance_criteria: dict[str, Any], evaluation_reports: dict[str, SplitEvaluationReport],
-        dataset: DatasetManifest, split: SplitManifest,
+        dataset: DatasetManifest, split: SplitManifest, label_classes: list[str], scientific_task: str,
     ) -> tuple[str, list[str]]:
+        # Two separate reason buckets on purpose: `reasons` are real, checked
+        # gate failures (training/data actually broken -- REJECTED is
+        # correct). `test_not_executed_reasons` means every other gate
+        # passed and the ONLY open question is that this training_run_id was
+        # never TEST-evaluated -- the normal, expected state for every
+        # non-recommended prepare_and_train() candidate, not a failure. A
+        # bundle with real gate failures is REJECTED even if TEST also
+        # wasn't run; a bundle whose ONLY gap is a missing TEST evaluation is
+        # TEST_NOT_EXECUTED, never REJECTED.
         reasons: list[str] = []
+        test_not_executed_reasons: list[str] = []
         # Real gates, checked again here rather than only trusted from
         # upstream -- a bundle is the artifact someone could hand to a live
         # pilot, so it re-verifies rather than assumes.
@@ -135,12 +156,34 @@ class BundleBuilder:
         if split.leakage_check.status != "PASSED":
             reasons.append(f"Leakage check is {split.leakage_check.status}, not PASSED.")
 
+        # Defense in depth: SplitBuilder._finalize()'s own >=2-TRAIN-classes
+        # gate should make this unreachable, but a bundle is the artifact
+        # someone could hand to a live pilot -- it must never leave this
+        # method un-rejected just because an earlier stage's gate was
+        # bypassed or changed. label_classes is the actual set of classes
+        # the model was trained on (label_classes.json), not recomputed.
+        if len(set(label_classes)) < 2:
+            reasons.append(f"TRAINING_DATA_SINGLE_CLASS: model was trained on only {sorted(set(label_classes))}.")
+        if scientific_task == "TARGET_VS_BACKGROUND" and "BACKGROUND_ENVIRONMENT" not in label_classes:
+            reasons.append("BACKGROUND_CLASS_MISSING: TARGET_VS_BACKGROUND model has no BACKGROUND_ENVIRONMENT class in TRAIN.")
+        assignment_ids = {a.example_id for a in split.assignments}
+        if not assignment_ids.issubset(set(dataset.example_ids)):
+            reasons.append(
+                "DATASET_COUNTER_MISMATCH: the split references example_ids not present in the frozen dataset "
+                "-- the split was not built from this exact dataset."
+            )
+
         min_test_accuracy = acceptance_criteria.get("min_test_accuracy")
         if min_test_accuracy is not None:
             test_report = evaluation_reports.get("TEST")
-            test_accuracy = test_report.accuracy if test_report else None
-            if test_accuracy is None or test_accuracy < min_test_accuracy:
-                reasons.append(f"TEST accuracy {test_accuracy} below required minimum {min_test_accuracy}.")
+            if test_report is None:
+                test_not_executed_reasons.append(
+                    f"TEST_NOT_EXECUTED: this training_run_id has no TEST evaluation yet, so the required minimum "
+                    f"({min_test_accuracy}) cannot be checked. Not a failure -- opt in to a TEST evaluation to make "
+                    "this bundle approvable."
+                )
+            elif test_report.accuracy is None or test_report.accuracy < min_test_accuracy:
+                reasons.append(f"TEST accuracy {test_report.accuracy} below required minimum {min_test_accuracy}.")
         min_validation_accuracy = acceptance_criteria.get("min_validation_accuracy")
         if min_validation_accuracy is not None:
             validation_report = evaluation_reports.get("VALIDATION")
@@ -150,6 +193,8 @@ class BundleBuilder:
 
         if reasons:
             return "REJECTED", reasons
+        if test_not_executed_reasons:
+            return "TEST_NOT_EXECUTED", test_not_executed_reasons
         # A ceiling, not a step toward approval: SYNTHETIC_PIPELINE_VERIFIED
         # proves the software pipeline works end to end, nothing about a
         # physical device. approve_for_live_pilot only accepts EVALUATED, so
@@ -168,11 +213,23 @@ class BundleBuilder:
         """The explicit, separate human sign-off step. Never reachable from
         build() alone -- a bundle must already be EVALUATED (i.e. it met its
         own frozen acceptance_criteria) before this can run."""
-        if manifest.data_origin != "REAL_B200" or manifest.operational_use == "FORBIDDEN":
+        # Origin check first and alone: it used to also fold in
+        # `operational_use == "FORBIDDEN"`, which made every REAL_B200
+        # REJECTED/TEST_NOT_EXECUTED bundle (operational_use is FORBIDDEN for
+        # those too, see build()) surface this SYNTHETIC-origin message
+        # instead of its real, specific reason below -- confusing for a
+        # bundle that has nothing to do with synthetic data.
+        if manifest.data_origin != "REAL_B200":
             raise ValueError(
                 f"CANNOT_APPROVE_A_SYNTHETIC_ORIGIN_BUNDLE_FOR_LIVE_PILOT:{manifest.bundle_id} "
                 f"(data_origin={manifest.data_origin}). A model trained on any synthetic data can only ever "
                 "reach SYNTHETIC_PIPELINE_VERIFIED -- it proves the software pipeline works, not physical RFFI capability."
+            )
+        if manifest.approval_status == "TEST_NOT_EXECUTED":
+            raise ValueError(
+                f"CANNOT_APPROVE_A_BUNDLE_WITH_NO_TEST_EVALUATION:{manifest.bundle_id}. This candidate was never "
+                "TEST-evaluated (normal for a non-recommended model) -- opt in to a TEST evaluation for it first, "
+                "then re-export, before it can be approved."
             )
         if manifest.approval_status != "EVALUATED":
             raise ValueError(f"CANNOT_APPROVE_A_BUNDLE_THAT_IS_NOT_EVALUATED:{manifest.approval_status}")

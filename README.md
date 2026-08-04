@@ -116,6 +116,24 @@ powershell -ExecutionPolicy Bypass -File .\start_unified.ps1 `
   -RadioCondaPythonPath "C:\Users\Usuario\radioconda\python.exe"
 ```
 
+Current command (with the remote training target and BLE-RFFI Studio's
+live decode explicit on the command line -- see BLE-RFFI Studio README's
+"Live BLE decode" section for what `-EnableBleLiveDecode` does; it already
+defaults to `$true` even if omitted, this just makes it visible/overridable
+directly here):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start_unified.ps1 -RemoteUser "assouyat" -RemoteHost "192.168.193.49" -EnableBleLiveDecode $true
+```
+
+Older command, kept for reference (still works -- `-RemoteUser`/`-RemoteHost`
+already default to the same values, and `-EnableBleLiveDecode` defaults to
+`$true` on its own, so this is functionally equivalent to the one above):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start_unified.ps1 -RemoteUser "assouyat" -RemoteHost "192.168.193.49"
+```
+
 The launcher starts the backend on `http://127.0.0.1:8000`, starts Vite, and
 propagates the SDR and polling configuration required by the frontend.
 

@@ -11,11 +11,24 @@ export const AppLayout: React.FC = () => {
   const globalActivity = useGlobalActivity();
   const { setUiState } = useAppActions();
 
+  // overflow-hidden as a hard backstop: with every child column below now
+  // properly min-h-0-constrained, nothing should overflow this box -- but
+  // pinning it here too guarantees the whole page can never grow past
+  // exactly one viewport, no matter what content is mounted through the
+  // router below.
   return (
-    <div className="app-shell flex h-screen">
+    <div className="app-shell flex h-screen overflow-hidden">
       {/* Sidebar */}
+      {/* min-h-0 (both here and on the h-full wrapper + nav below) is
+          required: without it, this column's own min-height:auto default
+          refuses to shrink below the FULL height of every nav link listed
+          below (there are a lot of modules), so a long module list was
+          silently stretching this entire flex row -- and therefore the
+          whole page, since overflow-visible is deliberately kept for the
+          collapse toggle button -- taller than h-screen. That's what showed
+          as dead space (or the OS desktop) below the fold. */}
       <div className={cn(
-        "app-sidebar relative flex flex-col border-r shadow-2xl transition-all duration-300 overflow-visible",
+        "app-sidebar relative flex min-h-0 flex-col border-r shadow-2xl transition-all duration-300 overflow-visible",
         ui.sidebarCollapsed ? "w-0" : "w-64"
       )}>
         {/* Collapse / expand toggle — pinned to the right edge of the sidebar, always visible */}
@@ -30,17 +43,18 @@ export const AppLayout: React.FC = () => {
         </button>
 
         {/* Sidebar content — hidden when collapsed */}
-        <div className={cn('flex flex-col h-full transition-opacity duration-200', ui.sidebarCollapsed ? 'opacity-0 pointer-events-none invisible' : 'opacity-100 visible')}>
+        <div className={cn('flex min-h-0 flex-col h-full transition-opacity duration-200', ui.sidebarCollapsed ? 'opacity-0 pointer-events-none invisible' : 'opacity-100 visible')}>
           {/* Header */}
-          <div className="border-b p-4" style={{ borderColor: 'var(--app-sidebar-border)' }}>
+          <div className="border-b p-4 flex-shrink-0" style={{ borderColor: 'var(--app-sidebar-border)' }}>
             <div>
               <div className="text-xs font-semibold uppercase tracking-[0.22em]" style={{ color: 'var(--app-accent)' }}>RF Lab</div>
               <h1 className="text-xl font-bold">Spectrum Lab</h1>
             </div>
           </div>
 
-          {/* Navigation */}
-          <nav className="flex-1 p-4 space-y-2">
+          {/* Navigation -- scrolls internally (min-h-0 + overflow-y-auto) so
+              a long module list never grows this column past h-screen. */}
+          <nav className="flex-1 min-h-0 overflow-y-auto p-4 space-y-2">
             {navigationModules.map((item) => {
               const isActive = location.pathname === item.path || location.pathname.startsWith(`${item.path}/`) || (item.aliases ?? []).includes(location.pathname);
               return (
@@ -61,7 +75,7 @@ export const AppLayout: React.FC = () => {
           </nav>
 
           {/* Footer */}
-          <div className="border-t p-4" style={{ borderColor: 'var(--app-sidebar-border)' }}>
+          <div className="border-t p-4 flex-shrink-0" style={{ borderColor: 'var(--app-sidebar-border)' }}>
             <div className="text-xs" style={{ color: 'var(--app-sidebar-muted)' }}>
               Acquisition + Dataset + QC
             </div>
@@ -144,7 +158,14 @@ export const AppLayout: React.FC = () => {
         </div>
 
         {/* Page content */}
-        <main className="flex-1 overflow-auto">
+        {/* min-h-0 is required here: without it, a flex item defaults to
+            min-height:auto, which refuses to shrink below its content's
+            intrinsic size -- so this container could render taller than the
+            viewport space flex-1 actually allocated it, leaving dead space
+            below whatever page is mounted (e.g. Live Monitor's spectrum)
+            visible only by scrolling. overflow-auto then correctly scrolls
+            WITHIN the allocated space instead of the space itself growing. */}
+        <main className="flex-1 min-h-0 overflow-auto">
           <Outlet />
         </main>
       </div>

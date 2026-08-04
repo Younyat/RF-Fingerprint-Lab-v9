@@ -265,12 +265,23 @@ export const useSpectrum = ({
   // Auto-refresh spectrum
   useEffect(() => {
     let cancelled = false;
+    // Real, reported bottleneck: setInterval fires on a fixed clock
+    // regardless of whether the previous tick's request already returned --
+    // if a response is ever slower than the poll interval (backend load,
+    // shared SDR hardware access), the next tick fires anyway, requests
+    // overlap and pile up, and over a long session that backlog compounds
+    // instead of draining. inFlight makes this loop skip a tick entirely
+    // rather than ever stacking a second concurrent request behind the
+    // first -- this is the base poll every Live Monitor session runs, so
+    // it is the one most worth guarding.
+    let inFlight = false;
 
     const refresh = async () => {
-      if (!enabled || !deviceStatus.isConnected) {
+      if (!enabled || !deviceStatus.isConnected || inFlight) {
         return;
       }
 
+      inFlight = true;
       try {
         setIsLoading(true);
         const data = await apiService.getLiveSpectrum();
@@ -283,6 +294,7 @@ export const useSpectrum = ({
           setError(err instanceof Error ? err.message : 'Failed to refresh spectrum');
         }
       } finally {
+        inFlight = false;
         if (!cancelled) {
           setIsLoading(false);
         }

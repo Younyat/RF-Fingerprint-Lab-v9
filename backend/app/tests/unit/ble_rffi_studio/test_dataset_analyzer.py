@@ -115,6 +115,41 @@ def test_build_gate_accepts_a_clean_dataset(analyzer, tmp_path):
     assert report.gate_decision == "ACCEPTED_FOR_TRAINING"
 
 
+def test_resolve_overlaps_keeps_one_of_an_exact_duplicate_pair(analyzer):
+    a = make_example(example_index=1, physical_unit_id="U1", session_id="S1", candidate_id="c", packet_id="p", iq_start_sample=0, iq_end_sample=100, source_iq_sha256="sha")
+    b = make_example(example_index=1, physical_unit_id="U1", session_id="S1", candidate_id="c", packet_id="p", iq_start_sample=0, iq_end_sample=100, source_iq_sha256="sha")
+    assert a.example_id == b.example_id  # a real exact duplicate by construction
+
+    excluded = analyzer.resolve_overlaps([a, b])
+    # Both ExampleRecords share the same example_id (that IS the duplicate),
+    # so exactly one KEY is excluded regardless of how many rows produced it.
+    assert set(excluded) == {a.example_id}
+    assert "SUPERSEDED_BY_DUPLICATE_RESOLUTION" in excluded[a.example_id]
+
+
+def test_resolve_overlaps_keeps_the_maximum_non_overlapping_subset(analyzer):
+    # Real reported case: two independently decoded, non-identical packets
+    # inside the same burst window overlap 95%+ -- resolve_overlaps must
+    # exclude exactly one of them (never both, never neither) so the
+    # remaining set passes check_sample_overlap().
+    a = make_example(example_index=1, physical_unit_id="U1", session_id="S1", candidate_id="cand-1", packet_id="pkt-a", iq_start_sample=0, iq_end_sample=1000, source_iq_sha256="sha")
+    b = make_example(example_index=2, physical_unit_id="U1", session_id="S1", candidate_id="cand-1", packet_id="pkt-b", iq_start_sample=50, iq_end_sample=1050, source_iq_sha256="sha")
+    c = make_example(example_index=3, physical_unit_id="U1", session_id="S1", candidate_id="cand-2", packet_id="pkt-c", iq_start_sample=5000, iq_end_sample=6000, source_iq_sha256="sha")
+
+    excluded = analyzer.resolve_overlaps([a, b, c])
+    assert len(excluded) == 1
+    assert c.example_id not in excluded  # never touches the independent, non-overlapping example
+    assert set(excluded).issubset({a.example_id, b.example_id})
+
+    remaining = [e for e in [a, b, c] if e.example_id not in excluded]
+    assert analyzer.check_sample_overlap(remaining).status == "PASSED"
+
+
+def test_resolve_overlaps_is_idempotent_and_finds_nothing_on_a_clean_set(analyzer):
+    examples = [make_example(example_index=i, physical_unit_id="U1", session_id="S1", iq_start_sample=i * 1000, iq_end_sample=i * 1000 + 500) for i in range(3)]
+    assert analyzer.resolve_overlaps(examples) == {}
+
+
 def test_build_gate_rejects_an_empty_dataset(analyzer, tmp_path):
     builder = DatasetBuilder(tmp_path / "datasets")
     draft = builder.build_draft(dataset_id="DS1", dataset_version="1.0.0", project_id="P1", campaign_id="C1", examples=[], data_origin="REAL_B200", creation_policy={}, created_at="2026-07-26T00:00:00Z")

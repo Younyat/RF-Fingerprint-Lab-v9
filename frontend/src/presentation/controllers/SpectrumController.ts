@@ -56,8 +56,20 @@ export const useSpectrumController = () => {
 
   const setSpan = useCallback(async (span: number) => {
     await apiService.setSpectrumSpan(span);
-    actions.setDeviceStatus({ sampleRate: span });
     actions.updateAnalyzerSettings({ span });
+  }, [actions]);
+
+  // The real ADC/USRP acquisition rate -- independent of span (the
+  // displayed/analyzed window). Raising span above the current sample rate
+  // is rejected server-side; lowering sample rate below the current span
+  // auto-narrows span to match (backend returns the authoritative span_hz).
+  const setSampleRate = useCallback(async (sampleRate: number) => {
+    const result = await apiService.setDeviceSampleRate(sampleRate);
+    actions.setDeviceStatus({ sampleRate: result.sample_rate_hz });
+    actions.updateAnalyzerSettings({
+      sampleRate: result.sample_rate_hz,
+      ...(typeof result.span_hz === 'number' ? { span: result.span_hz } : {}),
+    });
   }, [actions]);
 
   const setGain = useCallback(async (gain: number) => {
@@ -114,6 +126,7 @@ export const useSpectrumController = () => {
     setCenterFrequency,
     setStartStop,
     setSpan,
+    setSampleRate,
     setGain,
     setRbw,
     setVbw,

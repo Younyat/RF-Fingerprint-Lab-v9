@@ -13,9 +13,9 @@ def builder(tmp_path):
 
 
 def test_select_examples_excludes_quarantined_and_failed_quality(builder):
-    ok = make_example(example_index=1, physical_unit_id="U1", session_id="S1", dataset_eligibility="PENDING_REVIEW", quality_status="PASSED")
+    ok = make_example(example_index=1, physical_unit_id="U1", session_id="S1", dataset_eligibility="PENDING_ANALYSIS", quality_status="PASSED")
     quarantined = make_example(example_index=2, physical_unit_id=None, session_id="S1", dataset_eligibility="QUARANTINED", quality_status="PASSED")
-    bad_quality = make_example(example_index=3, physical_unit_id="U1", session_id="S1", dataset_eligibility="PENDING_REVIEW", quality_status="FAILED")
+    bad_quality = make_example(example_index=3, physical_unit_id="U1", session_id="S1", dataset_eligibility="PENDING_ANALYSIS", quality_status="FAILED")
 
     selected, excluded = builder.select_examples([ok, quarantined, bad_quality])
 

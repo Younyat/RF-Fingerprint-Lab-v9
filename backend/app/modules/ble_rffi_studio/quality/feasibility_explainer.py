@@ -41,7 +41,21 @@ def explain_feasibility(examples: list[ExampleRecord], scientific_task: str) -> 
     units_total = len(sessions_by_unit)
     units_ready = sum(1 for sessions in sessions_by_unit.values() if len(sessions) >= _MIN_SESSIONS_PER_UNIT)
     target_sessions = len({e.session_id for e in examples if e.physical_unit_id})
-    background_sessions = len({e.session_id for e in examples if not e.physical_unit_id})
+    # TARGET_VS_BACKGROUND's "background" must be real negative evidence:
+    # only an example whose OWN capture was declared BACKGROUND_TARGET_OFF or
+    # BACKGROUND_GENERAL (the operator explicitly confirmed the target was
+    # off/removed, or recorded ambient environment with no target in
+    # question) counts. An example with no physical_unit_id from a
+    # TARGET_DEVICE_ON capture just means the address never matched THAT
+    # session -- inconclusive, not confirmed absence -- and must never
+    # inflate this count (see split_builder.py's module docstring for the
+    # real failure this fixes).
+    background_declared_sessions = len({e.session_id for e in examples if not e.physical_unit_id and e.capture_purpose in ("BACKGROUND_TARGET_OFF", "BACKGROUND_GENERAL")})
+    # UNKNOWN_DEVICE_REJECTION's "unknown device" sessions are a different
+    # concept: ANY unmatched example is legitimate evidence of "some
+    # unregistered transmitter", regardless of what the operator declared
+    # they were trying to capture -- deliberately NOT filtered the same way.
+    unknown_device_sessions = len({e.session_id for e in examples if not e.physical_unit_id})
     next_steps: list[str] = []
 
     if scientific_task in ("SAME_MODEL_UNIT_IDENTIFICATION", "MULTI_DEVICE_CLASSIFICATION"):
@@ -62,36 +76,49 @@ def explain_feasibility(examples: list[ExampleRecord], scientific_task: str) -> 
         readiness_score = min(units_ready, 2) / 2
         progress = (unit_count_score + readiness_score) / 2
     elif scientific_task == "TARGET_VS_BACKGROUND":
-        feasible = target_sessions >= _MIN_TARGET_SESSIONS and background_sessions >= _MIN_BACKGROUND_SESSIONS
-        have = {"target_sessions": target_sessions, "background_sessions": background_sessions}
+        feasible = target_sessions >= _MIN_TARGET_SESSIONS and background_declared_sessions >= _MIN_BACKGROUND_SESSIONS
+        have = {"target_sessions": target_sessions, "background_sessions": background_declared_sessions}
         need = {"target_sessions_minimum": _MIN_TARGET_SESSIONS, "background_sessions_minimum": _MIN_BACKGROUND_SESSIONS}
         human_summary = (
-            f"Tienes {target_sessions} sesion(es) independiente(s) del objetivo y {background_sessions} sesion(es) ambiental(es).\n"
-            f"Esta tarea necesita al menos {_MIN_TARGET_SESSIONS} sesiones independientes del objetivo (una por particion) y "
-            f"al menos {_MIN_BACKGROUND_SESSIONS} sesion ambiental reservada fuera de entrenamiento."
+            f"Tienes {target_sessions} sesion(es) independiente(s) del objetivo y {background_declared_sessions} sesion(es) "
+            "ambiental(es) (con el objetivo declarado apagado/retirado por el operador).\n"
+            f"Esta tarea necesita al menos {_MIN_TARGET_SESSIONS} sesiones independientes del objetivo y al menos "
+            f"{_MIN_BACKGROUND_SESSIONS} sesiones ambientales declaradas (una por particion: entrenamiento, validacion y prueba "
+            "necesitan cada una un ejemplo real de entorno, no solo validacion/prueba)."
         )
         if target_sessions < _MIN_TARGET_SESSIONS:
             next_steps.append(f"Anade {_MIN_TARGET_SESSIONS - target_sessions} sesion(es) mas del dispositivo objetivo (aislado o con direccion confirmada).")
-        if background_sessions < _MIN_BACKGROUND_SESSIONS:
-            next_steps.append(f"Anade {_MIN_BACKGROUND_SESSIONS - background_sessions} sesion(es) mas de entorno/ambiente (sin el objetivo presente).")
+        if background_declared_sessions < _MIN_BACKGROUND_SESSIONS:
+            next_steps.append(
+                f"Anade {_MIN_BACKGROUND_SESSIONS - background_declared_sessions} sesion(es) mas de 'Capturar el entorno con mi "
+                "dispositivo apagado o retirado' (una simple falta de coincidencia de direccion en una captura de dispositivo "
+                "encendido no cuenta como entorno)."
+            )
         target_score = min(target_sessions / _MIN_TARGET_SESSIONS, 1.0) if _MIN_TARGET_SESSIONS else 1.0
-        background_score = min(background_sessions / _MIN_BACKGROUND_SESSIONS, 1.0) if _MIN_BACKGROUND_SESSIONS else 1.0
+        background_score = min(background_declared_sessions / _MIN_BACKGROUND_SESSIONS, 1.0) if _MIN_BACKGROUND_SESSIONS else 1.0
         progress = (target_score + background_score) / 2
     elif scientific_task == "UNKNOWN_DEVICE_REJECTION":
-        feasible = units_ready >= 1 and background_sessions >= _MIN_UNKNOWN_SESSIONS
-        have = {"known_physical_units_with_enough_sessions": units_ready, "unknown_device_sessions": background_sessions}
-        need = {"known_physical_units_minimum": 1, "independent_sessions_per_known_unit_minimum": _MIN_SESSIONS_PER_UNIT, "unknown_device_sessions_minimum": _MIN_UNKNOWN_SESSIONS}
+        # >=2, not >=1: SplitBuilder's common "TRAIN needs >=2 real classes"
+        # gate (quality/split_builder.py._finalize) means a single known
+        # unit alone can never actually reach READY -- TRAIN would only ever
+        # contain that one unit's label. Kept in sync with that gate on
+        # purpose (see this module's own docstring) rather than repeating
+        # the old, now-inaccurate ">=1" requirement here.
+        feasible = units_ready >= 2 and unknown_device_sessions >= _MIN_UNKNOWN_SESSIONS
+        have = {"known_physical_units_with_enough_sessions": units_ready, "unknown_device_sessions": unknown_device_sessions}
+        need = {"known_physical_units_minimum": 2, "independent_sessions_per_known_unit_minimum": _MIN_SESSIONS_PER_UNIT, "unknown_device_sessions_minimum": _MIN_UNKNOWN_SESSIONS}
         human_summary = (
-            f"Tienes {units_ready} unidad(es) conocida(s) con suficientes sesiones, y {background_sessions} sesion(es) de dispositivo desconocido.\n"
-            f"Esta tarea necesita al menos 1 unidad conocida con {_MIN_SESSIONS_PER_UNIT} sesiones independientes, y al menos "
+            f"Tienes {units_ready} unidad(es) conocida(s) con suficientes sesiones, y {unknown_device_sessions} sesion(es) de dispositivo desconocido.\n"
+            f"Esta tarea necesita al menos 2 unidades conocidas con {_MIN_SESSIONS_PER_UNIT} sesiones independientes cada una "
+            f"(un clasificador entrenado sobre una sola identidad conocida no distingue nada), y al menos "
             f"{_MIN_UNKNOWN_SESSIONS} sesiones de dispositivos desconocidos (reservadas para validacion y prueba, nunca entrenamiento)."
         )
-        if units_ready < 1:
-            next_steps.append(f"Consigue al menos 1 unidad conocida con {_MIN_SESSIONS_PER_UNIT} sesiones independientes.")
-        if background_sessions < _MIN_UNKNOWN_SESSIONS:
-            next_steps.append(f"Anade {_MIN_UNKNOWN_SESSIONS - background_sessions} sesion(es) mas de dispositivo(s) desconocido(s)/no registrado(s).")
-        known_score = min(units_ready, 1) / 1
-        unknown_score = min(background_sessions / _MIN_UNKNOWN_SESSIONS, 1.0) if _MIN_UNKNOWN_SESSIONS else 1.0
+        if units_ready < 2:
+            next_steps.append(f"Consigue al menos {2 - units_ready} unidad(es) conocida(s) mas, cada una con {_MIN_SESSIONS_PER_UNIT} sesiones independientes.")
+        if unknown_device_sessions < _MIN_UNKNOWN_SESSIONS:
+            next_steps.append(f"Anade {_MIN_UNKNOWN_SESSIONS - unknown_device_sessions} sesion(es) mas de dispositivo(s) desconocido(s)/no registrado(s).")
+        known_score = min(units_ready, 2) / 2
+        unknown_score = min(unknown_device_sessions / _MIN_UNKNOWN_SESSIONS, 1.0) if _MIN_UNKNOWN_SESSIONS else 1.0
         progress = (known_score + unknown_score) / 2
     else:
         raise ValueError(f"UNKNOWN_SCIENTIFIC_TASK:{scientific_task}")

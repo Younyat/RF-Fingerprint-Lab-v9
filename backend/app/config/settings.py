@@ -189,8 +189,16 @@ def build_settings() -> Settings:
         storage=_build_storage_settings(),
         default_device=DefaultDeviceSettings(
             center_frequency_hz=float(get_runtime_value("DEFAULT_CENTER_FREQUENCY_HZ", 89_400_000.0)),
-            sample_rate_hz=float(get_runtime_value("DEFAULT_SAMPLE_RATE_HZ", 2_000_000.0)),
-            span_hz=float(get_runtime_value("DEFAULT_SPAN_HZ", 2_000_000.0)),
+            # 4 MSps by default: matches ble-worker-lab's hardcoded
+            # INTERNAL_SAMPLE_RATE_HZ requirement (BLE Gate 2A.2 decode
+            # fails silently at any other rate -- see
+            # real_spectrum_stream.py's SAMPLE_RATE_MISMATCH check) and
+            # gives WiFi/Zigbee/other 2.4 GHz protocol work the same
+            # acquisition bandwidth without a manual step. span_hz (the
+            # displayed/analyzed window) is independent and defaults to the
+            # same value only so default visual behavior is unchanged.
+            sample_rate_hz=float(get_runtime_value("DEFAULT_SAMPLE_RATE_HZ", 4_000_000.0)),
+            span_hz=float(get_runtime_value("DEFAULT_SPAN_HZ", 4_000_000.0)),
             gain_db=float(get_runtime_value("DEFAULT_GAIN_DB", 20.0)),
             antenna=str(get_runtime_value("DEFAULT_ANTENNA", "RX2")),
             device_args=str(get_runtime_value("UHD_DEVICE_ARGS", "")),

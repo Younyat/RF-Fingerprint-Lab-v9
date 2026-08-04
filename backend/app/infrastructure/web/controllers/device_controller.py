@@ -11,7 +11,7 @@ from app.infrastructure.sdr.rf_safety import (
     validate_center_frequency,
     validate_frequency_window,
     validate_gain,
-    validate_span,
+    validate_sample_rate,
 )
 
 
@@ -211,15 +211,23 @@ class DeviceController:
             return {"status": "ok", "gain_db": gain_db}
 
     def set_sample_rate(self, sample_rate_hz: float) -> dict:
-        validate_span(sample_rate_hz)
+        # The real ADC/USRP acquisition rate -- independent of span_hz (the
+        # displayed/analyzed window; see SpectrumController.set_span).
+        # Lowering below the current span auto-narrows the span to match,
+        # since a view can never be wider than what's actually sampled.
+        validate_sample_rate(sample_rate_hz)
         validate_frequency_window(self._settings.frequency.center_frequency_hz, sample_rate_hz)
         self._settings.set_sample_rate(sample_rate_hz)
+        if sample_rate_hz < self._settings.frequency.span_hz:
+            self._settings.set_span(sample_rate_hz)
         if self._is_streaming:
             real_spectrum_stream.apply_settings(self._settings)
+        result = {"status": "ok", "sample_rate_hz": sample_rate_hz, "span_hz": self._settings.frequency.span_hz}
         try:
-            return self._set_sample_rate_use_case.execute(sample_rate_hz)
+            use_case_result = self._set_sample_rate_use_case.execute(sample_rate_hz)
+            return {**result, **(use_case_result or {})}
         except Exception:
-            return {"status": "ok", "sample_rate_hz": sample_rate_hz}
+            return result
 
     def get_device_status(self) -> dict:
         return {

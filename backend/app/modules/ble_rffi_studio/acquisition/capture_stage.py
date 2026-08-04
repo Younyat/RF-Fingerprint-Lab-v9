@@ -19,7 +19,7 @@ from pathlib import Path
 
 from app.infrastructure.ble.capture.ble_offline_replay import read_json
 
-from ..contracts import CapturePurpose, CaptureRecord, DatasetRole, TargetState
+from ..contracts import BackgroundKind, CapturePurpose, CaptureRecord, DatasetRole, TargetState
 
 _LE_SUFFIX = "_le"
 
@@ -47,6 +47,7 @@ class CaptureStage:
         isolation_declared_physical_unit_id: str | None = None,
         capture_purpose: CapturePurpose | None = None,
         target_state: TargetState | None = None,
+        background_kind: BackgroundKind | None = None,
         target_reference_id: str | None = None,
         dataset_role: DatasetRole | None = None,
     ) -> CaptureRecord:
@@ -95,6 +96,7 @@ class CaptureStage:
             isolation_declared_physical_unit_id=isolation_declared_physical_unit_id,
             capture_purpose=capture_purpose,
             target_state=target_state,
+            background_kind=background_kind,
             target_reference_id=target_reference_id,
             dataset_role=dataset_role,
             receiver_device_id=str(manifest.get("device_id") or self._device_id_from_request(capture_dir) or manifest.get("device_serial") or ""),

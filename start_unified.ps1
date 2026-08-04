@@ -7,7 +7,12 @@ param(
     [string]$FrontendHost = "127.0.0.1",
     [int]$AppSyncIntervalMs = 5000,
     [int]$SpectrumPollIntervalMs = 100,
-    [int]$WaterfallPollIntervalMs = 100
+    [int]$WaterfallPollIntervalMs = 100,
+    # Real BLE decode of Live Monitor's live burst (see BLE-RFFI Studio
+    # README's "Live BLE decode" section) -- on by default so it never has
+    # to be set by hand in the terminal, but shown here explicitly so it is
+    # visible/overridable directly on the main command line.
+    [object]$EnableBleLiveDecode = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,4 +42,5 @@ if (-not (Test-Path $Runner)) {
     -FrontendHost $FrontendHost `
     -AppSyncIntervalMs $AppSyncIntervalMs `
     -SpectrumPollIntervalMs $SpectrumPollIntervalMs `
-    -WaterfallPollIntervalMs $WaterfallPollIntervalMs
+    -WaterfallPollIntervalMs $WaterfallPollIntervalMs `
+    -EnableBleLiveDecode $EnableBleLiveDecode

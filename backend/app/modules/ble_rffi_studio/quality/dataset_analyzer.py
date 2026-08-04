@@ -16,6 +16,7 @@ from ..contracts import (
     ExactDuplicatesResult,
     ExampleRecord,
     NearDuplicateResult,
+    SampleOverlapPairDetail,
     SampleOverlapResult,
 )
 
@@ -38,6 +39,7 @@ class DatasetAnalyzer:
             by_source.setdefault(example.source_iq_sha256, []).append(example)
 
         overlapping_pairs: list[list[str]] = []
+        pair_details: list[SampleOverlapPairDetail] = []
         for group in by_source.values():
             ordered = sorted(group, key=lambda e: e.iq_start_sample)
             for i in range(len(ordered)):
@@ -49,7 +51,117 @@ class DatasetAnalyzer:
                     if a.iq_start_sample == b.iq_start_sample and a.iq_end_sample == b.iq_end_sample:
                         continue  # exact duplicate, already reported by check_exact_duplicates
                     overlapping_pairs.append(sorted([a.example_id, b.example_id]))
-        return SampleOverlapResult(status="FAILED" if overlapping_pairs else "PASSED", overlapping_pairs=overlapping_pairs)
+                    pair_details.append(self._describe_overlap(a, b))
+        return SampleOverlapResult(status="FAILED" if overlapping_pairs else "PASSED", overlapping_pairs=overlapping_pairs, pair_details=pair_details)
+
+    def _describe_overlap(self, a: ExampleRecord, b: ExampleRecord) -> SampleOverlapPairDetail:
+        """Never a vague "found N pairs" -- names exactly which two examples,
+        how much of their windows overlap, and (from evidence actually on the
+        two ExampleRecords, never guessed) why the extractor produced them
+        this close together. The extractor itself never creates overlapping
+        windows on purpose; every case below is two independently detected
+        real RF events landing close together, not intentional windowing."""
+        overlap_start = max(a.iq_start_sample, b.iq_start_sample)
+        overlap_end = min(a.iq_end_sample, b.iq_end_sample)
+        overlap_samples = max(0, overlap_end - overlap_start)
+        span_a = a.iq_end_sample - a.iq_start_sample
+        span_b = b.iq_end_sample - b.iq_start_sample
+        smaller_span = min(span_a, span_b)
+        overlap_fraction = (overlap_samples / smaller_span) if smaller_span > 0 else 0.0
+
+        if a.packet_id == b.packet_id:
+            reason = (
+                "IDENTICAL_PACKET_DECODED_TWICE: the same decoded packet_id produced two ExampleRecord "
+                "entries -- a real extractor bug, never intentional windowing."
+            )
+        elif a.candidate_id == b.candidate_id:
+            reason = (
+                f"TWO_DISTINCT_PACKETS_SAME_BURST_WINDOW: two independently decoded, CRC-checked BLE packets "
+                f"(packet_id {a.packet_id} vs {b.packet_id}) were detected inside the same RF burst candidate "
+                f"({a.candidate_id}) -- their real transmissions overlapped in time; not an intentional sliding window."
+            )
+            if a.association_status == "PHYSICAL_ISOLATION_DECLARED" and a.logical_transmitter_id != b.logical_transmitter_id:
+                reason += (
+                    f" Both were attributed to '{a.physical_unit_id}' only because physical isolation was declared "
+                    f"for this capture -- the decoded addresses actually differ ({a.logical_transmitter_id} vs "
+                    f"{b.logical_transmitter_id}), meaning a second, unregistered transmitter was active nearby "
+                    "during this capture (a likely isolation-declaration violation, not a labeling bug)."
+                )
+        else:
+            reason = (
+                f"TWO_DISTINCT_BURSTS_OVERLAP: two independently detected RF burst candidates "
+                f"({a.candidate_id} vs {b.candidate_id}) produced packet windows that overlap in raw IQ samples -- "
+                "two real, close-in-time RF events, never an intentional overlapping window."
+            )
+
+        return SampleOverlapPairDetail(
+            example_id_a=a.example_id, example_id_b=b.example_id,
+            capture_id_a=a.capture_id, capture_id_b=b.capture_id,
+            iq_start_sample_a=a.iq_start_sample, iq_end_sample_a=a.iq_end_sample,
+            iq_start_sample_b=b.iq_start_sample, iq_end_sample_b=b.iq_end_sample,
+            overlap_samples=overlap_samples, overlap_fraction_of_smaller_window=round(overlap_fraction, 4),
+            reason=reason,
+        )
+
+    def resolve_overlaps(self, examples: list[ExampleRecord]) -> dict[str, str]:
+        """Deterministic, reproducible fix for check_exact_duplicates()/
+        check_sample_overlap() FAILED gates -- returns example_id -> reason
+        for every example that must be excluded (dataset_eligibility set to
+        QUARANTINED by the caller) so the remaining set is duplicate-free and
+        overlap-free. Never guesses which of two overlapping decodes is
+        "better": there is no signal on an ExampleRecord this pipeline can
+        independently trust for that (both already passed CRC/quality_status
+        before reaching here). Two separate, principled rules instead:
+
+        1. Exact duplicates (identical source_iq_sha256/start/end): keep the
+           lexicographically-lowest example_id, exclude the rest -- an exact
+           duplicate carries zero additional information either way.
+        2. Overlapping-but-not-identical pairs: within each source IQ file,
+           run the textbook "maximum non-overlapping interval subset" greedy
+           sweep (sort by iq_end_sample, keep an interval only if it starts
+           at or after the last KEPT interval's end) -- this keeps the
+           largest possible number of independent examples, never an
+           arbitrary "first come" pick, and its result cannot depend on the
+           input's original ordering."""
+        excluded: dict[str, str] = {}
+
+        exact_groups: dict[tuple[str, int, int], list[ExampleRecord]] = {}
+        for example in examples:
+            key = (example.source_iq_sha256, example.iq_start_sample, example.iq_end_sample)
+            exact_groups.setdefault(key, []).append(example)
+        for group in exact_groups.values():
+            if len(group) < 2:
+                continue
+            ordered = sorted(group, key=lambda e: e.example_id)
+            kept = ordered[0]
+            for dup in ordered[1:]:
+                excluded[dup.example_id] = (
+                    f"SUPERSEDED_BY_DUPLICATE_RESOLUTION: exact duplicate of {kept.example_id} "
+                    "(identical source IQ file and sample range) -- carries no independent information."
+                )
+
+        remaining_by_source: dict[str, list[ExampleRecord]] = {}
+        for example in examples:
+            if example.example_id in excluded:
+                continue
+            remaining_by_source.setdefault(example.source_iq_sha256, []).append(example)
+
+        for group in remaining_by_source.values():
+            ordered = sorted(group, key=lambda e: (e.iq_end_sample, e.example_id))
+            kept_end: int | None = None
+            kept_id: str | None = None
+            for example in ordered:
+                if kept_end is not None and example.iq_start_sample < kept_end:
+                    excluded[example.example_id] = (
+                        f"SUPERSEDED_BY_SAMPLE_OVERLAP_RESOLUTION: overlaps {kept_id} in raw IQ samples -- "
+                        "excluded by a deterministic maximum-non-overlapping-subset resolution (keeps the "
+                        "largest possible set of independent examples), never a quality judgement between "
+                        "the two decodes."
+                    )
+                    continue
+                kept_end = example.iq_end_sample
+                kept_id = example.example_id
+        return excluded
 
     def check_near_duplicates(
         self,

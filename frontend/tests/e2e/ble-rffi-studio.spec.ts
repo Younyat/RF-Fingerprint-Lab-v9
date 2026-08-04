@@ -54,16 +54,12 @@ test.describe('BLE-RFFI Studio -- guided mode', () => {
     await page.getByRole('button', { name: 'Comprobar si hay datos suficientes' }).click();
     await expect(page.getByText('Todavia no hay datos suficientes para entrenar este objetivo.')).toBeVisible({ timeout: 15_000 });
 
-    // Step 5: run the orchestration -- it must stop cleanly, not crash, not fabricate a trained model.
-    await page.getByRole('button', { name: 'Preparar dataset y entrenar' }).click();
-    const step6Explanation = page.getByText('Todavia no hay datos suficientes para entrenar este objetivo.').last();
-    await expect(step6Explanation).toBeVisible({ timeout: 60_000 });
-    await expect(page.getByText(/Tienes \d+ (unidad|sesion)/).last()).toBeVisible();
-    // Concrete, actionable guidance -- never leave the operator to infer
-    // what to do next from the have/need numbers alone.
-    await expect(page.getByText('Que hacer ahora:')).toBeVisible();
-    // Never a fabricated trained model on a NOT_FEASIBLE split.
-    await expect(page.getByText('Modelo recomendado:')).toHaveCount(0);
+    // Step 5: the review gate must catch this before training ever starts --
+    // "Preparar dataset y entrenar" stays disabled until the review reports
+    // ready_to_train, so it must never be clickable here.
+    await page.getByRole('button', { name: 'Revisar datos que se van a usar antes de entrenar' }).click();
+    await expect(page.getByText('Todavia no se puede entrenar con estos datos.')).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole('button', { name: 'Preparar dataset y entrenar' })).toBeDisabled();
   });
 
   // SYNTHETIC_DEMO has no UI entry point in Guided mode by design (real
@@ -105,7 +101,7 @@ test.describe('BLE-RFFI Studio -- guided mode', () => {
   });
 
   test('detecting active devices runs a real scan and labels units without fabricating presence', async ({ page }) => {
-    test.setTimeout(30_000);
+    test.setTimeout(60_000);
     const consoleErrors: string[] = [];
     page.on('pageerror', (err) => consoleErrors.push('PAGEERROR: ' + err.message));
 
@@ -113,10 +109,15 @@ test.describe('BLE-RFFI Studio -- guided mode', () => {
     await page.getByRole('button', { name: /CAPTURAR MI DISPOSITIVO ENCENDIDO/ }).click();
     await page.getByRole('button', { name: /Detectar dispositivos activos ahora/ }).click();
 
-    // Real scan takes ~8s; the button shows a spinner while it runs and the
-    // detection timestamp appears once the real backend scan completes --
-    // never a hardcoded/instant "detected" result.
-    await expect(page.getByText(/Ultimo escaneo:/)).toBeVisible({ timeout: 20_000 });
+    // Real scan takes ~8s, PLUS the native scan worker's stop() teardown
+    // (can itself take up to ~11s -- BleNativeJobManager._stop_scan waits up
+    // to 10s for the worker process to exit, then terminates it). devices()
+    // is only fetched AFTER stop() completes (stop() is what merges the
+    // worker's fresh observations into the backend's registry -- fetching
+    // devices() any earlier only ever returns a PREVIOUS scan's stale
+    // merge). The detection timestamp appears once all of that real work
+    // completes -- never a hardcoded/instant "detected" result.
+    await expect(page.getByText(/Ultimo escaneo:/)).toBeVisible({ timeout: 45_000 });
 
     expect(consoleErrors, `Console errors: ${consoleErrors.join(', ')}`).toEqual([]);
   });
@@ -185,11 +186,11 @@ test.describe('BLE-RFFI Studio -- guided mode', () => {
 
     // Replay/evidence already ran as part of building this capture record
     // (the real fixture is already fully replayed) -- the decision must be a
-    // real, computed verdict (ELEGIBLE COMO POSITIVO), never a default/
-    // fabricated positive just because TARGET_DEVICE was declared.
+    // real, computed verdict (VALIDADA COMO DISPOSITIVO), never a default/
+    // fabricated positive just because TARGET_DEVICE_ON was declared.
     const sessionRow = page.locator('table', { hasText: 'Decision' }).locator('tbody tr', { hasText: 'BLE-IQ-e8edc49b59a0' }).first();
     await expect(sessionRow).toContainText(/Dispositivo encendido/);
-    await expect(sessionRow).toContainText(/ELEGIBLE COMO POSITIVO|CUARENTENA|RECHAZADA|SIN ANALIZAR/);
+    await expect(sessionRow).toContainText(/VALIDADA COMO DISPOSITIVO|CUARENTENA|REPETICION NECESARIA|SIN ANALIZAR/);
   });
 
   test('Prueba 3: reloading the page preserves the capture type, operator declaration and decision', async ({ page }) => {
@@ -230,5 +231,22 @@ test.describe('BLE-RFFI Studio -- guided mode', () => {
     const typeAfter = await listRowAfter.textContent();
     expect(typeAfter).toContain('Dispositivo encendido');
     expect(typeBefore).toContain('Dispositivo encendido');
+  });
+
+  test('BACKGROUND_GENERAL and UNKNOWN_DEVICE_COLLECTION need no device selection at all', async ({ page }) => {
+    await page.goto('/ble-rffi-studio', { waitUntil: 'networkidle' });
+
+    await page.getByRole('button', { name: /REGISTRAR EL ENTORNO SIN UN DISPOSITIVO CONCRETO/ }).click();
+    await expect(page.getByText('No hace falta seleccionar ni apagar ningun dispositivo concreto')).toBeVisible();
+    // Neither the isolation checkbox nor the operator-absence checkbox
+    // applies here -- BACKGROUND_GENERAL has no specific target at all.
+    await expect(page.getByText('Confirmo aislamiento fisico')).toHaveCount(0);
+    await expect(page.getByText('Confirmo que el dispositivo objetivo estaba apagado')).toHaveCount(0);
+    await expect(page.getByText('Paso 3. Iniciar captura')).toBeVisible();
+
+    await page.getByRole('button', { name: /RECOLECTAR DISPOSITIVOS DESCONOCIDOS/ }).click();
+    await expect(page.getByText('Esta captura es solo para entrenar el rechazo')).toBeVisible();
+    await expect(page.getByText('Confirmo aislamiento fisico')).toHaveCount(0);
+    await expect(page.getByText('Confirmo que el dispositivo objetivo estaba apagado')).toHaveCount(0);
   });
 });

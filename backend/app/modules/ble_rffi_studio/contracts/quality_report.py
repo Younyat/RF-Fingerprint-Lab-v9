@@ -19,9 +19,36 @@ class ExactDuplicatesResult(StudioContract):
     duplicate_groups: list[list[str]] = []  # groups of example_id sharing identical (source_iq_sha256, start, end)
 
 
+class SampleOverlapPairDetail(StudioContract):
+    """Everything an operator needs to judge one FAILED sample_overlap pair
+    without reading source code: which two examples, which capture(s), the
+    exact sample ranges, how much they overlap, and -- since the extractor
+    never generates overlapping windows intentionally -- a concrete,
+    evidence-based reason two examples were produced this close together.
+    split_a/split_b/cross_partition are filled in later, only where a
+    SplitManifest is available (dataset_training_preview), since
+    check_sample_overlap() itself runs before any split is chosen."""
+
+    example_id_a: str
+    example_id_b: str
+    capture_id_a: str
+    capture_id_b: str
+    iq_start_sample_a: int
+    iq_end_sample_a: int
+    iq_start_sample_b: int
+    iq_end_sample_b: int
+    overlap_samples: int
+    overlap_fraction_of_smaller_window: float
+    reason: str
+    split_a: str | None = None
+    split_b: str | None = None
+    cross_partition: bool = False
+
+
 class SampleOverlapResult(StudioContract):
     status: CheckStatus
     overlapping_pairs: list[list[str]] = []  # [example_id_a, example_id_b] with overlapping (not identical) ranges
+    pair_details: list[SampleOverlapPairDetail] = []
 
 
 class NearDuplicateResult(StudioContract):

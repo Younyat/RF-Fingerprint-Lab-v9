@@ -12,6 +12,10 @@ class SetSpanBody(BaseModel):
     span_hz: float
 
 
+class SetSampleRateBody(BaseModel):
+    sample_rate_hz: float
+
+
 class SetStartStopBody(BaseModel):
     start_frequency_hz: float
     stop_frequency_hz: float
@@ -75,6 +79,13 @@ def build_spectrum_router(controller) -> APIRouter:
     async def set_span(body: SetSpanBody):
         try:
             return controller.set_span(body.span_hz)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @router.post("/sample-rate")
+    async def set_sample_rate(body: SetSampleRateBody):
+        try:
+            return controller.set_sample_rate(body.sample_rate_hz)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

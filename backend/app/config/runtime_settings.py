@@ -66,11 +66,17 @@ SETTING_CATALOG: dict[str, dict[str, Any]] = {
         "section": "Hardware defaults",
         "tab": "Live Spectrum, Capture Lab",
         "type": "number",
-        "default": 2_000_000.0,
+        # 4 MSps: matches ble-worker-lab's hardcoded INTERNAL_SAMPLE_RATE_HZ
+        # requirement (BLE Gate 2A.2 decode fails silently at any other rate
+        # -- see real_spectrum_stream.py's SAMPLE_RATE_MISMATCH check), and
+        # gives WiFi/Zigbee/other 2.4 GHz protocol work the same
+        # out-of-the-box acquisition bandwidth. Independent of DEFAULT_SPAN_HZ
+        # (the displayed/analyzed window) -- see spectrum_stream_worker.py.
+        "default": 4_000_000.0,
         "min": 200_000.0,
         "max": 61_440_000.0,
         "unit": "samples/s",
-        "description": "Default sample rate and initial span at backend startup.",
+        "description": "Default real ADC/USRP acquisition rate at backend startup, independent of the displayed span.",
         "impact": "Higher rates increase USB load, CPU load and file size. Hardware may fail before the configured maximum on weak USB controllers.",
         "restart_required": True,
         "limit_kind": "hardware",
@@ -94,12 +100,16 @@ SETTING_CATALOG: dict[str, dict[str, Any]] = {
         "section": "Spectrum defaults",
         "tab": "Live Spectrum",
         "type": "number",
-        "default": 2_000_000.0,
+        # Independent of DEFAULT_SAMPLE_RATE_HZ (the real acquisition rate)
+        # -- this is only how much of that acquired bandwidth is displayed.
+        # Defaulted to match so default visual behavior is the full
+        # acquisition bandwidth unless narrowed deliberately.
+        "default": 4_000_000.0,
         "min": 1_000.0,
         "max": 61_440_000.0,
         "unit": "Hz",
-        "description": "Initial spectrum span shown after backend startup.",
-        "impact": "Wider span sees more spectrum but requires higher sample rate and more processing.",
+        "description": "Initial spectrum span (display window) shown after backend startup. Cannot exceed DEFAULT_SAMPLE_RATE_HZ.",
+        "impact": "Wider span shows more of the acquired spectrum. Does not by itself require a higher sample rate -- set that independently.",
         "restart_required": True,
         "limit_kind": "hardware",
         "risk": "medium",

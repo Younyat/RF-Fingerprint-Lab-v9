@@ -115,6 +115,7 @@ export const COLORMAPS = [
 export const DEFAULT_SETTINGS = {
   centerFrequency: 89400000, // 89.4 MHz
   span: 2000000, // 2 MHz
+  sampleRate: 4000000, // 4 MSps -- real acquisition rate, independent of span
   rbw: 10000, // 10 kHz
   vbw: 10000, // 10 kHz
   referenceLevel: 0, // 0 dBm

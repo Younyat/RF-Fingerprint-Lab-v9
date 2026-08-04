@@ -111,6 +111,39 @@ def test_approve_for_live_pilot_requires_evaluated_status_first(trained_artifact
         bundle_builder.approve_for_live_pilot(rejected_manifest)
 
 
+def test_bundle_is_test_not_executed_not_rejected_when_only_gap_is_a_missing_test_evaluation(trained_artifacts, tmp_path):
+    # Real report: a non-recommended prepare_and_train() candidate never has
+    # its own TEST evaluation (TEST stays reserved for the one selected
+    # model) -- exporting it anyway must not read as REJECTED, which implies
+    # invalid data or failed training. Every other gate passes here; the
+    # ONLY missing piece is TEST, so this must land on the distinct
+    # TEST_NOT_EXECUTED status instead.
+    dataset, split, artifacts, examples_by_id, capture_iq_paths = trained_artifacts
+    evaluator = Evaluator()
+    evaluation_reports = {
+        name: evaluator.evaluate_split(name, preds, artifacts.label_classes)
+        for name, preds in artifacts.predictions.items() if name != "TEST"
+    }
+    threshold = evaluator.calibrate_unknown_threshold(artifacts.predictions["VALIDATION"], artifacts.label_classes)
+    calibration = {"acceptance_threshold": threshold, "calibrated_on": "VALIDATION"}
+
+    bundle_builder = BundleBuilder(tmp_path / "bundles")
+    manifest, reasons = bundle_builder.build(
+        bundle_id="bundle-no-test-eval", training_run=artifacts.training_run, model=artifacts.model, label_classes=artifacts.label_classes,
+        feature_names=artifacts.feature_names, scaler=artifacts.scaler, dataset=dataset, split=split,
+        evaluation_reports=evaluation_reports, calibration=calibration, acceptance_criteria={"min_test_accuracy": 0.5},
+        model_card_text="# Test model", code_reference={}, created_at="2026-07-26T00:00:00Z",
+    )
+    assert manifest.approval_status == "TEST_NOT_EXECUTED"
+    assert manifest.operational_use == "FORBIDDEN"
+    assert any("TEST_NOT_EXECUTED" in reason for reason in reasons)
+
+    # And approval must still refuse it, with a message that points at the
+    # real gap (no TEST eval) rather than a generic "not evaluated" error.
+    with pytest.raises(ValueError, match="CANNOT_APPROVE_A_BUNDLE_WITH_NO_TEST_EVALUATION"):
+        bundle_builder.approve_for_live_pilot(manifest)
+
+
 def test_offline_inference_reloads_a_fresh_bundle_and_scores_unseen_examples(trained_artifacts, tmp_path):
     dataset, split, artifacts, examples_by_id, capture_iq_paths = trained_artifacts
     evaluator = Evaluator()
@@ -144,3 +177,68 @@ def test_offline_inference_raises_for_an_unknown_bundle_id(tmp_path):
     inference_service = OfflineInferenceService(tmp_path / "bundles", {})
     with pytest.raises(Exception):
         inference_service.run(bundle_id="does-not-exist", examples=[])
+
+
+def test_bundle_is_rejected_with_training_data_single_class_when_label_classes_has_only_one_entry(trained_artifacts, tmp_path):
+    # Defense in depth: SplitBuilder._finalize()'s own >=2-TRAIN-classes gate
+    # should make a real single-class training run unreachable -- this
+    # exercises the bundle-level guard directly (the reviewer's explicit
+    # demand: a single-class bundle must never be exportable), independent
+    # of whether that upstream gate is ever bypassed or changed.
+    dataset, split, artifacts, examples_by_id, capture_iq_paths = trained_artifacts
+    evaluator = Evaluator()
+    evaluation_reports = {name: evaluator.evaluate_split(name, preds, artifacts.label_classes) for name, preds in artifacts.predictions.items()}
+    calibration = {"acceptance_threshold": 0.9}
+
+    bundle_builder = BundleBuilder(tmp_path / "bundles")
+    manifest, reasons = bundle_builder.build(
+        bundle_id="bundle-single-class", training_run=artifacts.training_run, model=artifacts.model,
+        label_classes=[artifacts.label_classes[0]],  # only one class, as if TRAIN had never had a second one
+        feature_names=artifacts.feature_names, scaler=artifacts.scaler, dataset=dataset, split=split,
+        evaluation_reports=evaluation_reports, calibration=calibration, acceptance_criteria={"min_test_accuracy": 0.0},
+        model_card_text="# Test model", code_reference={}, created_at="2026-07-26T00:00:00Z",
+    )
+    assert manifest.approval_status == "REJECTED"
+    assert any("TRAINING_DATA_SINGLE_CLASS" in reason for reason in reasons)
+
+
+def test_bundle_is_rejected_with_background_class_missing_for_target_vs_background_without_it(trained_artifacts, tmp_path):
+    dataset, split, artifacts, examples_by_id, capture_iq_paths = trained_artifacts
+    evaluator = Evaluator()
+    evaluation_reports = {name: evaluator.evaluate_split(name, preds, artifacts.label_classes) for name, preds in artifacts.predictions.items()}
+    calibration = {"acceptance_threshold": 0.9}
+    target_vs_background_run = artifacts.training_run.model_copy(update={"scientific_task": "TARGET_VS_BACKGROUND"})
+
+    bundle_builder = BundleBuilder(tmp_path / "bundles")
+    manifest, reasons = bundle_builder.build(
+        bundle_id="bundle-no-background", training_run=target_vs_background_run, model=artifacts.model,
+        label_classes=["TARGET_DEVICE"],  # declares TARGET_VS_BACKGROUND but never actually had a background class
+        feature_names=artifacts.feature_names, scaler=artifacts.scaler, dataset=dataset, split=split,
+        evaluation_reports=evaluation_reports, calibration=calibration, acceptance_criteria={"min_test_accuracy": 0.0},
+        model_card_text="# Test model", code_reference={}, created_at="2026-07-26T00:00:00Z",
+    )
+    assert manifest.approval_status == "REJECTED"
+    assert any("BACKGROUND_CLASS_MISSING" in reason for reason in reasons)
+
+
+def test_bundle_is_rejected_with_dataset_counter_mismatch_when_split_references_examples_outside_the_frozen_dataset(trained_artifacts, tmp_path):
+    # The reviewer's explicit "los contadores... deben proceder exactamente
+    # del DatasetManifest congelado" requirement: a split referencing an
+    # example_id the frozen dataset never selected must never export.
+    dataset, split, artifacts, examples_by_id, capture_iq_paths = trained_artifacts
+    evaluator = Evaluator()
+    evaluation_reports = {name: evaluator.evaluate_split(name, preds, artifacts.label_classes) for name, preds in artifacts.predictions.items()}
+    calibration = {"acceptance_threshold": 0.9}
+
+    tampered_assignment = split.assignments[0].model_copy(update={"example_id": "ex-not-in-frozen-dataset"})
+    tampered_split = split.model_copy(update={"assignments": [tampered_assignment, *split.assignments[1:]]})
+
+    bundle_builder = BundleBuilder(tmp_path / "bundles")
+    manifest, reasons = bundle_builder.build(
+        bundle_id="bundle-counter-mismatch", training_run=artifacts.training_run, model=artifacts.model, label_classes=artifacts.label_classes,
+        feature_names=artifacts.feature_names, scaler=artifacts.scaler, dataset=dataset, split=tampered_split,
+        evaluation_reports=evaluation_reports, calibration=calibration, acceptance_criteria={"min_test_accuracy": 0.0},
+        model_card_text="# Test model", code_reference={}, created_at="2026-07-26T00:00:00Z",
+    )
+    assert manifest.approval_status == "REJECTED"
+    assert any("DATASET_COUNTER_MISMATCH" in reason for reason in reasons)

@@ -26,9 +26,10 @@ def make_example(
     iq_end_sample: int | None = None,
     association_status: str = "STRONG",
     quality_status: str = "PASSED",
-    dataset_eligibility: str = "PENDING_REVIEW",
+    dataset_eligibility: str = "PENDING_ANALYSIS",
     project_id: str = "SYN-PROJECT",
     campaign_id: str = "SYN-CAMPAIGN-01",
+    capture_purpose: str | None = None,
 ) -> ExampleRecord:
     start = iq_start_sample if iq_start_sample is not None else example_index * 2000
     end = iq_end_sample if iq_end_sample is not None else start + 1000
@@ -49,6 +50,7 @@ def make_example(
         iq_end_sample=end,
         physical_unit_id=physical_unit_id,
         logical_transmitter_id=f"TX-{physical_unit_id}" if physical_unit_id else None,
+        capture_purpose=capture_purpose,
         association_status=association_status,
         quality_status=quality_status,
         dataset_eligibility=dataset_eligibility,
@@ -173,6 +175,55 @@ def write_unknown_device_rejection_fixture(
         for example_index in range(examples_per_session):
             start, end = example_index * samples_per_example, example_index * samples_per_example + samples_per_example
             examples.append(make_example(example_index=counter, physical_unit_id=None, session_id=session_id, capture_id=capture_id, source_iq_sha256=f"sha-{capture_id}", iq_start_sample=start, iq_end_sample=end))
+            counter += 1
+
+    return examples, capture_iq_paths
+
+
+def write_target_vs_background_fixture(
+    tmp_path: Path,
+    target_sessions: int = 3,
+    background_sessions: int = 3,
+    examples_per_session: int = 16,
+    samples_per_example: int = 800,
+    sample_rate: float = 4_000_000.0,
+    noise_scale: float = 0.15,
+    target_cfo_hz: float = 80_000.0,
+    background_cfo_hz: float = 280_000.0,
+) -> tuple[list[ExampleRecord], dict[str, Path]]:
+    """TARGET_VS_BACKGROUND needs BOTH classes genuinely present in
+    TRAIN/VALIDATION/TEST (see split_builder.py's redesign) -- target
+    sessions carry a real physical_unit_id match; background sessions are
+    explicitly capture_purpose=BACKGROUND_ENVIRONMENT (the operator
+    confirmed the target was off/removed), never just "no address match"."""
+    examples: list[ExampleRecord] = []
+    capture_iq_paths: dict[str, Path] = {}
+    counter = 0
+    unit_id = "SYN-TARGET-UNIT"
+    for session_index in range(target_sessions):
+        session_id = f"SYN-TARGET-SESSION-{session_index:02d}"
+        capture_id = f"SYN-CAP-{session_id}"
+        iq_path = _write_session_iq(tmp_path, capture_id, target_cfo_hz, examples_per_session, samples_per_example, sample_rate, noise_scale, (unit_id, session_id))
+        capture_iq_paths[capture_id] = iq_path
+        for example_index in range(examples_per_session):
+            start, end = example_index * samples_per_example, example_index * samples_per_example + samples_per_example
+            examples.append(make_example(
+                example_index=counter, physical_unit_id=unit_id, session_id=session_id, capture_id=capture_id,
+                source_iq_sha256=f"sha-{capture_id}", iq_start_sample=start, iq_end_sample=end, capture_purpose="TARGET_DEVICE_ON",
+            ))
+            counter += 1
+
+    for session_index in range(background_sessions):
+        session_id = f"SYN-BACKGROUND-SESSION-{session_index:02d}"
+        capture_id = f"SYN-CAP-{session_id}"
+        iq_path = _write_session_iq(tmp_path, capture_id, background_cfo_hz, examples_per_session, samples_per_example, sample_rate, noise_scale, ("background", session_id))
+        capture_iq_paths[capture_id] = iq_path
+        for example_index in range(examples_per_session):
+            start, end = example_index * samples_per_example, example_index * samples_per_example + samples_per_example
+            examples.append(make_example(
+                example_index=counter, physical_unit_id=None, session_id=session_id, capture_id=capture_id,
+                source_iq_sha256=f"sha-{capture_id}", iq_start_sample=start, iq_end_sample=end, capture_purpose="BACKGROUND_TARGET_OFF",
+            ))
             counter += 1
 
     return examples, capture_iq_paths

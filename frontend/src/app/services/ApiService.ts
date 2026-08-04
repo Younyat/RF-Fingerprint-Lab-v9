@@ -92,6 +92,7 @@ const toPreset = (data: any): Preset => ({
   settings: data.settings ?? data.config ?? {
     centerFrequency: 100000000,
     span: 2000000,
+    sampleRate: 4000000,
     rbw: 10000,
     vbw: 3000,
     referenceLevel: 10,
@@ -167,8 +168,9 @@ export class ApiService {
     await axios.post(`${this.baseURL}${API_ENDPOINTS.DEVICE_SET_GAIN}`, { gain_db: gain });
   }
 
-  async setDeviceSampleRate(sampleRate: number): Promise<void> {
-    await axios.post(`${this.baseURL}${API_ENDPOINTS.DEVICE_SET_SAMPLE_RATE}`, { sample_rate_hz: sampleRate });
+  async setDeviceSampleRate(sampleRate: number): Promise<{ sample_rate_hz: number; span_hz?: number }> {
+    const response = await axios.post(`${this.baseURL}${API_ENDPOINTS.DEVICE_SET_SAMPLE_RATE}`, { sample_rate_hz: sampleRate });
+    return response.data;
   }
 
   // Spectrum endpoints

@@ -32,10 +32,36 @@ class SplitEvaluationReport:
     recall_per_class: dict[str, float]
     f1_per_class: dict[str, float]
     confusion_matrix: dict[str, dict[str, int]]
+    # "VALID" unless known_classes itself has fewer than 2 entries -- a
+    # classifier can never be validated against a single class (a confusion
+    # matrix with one row/column proves nothing about discrimination, e.g.
+    # TARGET_DEVICE vs BACKGROUND_ENVIRONMENT with only TARGET_DEVICE
+    # present). training_service.py's own TRAIN-class gate should make this
+    # unreachable in practice -- this is defense in depth, not the primary
+    # guard, so a report can never be presented as a real result if it is
+    # ever reached anyway.
+    evaluation_validity: str = "VALID"
+    # Plain accuracy alone can look excellent on an imbalanced or
+    # session-confounded split while hiding that one class is essentially
+    # never recalled -- macro_f1/balanced_accuracy average PER-CLASS
+    # performance equally, so a model that only ever predicts the majority
+    # class cannot hide behind a high raw accuracy number. Both are derived
+    # from precision_per_class/recall_per_class/f1_per_class above (never
+    # recomputed independently), so they can never disagree with the
+    # per-class numbers already in this same report. None only when there
+    # was nothing comparable to evaluate (mirrors accuracy's own None case).
+    macro_f1: float | None = None
+    balanced_accuracy: float | None = None
 
 
 class Evaluator:
     def evaluate_split(self, split: str, predictions: list[dict[str, Any]], known_classes: list[str]) -> SplitEvaluationReport:
+        if len(known_classes) < 2:
+            return SplitEvaluationReport(
+                split=split, n_examples=len(predictions), n_comparable_to_known_classes=0, accuracy=None,
+                precision_per_class={}, recall_per_class={}, f1_per_class={}, confusion_matrix={},
+                evaluation_validity="INVALID_SINGLE_CLASS_EVALUATION",
+            )
         comparable = [p for p in predictions if p["true_label"] in known_classes]
         if not comparable:
             return SplitEvaluationReport(
@@ -56,6 +82,7 @@ class Evaluator:
             recall_per_class=dict(zip(known_classes, recall.tolist())),
             f1_per_class=dict(zip(known_classes, f1.tolist())),
             confusion_matrix=confusion,
+            macro_f1=float(np.mean(f1)), balanced_accuracy=float(np.mean(recall)),
         )
 
     def calibrate_unknown_threshold(self, validation_predictions: list[dict[str, Any]], known_classes: list[str], min_identified_precision: float = 0.9) -> float:

@@ -16,9 +16,49 @@ DataOrigin = Literal["REAL_B200", "SYNTHETIC_TEST_ONLY"]
 # What the operator declared they were doing when they launched this
 # session -- the Guided UI's very first question ("Que quieres capturar?").
 # None only for captures that predate this field (legacy/manually-built).
-CapturePurpose = Literal["TARGET_DEVICE", "BACKGROUND_ENVIRONMENT"]
+#
+# Four genuinely different experimental intents, never collapsed into one
+# generic "background" bucket (that collapse was itself a real bug: a
+# BACKGROUND_TARGET_OFF capture's whole point -- the target's absence is the
+# EXPECTED, valid result -- was previously indistinguishable from a
+# BACKGROUND_GENERAL capture that never had a specific unit to check against,
+# and from UNKNOWN_DEVICE_COLLECTION, which is about capturing OTHER
+# transmitters entirely, not the registered target at all):
+#   TARGET_DEVICE_ON            -- the selected physical unit is powered on;
+#                                   this capture is trying for positive
+#                                   examples of it.
+#   BACKGROUND_TARGET_OFF       -- the target unit is declared off/removed;
+#                                   this capture is trying for negative
+#                                   examples of the environment WITHOUT it.
+#   BACKGROUND_GENERAL          -- environment recorded with no specific unit
+#                                   in question at all (no target to be
+#                                   absent or present).
+#   UNKNOWN_DEVICE_COLLECTION   -- capturing whatever unregistered transmitters
+#                                   happen to be nearby, for
+#                                   UNKNOWN_DEVICE_REJECTION training only --
+#                                   never treated as background/negative
+#                                   evidence for TARGET_VS_BACKGROUND.
+CapturePurpose = Literal["TARGET_DEVICE_ON", "BACKGROUND_TARGET_OFF", "BACKGROUND_GENERAL", "UNKNOWN_DEVICE_COLLECTION"]
 TargetState = Literal["POWERED_ON", "OPERATOR_DECLARED_POWERED_OFF_OR_REMOVED"]
-DatasetRole = Literal["POSITIVE_CANDIDATE", "NEGATIVE_CANDIDATE"]
+DatasetRole = Literal["POSITIVE_CANDIDATE", "NEGATIVE_CANDIDATE", "UNKNOWN_CANDIDATE", "CONTROL_ONLY"]
+
+# The exact experimental flavor behind a BACKGROUND_* capture_purpose --
+# preserved as its own field (not just inferred from capture_purpose) so a
+# consumer that only cares "is this real negative evidence, and of what kind"
+# never has to keep its own copy of the capture_purpose->background mapping.
+# None for TARGET_DEVICE_ON/UNKNOWN_DEVICE_COLLECTION.
+BackgroundKind = Literal["TARGET_DECLARED_OFF_OR_REMOVED", "GENERAL_AMBIENT"]
+
+# Whether the declared target unit was actually detected in this capture's
+# OWN evidence, computed once Evidence Stage has run (None beforehand, and
+# always NOT_APPLICABLE for BACKGROUND_GENERAL/UNKNOWN_DEVICE_COLLECTION,
+# which have no specific target to detect). This is what tells a
+# BACKGROUND_TARGET_OFF capture's expected "the target is absent" apart from
+# a TARGET_DEVICE_ON capture's problem "the target should have appeared but
+# didn't" -- the same raw fact (no eligible positive match) means opposite
+# things depending on capture_purpose, and must never be treated as one
+# generic "no examples" case.
+TargetPresenceStatus = Literal["DETECTED", "NOT_DETECTED", "INCONCLUSIVE", "NOT_APPLICABLE"]
 
 
 class CaptureRecord(StudioContract):
@@ -64,14 +104,26 @@ class CaptureRecord(StudioContract):
     # surfaced contradiction, not evidence to silently trust).
     capture_purpose: CapturePurpose | None = None
     target_state: TargetState | None = None
+    # Set only when capture_purpose is one of the BACKGROUND_* values --
+    # preserves the exact experimental flavor (see BackgroundKind above)
+    # independently of capture_purpose itself.
+    background_kind: BackgroundKind | None = None
     # Documentary only: which physical unit this capture's declared purpose
-    # is about -- the unit selected for a TARGET_DEVICE capture, or the unit
-    # the operator says was off/removed for a BACKGROUND_ENVIRONMENT capture.
-    # Never treated as ground truth for labeling on its own -- see the
-    # EvidenceStage note above (a BACKGROUND_ENVIRONMENT capture's examples
-    # are never linked as positive for this unit, even on an address match).
+    # is about -- the unit selected for a TARGET_DEVICE_ON capture, or the
+    # unit the operator says was off/removed for a BACKGROUND_TARGET_OFF
+    # capture. Never treated as ground truth for labeling on its own -- see
+    # the EvidenceStage note above (a BACKGROUND_TARGET_OFF capture's
+    # examples are never linked as positive for this unit, even on an
+    # address match). Always None for BACKGROUND_GENERAL/
+    # UNKNOWN_DEVICE_COLLECTION, which have no specific unit in question.
     target_reference_id: str | None = None
     dataset_role: DatasetRole | None = None
+    # Computed once (and only once) Evidence Stage has actually run for this
+    # capture -- never set at capture-declaration time, since it describes
+    # what the evidence showed, not what the operator intended. None until
+    # then. See TargetPresenceStatus above for what each value means per
+    # capture_purpose.
+    target_presence_status: TargetPresenceStatus | None = None
 
     receiver_device_id: str
     sdr_model: str

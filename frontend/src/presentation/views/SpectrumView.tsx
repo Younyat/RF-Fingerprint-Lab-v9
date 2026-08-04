@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { BarChart3, BrainCircuit, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, Eye, EyeOff, FlaskConical, Image, Move, Play, Square, RotateCcw, ScanSearch, Target, Usb, Unplug, Radio, Trash2, SlidersHorizontal, X } from 'lucide-react';
+import { BarChart3, BrainCircuit, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, Eye, EyeOff, FlaskConical, Image, Move, Play, Square, RotateCcw, ScanSearch, Target, Usb, Unplug, Radio, Trash2, SlidersHorizontal, X, PowerOff } from 'lucide-react';
 import { useSpectrum } from '../hooks/useSpectrum';
 import { useWaterfall } from '../hooks/useWaterfall';
 import { useSpectrumController } from '../controllers/SpectrumController';
@@ -13,6 +13,7 @@ import { RF_PROFILE_LIST, RF_PROFILE_STORAGE_KEY, RF_PROFILES, applyRFProfile } 
 import type { AnalyzerSettings, RFObjectDetection, RFSceneAnalysis, RFSignalUnderstandingResult, SpectrumData, WaterfallData } from '../../shared/types';
 import { useSpectrumTools } from '../../features/spectrum-tools/useSpectrumTools';
 import { SpectrumToolsPanel } from '../../features/spectrum-tools/ui/SpectrumToolsPanel';
+import { BleRffiLiveModelPanel } from './ble-rffi-studio/BleRffiLiveModelPanel';
 
 const hzToMhz = (hz: number) => Number.isFinite(hz) ? hz / 1e6 : 0;
 const mhzToHz = (mhz: string) => Number(mhz) * 1e6;
@@ -346,6 +347,7 @@ export const SpectrumView: React.FC = () => {
   const [isStreaming, setIsStreaming] = useState(false);
   const [centerMHz, setCenterMHz] = useState(formatInput(hzToMhz(settings.centerFrequency)));
   const [spanMHz, setSpanMHz] = useState(formatInput(hzToMhz(settings.span), 3));
+  const [sampleRateMHz, setSampleRateMHz] = useState(formatInput(hzToMhz(settings.sampleRate), 3));
   const [panStepMHz, setPanStepMHz] = useState(formatInput(hzToMhz(settings.span) / 10, 3));
   const [startMHz, setStartMHz] = useState(formatInput(hzToMhz(settings.centerFrequency - settings.span / 2)));
   const [stopMHz, setStopMHz] = useState(formatInput(hzToMhz(settings.centerFrequency + settings.span / 2)));
@@ -559,6 +561,7 @@ export const SpectrumView: React.FC = () => {
     if (isFrozen) return;
     setCenterMHz(formatInput(hzToMhz(settings.centerFrequency)));
     setSpanMHz(formatInput(hzToMhz(settings.span), 3));
+    setSampleRateMHz(formatInput(hzToMhz(settings.sampleRate), 3));
     setStartMHz(formatInput(hzToMhz(settings.centerFrequency - settings.span / 2)));
     setStopMHz(formatInput(hzToMhz(settings.centerFrequency + settings.span / 2)));
     setRbwKHz(formatInput(settings.rbw / 1e3, 2));
@@ -574,6 +577,7 @@ export const SpectrumView: React.FC = () => {
     isFrozen,
     settings.centerFrequency,
     settings.span,
+    settings.sampleRate,
     settings.rbw,
     settings.vbw,
     settings.referenceLevel,
@@ -647,7 +651,17 @@ export const SpectrumView: React.FC = () => {
     }
 
     let cancelled = false;
+    // Real, reported bottleneck: window.setInterval fires on a fixed clock
+    // regardless of whether the previous tick's request already returned --
+    // if a response is ever slower than the interval (backend load, shared
+    // SDR hardware access), the next tick fires anyway, requests overlap and
+    // pile up, and under a long session that backlog compounds instead of
+    // draining. inFlight makes each loop skip a tick entirely rather than
+    // ever stacking a second concurrent request behind the first.
+    let inFlight = false;
     const refreshRfScene = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const scene = analysisSpectrumData && (usePeakTraceForDetection || markerBandpassEnabled)
           ? await apiService.analyzeRFScene(analysisSpectrumData, { thresholdOffsetDb: 10, minSnrDb: 6 })
@@ -660,6 +674,8 @@ export const SpectrumView: React.FC = () => {
         if (!cancelled) {
           setRfOverlayError(getErrorMessage(error));
         }
+      } finally {
+        inFlight = false;
       }
     };
 
@@ -677,7 +693,10 @@ export const SpectrumView: React.FC = () => {
     }
 
     let cancelled = false;
+    let inFlight = false; // see refreshRfScene's comment above -- same fix
     const refreshRsuLive = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const live = analysisSpectrumData && (usePeakTraceForDetection || markerBandpassEnabled)
           ? await apiService.analyzeRFSignalUnderstandingFrame(analysisSpectrumData, { decision_mode: rsuOverlayMode })
@@ -690,6 +709,8 @@ export const SpectrumView: React.FC = () => {
         if (!cancelled) {
           setRsuOverlayError(getErrorMessage(error));
         }
+      } finally {
+        inFlight = false;
       }
     };
 
@@ -707,7 +728,10 @@ export const SpectrumView: React.FC = () => {
     }
 
     let cancelled = false;
+    let inFlight = false; // see refreshRfScene's comment above -- same fix
     const refreshExperimentOverlay = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const [healthResponse, models] = await Promise.all([
           apiService.getRFExperimentLabHealth(),
@@ -772,6 +796,8 @@ export const SpectrumView: React.FC = () => {
         if (!cancelled) {
           setRfExperimentOverlayError(getErrorMessage(error));
         }
+      } finally {
+        inFlight = false;
       }
     };
 
@@ -791,7 +817,10 @@ export const SpectrumView: React.FC = () => {
     }
 
     let cancelled = false;
+    let inFlight = false; // see refreshRfScene's comment above -- same fix
     const refreshE6Live = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const models = await apiService.getE6LiveReadyModels();
         if (cancelled) return;
@@ -833,6 +862,8 @@ export const SpectrumView: React.FC = () => {
           setE6LiveResult(null);
           setE6LiveError(getErrorMessage(error));
         }
+      } finally {
+        inFlight = false;
       }
     };
 
@@ -1132,6 +1163,20 @@ export const SpectrumView: React.FC = () => {
     }
   };
 
+  const applySampleRate = async () => {
+    const sampleRate = mhzToHz(sampleRateMHz);
+    if (!Number.isFinite(sampleRate) || sampleRate <= 0) {
+      setControlError('Sample rate must be a positive numeric value.');
+      return;
+    }
+    setControlError(null);
+    try {
+      await spectrumController.setSampleRate(sampleRate);
+    } catch (error) {
+      setControlError(getErrorMessage(error));
+    }
+  };
+
   const applyStartStop = async () => {
     const start = mhzToHz(startMHz);
     const stop = mhzToHz(stopMHz);
@@ -1315,6 +1360,29 @@ export const SpectrumView: React.FC = () => {
     }
   };
 
+  // "Connect USB"/"Disconnect" above only stop the B200 worker when the
+  // frontend's OWN isConnected flag is already true -- but real_spectrum_stream
+  // auto-starts the worker on ANY /api/spectrum/live poll (e.g. just having
+  // Live Monitor open), independent of that flag. That produced a real,
+  // observed problem: the B200 turning on and staying on with no visible way
+  // to stop it, since Disconnect wasn't even enabled/shown in that state.
+  // This button calls the exact same stop_streaming() -> real_spectrum_stream.stop()
+  // path unconditionally, regardless of isConnected, so there is always a way
+  // to force it off.
+  const [forcingB200Stop, setForcingB200Stop] = useState(false);
+  const handleForceStopB200 = async () => {
+    setForcingB200Stop(true);
+    setControlError('');
+    try {
+      await spectrumController.stopDeviceStream();
+      setIsStreaming(false);
+    } catch (error) {
+      setControlError(getErrorMessage(error));
+    } finally {
+      setForcingB200Stop(false);
+    }
+  };
+
   const addMarkerAtCanvas = async (event: React.MouseEvent<HTMLCanvasElement>) => {
     if (suppressNextClickRef.current) {
       suppressNextClickRef.current = false;
@@ -1389,7 +1457,11 @@ export const SpectrumView: React.FC = () => {
     }
   };
 
+  // Wheel over the spectrum does NOTHING at all unless Alt (Option, on
+  // macOS) is held -- explicit operator requirement: a bare scroll must
+  // never change zoom, span, or center frequency by accident.
   const zoomFromWheel = async (event: React.WheelEvent<HTMLCanvasElement>) => {
+    if (!event.altKey) return;
     event.preventDefault();
     const zoomFactor = event.deltaY < 0 ? 0.8 : 1.25;
     const nextSpan = Math.max(displaySettings.span * zoomFactor, 1_000);
@@ -1397,6 +1469,11 @@ export const SpectrumView: React.FC = () => {
       setFrozenViewRange({ centerFrequency: displaySettings.centerFrequency, span: nextSpan });
       return;
     }
+    // Cleared before every attempt (same pattern every other control below
+    // follows) -- without this, a span-exceeds-sample-rate rejection from
+    // one scroll stayed on screen forever, even after a later scroll (or
+    // raising the sample rate) made the state valid again.
+    setControlError(null);
     try {
       await spectrumController.setSpan(nextSpan);
     } catch (error) {
@@ -1577,6 +1654,16 @@ export const SpectrumView: React.FC = () => {
           >
             {deviceStatus.isConnected ? <Unplug className="w-4 h-4 mr-2" /> : <Usb className="w-4 h-4 mr-2" />}
             {deviceStatus.isConnected ? 'Disconnect' : 'Connect USB'}
+          </button>
+
+          <button
+            onClick={handleForceStopB200}
+            disabled={forcingB200Stop}
+            title="Fuerza el apagado del B200 aunque la interfaz no lo muestre como conectado -- util cuando se enciende solo y se queda encendido sin razon aparente."
+            className="h-9 flex items-center px-3 rounded-md text-sm font-medium bg-red-900/60 hover:bg-red-800 text-red-100 disabled:opacity-50"
+          >
+            <PowerOff className="w-4 h-4 mr-2" />
+            {forcingB200Stop ? 'Apagando...' : 'Forzar apagado B200'}
           </button>
 
           <button
@@ -1964,6 +2051,20 @@ export const SpectrumView: React.FC = () => {
           <LabeledInput label="Center MHz" value={centerMHz} onChange={setCenterMHz} onEnter={applyCenterSpan} />
           <LabeledInput label="Span MHz" value={spanMHz} onChange={setSpanMHz} onEnter={applyCenterSpan} />
           <button onClick={applyCenterSpan} className="h-9 px-3 rounded-md bg-slate-700 hover:bg-slate-600 text-sm">Apply</button>
+          <LabeledInput
+            label="Sample Rate MHz"
+            value={sampleRateMHz}
+            onChange={setSampleRateMHz}
+            onEnter={applySampleRate}
+            compact
+          />
+          <button
+            onClick={applySampleRate}
+            title="Real ADC/USRP acquisition rate -- independent of Span (the displayed window). Some decoders (e.g. BLE) require an exact rate."
+            className="h-9 px-3 rounded-md bg-slate-700 hover:bg-slate-600 text-sm"
+          >
+            Apply Rate
+          </button>
           <LabeledInput label="Step MHz" value={panStepMHz} onChange={setPanStepMHz} onEnter={() => undefined} compact />
           <button
             onClick={() => panFrequencyWindow(-1)}
@@ -2127,6 +2228,7 @@ export const SpectrumView: React.FC = () => {
                 onLiveTraceVisibleChange={setShowLiveTrace}
               />
             )}
+            <BleRffiLiveModelPanel centerFrequencyHz={settings.centerFrequency} sampleRateHz={settings.sampleRate} />
             {showPanOverlay && (
               <div
                 className="absolute z-10 rounded-xl border border-slate-700/80 bg-slate-950/60 px-2 py-2 shadow-lg backdrop-blur-md"
@@ -2466,7 +2568,7 @@ export const SpectrumView: React.FC = () => {
           <StatusRow label="Span" value={formatFrequency(displaySettings.span)} />
           <StatusRow label="Start" value={formatFrequency(displaySettings.centerFrequency - displaySettings.span / 2)} />
           <StatusRow label="Stop" value={formatFrequency(displaySettings.centerFrequency + displaySettings.span / 2)} />
-          <StatusRow label="Sample Rate" value={formatFrequency(deviceStatus.sampleRate || settings.span) + '/s'} />
+          <StatusRow label="Sample Rate" value={formatFrequency(deviceStatus.sampleRate || settings.sampleRate) + '/s'} />
           <StatusRow label="RBW" value={formatFrequency(settings.rbw)} />
           <StatusRow label="Effective RBW" value={spectrumData?.effectiveRbwHz ? formatFrequency(spectrumData.effectiveRbwHz) : 'n/a'} />
           <StatusRow label="Power Unit" value={spectrumData?.powerUnit ?? 'dBFS'} />

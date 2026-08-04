@@ -15,13 +15,25 @@ from typing import Any, Callable
 
 ANALYSIS_CONFIGURATION_ID = "ble-rffi-offline-detector-decoder-replay-v1"
 REPLAY_SCHEMA_VERSION = "ble-rffi-offline-replay-v1"
+# Acquisition profile (A0 baseline) that must stay frozen regardless of
+# channel -- comparing across channels/devices with a different sample
+# rate or bandwidth per capture would confound the comparison. center_
+# frequency_hz and ble_channel are validated separately below (see
+# _BLE_ADVERTISING_CHANNEL_FREQUENCIES_HZ): they are expected to vary
+# together across the 3 primary BLE advertising channels, not to be fixed
+# to channel 37. The decoder itself (ble_worker.whitening.ble_dewhiten)
+# already parameterizes dewhitening on channel_index for any of 0-39; this
+# gate used to hardcode channel 37 only, rejecting every real channel
+# 38/39 capture before decode ever started even though nothing downstream
+# actually required that -- confirmed by cross-referencing campaign_
+# orchestrator.py's own _BLE_CHANNEL_FREQUENCIES_HZ, which already lists
+# all 3.
 REQUIRED_RF = {
     "sample_format": "cf32_le",
     "sample_rate_sps": 4_000_000,
-    "center_frequency_hz": 2_402_000_000,
     "bandwidth_hz": 2_000_000,
-    "ble_channel": 37,
 }
+_BLE_ADVERTISING_CHANNEL_FREQUENCIES_HZ = {37: 2_402_000_000, 38: 2_426_000_000, 39: 2_480_000_000}
 # Every processing_status a candidate can reach. PENDING is the only
 # non-terminal value; a resumed run only ever re-attempts PENDING rows.
 CANDIDATE_PENDING = "PENDING"
@@ -251,6 +263,55 @@ class BleOfflineReplayService:
             raise ValueError("SOURCE_SESSION_NOT_UNAMBIGUOUS")
         return matches[0]
 
+    def quick_native_presence_check(self, capture_id: str, execution_id: Any = None, target_addresses: list[str] | None = None) -> dict[str, Any]:
+        """Fast (sub-second, no IQ decode) triage: was any of target_addresses
+        seen at all by the native Windows BLE scan during this capture's RF
+        window? Reads only capture_manifest.json + the already-preserved
+        advertisements.jsonl -- never touches the (large, slow to decode) IQ
+        file itself.
+
+        target_addresses is the caller's resolved set of known addresses for
+        the physical unit in question (e.g. from a Physical Device Registry
+        binding) -- callers whose session actually declares a single
+        target_address up front (the older hybrid-campaign flow) may omit
+        this and let it fall back to that field instead.
+
+        This is a NECESSARY-but-not-sufficient predictor of the real,
+        decode-dependent verdict _associate() computes later: a target never
+        seen natively in the window WILL end up REPETITION_NEEDED (no B200
+        decode can invent a native corroboration that never happened), so
+        target_observed=False is a reliable early rejection. target_observed
+        =True does not guarantee ELIGIBLE_AS_POSITIVE -- MULTIPLE_NATIVE_
+        CALLBACKS ambiguity can still occur and is only resolved by full
+        packet-level association, which this check deliberately skips.
+        """
+        capture_dir = self._capture_dir(capture_id)
+        capture_manifest = read_json(capture_dir / "capture_manifest.json")
+        try:
+            session = self._source_session(capture_id, execution_id)
+        except ValueError:
+            return {"applicable": False, "reason": "SOURCE_SESSION_NOT_FOUND"}
+        candidates = {str(addr).upper() for addr in (target_addresses or []) if addr}
+        if not candidates and session.get("target_address"):
+            candidates = {str(session["target_address"]).upper()}
+        if not candidates:
+            return {"applicable": False, "reason": "NO_TARGET_ADDRESS_AVAILABLE"}
+        window_start = capture_manifest.get("b200_rf_started_at")
+        window_end = capture_manifest.get("b200_rf_finished_at")
+        native_rows = self._native_rows(session, capture_manifest)
+        target_rows = [row for row in native_rows if str(row.get("address", "")).upper() in candidates]
+        other_addresses = {str(row.get("address", "")).upper() for row in native_rows} - candidates
+        return {
+            "applicable": True,
+            "target_addresses": sorted(candidates),
+            "window_start_utc": window_start,
+            "window_end_utc": window_end,
+            "target_observed": bool(target_rows),
+            "target_observation_count": len(target_rows),
+            "other_addresses_observed_count": len(other_addresses),
+            "total_native_observations": len(native_rows),
+        }
+
     def _validate_source(self, capture_id: str, capture: dict[str, Any], session: dict[str, Any], iq_sha: str) -> None:
         if session.get("capture_id") != capture_id:
             raise ValueError("CAPTURE_ID_DOES_NOT_BELONG_TO_EXECUTION_ID")
@@ -265,6 +326,12 @@ class BleOfflineReplayService:
                 observed = int(observed)
             if observed != expected:
                 raise ValueError(f"REPLAY_RF_CONFIGURATION_MISMATCH:{key}")
+        observed_channel = int(capture["ble_channel"])
+        expected_frequency = _BLE_ADVERTISING_CHANNEL_FREQUENCIES_HZ.get(observed_channel)
+        if expected_frequency is None:
+            raise ValueError(f"REPLAY_RF_CONFIGURATION_MISMATCH:ble_channel")
+        if int(capture["center_frequency_hz"]) != expected_frequency:
+            raise ValueError("REPLAY_RF_CONFIGURATION_MISMATCH:center_frequency_hz")
         if not (Path(str(session.get("_session_manifest_path"))).is_file()):
             raise ValueError("SOURCE_SESSION_MANIFEST_MISSING")
 

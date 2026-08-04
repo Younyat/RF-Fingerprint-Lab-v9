@@ -79,6 +79,41 @@ class OfflineInferenceService:
                 return torch.softmax(logits, dim=1).numpy()
         return bundle["model"].predict_proba(X)
 
+    def run_live(
+        self, *, bundle_id: str, iq_window: np.ndarray, sample_rate_sps: float,
+        base_profile: BasePreprocessingProfile | None = None,
+    ) -> dict[str, Any]:
+        """Live counterpart to run(): scores ONE already-extracted raw IQ
+        burst window directly (e.g. from Live Monitor's circular IQ buffer),
+        never touching ExampleRecord/capture_id/dataset/evidence at all --
+        this is deliberately the smallest possible path from "raw IQ burst"
+        to "prediction", reusing the exact same bundle-loading,
+        preprocessing, representation, and scoring logic run() uses for
+        offline batch inference (never a second, divergent implementation).
+
+        Compatibility (center frequency, channel, sample rate, IQ format,
+        bandwidth, extractor version) is deliberately NOT checked here --
+        this class has no notion of what the CURRENT live tuning is, only
+        what a single window looks like. The caller (StudioRepository, which
+        already resolves a bundle's training-time acquisition parameters via
+        the Physical capture registry) is responsible for that check before
+        ever calling this.
+        """
+        bundle = self._load_bundle(bundle_id)
+        base_profile = base_profile or BasePreprocessingProfile(profile_id="base-v1")
+        acceptance_threshold = bundle["acceptance_threshold"]
+        if acceptance_threshold is None:
+            raise ValueError(f"BUNDLE_HAS_NO_CALIBRATED_ACCEPTANCE_THRESHOLD:{bundle_id}")
+
+        window = apply_base_preprocessing(iq_window, base_profile, sample_rate_sps)
+        features = self._representation(window, sample_rate_sps, bundle["representation_profile_id"])
+        X = features[np.newaxis, ...]
+        if bundle["scaler"] is not None:
+            X = bundle["scaler"].transform(X)
+        proba = self._predict_proba(bundle, X)[0]
+        probabilities = {cls: float(p) for cls, p in zip(bundle["label_classes"], proba)}
+        return self.evaluator.classify_with_threshold({"example_id": None, "probabilities": probabilities}, acceptance_threshold)
+
     def run(self, *, bundle_id: str, examples: list[ExampleRecord], base_profile: BasePreprocessingProfile | None = None) -> list[dict[str, Any]]:
         bundle = self._load_bundle(bundle_id)
         base_profile = base_profile or BasePreprocessingProfile(profile_id="base-v1")

@@ -155,7 +155,7 @@ def test_background_environment_never_links_evidence_as_positive_for_the_declare
     silently trusted over that declaration to produce a positive example."""
     background_capture = CaptureStage(CAPTURE_ROOT).build_capture_record(
         capture_id=REAL_CAPTURE_ID, project_id=PROJECT_ID, campaign_id="CC2650-CAMPAIGN-01",
-        capture_purpose="BACKGROUND_ENVIRONMENT", target_state="OPERATOR_DECLARED_POWERED_OFF_OR_REMOVED",
+        capture_purpose="BACKGROUND_TARGET_OFF", target_state="OPERATOR_DECLARED_POWERED_OFF_OR_REMOVED",
         target_reference_id="CC2650-UNIT-01", dataset_role="NEGATIVE_CANDIDATE",
     )
     pairs = stage.build_examples(capture=background_capture, project_id=PROJECT_ID, ble_channel=37)
@@ -195,7 +195,7 @@ def test_background_environment_without_a_target_reference_id_is_unaffected(stag
     association proceeds exactly like a legacy/TARGET_DEVICE capture would."""
     background_capture = CaptureStage(CAPTURE_ROOT).build_capture_record(
         capture_id=REAL_CAPTURE_ID, project_id=PROJECT_ID, campaign_id="CC2650-CAMPAIGN-01",
-        capture_purpose="BACKGROUND_ENVIRONMENT", target_state="OPERATOR_DECLARED_POWERED_OFF_OR_REMOVED",
+        capture_purpose="BACKGROUND_TARGET_OFF", target_state="OPERATOR_DECLARED_POWERED_OFF_OR_REMOVED",
         dataset_role="NEGATIVE_CANDIDATE",
     )
     pairs = stage.build_examples(capture=background_capture, project_id=PROJECT_ID, ble_channel=37)

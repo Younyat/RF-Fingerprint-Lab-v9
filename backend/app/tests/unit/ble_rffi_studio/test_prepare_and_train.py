@@ -13,15 +13,12 @@ from app.infrastructure.ble.capture.ble_offline_replay import sha256_file, utc_n
 from app.modules.ble_rffi_studio.api import StudioRepository
 from app.modules.ble_rffi_studio.contracts import CaptureRecord
 
-from ._helpers import write_synthetic_capture_iq
+from ._helpers import write_synthetic_capture_iq, write_target_vs_background_fixture
 
 PROJECT_ID = "SYN-PROJECT"
 
 
-def _seed_synthetic_capture(repository: StudioRepository, tmp_path: Path, **kwargs):
-    raw_iq_dir = tmp_path / "raw_iq"
-    raw_iq_dir.mkdir(parents=True, exist_ok=True)
-    examples, iq_paths = write_synthetic_capture_iq(raw_iq_dir, **kwargs)
+def _seed_captures_from_examples(repository: StudioRepository, tmp_path: Path, examples, iq_paths, capture_purpose_by_capture: dict[str, str] | None = None):
     by_capture: dict[str, list] = {}
     for example in examples:
         by_capture.setdefault(example.capture_id, []).append(example)
@@ -38,6 +35,7 @@ def _seed_synthetic_capture(repository: StudioRepository, tmp_path: Path, **kwar
             center_frequency_hz=2_402_000_000, frontend_bandwidth_hz=2_000_000, effective_bandwidth_hz=2_000_000, gain_db=20.0, gain_mode="manual",
             capture_duration_s=1.0, capture_tool="synthetic", iq_path="iq.cf32", iq_size_bytes=dest.stat().st_size, iq_sha256=sha256_file(dest),
             acquisition_quality="PASSED", discontinuities=0, replay_status="FULLY_PROCESSED", created_at=utc_now(),
+            capture_purpose=(capture_purpose_by_capture or {}).get(capture_id),
         )
         write_json(repository.captures_dir / f"{capture_id}.json", capture.model_dump(mode="json"))
         capture_evidence_dir = repository.evidence_dir / capture_id
@@ -46,6 +44,21 @@ def _seed_synthetic_capture(repository: StudioRepository, tmp_path: Path, **kwar
         write_jsonl(capture_evidence_dir / "annotations.jsonl", [])
 
     return list(by_capture.keys())
+
+
+def _seed_synthetic_capture(repository: StudioRepository, tmp_path: Path, **kwargs):
+    raw_iq_dir = tmp_path / "raw_iq"
+    raw_iq_dir.mkdir(parents=True, exist_ok=True)
+    examples, iq_paths = write_synthetic_capture_iq(raw_iq_dir, **kwargs)
+    return _seed_captures_from_examples(repository, tmp_path, examples, iq_paths)
+
+
+def _seed_target_vs_background_capture(repository: StudioRepository, tmp_path: Path, **kwargs):
+    raw_iq_dir = tmp_path / "raw_iq"
+    raw_iq_dir.mkdir(parents=True, exist_ok=True)
+    examples, iq_paths = write_target_vs_background_fixture(raw_iq_dir, **kwargs)
+    capture_purpose_by_capture = {e.capture_id: e.capture_purpose for e in examples}
+    return _seed_captures_from_examples(repository, tmp_path, examples, iq_paths, capture_purpose_by_capture)
 
 
 @pytest.fixture
@@ -150,3 +163,29 @@ def test_prepare_and_train_skips_cnn_when_infeasible_but_still_trains_baselines(
     assert {"cnn1d", "cnn2d"} <= skipped_types
     assert all("insuficiente" in m["reason"] for m in result["skipped_models"] if m["model_type"] in ("cnn1d", "cnn2d"))
     assert result["trained_models"]  # baselines still ran
+
+
+def test_prepare_and_train_succeeds_end_to_end_on_synthetic_target_vs_background_data(repository, tmp_path):
+    # The exact scenario the reviewer demanded be proven end-to-end: both
+    # TARGET_DEVICE and BACKGROUND_ENVIRONMENT genuinely present and
+    # separable, producing a real 2-class result -- not the old single-class
+    # TRAIN bug (see split_builder.py's module docstring for the root cause).
+    capture_ids = _seed_target_vs_background_capture(
+        repository, tmp_path, target_sessions=3, background_sessions=3, examples_per_session=16,
+    )
+
+    result = repository.prepare_and_train(
+        capture_ids=capture_ids, project_id=PROJECT_ID, campaign_id="SYN-CAMPAIGN-01",
+        scientific_task="TARGET_VS_BACKGROUND", dataset_id="SYN-TVB-DS", speed_profile="quick_pilot",
+    )
+
+    assert result["stopped_at"] is None
+    assert result["split"].split_status == "READY"
+    assert result["trained_models"]
+    assert result["recommended_training_run_id"] is not None
+
+    evaluation = repository.get_evaluation(result["recommended_training_run_id"])
+    assert evaluation is not None
+    test_report = evaluation["evaluation_report"]["TEST"]
+    assert test_report["evaluation_validity"] == "VALID"
+    assert set(test_report["confusion_matrix"].keys()) == {"TARGET_DEVICE", "BACKGROUND_ENVIRONMENT"}

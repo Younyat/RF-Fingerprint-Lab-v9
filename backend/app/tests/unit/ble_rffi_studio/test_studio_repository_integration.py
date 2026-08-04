@@ -118,7 +118,7 @@ def test_capture_type_label_and_decision_for_a_target_device_capture(repository)
     repository.declare_binding(project_id=PROJECT_ID, address="B0:B4:48:C0:36:06", address_type="public", physical_unit_id="CC2650-UNIT-01", reason="test", decision_artifact_id="decl-1")
     capture = repository.build_capture(
         capture_id=REAL_CAPTURE_ID, project_id=PROJECT_ID, campaign_id="CC2650-CAMPAIGN-01",
-        capture_purpose="TARGET_DEVICE", target_state="POWERED_ON",
+        capture_purpose="TARGET_DEVICE_ON", target_state="POWERED_ON",
         target_reference_id="CC2650-UNIT-01", dataset_role="POSITIVE_CANDIDATE",
     )
 
@@ -134,36 +134,41 @@ def test_capture_type_label_and_decision_for_a_target_device_capture(repository)
     assert row["capture_decision"] == "ELIGIBLE_AS_POSITIVE"  # the real address-matched packets are still includable
 
 
-def test_capture_type_label_and_decision_for_a_background_environment_capture_without_a_named_unit(repository):
+def test_capture_type_label_and_decision_for_a_background_general_capture(repository):
+    # No specific unit in question at all -- BACKGROUND_GENERAL, not
+    # BACKGROUND_TARGET_OFF-without-a-reference (a genuinely different
+    # capture_purpose value, not the same intent minus one optional field).
     capture = repository.build_capture(
         capture_id=REAL_CAPTURE_ID, project_id="EMPTY-PROJECT", campaign_id="CC2650-CAMPAIGN-01",
-        capture_purpose="BACKGROUND_ENVIRONMENT", target_state="OPERATOR_DECLARED_POWERED_OFF_OR_REMOVED",
-        dataset_role="NEGATIVE_CANDIDATE",
+        capture_purpose="BACKGROUND_GENERAL", dataset_role="NEGATIVE_CANDIDATE",
     )
     repository.build_evidence(capture=capture, project_id="EMPTY-PROJECT", ble_channel=37)
     row = next(row for row in repository.list_legacy_captures()["captures"] if row["capture_id"] == REAL_CAPTURE_ID)
     assert row["capture_type_label"] == "Entorno general"
     assert row["capture_decision"] == "ELIGIBLE_AS_BACKGROUND"
+    assert row["target_presence_status"] == "NOT_APPLICABLE"
 
 
-def test_capture_type_label_and_decision_for_a_background_environment_capture_with_a_contradicted_unit(repository):
+def test_capture_type_label_and_decision_for_a_background_target_off_capture_with_a_contradicted_unit(repository):
     # The declared-off unit's own real address is registered here, so every
-    # one of its packets is a genuine contradiction -- never eligible as
-    # background evidence, since it never was actually confirmed absent.
+    # one of its packets is a genuine contradiction: the target actually
+    # showed up while declared off/removed. This must quarantine the whole
+    # capture-level verdict -- never silently treated as good evidence just
+    # because other, genuinely unrelated background traffic also exists in
+    # the same capture (the exact original bug: a real contradiction hiding
+    # behind unrelated clean data elsewhere in the same recording).
     repository.register_physical_unit(physical_unit_id="CC2650-UNIT-01", project_id=PROJECT_ID, device_family="TI_SENSOR_TAG", operator_declaration_id="decl-1")
     repository.declare_binding(project_id=PROJECT_ID, address="B0:B4:48:C0:36:06", address_type="public", physical_unit_id="CC2650-UNIT-01", reason="test", decision_artifact_id="decl-1")
     capture = repository.build_capture(
         capture_id=REAL_CAPTURE_ID, project_id=PROJECT_ID, campaign_id="CC2650-CAMPAIGN-01",
-        capture_purpose="BACKGROUND_ENVIRONMENT", target_state="OPERATOR_DECLARED_POWERED_OFF_OR_REMOVED",
+        capture_purpose="BACKGROUND_TARGET_OFF", target_state="OPERATOR_DECLARED_POWERED_OFF_OR_REMOVED",
         target_reference_id="CC2650-UNIT-01", dataset_role="NEGATIVE_CANDIDATE",
     )
     repository.build_evidence(capture=capture, project_id=PROJECT_ID, ble_channel=37)
     row = next(row for row in repository.list_legacy_captures()["captures"] if row["capture_id"] == REAL_CAPTURE_ID)
     assert row["capture_type_label"] == "Entorno -- dispositivo apagado"
-    # Every packet from the contradicted unit's address is quarantined, but
-    # this real capture also contains genuinely unrelated background traffic
-    # from other addresses that is still perfectly good background evidence.
-    assert row["capture_decision"] == "ELIGIBLE_AS_BACKGROUND"
+    assert row["capture_decision"] == "QUARANTINED"
+    assert row["target_presence_status"] == "DETECTED"
 
 
 def test_evidence_job_manager_matches_the_direct_call(repository, tmp_path):
@@ -208,7 +213,7 @@ def _seed_synthetic_capture(repository: StudioRepository, tmp_path: Path):
         dest = capture_dir / "iq.cf32"
         dest.write_bytes(src.read_bytes())
         capture = CaptureRecord(
-            project_id=PROJECT_ID, campaign_id="SYN-CAMPAIGN-01", capture_id=capture_id, session_id=capture_examples[0].session_id,
+            project_id="SYN-PROJECT", campaign_id="SYN-CAMPAIGN-01", capture_id=capture_id, session_id=capture_examples[0].session_id,
             execution_id=f"EXEC-{capture_id}", data_origin="SYNTHETIC_TEST_ONLY", receiver_device_id="synthetic", sdr_model="synthetic", rx_channel="RX2", antenna_port="RX2",
             sample_rate_sps=4_000_000, sample_dtype="cf32_le", byte_order="little_endian", sample_count=1_000_000, channel_count=1,
             center_frequency_hz=2_402_000_000, frontend_bandwidth_hz=2_000_000, effective_bandwidth_hz=2_000_000, gain_db=20.0, gain_mode="manual",

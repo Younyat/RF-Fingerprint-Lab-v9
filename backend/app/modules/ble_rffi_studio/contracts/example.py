@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from .capture import BackgroundKind, CapturePurpose
 from .common import StudioContract, identity_hash
 from .evidence import LabelDecision, LabelEvidenceItem
 
@@ -19,7 +20,7 @@ ANNOTATION_SCHEMA_VERSION = "ble-rffi-studio-annotation-v1"
 
 AssociationStatus = Literal["STRONG", "AMBIGUOUS", "NONE", "CONFLICT", "PHYSICAL_ISOLATION_DECLARED"]
 QualityStatus = Literal["PASSED", "FAILED", "INCOMPLETE"]
-DatasetEligibility = Literal["ELIGIBLE", "INELIGIBLE", "QUARANTINED", "PENDING_REVIEW"]
+DatasetEligibility = Literal["ELIGIBLE", "INELIGIBLE", "QUARANTINED", "PENDING_ANALYSIS"]
 
 
 class ExampleRecord(StudioContract):
@@ -40,6 +41,18 @@ class ExampleRecord(StudioContract):
 
     physical_unit_id: str | None = None
     logical_transmitter_id: str | None = None
+    # Denormalized copy of the owning CaptureRecord's capture_purpose/
+    # background_kind at the moment evidence was built (never part of
+    # example_id -- purely interpretive, like physical_unit_id). Exists so
+    # SplitBuilder/feasibility_explainer can tell "no address match"
+    # (association_status NONE/CONFLICT, physical_unit_id=None) apart from
+    # "operator confirmed this device was off/removed"
+    # (capture_purpose=BACKGROUND_TARGET_OFF) without a separate capture
+    # lookup -- only the latter (and BACKGROUND_GENERAL) is trustworthy
+    # negative evidence for TARGET_VS_BACKGROUND; the former is just
+    # inconclusive.
+    capture_purpose: CapturePurpose | None = None
+    background_kind: BackgroundKind | None = None
 
     # Three independent axes -- never conflated into one status field.
     association_status: AssociationStatus

@@ -58,8 +58,8 @@ const secondaryButtonClass = 'inline-flex h-9 items-center gap-2 rounded-md bord
 
 function statusPillClass(status: string): string {
   if (['ACCEPTED_FOR_TRAINING', 'PASSED', 'READY', 'COMPLETED', 'EVALUATED', 'APPROVED_FOR_LIVE_PILOT', 'IDENTIFIED'].includes(status)) return 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200';
-  if (['ACCEPTED_WITH_LIMITATIONS', 'DIAGNOSTIC_CHECK', 'UNKNOWN', 'PENDING_REVIEW'].includes(status)) return 'border-amber-500/40 bg-amber-500/10 text-amber-200';
-  if (['NOT_ACCEPTED_FOR_TRAINING', 'FAILED', 'NOT_FEASIBLE', 'REJECTED', 'QUARANTINED'].includes(status)) return 'border-rose-500/40 bg-rose-500/10 text-rose-200';
+  if (['ACCEPTED_WITH_LIMITATIONS', 'DIAGNOSTIC_CHECK', 'UNKNOWN', 'PENDING_ANALYSIS', 'REPETITION_NEEDED', 'CONTROL_ONLY', 'TEST_NOT_EXECUTED'].includes(status)) return 'border-amber-500/40 bg-amber-500/10 text-amber-200';
+  if (['NOT_ACCEPTED_FOR_TRAINING', 'FAILED', 'NOT_FEASIBLE', 'REJECTED', 'QUARANTINED', 'QUARANTINED_AMBIGUOUS'].includes(status)) return 'border-rose-500/40 bg-rose-500/10 text-rose-200';
   return 'border-slate-700 bg-slate-800 text-slate-300';
 }
 function Pill({ value }: { value: string }) {
@@ -73,6 +73,15 @@ export default function BleRffiStudioDashboard() {
 
   const [projectId, setProjectId] = useState('BLE-RFFI-CC2650');
   const [campaignId, setCampaignId] = useState('CC2650-CAMPAIGN-01');
+
+  // Auto-train: one click per registered device, no manual capture_id
+  // curation -- see StudioRepository.auto_train_candidates()/resolve_auto_train_capture_ids().
+  const [autoTrainCandidates, setAutoTrainCandidates] = useState<Array<{
+    physical_unit_id: string; project_id: string; target_captures: number; target_sessions: number;
+    background_captures: number; background_sessions: number; ready: boolean;
+  }>>([]);
+  const [autoTrainUnitId, setAutoTrainUnitId] = useState('');
+  const [autoTrainJob, setAutoTrainJob] = useState<StudioJob | null>(null);
 
   // A. Legacy captures (read-only)
   const [legacy, setLegacy] = useState<StudioLegacyCaptureListing | null>(null);
@@ -136,8 +145,9 @@ export default function BleRffiStudioDashboard() {
   }
 
   const refreshAll = async () => {
-    const [legacyRes, unitsRes, bindingsRes, capturesRes, datasetsRes, runsRes, bundlesRes] = await Promise.all([
+    const [legacyRes, unitsRes, bindingsRes, capturesRes, datasetsRes, runsRes, bundlesRes, autoTrainRes] = await Promise.all([
       api.legacyCaptures(), api.physicalUnits(), api.addressBindings(), api.captures(), api.datasets(), api.trainingRuns(), api.bundles(),
+      api.autoTrainCandidates(),
     ]);
     setLegacy(legacyRes);
     setUnits(asArray(unitsRes));
@@ -146,6 +156,7 @@ export default function BleRffiStudioDashboard() {
     setDatasets(asArray(datasetsRes));
     setTrainingRuns(asArray(runsRes));
     setBundles(asArray(bundlesRes));
+    setAutoTrainCandidates(asArray(autoTrainRes));
   };
 
   const [backendUnavailable, setBackendUnavailable] = useState(false);
@@ -228,6 +239,54 @@ export default function BleRffiStudioDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trainingJob?.job_id, trainingJob?.state]);
 
+  // --- Auto-train job polling ---
+  useEffect(() => {
+    if (!autoTrainJob || JOB_TERMINAL.has(autoTrainJob.state)) return;
+    const operationId = `ble-rffi-studio-auto-train-${autoTrainJob.job_id}`;
+    ensureOperation({ operationId, kind: 'processing', title: 'ENTRENAMIENTO AUTOMATICO', phase: autoTrainJob.phase || 'Iniciando', progressPercent: (autoTrainJob.overall_progress || 0) * 100, target: autoTrainUnitId, detail: autoTrainJob.message || '' });
+    const timer = window.setInterval(async () => {
+      try {
+        const next = await api.job(autoTrainJob.job_id);
+        setAutoTrainJob(next);
+        updateOperation(operationId, { phase: next.phase || '', progressPercent: (next.overall_progress || 0) * 100, detail: next.message || '' });
+        if (JOB_TERMINAL.has(next.state)) {
+          window.clearInterval(timer);
+          if (next.state === 'completed') {
+            finishOperation(operationId, 'Entrenamiento automatico completado');
+            setAutoTrainCandidates(asArray(await api.autoTrainCandidates()));
+            setBundles(asArray(await api.bundles()));
+          } else {
+            failOperation(operationId, next.error || 'Fallo desconocido');
+          }
+        }
+      } catch (e) {
+        window.clearInterval(timer);
+        failOperation(operationId, String(e));
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoTrainJob?.job_id, autoTrainJob?.state]);
+
+  const autoTrainSummary = autoTrainJob?.result_summary as
+    | { recommended_training_run_id?: string; recommended_reason?: string; final_test_evaluation?: {
+        balanced_accuracy?: number; macro_f1?: number; accuracy?: number;
+        confusion_matrix?: Record<string, Record<string, number>>;
+      }; trained_models?: Array<{ model_type: string; training_run_id: string; composite_score: number }>;
+      split_status?: string | null; feasibility?: { human_summary?: string } | null;
+      stopped_at?: string | null; stopped_reason?: string | null;
+      exported_bundles?: Array<{ training_run_id: string; model_type: string; bundle_id: string; approval_status: string | null; error?: string }> }
+    | undefined;
+  // Two independent gates can block training before any model is trained:
+  // the split feasibility check (not enough independent sessions -- see
+  // split_status) and the dataset quality gate (e.g. sample overlap --
+  // stopped_at/stopped_reason). Different result shapes, same "nothing to
+  // recommend yet" outcome -- surfaced together so the operator sees the
+  // real reason either way instead of a generic failure.
+  const autoTrainBlockedReason = autoTrainSummary && autoTrainSummary.split_status !== 'READY'
+    ? autoTrainSummary.feasibility?.human_summary || autoTrainSummary.stopped_reason || `Bloqueado en: ${autoTrainSummary.stopped_at || 'motivo desconocido'}`
+    : null;
+
   return (
     <div className="space-y-4 p-4 text-slate-100">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -252,7 +311,86 @@ export default function BleRffiStudioDashboard() {
       {error && <div className="rounded-md border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">{error}</div>}
       {message && !error && <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm text-emerald-200">{message}</div>}
 
-      <Panel title="Contexto: proyecto / campana">
+      <Panel title="Entrenamiento automatico (un clic por dispositivo)">
+        <p className="text-xs text-slate-400">
+          Resuelve por si solo las capturas de cada dispositivo (TARGET_DEVICE_ON propias + BACKGROUND_TARGET_OFF/BACKGROUND_GENERAL compartidas del proyecto), construye el dataset, la particion y entrena los 5 modelos candidatos -- sin pasar por captura -&gt; evidencia -&gt; dataset -&gt; particion a mano.
+        </p>
+        <table className="w-full text-left text-xs">
+          <thead className="text-slate-400">
+            <tr><th className="p-1">dispositivo</th><th className="p-1">proyecto</th><th className="p-1">sesiones objetivo</th><th className="p-1">sesiones entorno</th><th className="p-1">listo</th><th className="p-1" /></tr>
+          </thead>
+          <tbody>{autoTrainCandidates.map((c) => (
+            <tr key={c.physical_unit_id} className="border-t border-slate-800">
+              <td className="p-1 font-mono">{c.physical_unit_id}</td>
+              <td className="p-1 font-mono text-slate-400">{c.project_id}</td>
+              <td className="p-1">{c.target_sessions} ({c.target_captures} capturas)</td>
+              <td className="p-1">{c.background_sessions} ({c.background_captures} capturas)</td>
+              <td className="p-1"><Pill value={c.ready ? 'READY' : 'NOT_FEASIBLE'} /></td>
+              <td className="p-1">
+                <button
+                  className={buttonClass}
+                  disabled={!!busy || backendUnavailable || !c.ready || (!!autoTrainJob && !JOB_TERMINAL.has(autoTrainJob.state))}
+                  onClick={() => run('auto-train', async () => {
+                    setAutoTrainUnitId(c.physical_unit_id);
+                    const job = await api.autoTrain(c.physical_unit_id);
+                    setAutoTrainJob(job);
+                    setMessage(`Entrenamiento automatico iniciado para ${c.physical_unit_id}: al terminar, los 5 modelos candidatos se exportaran y aprobaran solos.`);
+                  })}
+                >
+                  Entrenar
+                </button>
+              </td>
+            </tr>
+          ))}</tbody>
+        </table>
+
+        {autoTrainJob && (
+          <div className="rounded-md border border-slate-700 bg-slate-900 p-3 text-xs space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold">{autoTrainUnitId}</span>
+              <Pill value={autoTrainJob.state.toUpperCase()} />
+              {autoTrainJob.message && <span className="text-slate-400">{autoTrainJob.message}</span>}
+            </div>
+            {autoTrainJob.state === 'completed' && autoTrainSummary && (
+              autoTrainBlockedReason ? (
+                <div className="text-amber-200">{autoTrainBlockedReason}</div>
+              ) : (
+                <>
+                  <div>Recomendado (mejor en VALIDATION): <span className="font-mono">{autoTrainSummary.recommended_training_run_id}</span> -- {autoTrainSummary.recommended_reason}</div>
+                  {autoTrainSummary.final_test_evaluation && (
+                    <div className="flex flex-wrap gap-4 font-mono" style={{ fontVariantNumeric: 'tabular-nums' }}>
+                      <span>balanced_accuracy: {autoTrainSummary.final_test_evaluation.balanced_accuracy?.toFixed(3)}</span>
+                      <span>macro_f1: {autoTrainSummary.final_test_evaluation.macro_f1?.toFixed(3)}</span>
+                      <span>accuracy: {autoTrainSummary.final_test_evaluation.accuracy?.toFixed(3)}</span>
+                    </div>
+                  )}
+                  <div className="pt-2">
+                    <div className="text-xs font-semibold text-slate-200">
+                      Los {autoTrainSummary.exported_bundles?.length ?? 0} modelos candidatos ya se exportaron y aprobaron automaticamente:
+                    </div>
+                    <table className="mt-1 w-full text-left text-xs">
+                      <thead className="text-slate-400">
+                        <tr><th className="p-1">bundle_id</th><th className="p-1">modelo</th><th className="p-1">estado</th></tr>
+                      </thead>
+                      <tbody>
+                        {(autoTrainSummary.exported_bundles || []).map((eb) => (
+                          <tr key={eb.bundle_id} className="border-t border-slate-800">
+                            <td className="p-1 font-mono">{eb.bundle_id}</td>
+                            <td className="p-1">{eb.model_type}{eb.training_run_id === autoTrainSummary.recommended_training_run_id ? ' (recomendado)' : ''}</td>
+                            <td className="p-1"><Pill value={eb.approval_status || eb.error || 'ERROR'} /></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )
+            )}
+          </div>
+        )}
+      </Panel>
+
+      <Panel title="Contexto: proyecto / campana (modo manual, avanzado)">
         <div className="flex flex-wrap gap-3">
           <Field label="project_id"><input className={inputClass} value={projectId} onChange={(e) => setProjectId(e.target.value)} /></Field>
           <Field label="campaign_id"><input className={inputClass} value={campaignId} onChange={(e) => setCampaignId(e.target.value)} /></Field>
@@ -367,13 +505,31 @@ export default function BleRffiStudioDashboard() {
             setMessage(`Dataset congelado: ${result.n_selected} seleccionados, ${result.n_excluded} excluidos.`);
           })}>Construir + congelar dataset</button>
         </div>
-        <table className="w-full text-left text-xs"><thead className="text-slate-400"><tr><th className="p-1">dataset_id</th><th className="p-1">version</th><th className="p-1">frozen</th><th className="p-1">examples</th><th className="p-1">class_distribution</th><th className="p-1" /></tr></thead>
+        <table className="w-full text-left text-xs"><thead className="text-slate-400"><tr><th className="p-1">dataset_id</th><th className="p-1">version</th><th className="p-1">frozen</th><th className="p-1">examples</th><th className="p-1">class_distribution</th><th className="p-1" /><th className="p-1" /></tr></thead>
           <tbody>{datasets.map((d) => (
             <tr key={`${d.dataset_id}-${d.dataset_version}`} className="border-t border-slate-800">
               <td className="p-1 font-mono">{d.dataset_id}</td><td className="p-1 font-mono">{d.dataset_version}</td>
               <td className="p-1">{d.frozen ? 'si' : 'no'}</td><td className="p-1">{d.example_ids.length}</td>
               <td className="p-1 font-mono">{JSON.stringify(d.class_distribution)}</td>
               <td className="p-1"><button className={secondaryButtonClass} onClick={() => { setSelectedDatasetId(d.dataset_id); setSelectedDatasetVersion(d.dataset_version); }}>Elegir</button></td>
+              <td className="p-1">
+                <button
+                  className={secondaryButtonClass}
+                  disabled={!!busy || backendUnavailable}
+                  onClick={() => run(`delete-dataset-${d.dataset_id}-${d.dataset_version}`, async () => {
+                    if (!window.confirm(`Borrar el dataset ${d.dataset_id}@${d.dataset_version}? Esto elimina el manifiesto congelado y cualquier split construido a partir de el (no se puede deshacer). Las capturas y evidencia originales no se tocan.`)) return;
+                    await api.deleteDataset(d.dataset_id, d.dataset_version);
+                    setDatasets(asArray(await api.datasets()));
+                    if (selectedDatasetId === d.dataset_id && selectedDatasetVersion === d.dataset_version) {
+                      setSelectedDatasetId('');
+                      setSelectedDatasetVersion('');
+                    }
+                    setMessage(`Dataset ${d.dataset_id}@${d.dataset_version} eliminado.`);
+                  })}
+                >
+                  Eliminar
+                </button>
+              </td>
             </tr>
           ))}</tbody>
         </table>

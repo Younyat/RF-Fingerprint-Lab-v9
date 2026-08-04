@@ -19,6 +19,24 @@ def normalize_device_addr(device_addr: str) -> str:
     return str(device_addr).strip()
 
 
+# LO-offset tuning: a real, measured B200/AD9361 hardware characteristic
+# (direct-conversion/zero-IF front end), not a software bug -- see the
+# README's "Center-frequency spectral artifact" section for the full
+# investigation. Tuning the LO exactly to the frequency of interest (a bare
+# float passed to set_center_freq) puts that residual LO-leakage/DC-offset
+# spike right at the center of the displayed band. uhd.tune_request_t's
+# (target_freq, lo_offset) form keeps the REPORTED/displayed center exactly
+# at target_freq (UHD compensates with an internal digital mixer) while
+# physically placing the LO -- and therefore the leakage -- lo_offset away
+# from it, landing the artifact off to one side of the display instead of
+# dead center. A quarter of the sample rate is a conventional, safe choice:
+# far enough to clear the narrow (~20-25 kHz measured) artifact, not so far
+# that the wanted band approaches the anti-aliasing filter's edge.
+def _tune_request(center_freq_hz: float, sample_rate_hz: float):
+    lo_offset_hz = sample_rate_hz * 0.25 if sample_rate_hz > 0 else 0.0
+    return uhd.tune_request_t(center_freq_hz, lo_offset_hz)
+
+
 class SpectrumStream(gr.top_block):
     def __init__(
         self,
@@ -35,8 +53,18 @@ class SpectrumStream(gr.top_block):
         )
         self.source.set_samp_rate(float(sample_rate_hz))
         self.source.set_time_unknown_pps(uhd.time_spec(0))
-        self.source.set_center_freq(float(center_freq_hz), 0)
+        self.source.set_center_freq(_tune_request(float(center_freq_hz), float(sample_rate_hz)), 0)
         self.source.set_antenna(str(antenna), 0)
+        try:
+            # Belt-and-suspenders alongside the LO-offset tune above (see
+            # _tune_request docstring): UHD's own digital DC-offset
+            # correction, tried first and confirmed NOT sufficient by itself
+            # (2026-08-01 investigation, see README's "Center-frequency
+            # spectral artifact" section) -- kept enabled anyway since it's
+            # free and can only help with whatever residual remains.
+            self.source.set_auto_dc_offset(True, 0)
+        except Exception:
+            pass
         try:
             self.source.set_gain(float(gain_db), 0)
         except TypeError:
@@ -46,7 +74,7 @@ class SpectrumStream(gr.top_block):
         self.connect((self.source, 0), (self.sink, 0))
 
     def set_center_frequency(self, center_freq_hz: float) -> None:
-        self.source.set_center_freq(float(center_freq_hz), 0)
+        self.source.set_center_freq(_tune_request(float(center_freq_hz), float(self.source.get_samp_rate())), 0)
 
     def set_sample_rate(self, sample_rate_hz: float) -> None:
         self.source.set_samp_rate(float(sample_rate_hz))
@@ -56,6 +84,57 @@ class SpectrumStream(gr.top_block):
             self.source.set_gain(float(gain_db), 0)
         except TypeError:
             self.source.set_gain(float(gain_db))
+
+
+import base64
+
+# BLE advertising band (channels 37/38/39 span roughly 2402-2480 MHz, with
+# guard room to 2483.5 MHz for the full 2.4 GHz ISM band) -- burst detection
+# below only ever runs when the CURRENT live tuning overlaps this range, so
+# enabling "BLE live check" while looking at FM/WiFi/etc. never adds any
+# per-frame cost at all (see _within_ble_band's call site in the main loop).
+_BLE_BAND_START_HZ = 2_400_000_000.0
+_BLE_BAND_STOP_HZ = 2_483_500_000.0
+
+
+def _within_ble_band(center_freq_hz: float, sample_rate_hz: float) -> bool:
+    tuned_start = center_freq_hz - sample_rate_hz / 2.0
+    tuned_stop = center_freq_hz + sample_rate_hz / 2.0
+    return tuned_start <= _BLE_BAND_STOP_HZ and tuned_stop >= _BLE_BAND_START_HZ
+
+
+def _detect_energy_bursts(iq: np.ndarray, sample_rate_hz: float) -> list[tuple[int, int, float]]:
+    """Lightweight, in-memory adaptation of ble_sdr_capture_worker.py's own
+    detect_bursts() energy-threshold algorithm (median/MAD noise floor,
+    block-power grouping) -- deliberately re-implemented here rather than
+    imported, since that function is file(np.memmap)-oriented and used by the
+    disk-based OFFLINE_REPLAY pipeline; duplicating ~10 lines of simple,
+    stable math is lower-risk than forcing a shared dependency between a
+    live-streaming worker and a disk-batch decode tool. Returns
+    (start_sample, end_sample, peak_power_dbfs) tuples, strongest last.
+    """
+    block = max(64, int(sample_rate_hz / 100_000))
+    count = len(iq) // block
+    if count < 4:
+        return []
+    power = np.mean(np.abs(iq[: count * block].reshape(count, block)) ** 2, axis=1)
+    noise = float(np.median(power))
+    mad = float(np.median(np.abs(power - noise)))
+    threshold = max(noise * 4.0, noise + 8.0 * mad, 1e-12)
+    active = np.flatnonzero(power > threshold)
+    if not active.size:
+        return []
+    groups = np.split(active, np.where(np.diff(active) > 2)[0] + 1)
+    bursts = []
+    for group in groups:
+        if not len(group):
+            continue
+        start = max(0, (int(group[0]) - 2) * block)
+        end = min(len(iq), (int(group[-1]) + 3) * block)
+        peak_dbfs = float(10.0 * np.log10(max(float(np.max(power[group])), 1e-12)))
+        bursts.append((start, end, peak_dbfs))
+    bursts.sort(key=lambda item: item[2])
+    return bursts
 
 
 def next_power_of_two(value: int) -> int:
@@ -97,6 +176,7 @@ def build_frame(
     samples: np.ndarray,
     center_freq_hz: float,
     sample_rate_hz: float,
+    span_hz: float,
     fft_size: int,
     requested_rbw_hz: float,
     effective_rbw_hz: float,
@@ -110,6 +190,10 @@ def build_frame(
     spectrum = np.fft.fftshift(np.fft.fft(samples * window, n=fft_size))
     magnitudes = np.abs(spectrum) / max(float(np.sum(window)), 1.0)
     levels_db = 20.0 * np.log10(magnitudes + 1e-12)
+    # Smoothing operates on the full acquisition bandwidth (fft_size bins,
+    # matching sample_rate_hz) so its shape stays stable across frames
+    # regardless of the display span -- cropping to span_hz happens only
+    # below, after smoothing, and never touches acquisition itself.
     levels_db, video_power = smooth_video_bandwidth(
         levels_db,
         previous_video_power,
@@ -117,16 +201,25 @@ def build_frame(
         frame_interval_s,
     )
     freqs = center_freq_hz + np.fft.fftshift(np.fft.fftfreq(fft_size, d=1.0 / sample_rate_hz))
+    # span_hz is a VIEW window into the real acquisition bandwidth
+    # (sample_rate_hz) -- independent of it by design (see
+    # RuntimeConfig/real_spectrum_stream.py's separate sample-rate control).
+    # Never wider than what was actually sampled.
+    display_span_hz = min(float(span_hz), float(sample_rate_hz))
+    if display_span_hz < sample_rate_hz:
+        keep = np.abs(freqs - center_freq_hz) <= display_span_hz / 2.0
+        freqs = freqs[keep]
+        levels_db = levels_db[keep]
     return {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "center_frequency_hz": center_freq_hz,
-        "span_hz": sample_rate_hz,
+        "span_hz": display_span_hz,
         "start_frequency_hz": float(freqs[0]),
         "stop_frequency_hz": float(freqs[-1]),
         "sample_rate_hz": sample_rate_hz,
         "frequencies_hz": freqs.astype(float).tolist(),
         "levels_db": levels_db.astype(float).tolist(),
-        "points": fft_size,
+        "points": int(freqs.size),
         "fft_size": fft_size,
         "requested_rbw_hz": requested_rbw_hz,
         "effective_rbw_hz": effective_rbw_hz,
@@ -148,24 +241,41 @@ class RuntimeConfig:
         fft_size: int,
         requested_rbw_hz: float,
         requested_vbw_hz: float,
+        span_hz: float | None = None,
     ) -> None:
         self._lock = threading.Lock()
         self.center_freq_hz = center_freq_hz
         self.sample_rate_hz = sample_rate_hz
+        # Independent from sample_rate_hz by design: sample_rate_hz is the
+        # real ADC/USRP acquisition rate (what a downstream decoder like
+        # BLE's Gate 2A.2 actually needs correct); span_hz is only how much
+        # of that acquired bandwidth gets displayed/analyzed (see
+        # build_frame's display_span_hz cropping). Defaults to the full
+        # acquisition bandwidth so behavior is unchanged unless a caller
+        # deliberately requests a narrower view.
+        self.span_hz = float(span_hz) if span_hz is not None else sample_rate_hz
         self.gain_db = gain_db
         self.fft_size = fft_size
         self.requested_rbw_hz = requested_rbw_hz
         self.requested_vbw_hz = requested_vbw_hz
+        # Opt-in only (see BLE-RFFI Studio's "Live Monitor model check"
+        # feature) -- off by default, so every existing use of this worker
+        # (FM/WiFi/anything else) behaves exactly as before this field
+        # existed. Toggled via the same "update" stdin command as every
+        # other runtime setting, never a separate code path.
+        self.ble_live_check_enabled = False
 
-    def snapshot(self) -> tuple[float, float, float, int, float, float]:
+    def snapshot(self) -> tuple[float, float, float, float, int, float, float, bool]:
         with self._lock:
             return (
                 self.center_freq_hz,
                 self.sample_rate_hz,
+                self.span_hz,
                 self.gain_db,
                 self.fft_size,
                 self.requested_rbw_hz,
                 self.requested_vbw_hz,
+                self.ble_live_check_enabled,
             )
 
     def apply(self, update: dict) -> tuple[bool, str | None]:
@@ -180,6 +290,11 @@ class RuntimeConfig:
                 value = float(update["sample_rate_hz"])
                 if value != self.sample_rate_hz:
                     self.sample_rate_hz = value
+                    changed = True
+            if "span_hz" in update:
+                value = float(update["span_hz"])
+                if value != self.span_hz:
+                    self.span_hz = value
                     changed = True
             if "gain_db" in update:
                 value = float(update["gain_db"])
@@ -200,6 +315,11 @@ class RuntimeConfig:
                 value = float(update["vbw_hz"])
                 if value != self.requested_vbw_hz:
                     self.requested_vbw_hz = value
+                    changed = True
+            if "ble_live_check_enabled" in update:
+                value = bool(update["ble_live_check_enabled"])
+                if value != self.ble_live_check_enabled:
+                    self.ble_live_check_enabled = value
                     changed = True
         return changed, None
 
@@ -226,6 +346,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Persistent UHD spectrum stream worker.")
     parser.add_argument("--freq", type=float, required=True, help="Center frequency in MHz")
     parser.add_argument("--sample-rate", type=float, default=2e6)
+    parser.add_argument("--span-hz", type=float, default=None, help="Display span; defaults to --sample-rate (full acquisition bandwidth)")
     parser.add_argument("--gain", type=float, default=20.0)
     parser.add_argument("--antenna", type=str, default="RX2")
     parser.add_argument("--device-addr", type=str, default="")
@@ -256,6 +377,7 @@ def main() -> None:
         fft_size=fft_size,
         requested_rbw_hz=float(args.rbw),
         requested_vbw_hz=float(args.vbw),
+        span_hz=float(args.span_hz) if args.span_hz is not None else None,
     )
 
     tb = SpectrumStream(
@@ -273,20 +395,34 @@ def main() -> None:
 
     tb.start()
     threading.Thread(target=stdin_control_loop, args=(runtime,), daemon=True).start()
+    # Small 2-slot rolling window of raw IQ (this interval + the previous one)
+    # purely for BLE burst detection below -- never touches the FFT path
+    # above. Two slots (rather than just the current interval) so a burst
+    # straddling an interval boundary is still fully contained in at least
+    # one detection pass. Bounded by construction: at most 2x one interval's
+    # worth of samples, the same data this loop already holds in memory for
+    # the FFT every cycle.
+    previous_iq_for_ble: np.ndarray | None = None
     try:
         while True:
             time.sleep(interval)
             (
                 center_freq_hz,
                 sample_rate_hz,
+                span_hz,
                 gain_db,
                 fft_size,
                 requested_rbw_hz,
                 requested_vbw_hz,
+                ble_live_check_enabled,
             ) = runtime.snapshot()
 
-            tb.set_center_frequency(center_freq_hz)
+            # Sample rate first: set_center_frequency() reads the CURRENT
+            # sample rate off the source to size its LO offset (see
+            # _tune_request), so it must see this cycle's rate, not last
+            # cycle's.
             tb.set_sample_rate(sample_rate_hz)
+            tb.set_center_frequency(center_freq_hz)
             tb.set_gain(gain_db)
 
             fft_size = effective_fft_size(
@@ -305,6 +441,7 @@ def main() -> None:
                 samples,
                 center_freq_hz,
                 sample_rate_hz,
+                span_hz,
                 fft_size,
                 requested_rbw_hz,
                 effective_rbw_hz,
@@ -314,6 +451,31 @@ def main() -> None:
                 device_serial,
             )
             print(json.dumps(frame), flush=True)
+
+            # Additive, opt-in only: skipped entirely (zero extra cost) unless
+            # BLE live check is enabled AND the current tuning overlaps the
+            # BLE band -- never runs while looking at FM/WiFi/anything else.
+            if ble_live_check_enabled and _within_ble_band(center_freq_hz, sample_rate_hz):
+                try:
+                    ring = samples if previous_iq_for_ble is None else np.concatenate([previous_iq_for_ble, samples])
+                    bursts = _detect_energy_bursts(ring, sample_rate_hz)
+                    if bursts:
+                        start, end, peak_dbfs = bursts[-1]
+                        burst_iq = ring[start:end]
+                        print(json.dumps({
+                            "source": "ble_rffi_iq_burst",
+                            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                            "center_frequency_hz": center_freq_hz,
+                            "sample_rate_hz": sample_rate_hz,
+                            "bandwidth_hz": sample_rate_hz,
+                            "sample_format": "cf32_le",
+                            "peak_power_dbfs": peak_dbfs,
+                            "sample_count": int(end - start),
+                            "iq_window_base64": base64.b64encode(burst_iq.astype(np.complex64).tobytes()).decode("ascii"),
+                        }), flush=True)
+                except Exception as exc:
+                    print(json.dumps({"source": "ble_rffi_burst_detection_error", "error": str(exc)}), flush=True)
+            previous_iq_for_ble = samples
 
             reset = getattr(tb.sink, "reset", None)
             if callable(reset):

@@ -49,7 +49,7 @@ def _example_kwargs(**overrides):
         candidate_id="cand-1", packet_id="pkt-1",
         source_iq_sha256="sha-iq-abc", iq_start_sample=100, iq_end_sample=200,
         physical_unit_id="CC2650-UNIT-01", logical_transmitter_id="TX-1",
-        association_status="STRONG", quality_status="PASSED", dataset_eligibility="PENDING_REVIEW",
+        association_status="STRONG", quality_status="PASSED", dataset_eligibility="PENDING_ANALYSIS",
         channel=37, sample_rate_sps=4_000_000, center_frequency_hz=2_402_000_000,
         created_at="2026-01-01T00:00:00Z",
     )

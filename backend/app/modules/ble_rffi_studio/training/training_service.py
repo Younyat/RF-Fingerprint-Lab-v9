@@ -19,10 +19,10 @@ from app.infrastructure.ble.capture.ble_offline_replay import utc_now
 from ..contracts import ExampleRecord, SplitManifest, TrainingRun
 from ..preprocessing import BasePreprocessingProfile, TrainOnlyScaler, apply_base_preprocessing, feature_vector_representation, load_iq_window
 from ..preprocessing.representation_profiles import FEATURE_NAMES, raw_iq_representation, spectrogram_representation
+from ..quality.split_builder import train_label_for
 from .baseline_models import BaselineModelTrainer
 from .cnn_models import CnnTrainer
 
-UNKNOWN_CLASS_LABEL = "UNKNOWN"
 DEFAULT_RAW_IQ_LENGTH = 800
 DEFAULT_SPECTROGRAM_N_FFT = 64
 DEFAULT_SPECTROGRAM_FRAMES = 32
@@ -47,8 +47,13 @@ class TrainingService:
         self.capture_iq_paths = capture_iq_paths
         self.base_profile = base_profile or BasePreprocessingProfile(profile_id="base-v1")
 
-    def _label_for(self, example: ExampleRecord) -> str:
-        return example.physical_unit_id or UNKNOWN_CLASS_LABEL
+    def _label_for(self, example: ExampleRecord, scientific_task: str) -> str:
+        # Single source of truth shared with SplitBuilder's own train-class
+        # gate (quality/split_builder.py's train_label_for) -- training must
+        # never derive a different label scheme than the one the split was
+        # validated against, or the two-class guarantee that gate enforces
+        # would not actually hold for what gets trained here.
+        return train_label_for(scientific_task, example)
 
     def _window_for(self, example: ExampleRecord) -> np.ndarray:
         path = self.capture_iq_paths[example.capture_id]
@@ -76,7 +81,16 @@ class TrainingService:
 
         started_at = utc_now()
         X = {name: self._features_for(exs) for name, exs in by_split.items()}
-        y = {name: [self._label_for(e) for e in exs] for name, exs in by_split.items()}
+        y = {name: [self._label_for(e, split.scientific_task) for e in exs] for name, exs in by_split.items()}
+        # Defense in depth: SplitBuilder._finalize already refuses to mark a
+        # split READY with fewer than 2 distinct TRAIN labels, but training
+        # must never silently proceed on a single class regardless of how it
+        # got here -- sklearn's LogisticRegression/SVC already raise on their
+        # own; RandomForestClassifier does not, so this check is what
+        # actually protects it (and random_forest is not special-cased here
+        # on purpose -- every model_type goes through this same guard).
+        if len(set(y["TRAIN"])) < 2:
+            raise ValueError(f"TRAINING_REQUIRES_AT_LEAST_TWO_CLASSES: TRAIN contains only {sorted(set(y['TRAIN']))}")
 
         scaler = TrainOnlyScaler()
         scaler.fit(X["TRAIN"], split="TRAIN")
@@ -146,11 +160,17 @@ class TrainingService:
             raise ValueError("NO_TRAIN_EXAMPLES_IN_SPLIT")
 
         started_at = utc_now()
-        classes = sorted({self._label_for(e) for e in by_split["TRAIN"]})
+        classes = sorted({self._label_for(e, split.scientific_task) for e in by_split["TRAIN"]})
         class_to_idx = {label: idx for idx, label in enumerate(classes)}
+        # Same defense-in-depth guard as run_baseline -- unlike sklearn's
+        # LogisticRegression/SVC, neither PyTorch nor CnnTrainer.build/fit
+        # refuse a single-class TRAIN on their own, so this is what actually
+        # protects cnn1d/cnn2d from "succeeding" on a meaningless model.
+        if len(classes) < 2:
+            raise ValueError(f"TRAINING_REQUIRES_AT_LEAST_TWO_CLASSES: TRAIN contains only {classes}")
 
         X = {name: (np.stack([self._cnn_representation(e, training_run.model_type) for e in exs]) if exs else np.zeros((0,))) for name, exs in by_split.items()}
-        y_labels = {name: [self._label_for(e) for e in exs] for name, exs in by_split.items()}
+        y_labels = {name: [self._label_for(e, split.scientific_task) for e in exs] for name, exs in by_split.items()}
 
         trainer = CnnTrainer()
         model = trainer.build(training_run.model_type, num_classes=len(classes))

@@ -5,7 +5,7 @@ parent), never an edit of this one.
 
 Selection here is deliberately conservative: an example only enters the
 draft if Evidence Stage already marked it quality_status=PASSED and
-dataset_eligibility in {PENDING_REVIEW, ELIGIBLE} -- QUARANTINED/INELIGIBLE
+dataset_eligibility in {PENDING_ANALYSIS, ELIGIBLE} -- QUARANTINED/INELIGIBLE
 examples are recorded as excluded (with a reason), never silently dropped.
 Reaching dataset_eligibility=ELIGIBLE for real is what the Dataset Analyzer's
 gate (quality/dataset_analyzer.py) decides next, not this stage.
@@ -21,7 +21,7 @@ from app.infrastructure.ble.capture.ble_offline_replay import read_json, write_j
 from ..contracts import DataOrigin, DatasetManifest, ExampleRecord
 
 _QUARANTINED_ELIGIBILITY = {"QUARANTINED", "INELIGIBLE"}
-_INCLUDABLE_ELIGIBILITY = {"PENDING_REVIEW", "ELIGIBLE"}
+_INCLUDABLE_ELIGIBILITY = {"PENDING_ANALYSIS", "ELIGIBLE"}
 
 
 class DatasetBuilder:

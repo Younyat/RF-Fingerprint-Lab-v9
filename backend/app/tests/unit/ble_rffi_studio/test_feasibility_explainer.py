@@ -16,12 +16,15 @@ from ._helpers import make_example
 
 def _one_unit_plus_environment_examples() -> list:
     """Exactly the real scenario reported: one physical unit (Shelly, one
-    isolation-declared session) plus three environment-only sessions."""
+    isolation-declared session) plus three environment-only sessions, each
+    from a capture the operator explicitly declared BACKGROUND_ENVIRONMENT
+    (never just "no address match" -- see split_builder.py's module
+    docstring for why that distinction matters)."""
     examples = []
     counter = 0
     for session_index in range(3):
         session_id = f"ENV-SESSION-{session_index:02d}"
-        examples.append(make_example(example_index=counter, physical_unit_id=None, session_id=session_id))
+        examples.append(make_example(example_index=counter, physical_unit_id=None, session_id=session_id, capture_purpose="BACKGROUND_TARGET_OFF"))
         counter += 1
     examples.append(make_example(example_index=counter, physical_unit_id="SHELLY-PLUG-01", session_id="SHELLY-SESSION-00"))
     return examples
@@ -73,6 +76,25 @@ def test_recommend_scientific_task_prefers_an_already_feasible_task_over_a_parti
     recommended_candidate = next(c for c in recommendation["candidates"] if c["scientific_task"] == "TARGET_VS_BACKGROUND")
     assert recommended_candidate["feasible"] is True
     assert "suficientes datos" in recommendation["reason"]
+
+
+def test_target_vs_background_ignores_no_match_examples_from_a_target_device_capture():
+    """The exact real bug this fix targets: two TARGET_DEVICE-declared
+    captures whose evidence never matched a registered address (quarantined/
+    no-match, physical_unit_id=None) were silently counted as "2 sesiones
+    ambientales" by the old code, recommending TARGET_VS_BACKGROUND as
+    feasible when there was no real background evidence at all."""
+    examples = [
+        make_example(example_index=i, physical_unit_id="TARGET-UNIT", session_id=f"TARGET-S-{i}", capture_purpose="TARGET_DEVICE_ON")
+        for i in range(3)
+    ] + [
+        make_example(example_index=100 + i, physical_unit_id=None, session_id=f"UNMATCHED-S-{i}", capture_purpose="TARGET_DEVICE_ON", association_status="NONE")
+        for i in range(3)
+    ]
+    result = explain_feasibility(examples, "TARGET_VS_BACKGROUND")
+    assert result["have"]["background_sessions"] == 0
+    assert result["feasible"] is False
+    assert any("apagado o retirado" in step for step in result["next_steps"])
 
 
 def test_recommend_scientific_task_with_no_data_at_all_still_returns_a_best_guess():

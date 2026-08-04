@@ -142,7 +142,13 @@ export const useWaterfall = (enabled = true, displayData: ReturnType<typeof useW
       return;
     }
 
+    // Same bottleneck fix as useSpectrum.ts: skip a tick entirely if the
+    // previous one is still in flight, instead of ever stacking overlapping
+    // requests behind a slow response.
+    let inFlight = false;
     const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         setIsLoading(true);
         const data = await apiService.getLiveWaterfall();
@@ -155,6 +161,7 @@ export const useWaterfall = (enabled = true, displayData: ReturnType<typeof useW
           setError(err instanceof Error ? err.message : 'Failed to refresh waterfall');
         }
       } finally {
+        inFlight = false;
         if (!cancelled) {
           setIsLoading(false);
         }

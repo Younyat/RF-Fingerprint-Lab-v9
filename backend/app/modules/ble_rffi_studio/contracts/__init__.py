@@ -1,5 +1,14 @@
 from .bundle import BUNDLE_SCHEMA_VERSION, REQUIRED_BUNDLE_FILES, ModelBundleManifest
-from .capture import CAPTURE_SCHEMA_VERSION, CapturePurpose, CaptureRecord, DataOrigin, DatasetRole, TargetState
+from .capture import (
+    CAPTURE_SCHEMA_VERSION,
+    BackgroundKind,
+    CapturePurpose,
+    CaptureRecord,
+    DataOrigin,
+    DatasetRole,
+    TargetPresenceStatus,
+    TargetState,
+)
 from .common import StudioContract, identity_hash
 from .dataset import DATASET_SCHEMA_VERSION, DatasetManifest
 from .evidence import LabelDecision, LabelEvidenceItem
@@ -17,6 +26,7 @@ from .quality_report import (
     DatasetQualityReport,
     ExactDuplicatesResult,
     NearDuplicateResult,
+    SampleOverlapPairDetail,
     SampleOverlapResult,
 )
 from .split import LeakageCheckResult, SplitAssignment, SplitManifest
@@ -38,7 +48,9 @@ __all__ = [
     "CAPTURE_SCHEMA_VERSION",
     "DataOrigin",
     "CapturePurpose",
+    "BackgroundKind",
     "TargetState",
+    "TargetPresenceStatus",
     "DatasetRole",
     "LabelEvidenceItem",
     "LabelDecision",
@@ -60,6 +72,7 @@ __all__ = [
     "DatasetQualityReport",
     "ExactDuplicatesResult",
     "SampleOverlapResult",
+    "SampleOverlapPairDetail",
     "NearDuplicateResult",
     "QUALITY_REPORT_SCHEMA_VERSION",
 ]

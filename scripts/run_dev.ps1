@@ -15,7 +15,8 @@ param(
     [object]$UseRealSdr = $false,
     [object]$EnableBleIqCapture = $true,
     [object]$EnableBleReplay = $true,
-    [object]$EnableBleOfflineIqAnalysis = $true
+    [object]$EnableBleOfflineIqAnalysis = $true,
+    [object]$EnableBleLiveDecode = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -378,6 +379,7 @@ $WaterfallPollIntervalMs = [int](Get-RuntimeSetting -Name "VITE_WATERFALL_POLL_I
 $EnableBleIqCapture = Get-RuntimeSetting -Name "BLE_IQ_CAPTURE_EXPERIMENTAL_ENABLED" -Fallback $EnableBleIqCapture
 $EnableBleReplay = Get-RuntimeSetting -Name "BLE_ANALYZER_V1" -Fallback $EnableBleReplay
 $EnableBleOfflineIqAnalysis = Get-RuntimeSetting -Name "BLE_IQ_OFFLINE_EXPERIMENTAL_ENABLED" -Fallback $EnableBleOfflineIqAnalysis
+$EnableBleLiveDecode = Get-RuntimeSetting -Name "BLE_LIVE_DECODE_ENABLED" -Fallback $EnableBleLiveDecode
 
 foreach ($RuntimeEnvKey in @(
     "UHD_DEVICE_ARGS",
@@ -518,6 +520,13 @@ if ($UseRealSdrEnabled) {
 $env:BLE_IQ_CAPTURE_EXPERIMENTAL_ENABLED = if (Convert-ToBool $EnableBleIqCapture) { "true" } else { "false" }
 $env:BLE_ANALYZER_V1 = if (Convert-ToBool $EnableBleReplay) { "true" } else { "false" }
 $env:BLE_IQ_OFFLINE_EXPERIMENTAL_ENABLED = if (Convert-ToBool $EnableBleOfflineIqAnalysis) { "true" } else { "false" }
+# Real BLE decode of Live Monitor's live burst (see BLE-RFFI Studio README's
+# "Live BLE decode" section) -- on by default here so the main startup
+# command always enables it, instead of requiring $env:BLE_LIVE_DECODE_ENABLED
+# to be set by hand in the same terminal every time. Still overridable via
+# -EnableBleLiveDecode $false or runtime_settings.json if it ever needs to be
+# turned off again.
+$env:BLE_LIVE_DECODE_ENABLED = if (Convert-ToBool $EnableBleLiveDecode) { "true" } else { "false" }
 $env:BLE_CAPTURE_AND_DECODE_ENABLED = "false"
 
 $BackendProcess = Start-Process `

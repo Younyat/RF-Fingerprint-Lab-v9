@@ -4,11 +4,13 @@ import re
 
 from app.infrastructure.sdr.real_spectrum_stream import real_spectrum_stream
 from app.infrastructure.sdr.rf_safety import (
+    RFSafetyError,
     safety_status,
     validate_center_frequency,
     validate_frequency_window,
     validate_gain,
     validate_rbw,
+    validate_sample_rate,
     validate_span,
     validate_start_stop,
     validate_vbw,
@@ -71,12 +73,39 @@ class SpectrumController:
         return safety_status()
 
     def set_span(self, span_hz: float) -> dict:
+        # span_hz is only how much of the already-acquired bandwidth is
+        # displayed/analyzed -- independent of sample_rate_hz (the real
+        # ADC/USRP acquisition rate a downstream decoder like BLE's Gate
+        # 2A.2 depends on). Never touches sample_rate_hz; use
+        # set_sample_rate() for that.
+        validate_span(span_hz)
+        if span_hz > self._settings.frequency.sample_rate_hz:
+            raise RFSafetyError(
+                f"span_hz ({span_hz:.0f}) cannot exceed the current sample_rate_hz "
+                f"({self._settings.frequency.sample_rate_hz:.0f}); raise the sample rate first."
+            )
         validate_frequency_window(self._settings.frequency.center_frequency_hz, span_hz)
         self._settings.set_span(span_hz)
-        self._settings.set_sample_rate(span_hz)
         if real_spectrum_stream.is_running():
             real_spectrum_stream.apply_settings(self._settings)
         return {"status": "ok", "span_hz": span_hz}
+
+    def set_sample_rate(self, sample_rate_hz: float) -> dict:
+        # The real ADC/USRP acquisition rate -- independent of span_hz (the
+        # display window). Raising this always succeeds; lowering it below
+        # the current span_hz auto-narrows the span to match, since a view
+        # can never be wider than what's actually sampled.
+        validate_sample_rate(sample_rate_hz)
+        self._settings.set_sample_rate(sample_rate_hz)
+        if sample_rate_hz < self._settings.frequency.span_hz:
+            self._settings.set_span(sample_rate_hz)
+        if real_spectrum_stream.is_running():
+            real_spectrum_stream.apply_settings(self._settings)
+        return {
+            "status": "ok",
+            "sample_rate_hz": sample_rate_hz,
+            "span_hz": self._settings.frequency.span_hz,
+        }
 
     def set_center_frequency(self, frequency_hz: float) -> dict:
         validate_center_frequency(frequency_hz)
@@ -93,9 +122,13 @@ class SpectrumController:
 
     def set_start_stop(self, start_frequency_hz: float, stop_frequency_hz: float) -> dict:
         center_frequency_hz, span_hz = validate_start_stop(start_frequency_hz, stop_frequency_hz)
+        if span_hz > self._settings.frequency.sample_rate_hz:
+            raise RFSafetyError(
+                f"span_hz ({span_hz:.0f}) cannot exceed the current sample_rate_hz "
+                f"({self._settings.frequency.sample_rate_hz:.0f}); raise the sample rate first."
+            )
         self._settings.set_center_frequency(center_frequency_hz)
         self._settings.set_span(span_hz)
-        self._settings.set_sample_rate(span_hz)
         if real_spectrum_stream.is_running():
             real_spectrum_stream.apply_settings(self._settings)
         return {

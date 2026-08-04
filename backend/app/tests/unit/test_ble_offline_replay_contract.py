@@ -78,3 +78,42 @@ def test_replay_rejects_rf_configuration_mismatch(tmp_path):
     write_json(manifest, data)
     with pytest.raises(ValueError, match="REPLAY_RF_CONFIGURATION_MISMATCH:sample_rate_sps"):
         service.create(capture_id, {"execution_id": execution_id, "expected_iq_sha256": digest})
+
+
+# Real bug found and fixed: REQUIRED_RF used to hardcode ble_channel=37 /
+# center_frequency_hz=2_402_000_000 as the ONLY accepted combination,
+# rejecting every real channel 38/39 capture before OFFLINE_REPLAY ever
+# started -- even though the decoder itself (ble_worker.whitening.
+# ble_dewhiten) already parameterizes dewhitening on channel_index for any
+# BLE channel. _validate_source is exercised directly here (not through
+# create()) since a full create() run would go on to invoke the real
+# decoder on fake placeholder IQ bytes, which is a different, unrelated
+# failure mode from what these tests check.
+@pytest.mark.parametrize("channel,frequency_hz", [(37, 2_402_000_000), (38, 2_426_000_000), (39, 2_480_000_000)])
+def test_validate_source_accepts_every_primary_advertising_channel(tmp_path, channel, frequency_hz):
+    service, capture_id, execution_id, digest = source_tree(tmp_path)
+    capture = json.loads((service._capture_dir(capture_id) / "capture_manifest.json").read_text(encoding="utf-8"))
+    capture["ble_channel"] = channel
+    capture["center_frequency_hz"] = frequency_hz
+    session = {"capture_id": capture_id, "_session_manifest_path": str(service._capture_dir(capture_id) / "capture_manifest.json")}
+    service._validate_source(capture_id, capture, session, digest)  # must not raise
+
+
+def test_validate_source_rejects_channel_frequency_mismatch(tmp_path):
+    service, capture_id, execution_id, digest = source_tree(tmp_path)
+    capture = json.loads((service._capture_dir(capture_id) / "capture_manifest.json").read_text(encoding="utf-8"))
+    capture["ble_channel"] = 38
+    # center_frequency_hz left at the channel-37 value from the fixture --
+    # a real, physically inconsistent combination that must still be caught.
+    session = {"capture_id": capture_id, "_session_manifest_path": str(service._capture_dir(capture_id) / "capture_manifest.json")}
+    with pytest.raises(ValueError, match="REPLAY_RF_CONFIGURATION_MISMATCH:center_frequency_hz"):
+        service._validate_source(capture_id, capture, session, digest)
+
+
+def test_validate_source_rejects_unknown_channel(tmp_path):
+    service, capture_id, execution_id, digest = source_tree(tmp_path)
+    capture = json.loads((service._capture_dir(capture_id) / "capture_manifest.json").read_text(encoding="utf-8"))
+    capture["ble_channel"] = 12  # a real general-purpose channel, but not yet supported by this pipeline
+    session = {"capture_id": capture_id, "_session_manifest_path": str(service._capture_dir(capture_id) / "capture_manifest.json")}
+    with pytest.raises(ValueError, match="REPLAY_RF_CONFIGURATION_MISMATCH:ble_channel"):
+        service._validate_source(capture_id, capture, session, digest)

@@ -57,7 +57,6 @@ class EvidenceStage:
             if row.get("packet_sha256")
         }
 
-        target_address = str((analysis["capture"] or {}).get("target_address") or "").upper()
         generated_at = generated_at or utc_now()
         rate = float(capture.sample_rate_sps)
         isolated_unit_id = capture.isolation_declared_physical_unit_id
@@ -65,7 +64,7 @@ class EvidenceStage:
         pairs: list[tuple[ExampleRecord, ExampleAnnotation]] = []
         for packet in analysis["packets"]:
             example = self._build_example(packet, capture, project_id, ble_channel, bit_span_by_sha, sha_by_packet_id, rate, generated_at, isolated_unit_id)
-            annotation = self._build_annotation(packet, example, target_address, generated_at, isolated_unit_id, capture)
+            annotation = self._build_annotation(packet, example, generated_at, isolated_unit_id, capture)
             pairs.append((example, annotation))
         return pairs
 
@@ -112,7 +111,7 @@ class EvidenceStage:
             physical_unit_id = binding.bound_physical_unit_id if binding and binding.binding_status == "BOUND" else None
 
         if (
-            capture.capture_purpose == "BACKGROUND_ENVIRONMENT"
+            capture.capture_purpose == "BACKGROUND_TARGET_OFF"
             and capture.target_reference_id
             and physical_unit_id == capture.target_reference_id
         ):
@@ -132,7 +131,7 @@ class EvidenceStage:
         # Everything else waits for the Fase 2 Dataset Builder gate (leakage,
         # duplicates, session-split feasibility) before it can become
         # ELIGIBLE -- Evidence Stage never promotes straight to ELIGIBLE.
-        dataset_eligibility = "QUARANTINED" if association_status == "CONFLICT" else "PENDING_REVIEW"
+        dataset_eligibility = "QUARANTINED" if association_status == "CONFLICT" else "PENDING_ANALYSIS"
 
         example_id = ExampleRecord.make_example_id(capture.iq_sha256, iq_start_sample, iq_end_sample, packet["candidate_id"], packet["packet_id"])
         return ExampleRecord(
@@ -149,6 +148,8 @@ class EvidenceStage:
             iq_end_sample=iq_end_sample,
             physical_unit_id=physical_unit_id,
             logical_transmitter_id=f"TX-{address.replace(':', '')}" if address else None,
+            capture_purpose=capture.capture_purpose,
+            background_kind=capture.background_kind,
             association_status=association_status,
             quality_status=quality_status,
             dataset_eligibility=dataset_eligibility,
@@ -159,12 +160,12 @@ class EvidenceStage:
         )
 
     def _build_annotation(
-        self, packet: dict[str, Any], example: ExampleRecord, target_address: str, generated_at: str,
+        self, packet: dict[str, Any], example: ExampleRecord, generated_at: str,
         isolated_unit_id: str | None = None, capture: CaptureRecord | None = None,
     ) -> ExampleAnnotation:
         is_background_contradiction = (
             capture is not None
-            and capture.capture_purpose == "BACKGROUND_ENVIRONMENT"
+            and capture.capture_purpose == "BACKGROUND_TARGET_OFF"
             and bool(capture.target_reference_id)
             and example.association_status == "CONFLICT"
             and packet["windows_evidence"]["association_rejection_reason"] != _CONFLICT_REJECTION_REASON
@@ -189,7 +190,6 @@ class EvidenceStage:
                 description=f"Nearest native Windows callback, time_delta_ms={delta['value'] if delta else None}",
             ))
 
-        address = packet["advertiser_address_canonical"]["value"]
         if isolated_unit_id:
             label = isolated_unit_id
             decision_status, reason = "CONFIRMED", (
@@ -210,9 +210,9 @@ class EvidenceStage:
         elif example.association_status == "CONFLICT":
             label = "UNKNOWN_ENVIRONMENTAL_TRANSMITTER"
             decision_status, reason = "AMBIGUOUS", "Multiple native Windows callbacks fell inside the same association time window (MULTIPLE_NATIVE_CALLBACKS)."
-        elif address and address == target_address:
-            label = example.physical_unit_id or "UNKNOWN_ENVIRONMENTAL_TRANSMITTER"
-            decision_status, reason = "PROVISIONAL", "Address matches the campaign target but without a strong Windows-corroborated association."
+        elif example.physical_unit_id:
+            label = example.physical_unit_id
+            decision_status, reason = "PROVISIONAL", "Address matches a registered physical-unit binding but without a strong Windows-corroborated association."
         else:
             label = "UNKNOWN_ENVIRONMENTAL_TRANSMITTER"
             decision_status, reason = "PROVISIONAL", "No registered physical-unit binding exists for this address in this project."

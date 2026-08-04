@@ -105,7 +105,7 @@ class SyntheticDemoSeeder:
                 example_id=example_id, project_id=DEMO_PROJECT_ID, campaign_id=DEMO_CAMPAIGN_ID, capture_id=capture_id,
                 execution_id=f"SYNTHETIC-EXEC-{session_id}", session_id=session_id, candidate_id=candidate_id, packet_id=packet_id,
                 source_iq_sha256=f"sha-{capture_id}", iq_start_sample=start, iq_end_sample=end, physical_unit_id=unit_id,
-                logical_transmitter_id=f"TX-{unit_id}", association_status="STRONG", quality_status="PASSED", dataset_eligibility="PENDING_REVIEW",
+                logical_transmitter_id=f"TX-{unit_id}", association_status="STRONG", quality_status="PASSED", dataset_eligibility="PENDING_ANALYSIS",
                 channel=ble_channel, sample_rate_sps=int(sample_rate), center_frequency_hz=2_402_000_000 + ble_channel * 2_000_000, created_at=created_at,
             ))
         evidence_dir = self.repository.evidence_dir / capture_id

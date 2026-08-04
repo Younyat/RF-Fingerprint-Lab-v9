@@ -124,6 +124,7 @@ export class AnalyzerSettingsModel {
   private settings: AnalyzerSettings = {
     centerFrequency: 89400000,
     span: 2000000,
+    sampleRate: 4000000,
     rbw: 10000,
     vbw: 10000,
     referenceLevel: 0,

@@ -86,6 +86,7 @@ export interface DeviceStatus {
 export interface AnalyzerSettings {
   centerFrequency: number;
   span: number;
+  sampleRate: number;
   rbw: number;
   vbw: number;
   referenceLevel: number;

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
+from app.infrastructure.ble.capture.ble_offline_replay import utc_now
+
 from ..contracts import TrainingRun
 
 
@@ -37,6 +39,14 @@ def build_ble_rffi_studio_router(repository, job_manager) -> APIRouter:
     @router.get("/legacy-captures")
     def legacy_captures():
         return call(repository.list_legacy_captures)
+
+    # Deletes a raw B200 capture (real, irreversible IQ removal -- mainly
+    # meant for the RF-overflow retry artifacts the campaign retry loop
+    # leaves behind, never cleaned up automatically). Also removes this
+    # module's own CaptureRecord/evidence for it, if any were built.
+    @router.delete("/legacy-captures/{capture_id}")
+    def delete_legacy_capture(capture_id: str):
+        return call(lambda: repository.delete_legacy_capture(capture_id))
 
     # ------------------------------------------------------------------
     # Physical Device Registry
@@ -89,8 +99,32 @@ def build_ble_rffi_studio_router(repository, job_manager) -> APIRouter:
             physical_unit_id=body.get("physical_unit_id"), project_id=body["project_id"], campaign_id=body["campaign_id"],
             session_index=body.get("session_index", 1), device_id=body.get("device_id"),
             isolation_declared=bool(body.get("isolation_declared", False)),
-            capture_purpose=body.get("capture_purpose", "TARGET_DEVICE"),
+            capture_purpose=body.get("capture_purpose", "TARGET_DEVICE_ON"),
             operator_confirmed_target_absent=bool(body.get("operator_confirmed_target_absent", False)),
+            # capture_only=True stops after the real B200 acquisition --
+            # OFFLINE_REPLAY/evidence are applied later via the
+            # replay-and-evidence-jobs endpoint below, for any number of
+            # captures, whenever there's time for the slow decode.
+            capture_only=bool(body.get("capture_only", False)),
+        ))
+
+    # Guided capture: probes with short, throwaway B200 captures for a real
+    # signal (TARGET_DEVICE_ON) or a clean environment (BACKGROUND_*) BEFORE
+    # launching the real, saved capture -- see CampaignOrchestrator.run_guided_capture_only().
+    # Stops after the real B200 acquisition, same as capture_only above --
+    # OFFLINE_REPLAY/evidence are applied later, never here.
+    @router.post("/campaign/guided-sessions", status_code=202)
+    def start_guided_capture_session(body: dict):
+        return call(lambda: job_manager.start_guided_capture_job(
+            ble_channel=body.get("ble_channel", 37), duration_seconds=body.get("duration_seconds", 10.0),
+            gain_db=body.get("gain_db", 20.0), condition_label=body["condition_label"],
+            physical_unit_id=body.get("physical_unit_id"), project_id=body["project_id"], campaign_id=body["campaign_id"],
+            session_index=body.get("session_index", 1), device_id=body.get("device_id"),
+            isolation_declared=bool(body.get("isolation_declared", False)),
+            capture_purpose=body.get("capture_purpose", "TARGET_DEVICE_ON"),
+            operator_confirmed_target_absent=bool(body.get("operator_confirmed_target_absent", False)),
+            probe_duration_seconds=body.get("probe_duration_seconds", 1.0),
+            probe_timeout_seconds=body.get("probe_timeout_seconds", 30.0),
         ))
 
     # ------------------------------------------------------------------
@@ -108,6 +142,7 @@ def build_ble_rffi_studio_router(repository, job_manager) -> APIRouter:
             execution_id=body.get("execution_id"), session_id=body.get("session_id"),
             isolation_declared_physical_unit_id=body.get("isolation_declared_physical_unit_id"),
             capture_purpose=body.get("capture_purpose"), target_state=body.get("target_state"),
+            background_kind=body.get("background_kind"),
             target_reference_id=body.get("target_reference_id"), dataset_role=body.get("dataset_role"),
         )))
 
@@ -130,9 +165,32 @@ def build_ble_rffi_studio_router(repository, job_manager) -> APIRouter:
             capture_id=capture_id, project_id=body["project_id"], ble_channel=body["ble_channel"], replay_run_id=body.get("replay_run_id"),
         ))
 
+    # Runs the resumable OFFLINE_REPLAY (decode) + Evidence Stage for a
+    # CaptureRecord that already exists -- the deliberately separable "slow
+    # part" a capture_only=True campaign session skips. Idempotent unless
+    # force=True: a capture that already has evidence is reported as
+    # skipped, never silently re-decoded (real decode time, not free).
+    @router.post("/captures/{capture_id}/replay-and-evidence-jobs", status_code=202)
+    def start_replay_and_evidence_job(capture_id: str, body: dict):
+        return call(lambda: job_manager.start_replay_and_evidence_job(
+            capture_id=capture_id, project_id=body["project_id"], ble_channel=body["ble_channel"],
+            force=bool(body.get("force", False)),
+        ))
+
     @router.get("/captures/{capture_id}/examples")
     def list_examples(capture_id: str):
         return call(lambda: dump_list(repository.list_examples(capture_id)))
+
+    @router.get("/captures/{capture_id}/repair-guidance")
+    def capture_repair_guidance(capture_id: str):
+        return call(lambda: repository.capture_repair_guidance(capture_id))
+
+    # Fast (no IQ decode) native-scan-only triage -- lets the operator learn
+    # a capture is doomed (target never seen natively) in ~1s instead of
+    # waiting through the full "Aplicar analisis" decode.
+    @router.get("/captures/{capture_id}/quick-presence-check")
+    def quick_presence_check(capture_id: str):
+        return call(lambda: repository.quick_presence_check(capture_id))
 
     @router.get("/captures/{capture_id}/annotations")
     def list_annotations(capture_id: str):
@@ -149,6 +207,10 @@ def build_ble_rffi_studio_router(repository, job_manager) -> APIRouter:
     @router.get("/datasets")
     def datasets():
         return call(lambda: dump_list(repository.list_datasets()))
+
+    @router.delete("/datasets/{dataset_id}/{dataset_version}")
+    def delete_dataset(dataset_id: str, dataset_version: str):
+        return call(lambda: repository.delete_dataset(dataset_id, dataset_version))
 
     @router.post("/datasets", status_code=201)
     def create_dataset(body: dict):
@@ -169,6 +231,14 @@ def build_ble_rffi_studio_router(repository, job_manager) -> APIRouter:
             return dump(dataset)
         return call(fn)
 
+    @router.get("/datasets/{dataset_id}/{dataset_version}/label-provenance")
+    def label_provenance(dataset_id: str, dataset_version: str):
+        return call(lambda: repository.label_provenance_report(dataset_id, dataset_version))
+
+    @router.get("/datasets/{dataset_id}/{dataset_version}/composition-report")
+    def dataset_composition(dataset_id: str, dataset_version: str):
+        return call(lambda: repository.dataset_composition_report(dataset_id, dataset_version))
+
     @router.post("/datasets/{dataset_id}/{dataset_version}/quality-report")
     def build_quality_report(dataset_id: str, dataset_version: str, body: dict | None = None):
         run_near_duplicates = bool((body or {}).get("run_near_duplicates", False))
@@ -181,6 +251,17 @@ def build_ble_rffi_studio_router(repository, job_manager) -> APIRouter:
             if report is None:
                 raise FileNotFoundError("QUALITY_REPORT_NOT_BUILT_YET")
             return dump(report)
+        return call(fn)
+
+    # UI-reachable fix for a quality gate blocked on exact duplicates or
+    # sample overlap: quarantines exactly the examples DatasetAnalyzer.
+    # resolve_overlaps() determines are redundant/overlapping, directly on
+    # each capture's evidence -- the next "Revisar datos"/quality-report
+    # rebuilds its dataset draft fresh from that evidence, so no separate
+    # re-freeze step is needed here.
+    @router.post("/datasets/resolve-duplicates", status_code=200)
+    def resolve_dataset_duplicates(body: dict):
+        return call(lambda: repository.resolve_dataset_duplicates(capture_ids=body["capture_ids"]))
         return call(fn)
 
     # ------------------------------------------------------------------
@@ -199,6 +280,10 @@ def build_ble_rffi_studio_router(repository, job_manager) -> APIRouter:
                 raise FileNotFoundError("SPLIT_NOT_BUILT_YET")
             return dump(split)
         return call(fn)
+
+    @router.get("/datasets/{dataset_id}/{dataset_version}/splits/{scientific_task}/training-preview")
+    def split_training_preview(dataset_id: str, dataset_version: str, scientific_task: str):
+        return call(lambda: repository.dataset_training_preview(dataset_id=dataset_id, dataset_version=dataset_version, scientific_task=scientific_task))
 
     # ------------------------------------------------------------------
     # Guided mode helpers
@@ -229,6 +314,82 @@ def build_ble_rffi_studio_router(repository, job_manager) -> APIRouter:
             from ..quality import recommend_scientific_task
             return recommend_scientific_task(examples)
         return call(fn)
+
+    # Auto-train: one call per registered device instead of an operator
+    # manually enumerating capture_ids before every prepare-and-train --
+    # resolves "this device's own TARGET_DEVICE_ON captures + every
+    # project-shared BACKGROUND_* capture" the same way a careful operator
+    # would by hand, then launches the exact same PREPARE_AND_TRAIN job.
+    @router.get("/auto-train/candidates")
+    def auto_train_candidates():
+        return call(repository.auto_train_candidates)
+
+    @router.post("/auto-train/{physical_unit_id}", status_code=202)
+    def auto_train(physical_unit_id: str, body: dict | None = None):
+        def fn():
+            resolved = repository.resolve_auto_train_capture_ids(physical_unit_id)
+            body_ = body or {}
+            return job_manager.start_prepare_and_train_job(
+                capture_ids=resolved["capture_ids"], project_id=resolved["project_id"],
+                campaign_id=body_.get("campaign_id") or f"{resolved['project_id']}-AUTO-TRAIN-CAMPAIGN",
+                scientific_task="TARGET_VS_BACKGROUND", ble_channel=body_.get("ble_channel", 37),
+                dataset_id=body_.get("dataset_id") or f"{physical_unit_id}-AUTO-TVB",
+                dataset_version=body_.get("dataset_version") or utc_now().replace(":", "").replace("-", ""),
+                # Single-device auto-train must never let a different
+                # registered device's packets (incidentally captured nearby)
+                # count as TARGET evidence for this one -- see build_dataset()
+                # docstring comment for the real CC2541SensorTag/CC2650-UNIT-01
+                # contamination this prevents.
+                target_physical_unit_ids={physical_unit_id},
+                # One click, fully automatic: every candidate model this run
+                # trains gets exported + approved for Live Monitor too,
+                # never a separate manual step (see
+                # StudioRepository.export_and_approve_all_candidates()).
+                auto_export_physical_unit_id=physical_unit_id,
+            )
+        return call(fn)
+
+    # One-click: detect every background capture still contaminated by an
+    # "always-on" device (never genuinely off, so it always leaks into its
+    # own declared-background evidence), scrub+verify each, then train and
+    # export both an ORIGINAL-background and a SCRUBBED-background model set
+    # for direct comparison. See StudioRepository.scrub_device_from_background().
+    @router.post("/scrub-background/{physical_unit_id}", status_code=202)
+    def scrub_background(physical_unit_id: str):
+        return call(lambda: job_manager.start_device_scrub_job(physical_unit_id=physical_unit_id))
+
+    @router.get("/scrub-background/{physical_unit_id}/candidates")
+    def scrub_background_candidates(physical_unit_id: str):
+        return call(lambda: dump_list(repository.find_contaminated_background_captures(physical_unit_id)))
+
+    # Training Service: pick 1+ ALREADY-frozen, already-labeled dataset(s) +
+    # exactly which model_type candidates to train. One dataset trains a
+    # normal TARGET_VS_BACKGROUND detector (never builds a new dataset,
+    # never touches capture_ids -- StudioRepository.train_selected_models()).
+    # 2+ datasets combine into a multi-class SAME_MODEL_UNIT_IDENTIFICATION
+    # model that says WHICH device is present, never a binary "any of these"
+    # family (StudioRepository.combine_datasets_for_identification()).
+    @router.post("/training-service/run", status_code=202)
+    def training_service_run(body: dict):
+        dataset_keys = [(d["dataset_id"], d["dataset_version"]) for d in body["dataset_keys"]]
+        background = body.get("background_dataset")
+        background_dataset_key = (background["dataset_id"], background["dataset_version"]) if background else None
+        return call(lambda: job_manager.start_train_selected_models_job(
+            dataset_keys=dataset_keys, model_types=body["model_types"], background_dataset_key=background_dataset_key,
+        ))
+
+    # Explicit, operator-visible export button for the Training Service
+    # results panel -- export already happens automatically right after
+    # training (see _run_train_selected_models_job), but re-running this is
+    # always safe (export_bundle/approve_bundle are themselves idempotent)
+    # and gives the operator a real, clickable action rather than only a
+    # silent background step.
+    @router.post("/training-service/export")
+    def training_service_export(body: dict):
+        return call(lambda: repository.export_and_approve_all_candidates(
+            physical_unit_id=body["run_name"],
+            prepare_and_train_result={"trained_models": body["trained_models"], "recommended_training_run_id": body.get("recommended_training_run_id")},
+        ))
 
     @router.post("/prepare-and-train", status_code=202)
     def prepare_and_train(body: dict):
@@ -274,6 +435,10 @@ def build_ble_rffi_studio_router(repository, job_manager) -> APIRouter:
             return run
         return call(fn)
 
+    @router.delete("/training-runs/{training_run_id}")
+    def delete_training_run(training_run_id: str):
+        return call(lambda: repository.delete_training_run(training_run_id))
+
     # ------------------------------------------------------------------
     # Evaluation
     # ------------------------------------------------------------------
@@ -285,8 +450,27 @@ def build_ble_rffi_studio_router(repository, job_manager) -> APIRouter:
         # the operator explicitly asks for it (e.g. the single model already
         # chosen), never by default -- comparing several candidates this way
         # must stay VALIDATION-only, same as the automatic orchestration.
+        # Any include_test=True through this generic, manual route is -- by
+        # construction -- never the one automatic single-selection call
+        # prepare_and_train() makes internally, so it is always tagged
+        # OPT_IN_MULTI_CANDIDATE_COMPARISON, never SINGLE_SELECTION_GUARANTEE.
         include_test = bool((body or {}).get("include_test", False))
-        return call(lambda: repository.evaluate_training_run(training_run_id, min_identified_precision=min_precision, include_test=include_test))
+        return call(lambda: repository.evaluate_training_run(
+            training_run_id, min_identified_precision=min_precision, include_test=include_test,
+            test_evaluation_provenance="OPT_IN_MULTI_CANDIDATE_COMPARISON" if include_test else None,
+        ))
+
+    # Guided mode's gated entry point for the same action: requires an
+    # explicit acknowledge_multiple_comparison_risk=true rather than a bare
+    # include_test flag, since Guided mode is meant for an operator who may
+    # not already know why comparing several candidates against TEST is a
+    # real statistical caveat, not a formality (see StudioRepository's
+    # evaluate_training_run_on_test_opt_in docstring).
+    @router.post("/training-runs/{training_run_id}/evaluate-on-test-opt-in")
+    def evaluate_training_run_on_test_opt_in(training_run_id: str, body: dict | None = None):
+        return call(lambda: repository.evaluate_training_run_on_test_opt_in(
+            training_run_id, acknowledge_multiple_comparison_risk=bool((body or {}).get("acknowledge_multiple_comparison_risk", False)),
+        ))
 
     @router.get("/training-runs/{training_run_id}/evaluation")
     def get_evaluation(training_run_id: str):
@@ -324,9 +508,26 @@ def build_ble_rffi_studio_router(repository, job_manager) -> APIRouter:
             return dump(bundle)
         return call(fn)
 
+    @router.delete("/bundles/{bundle_id}")
+    def delete_bundle(bundle_id: str):
+        return call(lambda: repository.delete_bundle(bundle_id))
+
     @router.post("/bundles/{bundle_id}/approve")
     def approve_bundle(bundle_id: str):
         return call(lambda: dump(repository.approve_bundle(bundle_id)))
+
+    # Resolution only -- the actual retrain runs through the EXISTING
+    # POST /prepare-and-train job (see retrain_reference()'s docstring).
+    @router.get("/bundles/{bundle_id}/retrain-reference")
+    def retrain_reference(bundle_id: str):
+        return call(lambda: repository.retrain_reference(bundle_id))
+
+    # Same idea, but for the Benchmark panel's "Reentrenar (mismas capturas)"
+    # action -- works even for a candidate that was never exported to a
+    # bundle at all.
+    @router.get("/training-runs/{training_run_id}/retrain-reference")
+    def retrain_reference_from_training_run(training_run_id: str):
+        return call(lambda: repository.retrain_reference_from_training_run(training_run_id))
 
     # ------------------------------------------------------------------
     # Offline inference
@@ -335,5 +536,82 @@ def build_ble_rffi_studio_router(repository, job_manager) -> APIRouter:
     @router.post("/bundles/{bundle_id}/inference")
     def run_inference(bundle_id: str, body: dict):
         return call(lambda: repository.run_inference(bundle_id=bundle_id, capture_id=body["capture_id"]))
+
+    # ------------------------------------------------------------------
+    # Live Monitor: on-demand model check over a short live IQ burst.
+    # Deliberately a separate URL namespace from /bundles/{bundle_id} (never
+    # /bundles/live-selectable) to avoid any path-matching ambiguity with the
+    # existing {bundle_id} route above.
+    # ------------------------------------------------------------------
+
+    @router.get("/live-monitor/models")
+    def live_selectable_models():
+        return call(repository.list_live_selectable_bundles)
+
+    @router.post("/live-monitor/live-check")
+    def live_check(body: dict):
+        import base64
+        import numpy as np
+
+        def fn():
+            iq_bytes = base64.b64decode(body["iq_window_base64"])
+            iq_window = np.frombuffer(iq_bytes, dtype=np.complex64)
+            result = repository.live_check(
+                bundle_id=body["bundle_id"], iq_window=iq_window, sample_rate_sps=float(body["sample_rate_sps"]),
+                center_frequency_hz=float(body["center_frequency_hz"]), bandwidth_hz=float(body["bandwidth_hz"]),
+                sample_format=body["sample_format"],
+            )
+            return result
+        return call(fn)
+
+    # Continuous on-demand live check, wired through the SAME B200 session
+    # Live Monitor's own spectrum stream already owns (real_spectrum_stream) --
+    # never opens a second SDR session. See real_spectrum_stream.py's
+    # enable_ble_live_check/_live_check_worker_loop and
+    # spectrum_stream_worker.py's ble_live_check_enabled for the full path.
+    # Deliberately imported here (not in spectrum_controller.py) so Live
+    # Monitor's own spectrum routes/DI wiring stay completely untouched --
+    # this module is the only one with both the repository AND a reason to
+    # know about bundles.
+    @router.post("/live-monitor/enable/{bundle_id}")
+    def enable_live_monitor_check(bundle_id: str):
+        from app.infrastructure.sdr.real_spectrum_stream import real_spectrum_stream
+
+        def fn():
+            bundle = repository.get_bundle(bundle_id)
+            if bundle is None:
+                raise FileNotFoundError(f"BUNDLE_NOT_FOUND:{bundle_id}")
+            if bundle.approval_status != "APPROVED_FOR_LIVE_PILOT":
+                raise ValueError(f"BUNDLE_NOT_APPROVED_FOR_LIVE_PILOT:{bundle_id}")
+            real_spectrum_stream.enable_ble_live_check(bundle_id, repository)
+            return {"status": "enabled", "bundle_id": bundle_id}
+        return call(fn)
+
+    # No bundle_id: full teardown (every currently-watched bundle) --
+    # reserved for the panel's own unmount cleanup. A single row's own
+    # toggle-off must use the per-bundle route below instead, or it would
+    # silently stop every OTHER bundle a different row (or the multi-device
+    # watch list) had going.
+    @router.post("/live-monitor/disable")
+    def disable_live_monitor_check():
+        from app.infrastructure.sdr.real_spectrum_stream import real_spectrum_stream
+        real_spectrum_stream.disable_ble_live_check()
+        return {"status": "disabled"}
+
+    @router.post("/live-monitor/disable/{bundle_id}")
+    def disable_live_monitor_check_one(bundle_id: str):
+        from app.infrastructure.sdr.real_spectrum_stream import real_spectrum_stream
+        real_spectrum_stream.disable_ble_live_check(bundle_id)
+        return {"status": "disabled", "bundle_id": bundle_id}
+
+    # Keyed by bundle_id -- every currently-watched bundle's latest result,
+    # scored against the same shared burst (see real_spectrum_stream.py's
+    # _live_check_worker_loop). Was a single flat result before multi-device
+    # watching existed; this is a breaking response-shape change consumed by
+    # BleRffiLiveModelPanel.tsx only.
+    @router.get("/live-monitor/result")
+    def live_monitor_result():
+        from app.infrastructure.sdr.real_spectrum_stream import real_spectrum_stream
+        return real_spectrum_stream.get_latest_live_check_results()
 
     return router
