@@ -1,0 +1,76 @@
+import { useState } from 'react';
+import AcquisitionQualityTab from './AcquisitionQualityTab';
+import CampaignTab from './CampaignTab';
+import IntegrityLeakageTab from './IntegrityLeakageTab';
+import ProtocolTab from './ProtocolTab';
+import ReadinessTab from './ReadinessTab';
+
+// The full specification calls for 14 tabs. Fase 1+2 implement the five
+// this phase's backend supports (Protocol, Readiness, Campaign, Integrity
+// and Leakage, Acquisition Quality); the remaining 9 (RQ1-4, S1-S2,
+// forensics, reproducibility, export) are declared here so the navigation
+// shape matches the final module from day one, but stay disabled rather
+// than rendering UI for endpoints that do not exist yet -- see
+// docs/ble/SCIENTIFIC_STATUS.md and the Fase 1/2 plan for what each one
+// will cover.
+const TABS: { id: string; label: string; enabled: boolean }[] = [
+  { id: 'protocol', label: 'Protocol', enabled: true },
+  { id: 'readiness', label: 'Readiness', enabled: true },
+  { id: 'campaign', label: 'Campaign', enabled: true },
+  { id: 'integrity', label: 'Integrity and Leakage', enabled: true },
+  { id: 'quality', label: 'Acquisition Quality', enabled: true },
+  { id: 'rq1', label: 'RQ1', enabled: false },
+  { id: 'rq2', label: 'RQ2', enabled: false },
+  { id: 'rq3', label: 'RQ3', enabled: false },
+  { id: 'rq4', label: 'RQ4', enabled: false },
+  { id: 's1', label: 'Channel Transport', enabled: false },
+  { id: 's2', label: 'Online Equivalence', enabled: false },
+  { id: 'forensics', label: 'Calibration and Forensics', enabled: false },
+  { id: 'reproducibility', label: 'Reproducibility', enabled: false },
+  { id: 'export', label: 'Paper Export', enabled: false },
+];
+
+export default function BleScientificResultsPage() {
+  const [activeTab, setActiveTab] = useState('protocol');
+
+  return (
+    <div>
+      <div className="sticky top-0 z-10 border-b border-slate-800 bg-slate-950/95 px-4 py-2 backdrop-blur">
+        <div className="mb-2">
+          <div className="text-base font-bold text-slate-100">BLE Scientific Results Studio</div>
+          <div className="text-xs text-slate-500">
+            Capa autoritativa para los resultados empiricos del paper BLE -- contratos de analisis congelados,
+            preflight cientifico, registros canonicos y contabilidad de campana. Fase 2 de 6. Nunca modifica los
+            manifests o artefactos de BLE-RFFI Studio.
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {TABS.map((tab) => (
+            <button
+              key={tab.id}
+              disabled={!tab.enabled}
+              className={`rounded px-2.5 py-1 text-xs transition-colors ${
+                activeTab === tab.id
+                  ? 'bg-cyan-600/30 text-cyan-100'
+                  : tab.enabled
+                    ? 'text-slate-400 hover:bg-slate-800'
+                    : 'cursor-not-allowed text-slate-700'
+              }`}
+              title={tab.enabled ? undefined : 'Fase 3+'}
+              onClick={() => tab.enabled && setActiveTab(tab.id)}
+            >
+              {tab.label}
+              {!tab.enabled && <span className="ml-1 text-[10px] text-slate-700">Fase 3+</span>}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {activeTab === 'protocol' && <ProtocolTab />}
+      {activeTab === 'readiness' && <ReadinessTab />}
+      {activeTab === 'campaign' && <CampaignTab />}
+      {activeTab === 'integrity' && <IntegrityLeakageTab />}
+      {activeTab === 'quality' && <AcquisitionQualityTab />}
+    </div>
+  );
+}

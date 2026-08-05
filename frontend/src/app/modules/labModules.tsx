@@ -22,6 +22,7 @@ import { bleLabModule } from './ble-lab/module';
 import { bleRffiStageOneModule } from './ble-rffi-stage-one/module';
 import { blePacketAnalysisLabModule } from './ble-packet-analysis-lab/module';
 import { bleRffiStudioModule } from './ble-rffi-studio/module';
+import { bleScientificResultsModule } from './ble-scientific-results/module';
 import { LabModuleDefinition } from './types';
 
 export type { LabModuleDefinition } from './types';
@@ -48,6 +49,7 @@ export const labModules: LabModuleDefinition[] = [
   bleRffiStageOneModule,
   blePacketAnalysisLabModule,
   bleRffiStudioModule,
+  bleScientificResultsModule,
   liveDemodulationModule,
   kiwiSdrMapModule,
   settingsModule,
