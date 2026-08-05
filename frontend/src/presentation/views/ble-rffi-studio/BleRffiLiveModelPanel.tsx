@@ -497,6 +497,44 @@ export function BleRffiLiveModelPanel({ centerFrequencyHz, sampleRateHz }: Props
   const identified = displayedResult?.final_decision === 'IDENTIFIED' && !displayedResult?.error;
   const liveHue = resultHue(displayedResult);
 
+  // Same on-spectrum band mechanic as the single health-check model above,
+  // but for every watched device at once: real request -- a detection must
+  // be visible ON the spectrum itself, not only inside the dropdown list.
+  // Devices that train on the same BLE channel (the common case: most of
+  // this project's devices share channel 37) resolve to the same band
+  // position, so they are grouped into ONE band with a small stacked list
+  // of labels rather than several identical, overlapping rectangles.
+  const watchBandGroups = useMemo(() => {
+    if (!sampleRateHz) return [] as Array<{ left: number; width: number; devices: Array<{ device: string; hue: number; text: string }> }>;
+    const specStart = centerFrequencyHz - sampleRateHz / 2;
+    const groups = new Map<string, { left: number; width: number; devices: Array<{ device: string; hue: number; text: string }> }>();
+    for (const device of watchDevices) {
+      const bundleId = watchModelChoice[device];
+      const bundle = bundles.find((b) => b.bundle_id === bundleId);
+      const centerHz = bundle?.acquisition_reference.center_frequency_hz;
+      if (!bundle || centerHz == null) continue;
+      const bandwidthHz = bundle.acquisition_reference.bandwidth_hz || sampleRateHz;
+      const bandStart = centerHz - bandwidthHz / 2;
+      const leftPct = ((bandStart - specStart) / sampleRateHz) * 100;
+      const widthPct = (bandwidthHz / sampleRateHz) * 100;
+      if (leftPct < -5 || leftPct + widthPct > 105 || widthPct < 0.1) continue;
+      const clampedLeft = Math.max(0, leftPct);
+      const clampedWidth = Math.min(100 - clampedLeft, widthPct);
+      const result = watchResults[bundleId];
+      const isIdentified = result?.final_decision === 'IDENTIFIED' && !result.error;
+      const hue = isIdentified ? 120 : 0;
+      const text = isIdentified
+        ? `${device} · ${result?.class_probability != null ? `${Math.round((result.class_probability as number) * 100)}%` : 'identificado'}`
+        : `${device} · vigilando`;
+      const key = `${clampedLeft.toFixed(1)}_${clampedWidth.toFixed(1)}`;
+      const existing = groups.get(key);
+      if (existing) existing.devices.push({ device, hue, text });
+      else groups.set(key, { left: clampedLeft, width: clampedWidth, devices: [{ device, hue, text }] });
+    }
+    return Array.from(groups.values());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchDevices, watchModelChoice, watchResults, bundles, centerFrequencyHz, sampleRateHz]);
+
   return (
     <>
       {band && (
@@ -514,6 +552,29 @@ export function BleRffiLiveModelPanel({ centerFrequencyHz, sampleRateHz }: Props
               {identified && displayedResult!.class_probability != null ? ` · ${Math.round(displayedResult!.class_probability * 100)}%` : ''}
             </div>
           </div>
+        </div>
+      )}
+      {watchBandGroups.length > 0 && (
+        <div className="pointer-events-none absolute inset-0 z-[9]">
+          {watchBandGroups.map((group, i) => (
+            <div
+              key={i}
+              className="absolute top-0 bottom-0 border-l border-r border-dashed transition-colors"
+              style={{ left: `${group.left}%`, width: `${group.width}%`, borderColor: 'rgba(148,163,184,0.35)' }}
+            >
+              <div className="absolute top-9 left-1/2 flex -translate-x-1/2 flex-col items-center gap-0.5">
+                {group.devices.map((d) => (
+                  <div
+                    key={d.device}
+                    className="whitespace-nowrap rounded-md border bg-slate-950/85 px-2 py-0.5 text-[10px] backdrop-blur-sm shadow"
+                    style={{ borderColor: hsl(d.hue, 0.4), color: hsl(d.hue) }}
+                  >
+                    {d.text}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       )}
       <div ref={rootRef} className="absolute right-60 top-2 z-20 w-fit pointer-events-auto" onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
@@ -664,8 +725,20 @@ export function BleRffiLiveModelPanel({ centerFrequencyHz, sampleRateHz }: Props
                         </span>
                       )}
                       {watching && (
-                        <span className={`shrink-0 text-[11px] ${identified ? 'text-emerald-300' : 'text-slate-500'}`}>
-                          {identified ? `IDENTIFICADO ${result?.class_probability != null ? `${Math.round((result.class_probability as number) * 100)}%` : ''}` : (result ? 'entorno' : '...')}
+                        // A separate pill, not inline text right after the
+                        // device name -- "entorno" flowing directly after
+                        // "CC2650-UNIT-01" read like it was describing the
+                        // device itself ("CC2650-UNIT-01 [es] entorno")
+                        // instead of reporting this device's current
+                        // detection state. AUSENTE is unambiguous either way.
+                        <span
+                          className={`shrink-0 whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${
+                            identified ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' : 'border-slate-700 bg-slate-900 text-slate-500'
+                          }`}
+                        >
+                          {identified
+                            ? `PRESENTE${result?.class_probability != null ? ` ${Math.round((result.class_probability as number) * 100)}%` : ''}`
+                            : (result ? 'AUSENTE' : 'esperando…')}
                         </span>
                       )}
                     </div>

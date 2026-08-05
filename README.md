@@ -11,7 +11,15 @@ FastAPI backend and a React/TypeScript frontend.
 > Spectrum Lab uses real SDR samples. The live spectrum, waterfall, captures,
 > triggered pre-buffer, demodulation, and dataset artifacts are not mock data.
 
-## BLE Dataset Studio Pilot v1
+## BLE Dataset Studio Pilot v1 (superseded)
+
+> **Superseded.** Everything below describes a frozen, early baseline that
+> predates the BLE-RFFI End-to-End Studio module. It is kept only as a
+> reproducibility record (the hashes below still resolve to real, unmodified
+> local artifacts) -- it does **not** describe the current state of BLE work
+> in this repository. For the real, current BLE capability (device capture,
+> evidence, datasets, trained models, and live detection), see
+> [BLE-RFFI Studio](#ble-rffi-studio) below.
 
 `BLE Dataset Studio Pilot v1` is the frozen reproducible baseline for the BLE
 methodology implemented and verified in this repository. Its current state is:
@@ -58,6 +66,7 @@ The hashes above bind them to this pilot baseline without modifying them.
 - [Platform views](#platform-views)
 - [Live Monitor and Spectrum Tools](#live-monitor-and-spectrum-tools)
 - [Capture and dataset workflow](#capture-and-dataset-workflow)
+- [BLE-RFFI Studio](#ble-rffi-studio)
 - [Demodulation capabilities](#demodulation-capabilities)
 - [Architecture](#architecture)
 - [Hardware and runtime](#hardware-and-runtime)
@@ -80,6 +89,10 @@ The hashes above bind them to this pilot baseline without modifying them.
 - Analog, digital, and IoT demodulation workflows.
 - Dataset governance for training, validation, and prediction.
 - Model training, retraining, external validation, registry, and inference.
+- BLE-RFFI Studio: real B200 capture -> evidence -> dataset -> training ->
+  live device detection/identification pipeline, with per-device model
+  training, a device-scrubbing technique for always-on devices, and
+  simultaneous multi-device live watching directly on the spectrum.
 - Reproducible E0/E1/E3/E5 experiments and E6 classical-ML workflows.
 - KiwiSDR receiver discovery and remote receiver map.
 - Persisted runtime settings with hardware and scientific-policy limits.
@@ -372,6 +385,16 @@ Models is the registry and model-card view. It presents model identity, task,
 algorithm, dataset lineage, label schema, validation evidence, artifact paths,
 readiness, and whether a model is enabled for live use.
 
+### BLE-RFFI Studio — `/ble-rffi-studio`
+
+BLE-RFFI Studio is a separate, independent module (it does not modify or
+replace RF Experiment Lab, E6, or Models) that detects and identifies
+specific BLE devices by their real radio signal: capture, evidence, dataset,
+training, export, and live inference, all against real USRP B200
+acquisitions. See [BLE-RFFI Studio](#ble-rffi-studio) below for the full
+pipeline, current real model inventory, Live Monitor integration, and
+documented findings.
+
 ### Waterfall — `/waterfall`
 
 Waterfall visualizes spectral power over time. It is useful for bursts,
@@ -508,6 +531,167 @@ Each successful acquisition can produce:
 - Capture configuration and RF context.
 - Trigger and pre-trigger metadata when applicable.
 - Dataset split and label fields.
+
+## BLE-RFFI Studio
+
+BLE-RFFI Studio (`/ble-rffi-studio`) covers the complete real pipeline for
+detecting and identifying specific BLE devices by their radio signal:
+**capture -> evidence -> dataset -> split -> training -> export -> live
+inference**, all against real USRP B200 acquisitions, never synthetic data
+for anything operational. It is a separate, independent module and does not
+modify or replace RF Experiment Lab, E6, or Models.
+
+Current real state of this module (all counts below are real, on-disk
+artifacts, not targets or plans):
+
+- **146** registered captures, decoded through a real BLE packet decoder
+  (Gate 2A.2) and resolved against an address-binding registry, never
+  guessed.
+- **8** frozen, quality-gated, single-device datasets.
+- **27** trained and `APPROVED_FOR_LIVE_PILOT` models, covering **5** real
+  physical devices (`CC2541SensorTag`, `CC2650-UNIT-01`, `SHELLY-PLUG-01`,
+  `keyfobdemo 01`, `keyfobdemo 02`), 5 model architectures each (logistic
+  regression, SVM-RBF, random forest, 1D CNN, 2D CNN) -- every architecture
+  is always trained and exported, never only the best-scoring one, so the
+  real comparison between them stays visible.
+
+### Pipeline stages
+
+1. **Capture**: real B200 I/Q acquisition, registered with its own
+   `capture_purpose` (`TARGET_DEVICE_ON`, `BACKGROUND_TARGET_OFF`,
+   `BACKGROUND_GENERAL`, or `UNKNOWN_DEVICE_COLLECTION`) -- never a generic,
+   ambiguous "background" bucket.
+2. **Evidence**: every decoded packet is resolved to a registered physical
+   device through address bindings (never trusted blindly -- a declared
+   "device off" capture that still shows the device's real address is
+   flagged as a contradiction, not silently counted as negative evidence).
+3. **Dataset**: a frozen, hashed selection of evidence examples, gated on
+   quality (duplicate/overlap checks) before it can be used at all.
+4. **Split**: session-disjoint TRAIN/VALIDATION/TEST partitions, with an
+   explicit minimum-evidence rule per scientific task -- a task reports
+   `NOT_FEASIBLE` with a real reason rather than training on an
+   under-evidenced split.
+5. **Training**: 5 candidate model architectures per run; a VALIDATION-only
+   composite score picks a recommended one (single, guaranteed TEST
+   evaluation, no multiple-comparison leakage), while every other candidate
+   can still be exported with its own real, separately-run TEST evaluation.
+6. **Live inference**: the trained model scores real, decoded BLE bursts from
+   the same live B200 stream Live Monitor already uses -- never a second SDR
+   session.
+
+### Live Monitor integration
+
+Panel in the top-right corner of the spectrum:
+
+- A single-model **health check**: an automated 15s-baseline /
+  15s-device-on comparison that verifies a model actually discriminates the
+  real device from the real environment, instead of trusting a good TEST
+  score blindly.
+- **Simultaneous multi-device watching**: several already-trained,
+  single-device models run in parallel against the *same* decoded burst (one
+  decode, N classifications -- never a separate capture per model, no
+  bottleneck). Each watched device gets its own compact status badge
+  (`PRESENTE`/`AUSENTE`) and a small on-spectrum band at its real training
+  frequency, so a positive detection is visible directly on the spectrum, not
+  only inside a dropdown list.
+- A **Training Service** panel lets an operator pick any already-frozen,
+  already-labeled dataset plus exactly which model architectures to train,
+  with an internally-generated run name (date, time, and target device) and
+  both automatic and explicit export buttons.
+
+### Real, investigated findings
+
+Documented in full in [`backend/README.md`](backend/README.md) and the
+module's own
+[`backend/app/modules/ble_rffi_studio/README.md`](backend/app/modules/ble_rffi_studio/README.md):
+
+- An **always-on device** (e.g. `SHELLY-PLUG-01`, a mains smart plug with no
+  accessible off switch) structurally never produces a real "device absent"
+  example. A **device-scrubbing** technique -- surgically removing that
+  device's own decoded-packet windows from real IQ captures and replacing
+  each with a real quiet segment copied from elsewhere in the *same*
+  recording (never a synthetic/averaged fill) -- was designed, implemented,
+  and verified live: after scrubbing and capturing 8 real background
+  sessions, `SHELLY-PLUG-01`'s best model reached TEST macro-F1 = 1.0 and was
+  confirmed live, correctly reporting `IDENTIFIED` against real traffic.
+- A real cross-device dataset-contamination bug was found (one device's
+  packets leaking into another device's "single-device" training set when
+  both were physically nearby) and fixed at the dataset-building layer.
+- A real hardware artifact (LO leakage, a direct-conversion USRP B200/AD9361
+  characteristic) was investigated, root-caused, and mitigated via LO-offset
+  tuning -- see `backend/README.md`.
+- A pre-existing multi-class "which of N devices is this" task was found to
+  structurally exclude any "no device" example from its own training split
+  -- documented rather than silently worked around, which is why
+  simultaneous multi-device watching (above) exists as the practical
+  solution instead of a single combined classifier.
+
+### Scientific status
+
+Full detail, per-capability status table, the complete acquisition-chain
+trace (native scan -> B200 IQ -> burst detection -> sync -> GFSK demod ->
+dewhitening -> PDU/CRC -> native/SDR association -> Evidence Stage ->
+dataset -> split -> training -> export -> live inference), every real
+execution on disk (favorable and unfavorable alike), and the exact
+reproduction sequence live in
+[`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md). This
+summary states the essentials only.
+
+**BLE-RFFI Studio is not an E-code.** It is a third module, independent
+from `rf_experiment_lab` (E0/E1/E2/E3/E5/E8/E9/E10/S1/S2/S4, general RF
+technique replications, not all BLE) and from `e6_oracle_style` (E6,
+classical fingerprinting over external non-BLE reference datasets). No code,
+dataset schema, or metric implementation is shared between these three
+systems. BLE-RFFI Studio's own taxonomy is a `ScientificTask` enum
+(`TARGET_VS_BACKGROUND`, `MULTI_DEVICE_CLASSIFICATION`,
+`SAME_MODEL_UNIT_IDENTIFICATION`, `UNKNOWN_DEVICE_REJECTION`) and a
+`ModelType` enum (`logistic_regression`, `svm_rbf`, `random_forest`,
+`cnn1d`, `cnn2d`) -- no other architecture (no Transformer, no ResNet
+variant, no MFCC/LFCC representation) is implemented, UI-exposed, or
+planned inside this module. No experimental code was renamed to produce
+this section.
+
+**The single most important label-quality caveat**: `association_status`
+(the independently-corroborated, address + native-Windows-timestamp match)
+is `STRONG` on exactly 72 examples across the entire 47,051-example corpus
+-- and all 72 come from one `SYNTHETIC_TEST_ONLY` capture used for demo
+seeding. **Among real (`REAL_B200`) evidence, `STRONG` association occurs
+zero times.** Every one of the corpus's 7,599 real `CONFIRMED` label
+decisions instead relies on `PHYSICAL_ISOLATION_DECLARED` -- the operator's
+declaration that only one device was transmitting nearby, explicitly
+documented in code as weaker ground truth with no independent cross-check.
+This does not block training (per-device `physical_unit_id` resolution is a
+separate, address-binding-registry mechanism that both paths feed), but it
+means no claim of address-and-timestamp-corroborated ground truth can
+currently be made for any real device in this project.
+
+Current real capability status (7 of 19 tracked capabilities shown; full
+table in the linked doc):
+
+| Capability | State | Real evidence |
+|---|---|---|
+| USRP B200 real IQ acquisition | REPEATED | 140/146 captures `REAL_B200` |
+| BLE PDU/CRC decode (Gate 2A.2, external `ble-worker-lab` decoder) | TESTED_REAL_IQ | Spec-correct CRC-24/dewhitening; explicitly **not frozen** -- best dev-sweep 381/384, `iq_recovery_validated=false` |
+| Native<->SDR packet association | TESTED_REAL_IQ | 0 `STRONG` matches among real evidence (see caveat above) |
+| Dataset quality gate | REPEATED | 34 reports ever generated: 32 `ACCEPTED_FOR_TRAINING`, 2 `NOT_ACCEPTED_FOR_TRAINING` |
+| Session-disjoint split + leakage check | VALIDATED | 2 of 8 currently-frozen datasets' splits are `NOT_FEASIBLE` -- a real, on-disk case of the gate rejecting contaminated real data |
+| Device Scrubbing | REPEATED | `SHELLY-PLUG-01`: unscrubbed background structurally untrainable (leakage `NOT_FEASIBLE`); scrubbed background reached TEST macro-F1 = 1.000 (`random_forest`, n=122) and live `IDENTIFIED` on 6/10 real samples |
+| Live-spectrum inference latency/throughput/dropped-window measurement | PENDING | No latency, dropped-window, or offline/live agreement-reconciliation code exists for the live path -- "real-time" is never claimed for this reason; use "online experimental inference" or "live-spectrum inference" |
+
+Current scientific scope, stated once: real evidence covers **5 physical
+devices**, **1 receiver** (USRP B200, serial `E3R04Z1B2`), **1 BLE channel
+per device's training set**, across **146 real+synthetic capture sessions**
+(2026-07-28 to 2026-08-03), all at a single physical location. No
+population-, receiver-, or channel-generalization claim is made anywhere in
+this project, and none is currently measurable from the evidence on disk.
+
+BLE-RFFI Studio implements a real, end-to-end capture-to-inference pipeline
+against genuine USRP B200 acquisitions, with per-device classification
+scores traceable to raw IQ; it does not currently constitute a deployed
+industrial identification system, and no output of this pipeline should be
+read as forensic attribution without an explicit population definition, a
+stated set of alternative-source propositions, and an independent
+validation study.
 
 ## Demodulation capabilities
 
@@ -676,3 +860,4 @@ needed.
 - [Backend documentation](backend/README.md)
 - [Backend setup](backend/README_SETUP.md)
 - [Frontend documentation](frontend/README.md)
+- [BLE-RFFI Studio module documentation](backend/app/modules/ble_rffi_studio/README.md)
