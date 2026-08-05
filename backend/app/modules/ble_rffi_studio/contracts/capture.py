@@ -158,3 +158,31 @@ class CaptureRecord(StudioContract):
     discontinuities: int = 0
     replay_status: ReplayStatus = "NOT_STARTED"
     created_at: str
+
+    # Paper-campaign metadata (added for BLE Scientific Results Studio's
+    # real experimental design -- day/intervention/content-variant/receiver-
+    # epoch/environmental tracking). All optional, default None: every
+    # capture recorded before this field set existed remains valid and
+    # simply has no value here (never a silent default other than None).
+    # Populated by ble_sdr_capture_worker.py from request.json when a
+    # caller (e.g. the paper campaign runner) declares them before capture;
+    # never inferred or reconstructed after the fact.
+    day_id: str | None = None
+    campaign_period: str | None = None
+    pre_or_post: str | None = None
+    intervention_arm: str | None = None
+    packet_variant: str | None = None
+    receiver_epoch: str | None = None
+    host_id: str | None = None
+    firmware_hash: str | None = None
+    configuration_hash: str | None = None
+    time_since_power_on_s: float | None = None
+    time_since_intervention_s: float | None = None
+    capture_order: int | None = None
+    review_status: str | None = None
+    ambient_temperature_c: float | None = None
+    battery_id: str | None = None
+    battery_voltage_pre_v: float | None = None
+    battery_voltage_post_v: float | None = None
+    operator_id: str | None = None
+    planned_capture_id: str | None = None

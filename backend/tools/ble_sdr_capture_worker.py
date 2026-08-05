@@ -573,6 +573,21 @@ def capture(request_path: Path, output: Path) -> int:
             "iq_recovery_validated": False,
             "ota_validated": False,
             "error": error,
+            # Paper-campaign metadata: copied straight from the caller's
+            # request when declared (e.g. by paper_campaign_runner.py before
+            # capture) -- never fabricated here. Absent from `request` on
+            # every capture not run through the runner, which leaves these
+            # None on the manifest and, downstream, on CaptureRecord too.
+            "day_id": request.get("day_id"), "campaign_period": request.get("campaign_period"),
+            "pre_or_post": request.get("pre_or_post"), "intervention_arm": request.get("intervention_arm"),
+            "packet_variant": request.get("packet_variant"), "receiver_epoch": request.get("receiver_epoch"),
+            "firmware_hash": request.get("firmware_hash"), "configuration_hash": request.get("configuration_hash"),
+            "time_since_power_on_s": request.get("time_since_power_on_s"),
+            "time_since_intervention_s": request.get("time_since_intervention_s"),
+            "capture_order": request.get("capture_order"), "review_status": request.get("review_status"),
+            "ambient_temperature_c": request.get("ambient_temperature_c"), "battery_id": request.get("battery_id"),
+            "battery_voltage_pre_v": request.get("battery_voltage_pre_v"), "battery_voltage_post_v": request.get("battery_voltage_post_v"),
+            "operator_id": request.get("operator_id"), "planned_capture_id": request.get("planned_capture_id"),
         }
         atomic_json(output / "capture_manifest.json", manifest)
         if persist_iq and data_sha and metadata_sha:

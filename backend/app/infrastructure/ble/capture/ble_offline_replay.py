@@ -1025,6 +1025,16 @@ class BleOfflineReplayService:
                 "association_strength": association_strength,
                 "association_rejection_reason": rejection,
                 "target_address_match": is_target,
+                # Copied straight from decoded_packets.jsonl (see
+                # ble_decode_burst_directory.py), which in turn copies them
+                # from RecoveredBitstreamCandidate -- already computed
+                # inside ble-worker-lab's dsp_receiver() during decode, not
+                # re-derived here. None when the source row predates this
+                # field (old real replays decoded before this change).
+                "synchronization_score": packet.get("synchronization_score"),
+                "symbol_phase": packet.get("symbol_phase"),
+                "frequency_offset_hz": packet.get("frequency_offset_hz"),
+                "frequency_fit_quality": packet.get("frequency_fit_quality"),
             }
             if selected:
                 used.add(selected[0].get("native_observation_id"))

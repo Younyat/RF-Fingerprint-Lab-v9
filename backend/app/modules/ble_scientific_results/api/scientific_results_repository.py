@@ -28,6 +28,7 @@ from ..contracts import (
     GitDirtyState,
     HoldoutAccessLogEntry,
     HoldoutChainVerificationResult,
+    HoldoutGroupAssignment,
     InputArtifactIndex,
     InputSnapshotEntry,
     IntegrityCheckResult,
@@ -271,6 +272,57 @@ class ScientificResultsRepository:
 
         status = "BROKEN" if findings else "VALID"
         return HoldoutChainVerificationResult(status=status, entry_count=len(entries), broken_at_sequence=broken_at, findings=findings)
+
+    # ------------------------------------------------------------------
+    # Fase 1 closure item 10: real holdout groups -- mechanism only, no
+    # real 20-day campaign data exists yet to populate FUTURE_TEST with.
+    # ------------------------------------------------------------------
+
+    def _holdout_groups_dir(self, dataset_id: str, dataset_version: str) -> Path:
+        if any(part in dataset_id or part in dataset_version for part in ("/", "\\", "..")):
+            raise ValueError("INVALID_DATASET_IDENTITY")
+        return self.root / "_holdout_groups" / f"{dataset_id}__{dataset_version}"
+
+    def freeze_holdout_groups(
+        self, *, dataset_id: str, dataset_version: str, group: str,
+        physical_unit_ids: list[str] | None = None, day_ids: list[str] | None = None, session_ids: list[str] | None = None,
+    ) -> HoldoutGroupAssignment:
+        frozen_at = utc_now()
+        draft = HoldoutGroupAssignment(
+            assignment_id=HoldoutGroupAssignment.make_assignment_id(dataset_id=dataset_id, dataset_version=dataset_version, group=group, frozen_at=frozen_at),
+            dataset_id=dataset_id, dataset_version=dataset_version, group=group,
+            physical_unit_ids=physical_unit_ids or [], day_ids=day_ids or [], session_ids=session_ids or [],
+            frozen_at=frozen_at, group_manifest_sha256="",
+        )
+        assignment = draft.model_copy(update={"group_manifest_sha256": draft.content_hash(exclude={"group_manifest_sha256"})})
+        directory = self._holdout_groups_dir(dataset_id, dataset_version)
+        atomic_json(directory / f"{assignment.assignment_id}.json", assignment.model_dump(mode="json"))
+        self.logger.info("holdout group frozen dataset=%s/%s group=%s assignment_id=%s", dataset_id, dataset_version, group, assignment.assignment_id)
+        return assignment
+
+    def list_holdout_groups(self, dataset_id: str, dataset_version: str) -> list[HoldoutGroupAssignment]:
+        directory = self._holdout_groups_dir(dataset_id, dataset_version)
+        if not directory.is_dir():
+            return []
+        assignments = [HoldoutGroupAssignment.model_validate(json.loads(path.read_text(encoding="utf-8"))) for path in sorted(directory.glob("*.json"))]
+        return sorted(assignments, key=lambda a: a.frozen_at, reverse=True)
+
+    def read_group(
+        self, dataset_id: str, dataset_version: str, group: str, *, actor: str, process: str, reason: str, paper_run_id: str | None = None,
+    ) -> HoldoutGroupAssignment | None:
+        """FUTURE_TEST reads are ALWAYS logged through the same chained
+        holdout access log Fase 1 already built -- no other read path for
+        FUTURE_TEST exists in this repository. TRAIN/VALIDATION reads are
+        not gated (they are exactly what preprocessing/model selection is
+        allowed to see)."""
+        assignments = [a for a in self.list_holdout_groups(dataset_id, dataset_version) if a.group == group]
+        if group == "FUTURE_TEST":
+            self.log_holdout_access(
+                actor=actor, process=process, access_type="READ_GROUP", access_path=f"holdout_groups/{dataset_id}/{dataset_version}/FUTURE_TEST",
+                resource_id=f"{dataset_id}__{dataset_version}__FUTURE_TEST", resource_hash=assignments[0].group_manifest_sha256 if assignments else None,
+                reason=reason, paper_run_id=paper_run_id, analysis_contract_hash=None,
+            )
+        return assignments[0] if assignments else None
 
     # ------------------------------------------------------------------
     # Paper runs
@@ -701,7 +753,8 @@ class ScientificResultsRepository:
 
     def _check_paper_campaign_completeness(
         self, dataset: DatasetManifest, examples: list[ExampleRecord], contract: AnalysisContract, population: PopulationSeparationResult,
-    ) -> PaperCampaignCompletenessResult:
+    ) -> PaperCampaignCompletenessResult:  # noqa: C901 -- see per-dimension comments; splitting further would scatter the shared checked/findings state
+        holdout_groups = self.list_holdout_groups(dataset.dataset_id, dataset.dataset_version)
         """Whole-PAPER requirements, distinct from (and layered on top of)
         the dataset-structural checks above. Unlike design_completeness
         (tier 1, dataset-scoped), every dimension the user's specification
@@ -770,10 +823,13 @@ class ScientificResultsRepository:
         if not contract.minimum_independent_blocks:
             findings.append("independent_blocks: protocol declares no minimum_independent_blocks for this paper campaign.")
 
-        # Groups / holdouts: no future-holdout group concept is bound to a
-        # dataset anywhere yet (Fase 1's holdout_access_log is a project-
-        # wide audit trail, not a per-dataset holdout-group assignment).
-        findings.append("groups_and_holdouts: NOT_DOCUMENTED -- no per-dataset holdout-group assignment exists anywhere yet.")
+        # Groups / holdouts: now checkable for real once freeze_holdout_groups()
+        # has actually been called for this dataset (Fase 1 closure item 10).
+        groups_present = {a.group for a in holdout_groups}
+        required_groups = {"TRAIN", "VALIDATION", "FUTURE_TEST"}
+        missing_groups = required_groups - groups_present
+        if missing_groups:
+            findings.append(f"groups_and_holdouts: no real HoldoutGroupAssignment exists yet for group(s) {sorted(missing_groups)} on this dataset -- call freeze_holdout_groups() before this can pass.")
 
         # Receiver profile: real, checkable field.
         receiver_ids = set()

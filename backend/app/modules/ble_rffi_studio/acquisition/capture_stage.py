@@ -130,6 +130,24 @@ class CaptureStage:
             discontinuities=int(manifest.get("discontinuity_count") or 0),
             replay_status=self._infer_replay_status(capture_dir),
             created_at=str(manifest["created_at_utc"]),
+            # Paper-campaign metadata: read directly from the manifest when
+            # present (written by ble_sdr_capture_worker.py from
+            # request.json, itself declared by the paper campaign runner
+            # before capture -- see paper_campaign_runner.py). Absent on
+            # every capture recorded before this field set existed, and on
+            # any capture not run through the runner -- stays None, never
+            # reconstructed or guessed here.
+            day_id=manifest.get("day_id"), campaign_period=manifest.get("campaign_period"),
+            pre_or_post=manifest.get("pre_or_post"), intervention_arm=manifest.get("intervention_arm"),
+            packet_variant=manifest.get("packet_variant"), receiver_epoch=manifest.get("receiver_epoch"),
+            host_id=manifest.get("host_id"), firmware_hash=manifest.get("firmware_hash"),
+            configuration_hash=manifest.get("configuration_hash"),
+            time_since_power_on_s=manifest.get("time_since_power_on_s"),
+            time_since_intervention_s=manifest.get("time_since_intervention_s"),
+            capture_order=manifest.get("capture_order"), review_status=manifest.get("review_status"),
+            ambient_temperature_c=manifest.get("ambient_temperature_c"), battery_id=manifest.get("battery_id"),
+            battery_voltage_pre_v=manifest.get("battery_voltage_pre_v"), battery_voltage_post_v=manifest.get("battery_voltage_post_v"),
+            operator_id=manifest.get("operator_id"), planned_capture_id=manifest.get("planned_capture_id"),
         )
 
     def _device_id_from_request(self, capture_dir: Path) -> str | None:

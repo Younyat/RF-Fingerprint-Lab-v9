@@ -29,6 +29,7 @@ from .quality_report import (
     SampleOverlapPairDetail,
     SampleOverlapResult,
 )
+from .paper_campaign import PAPER_CAMPAIGN_SCHEDULE_SCHEMA_VERSION, PaperCampaignSchedule, PaperCampaignScheduleEntry
 from .split import LeakageCheckResult, SplitAssignment, SplitManifest
 from .training import TRAINING_RUN_SCHEMA_VERSION, OperationalUse, TrainingRun
 
@@ -75,4 +76,7 @@ __all__ = [
     "SampleOverlapPairDetail",
     "NearDuplicateResult",
     "QUALITY_REPORT_SCHEMA_VERSION",
+    "PaperCampaignSchedule",
+    "PaperCampaignScheduleEntry",
+    "PAPER_CAMPAIGN_SCHEDULE_SCHEMA_VERSION",
 ]

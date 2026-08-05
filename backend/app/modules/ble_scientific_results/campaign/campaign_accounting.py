@@ -45,6 +45,13 @@ def build_campaign_accounting(*, run_dir: Path, contract: AnalysisContract) -> d
     observed_captures = len(captures)
     missing_captures = int((deviations["deviation_type"] == "CAPTURE_NOT_FOUND").sum()) if not deviations.empty else 0
     duplicate_captures = int((deviations["deviation_type"] == "DUPLICATE_CAPTURE").sum()) if not deviations.empty else 0
+    # Deviation classification counts -- kept structurally separate so a
+    # normal candidate-level exclusion is never presented as a protocol
+    # failure. protocol_deviation_count is the only one that should worry a
+    # reader of "did the campaign follow its frozen design".
+    protocol_deviation_count = int((deviations["classification"] == "PROTOCOL_DEVIATION").sum()) if not deviations.empty and "classification" in deviations.columns else 0
+    capture_exclusion_count = int((deviations["classification"] == "CAPTURE_EXCLUSION").sum()) if not deviations.empty and "classification" in deviations.columns else 0
+    candidate_exclusion_count = int((deviations["classification"] == "CANDIDATE_EXCLUSION").sum()) if not deviations.empty and "classification" in deviations.columns else 0
 
     declared_planned = (contract.campaign_schedule or {}).get("planned_captures")
     planned_captures = declared_planned if declared_planned is not None else observed_captures
@@ -54,14 +61,14 @@ def build_campaign_accounting(*, run_dir: Path, contract: AnalysisContract) -> d
     captures_with_bursts = int(bursts["capture_id"].nunique()) if not bursts.empty else 0
     captures_with_crc = int(bursts.loc[bursts["burst_class"].isin(["CRC_VALID_PACKET", "TARGET_ASSOCIATED_PACKET"]), "capture_id"].nunique()) if not bursts.empty else 0
     captures_with_target_association = int(bursts.loc[bursts["burst_class"] == "TARGET_ASSOCIATED_PACKET", "capture_id"].nunique()) if not bursts.empty else 0
-    eligible_captures = int((captures["eligible"] == True).sum()) if not captures.empty else 0  # noqa: E712
+    eligible_captures = int((captures["capture_eligible"] == True).sum()) if not captures.empty else 0  # noqa: E712
 
     declared_channels = sorted(set(contract.channels or []))
     observed_channels = sorted(set(int(c) for c in captures["channel"].dropna().unique())) if not captures.empty and "channel" in captures.columns else []
     complete_channel_blocks = len([c for c in declared_channels if c in observed_channels])
 
-    active_windows = int((windows["active"] == True).sum()) if not windows.empty else 0  # noqa: E712
-    eligible_windows = int((windows["decision_eligible"] == True).sum()) if not windows.empty else 0  # noqa: E712
+    active_windows = int((windows["window_status"] != "INACTIVE").sum()) if not windows.empty else 0
+    eligible_windows = int((windows["window_status"] == "ACTIVE_ELIGIBLE").sum()) if not windows.empty else 0
 
     counters = {
         "planned_captures": planned_captures, "planned_captures_is_declared": planned_captures_is_declared,
@@ -75,21 +82,31 @@ def build_campaign_accounting(*, run_dir: Path, contract: AnalysisContract) -> d
         "planned_content_blocks": 0, "complete_content_blocks": 0,
         "planned_channel_blocks": len(declared_channels), "complete_channel_blocks": complete_channel_blocks,
         "active_windows": active_windows, "eligible_windows": eligible_windows,
+        "protocol_deviation_count": protocol_deviation_count, "capture_exclusion_count": capture_exclusion_count,
+        "candidate_exclusion_count": candidate_exclusion_count,
     }
 
     # ------------------------------------------------------------------
     # C: exclusion reasons -- one row per object x reason, never collapsed
     # ------------------------------------------------------------------
+    # blocking_reason_codes and diagnostic_flags are kept in separate
+    # columns -- a blocking reason means the object cannot be used for the
+    # corresponding purpose; a diagnostic flag is an observation that does
+    # not, by itself, block anything.
     exclusion_rows: list[dict[str, Any]] = []
     if not captures.empty:
         for _, row in captures.iterrows():
-            for reason in row.get("exclusion_reason_codes") or []:
-                exclusion_rows.append({"object_type": "capture", "object_id": row["capture_id"], "reason": reason})
+            for reason in row.get("blocking_reason_codes") or []:
+                exclusion_rows.append({"object_type": "capture", "object_id": row["capture_id"], "kind": "blocking", "reason": reason})
+            for flag in row.get("diagnostic_flags") or []:
+                exclusion_rows.append({"object_type": "capture", "object_id": row["capture_id"], "kind": "diagnostic", "reason": flag})
     if not bursts.empty:
         for _, row in bursts.iterrows():
-            for reason in row.get("exclusion_reason_codes") or []:
-                exclusion_rows.append({"object_type": "burst", "object_id": row["burst_id"], "reason": reason})
-    exclusion_frame = pd.DataFrame(exclusion_rows, columns=["object_type", "object_id", "reason"])
+            for reason in row.get("blocking_reason_codes") or []:
+                exclusion_rows.append({"object_type": "burst", "object_id": row["burst_id"], "kind": "blocking", "reason": reason})
+            for flag in row.get("diagnostic_flags") or []:
+                exclusion_rows.append({"object_type": "burst", "object_id": row["burst_id"], "kind": "diagnostic", "reason": flag})
+    exclusion_frame = pd.DataFrame(exclusion_rows, columns=["object_type", "object_id", "kind", "reason"])
     exclusion_frame.to_csv(accounting_dir / "campaign_exclusion_reasons.csv", index=False)
 
     # ------------------------------------------------------------------

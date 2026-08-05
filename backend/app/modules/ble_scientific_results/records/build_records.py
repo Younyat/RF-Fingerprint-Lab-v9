@@ -19,8 +19,8 @@ from app.modules.ble_rffi_studio.contracts import CaptureRecord, DatasetManifest
 from ..contracts import RecordBuildResult, ScientificBurstRecord, ScientificCampaignDeviationRecord, ScientificCaptureRecord, ScientificDecisionWindowRecord
 from .burst_records import build_burst_records
 from .campaign_deviations import build_campaign_deviations
-from .capture_records import build_capture_record
-from .decision_window_records import build_decision_window_records
+from .capture_records import DEFAULT_WINDOW_DURATION_S, build_capture_record
+from .decision_window_records import DEFAULT_MINIMUM_ELIGIBLE_BURSTS, build_decision_window_records
 from .iq_resolution import resolve_replay_dir
 
 ProgressHook = Callable[[str, float, str], None] | None
@@ -37,6 +37,7 @@ def build_records(
     *, paper_run_id: str, protocol_id: str, campaign_id: str, association_policy_hash: str,
     dataset: DatasetManifest, split: SplitManifest, run_dir: Path, ble_root: Path, legacy_capture_root: Path,
     load_capture: Callable[[str], CaptureRecord | None], load_examples: Callable[[str], list[ExampleRecord]],
+    window_duration_s: float = DEFAULT_WINDOW_DURATION_S, minimum_eligible_bursts: int = DEFAULT_MINIMUM_ELIGIBLE_BURSTS,
     progress: ProgressHook = None,
 ) -> RecordBuildResult:
     output_dir = run_dir / "01_inputs" / "canonical_records"
@@ -46,7 +47,6 @@ def build_records(
     burst_records: list[ScientificBurstRecord] = []
     window_records: list[ScientificDecisionWindowRecord] = []
     captures_without_replay: list[str] = []
-    ambiguous_association_burst_ids: list[str] = []
 
     total = max(len(dataset.captures), 1)
     for index, capture_id in enumerate(dataset.captures):
@@ -56,27 +56,31 @@ def build_records(
         if capture is None:
             continue
         examples = load_examples(capture_id)
-        capture_records.append(build_capture_record(
+        capture_record = build_capture_record(
             paper_run_id=paper_run_id, protocol_id=protocol_id, campaign_id=campaign_id, capture=capture,
             examples=examples, dataset=dataset, split=split, ble_root=ble_root, legacy_capture_root=legacy_capture_root,
-        ))
+            window_duration_s=window_duration_s,
+        )
+        capture_records.append(capture_record)
 
         replay_dir = resolve_replay_dir(legacy_capture_root, capture_id)
         if replay_dir is None:
             captures_without_replay.append(capture_id)
-        bursts = build_burst_records(capture_id=capture_id, replay_dir=replay_dir, examples=examples, association_policy_hash=association_policy_hash)
-        burst_records.extend(bursts)
-        window_records.extend(build_decision_window_records(capture_id=capture_id, bursts=bursts))
-        ambiguous_association_burst_ids.extend(
-            burst.burst_id for burst in bursts
-            if "MULTIPLE_NATIVE_CALLBACKS" in burst.exclusion_reason_codes or "AMBIGUOUS" == burst.association_status
+        bursts = build_burst_records(
+            capture_id=capture_id, replay_dir=replay_dir, examples=examples, association_policy_hash=association_policy_hash,
+            capture_eligible=bool(capture_record.capture_eligible),
         )
+        burst_records.extend(bursts)
+        window_records.extend(build_decision_window_records(
+            capture_id=capture_id, bursts=bursts, sample_rate_hz=capture.sample_rate_sps, window_duration_s=window_duration_s,
+            minimum_eligible_bursts=minimum_eligible_bursts,
+        ))
 
     if progress:
         progress("campaign_deviations", 0.9, "Detecting campaign deviations")
     deviation_records = build_campaign_deviations(
         paper_run_id=paper_run_id, campaign_id=campaign_id, dataset=dataset, split=split,
-        capture_records=capture_records, ambiguous_association_burst_ids=ambiguous_association_burst_ids,
+        capture_records=capture_records,
     )
 
     if progress:

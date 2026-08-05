@@ -72,14 +72,24 @@ def test_build_records_classifies_bursts_correctly(tmp_path):
     result = repository.build_records(run.paper_run_id)
     assert result.capture_record_count == 1
     assert result.burst_record_count == 3
-    assert result.decision_window_record_count == 3
+    # Real 10s time windows (default window_duration_s=10, sample_rate=
+    # 4_000_000): all 3 candidates in this fixture sit within a few
+    # thousand samples of each other, well inside one 40M-sample window --
+    # so they collapse into exactly 1 real decision window, not 3 (the
+    # corrected behavior; Fase 2 first shipped 1 candidate = 1 window).
+    assert result.decision_window_record_count == 1
     assert result.captures_without_replay == []
 
     bursts = repository.list_burst_records(run.paper_run_id, limit=10)
     classes = {b["candidate_group_id"]: b["burst_class"] for b in bursts}
     assert classes[candidate_ids[0]] == "TARGET_ASSOCIATED_PACKET"
     assert classes[candidate_ids[1]] == "CRC_VALID_PACKET"
-    assert classes[candidate_ids[2]] == "RF_ACTIVITY"
+    assert classes[candidate_ids[2]] == "SOURCE_CONTEXT_ONLY"
+
+    windows = repository.list_window_records(run.paper_run_id, limit=10)
+    assert len(windows) == 1
+    assert windows[0]["candidate_count"] == 3
+    assert windows[0]["window_status"] == "ACTIVE_ELIGIBLE"
 
 
 def test_burst_resolves_to_existing_capture_and_ids_are_unique(tmp_path):

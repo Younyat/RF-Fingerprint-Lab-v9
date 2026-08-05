@@ -1,5 +1,6 @@
 from .common import StudioContract, identity_hash
 from .holdout import HOLDOUT_ACCESS_LOG_SCHEMA_VERSION, HoldoutAccessLogEntry, HoldoutChainStatus, HoldoutChainVerificationResult
+from .holdout_groups import HOLDOUT_GROUP_SCHEMA_VERSION, HoldoutGroup, HoldoutGroupAssignment
 from .input_snapshot import INPUT_ARTIFACT_INDEX_SCHEMA_VERSION, InputArtifactIndex, InputSnapshotEntry
 from .preflight import (
     PREFLIGHT_SCHEMA_VERSION,
@@ -17,11 +18,14 @@ from .protocol import ANALYSIS_CONTRACT_SCHEMA_VERSION, AnalysisContract, GitDir
 from .record_contracts import (
     RECORD_SCHEMA_VERSION,
     BurstClass,
+    DeviationClassification,
     RecordBuildResult,
     ScientificBurstRecord,
     ScientificCampaignDeviationRecord,
     ScientificCaptureRecord,
     ScientificDecisionWindowRecord,
+    SourceIdentityOrigin,
+    WindowStatus,
 )
 from .run import PAPER_RUN_SCHEMA_VERSION, PaperRunRecord
 
@@ -35,6 +39,9 @@ __all__ = [
     "HOLDOUT_ACCESS_LOG_SCHEMA_VERSION",
     "HoldoutChainStatus",
     "HoldoutChainVerificationResult",
+    "HoldoutGroup",
+    "HoldoutGroupAssignment",
+    "HOLDOUT_GROUP_SCHEMA_VERSION",
     "InputArtifactIndex",
     "InputSnapshotEntry",
     "INPUT_ARTIFACT_INDEX_SCHEMA_VERSION",
@@ -55,6 +62,9 @@ __all__ = [
     "ScientificDecisionWindowRecord",
     "ScientificCampaignDeviationRecord",
     "BurstClass",
+    "SourceIdentityOrigin",
+    "WindowStatus",
+    "DeviationClassification",
     "RECORD_SCHEMA_VERSION",
     "RecordBuildResult",
 ]

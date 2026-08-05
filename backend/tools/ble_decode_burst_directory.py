@@ -50,14 +50,27 @@ def main() -> int:
         parsed = [normalized(item) for item in result.semantic_packets]
         semantic_by_id = {item.get("packet_id"): item for item in parsed}
         packets = []
-        for decoded in result.decoded_results:
+        # result.candidates and result.decoded_results are built in the same
+        # single loop inside run_offline_receiver() (one candidate -> one
+        # decode attempt, same order, same length) -- zipping them by index
+        # is how the candidate that produced each decoded result is
+        # recovered here. This is the exact point where
+        # RecoveredBitstreamCandidate.detector_score/estimated_cfo_hz/
+        # estimated_timing_phase/refined_cfo_hz were previously computed and
+        # then discarded before reaching decoded_packets.jsonl.
+        for candidate, decoded in zip(result.candidates, result.decoded_results):
+            frequency_fit_quality = None
+            if candidate.refined_cfo_hz is not None and candidate.estimated_cfo_hz is not None:
+                frequency_fit_quality = abs(candidate.refined_cfo_hz - candidate.estimated_cfo_hz)
             for packet in decoded.confirmed_packets:
                 item=normalized(packet); sem=semantic_by_id.get(item.get("packet_sha256"),{})
                 advertiser=(sem.get("addresses") or {}).get("advertiser") or {}; advertising=sem.get("advertising_data") or {}
                 item.update({"source":"usrp_b200","frequency_hz":{37:2402000000,38:2426000000,39:2480000000}[args.channel],
                     "address":advertiser.get("address_canonical"),"address_type":advertiser.get("address_type_from_header"),
                     "advertising_data_hex":advertising.get("raw_hex"),"ad_structures":advertising.get("structures",[]),
-                    "local_name":None,"power_dbfs":None,"snr_db":None})
+                    "local_name":None,"power_dbfs":None,"snr_db":None,
+                    "synchronization_score":candidate.detector_score,"symbol_phase":candidate.estimated_timing_phase,
+                    "frequency_offset_hz":candidate.estimated_cfo_hz,"frequency_fit_quality":frequency_fit_quality})
                 packets.append(item)
         for value in packets: value["iq_segment"] = segment.name
         for value in parsed: value["iq_segment"] = segment.name
