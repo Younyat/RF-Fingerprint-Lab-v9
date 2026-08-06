@@ -44,6 +44,26 @@ def _is_ambiguous(event: CalibrationEventRecord, threshold_ms: float) -> bool:
     )
 
 
+def is_valid_strong_event(event: CalibrationEventRecord, threshold_ms: float) -> bool:
+    """Public wrapper -- the SAME criterion select_association_threshold
+    uses internally, exposed so a single real capture (e.g. a target-
+    absence control run outside a full calibration campaign) can be
+    checked against a threshold without re-deriving the rule."""
+    return _is_valid_strong(event, threshold_ms)
+
+
+def is_ambiguous_event(event: CalibrationEventRecord, threshold_ms: float) -> bool:
+    return _is_ambiguous(event, threshold_ms)
+
+
+def false_strong_counts_by_threshold(events: list[CalibrationEventRecord], threshold_grid: list[float]) -> dict[float, int]:
+    """Same aggregate select_association_threshold computes internally for
+    its own target_absence_events, exposed for a standalone control run
+    (e.g. the Guided Validation "Reinforced Target-Absence Control"
+    action) that has no calibration_events counterpart to pair it with."""
+    return {threshold: sum(1 for event in events if _is_valid_strong(event, threshold)) for threshold in sorted(threshold_grid)}
+
+
 def select_association_threshold(
     *, calibration_events: list[CalibrationEventRecord], target_absence_events: list[CalibrationEventRecord],
     threshold_grid: list[float], calibration_campaign_id: str, devices_used: list[str], captures_used: list[str],

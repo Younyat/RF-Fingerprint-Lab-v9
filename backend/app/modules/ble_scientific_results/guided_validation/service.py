@@ -25,21 +25,56 @@ from ..calibration import (
     NoThresholdSatisfiesCriteriaError,
     calibration_event_from_ledger_row,
     evaluate_capture_eligibility,
+    false_strong_counts_by_threshold,
     find_enrolled_devices_in_native_scan,
+    is_ambiguous_event,
+    is_valid_strong_event,
     select_association_policy,
 )
 from ..contracts import CalibrationEventRecord
 from ..records.iq_resolution import resolve_replay_dir
 from .contracts import GuidedValidationStage, GuidedValidationSummary, CapabilityFlag
+from .hardware_actions import classify_timing_diagnostic
 
 ProgressHook = Callable[[str, float, str], None] | None
 
 _ASSOCIATION_THRESHOLD_GRID = [50.0, 100.0, 150.0, 200.0, 250.0, 300.0, 400.0, 500.0]
 _PILOT_FIELDS = ("day_id", "campaign_period", "pre_or_post", "intervention_arm", "capture_order", "receiver_epoch")
+_NARROW_WINDOW_MS = 250.0
+
+
+class HardwareActionError(Exception):
+    """Raised whenever a real-hardware Guided Validation action (timing
+    diagnostic, target-absence control) cannot proceed -- no campaign
+    orchestrator available, missing per-device confirmation, or the real
+    B200_BUSY/native-scanner-busy error CampaignOrchestrator itself raises.
+    Always fails closed; never falls back to a fabricated result."""
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _median(sorted_values: list[float]) -> float | None:
+    return _quantile(sorted_values, 0.5) if sorted_values else None
+
+
+def _quantile(sorted_values: list[float], q: float) -> float | None:
+    if not sorted_values:
+        return None
+    index = q * (len(sorted_values) - 1)
+    lower, upper = int(index), min(int(index) + 1, len(sorted_values) - 1)
+    fraction = index - lower
+    return sorted_values[lower] + fraction * (sorted_values[upper] - sorted_values[lower])
+
+
+def _epoch(timestamp: str | None) -> float | None:
+    if not timestamp:
+        return None
+    try:
+        return datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
 
 
 def _read_jsonl(path: Path | None) -> list[dict]:
@@ -53,13 +88,19 @@ def _read_json(path: Path) -> dict:
 
 
 class GuidedBleScientificValidationService:
-    def __init__(self, repository: ScientificResultsRepository) -> None:
+    def __init__(self, repository: ScientificResultsRepository, campaign_orchestrator: Any = None) -> None:
         self.repository = repository
         self.ble_root = repository.ble_root
         self.legacy_capture_root = repository.legacy_capture_root
         self.native_scan_root = self.legacy_capture_root.parent / "native" / "scans"
         self.output_root = repository.root / "guided_validation"
         self.output_root.mkdir(parents=True, exist_ok=True)
+        # The SAME real CampaignOrchestrator ble_rffi_studio's own module
+        # wiring constructs (shared hybrid_manager/capture_manager/arbiter --
+        # see app/modules/ble_scientific_results/module.py). None when
+        # ble_lab's shared managers were never populated (e.g. ble_lab
+        # disabled), in which case both hardware actions fail closed.
+        self.campaign_orchestrator = campaign_orchestrator
 
     # ------------------------------------------------------------------
     # Discovery (step 1)
@@ -473,3 +514,208 @@ class GuidedBleScientificValidationService:
         atomic_json(run_dir / "artifact_index.json", {
             "calibration_records_csv": {"path": str(csv_path), "size_bytes": csv_path.stat().st_size, "sha256": sha256, "row_count": len(calibration_events)},
         })
+
+    # ------------------------------------------------------------------
+    # Hardware action: Live Timing Diagnostic -- a real, short, supervised
+    # capture of ONE enrolled device, reusing CampaignOrchestrator.
+    # run_session() unchanged (it already starts the native scanner,
+    # starts the B200 capture, keeps both running for the full duration,
+    # stops both safely via its own try/finally, and runs offline replay +
+    # evidence). This method never talks to the SDR/native scanner/arbiter
+    # directly -- only run_session() does.
+    # ------------------------------------------------------------------
+
+    def _new_action_id(self, prefix: str) -> str:
+        return f"{prefix}-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
+
+    def _wide_window_residuals_ms(self, *, candidates: list[dict], ledger_rows: list[dict], native_rows: list[dict], target_address: str, manifest: dict) -> list[float]:
+        """Residuals for target-address-matched packets, WITHOUT the
+        production +/-250ms cap _associate() applies before it ever
+        records a residual (packet_association_ledger.jsonl's own
+        time_delta_ms is null whenever the true residual is larger, by
+        construction -- see ble_offline_replay.py::_associate()). Mirrors
+        _associate()'s own packet-time formula (capture start + start_sample
+        / sample_rate) so this is the SAME timestamp math, just unconstrained,
+        never a second, different clock model."""
+        capture_start = _epoch(manifest.get("created_at_utc")) or _epoch(manifest.get("b200_rf_started_at")) or 0.0
+        sample_rate = float(manifest.get("sample_rate_sps") or 0.0)
+        if sample_rate <= 0:
+            return []
+        target_native_epochs = [_epoch(row.get("timestamp_callback_utc")) for row in native_rows if str(row.get("address", "")).upper() == target_address.upper()]
+        target_native_epochs = [ts for ts in target_native_epochs if ts is not None]
+        if not target_native_epochs:
+            return []
+        ledger_by_candidate = {row["candidate_id"]: row for row in ledger_rows if row.get("candidate_id")}
+        residuals = []
+        for candidate in candidates:
+            row = ledger_by_candidate.get(candidate.get("candidate_id"))
+            if not row or str(row.get("advertiser_address_canonical", "")).upper() != target_address.upper():
+                continue
+            packet_time = capture_start + float(candidate.get("start_sample", 0)) / sample_rate
+            residuals.append(min(abs((native_ts - packet_time) * 1000.0) for native_ts in target_native_epochs))
+        return residuals
+
+    def run_timing_diagnostic(
+        self, *, run_id: str, physical_unit_id: str, capture_duration_s: float, channel: int,
+        receiver_profile: str | None, operator_id: str | None, progress: ProgressHook = None,
+    ) -> dict[str, Any]:
+        if self.campaign_orchestrator is None:
+            raise HardwareActionError("NO_CAMPAIGN_ORCHESTRATOR_CONFIGURED:real ble_lab hardware managers are not available in this process")
+        device_addresses = self._device_addresses()
+        target_address = device_addresses.get(physical_unit_id)
+        if not target_address:
+            raise HardwareActionError(f"NO_BOUND_ADDRESS_FOR_DEVICE:{physical_unit_id}")
+
+        def report(stage: str, fraction: float, message: str) -> None:
+            if progress:
+                progress(stage, fraction, message)
+
+        action_id = self._new_action_id("TIMING-DIAG")
+        action_dir = self.output_root / run_id / "timing_diagnostics" / action_id
+        action_dir.mkdir(parents=True, exist_ok=True)
+
+        report("capture", 0.1, f"Starting native scanner + B200 capture for {physical_unit_id}")
+        try:
+            session_result = self.campaign_orchestrator.run_session(
+                ble_channel=channel, duration_seconds=capture_duration_s, gain_db=20.0,
+                condition_label=f"guided-validation-timing-diagnostic-{action_id}", physical_unit_id=physical_unit_id,
+                project_id="GUIDED-VALIDATION-DIAGNOSTIC", campaign_id="GUIDED-VALIDATION-DIAGNOSTIC", session_index=1,
+                isolation_declared=True, capture_purpose="TARGET_DEVICE_ON",
+            )
+        except Exception as error:
+            atomic_json(action_dir / "action_manifest.json", {
+                "action_id": action_id, "action_type": "TIMING_DIAGNOSTIC", "physical_unit_id": physical_unit_id,
+                "operator_id": operator_id, "channel": channel, "capture_duration_s": capture_duration_s,
+                "receiver_profile": receiver_profile, "status": "FAILED", "error": str(error), "requested_at": utc_now(),
+            })
+            raise HardwareActionError(str(error)) from error
+
+        capture_id, session_id = session_result["capture_id"], session_result["session_id"]
+        report("analyze", 0.6, "Reconstructing association records from the real capture")
+
+        manifest = _read_json(self.legacy_capture_root / capture_id / "capture_manifest.json")
+        native_rows = _read_jsonl(self.native_scan_root / session_id / "advertisements.jsonl")
+        replay_dir = resolve_replay_dir(self.legacy_capture_root, capture_id)
+        candidates = _read_jsonl(replay_dir / "candidate_manifest.jsonl") if replay_dir else []
+        ledger_rows = _read_jsonl(replay_dir / "packet_association_ledger.jsonl") if replay_dir else []
+
+        fallback_ts = manifest.get("created_at_utc") or utc_now()
+        events = [calibration_event_from_ledger_row(row, device_id=physical_unit_id, capture_id=capture_id, fallback_timestamp=fallback_ts) for row in ledger_rows]
+
+        crc_valid_count = sum(1 for candidate in candidates if candidate.get("crc_status") == "VALID")
+        target_native_event_count = sum(1 for row in native_rows if str(row.get("address", "")).upper() == target_address.upper())
+        target_address_packet_count = sum(1 for row in ledger_rows if str(row.get("advertiser_address_canonical", "")).upper() == target_address.upper())
+        narrow_valid = sum(1 for event in events if is_valid_strong_event(event, _NARROW_WINDOW_MS))
+        narrow_ambiguous = sum(1 for event in events if is_ambiguous_event(event, _NARROW_WINDOW_MS))
+        wide_residuals = sorted(self._wide_window_residuals_ms(candidates=candidates, ledger_rows=ledger_rows, native_rows=native_rows, target_address=target_address, manifest=manifest))
+
+        diagnosis = classify_timing_diagnostic(
+            native_event_count=len(native_rows), target_native_event_count=target_native_event_count,
+            target_address_packet_count=target_address_packet_count, narrow_window_valid_count=narrow_valid,
+            narrow_window_ambiguous_count=narrow_ambiguous, wide_window_residuals_ms=wide_residuals,
+            narrow_window_threshold_ms=_NARROW_WINDOW_MS,
+        )
+
+        result = {
+            "action_id": action_id, "physical_unit_id": physical_unit_id, "capture_id": capture_id, "session_id": session_id,
+            "native_scanner_running_time_s": capture_duration_s, "native_event_count": len(native_rows),
+            "target_native_event_count": target_native_event_count, "sdr_candidate_count": len(candidates),
+            "crc_valid_packet_count": crc_valid_count, "target_address_packet_count": target_address_packet_count,
+            "candidate_pair_count": len(events), "narrow_window_valid_count": narrow_valid, "narrow_window_ambiguous_count": narrow_ambiguous,
+            "best_residual_ms_median": _median(wide_residuals), "best_residual_ms_p95": _quantile(wide_residuals, 0.95),
+            "diagnosis_code": diagnosis.code, "diagnosis_explanation": diagnosis.explanation, "diagnosis_next_action": diagnosis.next_action,
+        }
+
+        report("persist", 0.95, "Persisting diagnostic artifacts")
+        atomic_json(action_dir / "action_manifest.json", {
+            "action_id": action_id, "action_type": "TIMING_DIAGNOSTIC", "physical_unit_id": physical_unit_id,
+            "operator_id": operator_id, "channel": channel, "capture_duration_s": capture_duration_s,
+            "receiver_profile": receiver_profile, "capture_id": capture_id, "session_id": session_id,
+            "capture_sha256": manifest.get("data_sha256"), "requested_at": utc_now(), "status": "COMPLETED",
+        })
+        (action_dir / "native_events.jsonl").write_text("\n".join(json.dumps(row) for row in native_rows), encoding="utf-8")
+        atomic_json(action_dir / "decoder_summary.json", {"candidate_count": len(candidates), "crc_valid_count": crc_valid_count})
+        atomic_json(action_dir / "timing_diagnostic.json", result)
+        report("done", 1.0, diagnosis.code)
+        return result
+
+    # ------------------------------------------------------------------
+    # Hardware action: Reinforced Target-Absence Control -- a real,
+    # supervised capture with every enrolled device individually confirmed
+    # absent. Same reuse discipline: only run_session() touches hardware.
+    # ------------------------------------------------------------------
+
+    def run_target_absence_control(
+        self, *, run_id: str, confirmed_devices_off: dict[str, bool], capture_duration_s: float, channel: int,
+        operator_id: str | None, progress: ProgressHook = None,
+    ) -> dict[str, Any]:
+        if self.campaign_orchestrator is None:
+            raise HardwareActionError("NO_CAMPAIGN_ORCHESTRATOR_CONFIGURED:real ble_lab hardware managers are not available in this process")
+        device_ids = self._discover_enrolled_devices()
+        missing = [device_id for device_id in device_ids if not confirmed_devices_off.get(device_id)]
+        if missing:
+            raise HardwareActionError(f"MISSING_INDIVIDUAL_CONFIRMATION:{','.join(missing)}")
+
+        def report(stage: str, fraction: float, message: str) -> None:
+            if progress:
+                progress(stage, fraction, message)
+
+        action_id = self._new_action_id("TARGET-ABSENCE")
+        action_dir = self.output_root / run_id / "target_absence_controls" / action_id
+        action_dir.mkdir(parents=True, exist_ok=True)
+
+        report("capture", 0.1, "Starting native scanner + B200 capture with every enrolled device confirmed absent")
+        try:
+            session_result = self.campaign_orchestrator.run_session(
+                ble_channel=channel, duration_seconds=capture_duration_s, gain_db=20.0,
+                condition_label=f"guided-validation-target-absence-control-{action_id}", physical_unit_id=None,
+                project_id="GUIDED-VALIDATION-DIAGNOSTIC", campaign_id="GUIDED-VALIDATION-DIAGNOSTIC", session_index=1,
+                isolation_declared=False, capture_purpose="BACKGROUND_TARGET_OFF", operator_confirmed_target_absent=True,
+            )
+        except Exception as error:
+            atomic_json(action_dir / "action_manifest.json", {
+                "action_id": action_id, "action_type": "TARGET_ABSENCE_CONTROL", "operator_id": operator_id,
+                "channel": channel, "capture_duration_s": capture_duration_s, "confirmed_devices_off": confirmed_devices_off,
+                "status": "FAILED", "error": str(error), "requested_at": utc_now(),
+            })
+            raise HardwareActionError(str(error)) from error
+
+        capture_id, session_id = session_result["capture_id"], session_result["session_id"]
+        report("analyze", 0.6, "Verifying target absence and reconstructing association records")
+
+        manifest = _read_json(self.legacy_capture_root / capture_id / "capture_manifest.json")
+        native_rows = _read_jsonl(self.native_scan_root / session_id / "advertisements.jsonl")
+        device_addresses = self._device_addresses()
+        detected = find_enrolled_devices_in_native_scan(native_rows, device_addresses)
+
+        if not native_rows:
+            status = "TARGET_ABSENCE_CONTROL_INVALID_NO_NATIVE_COVERAGE"
+        elif detected:
+            status = "TARGET_ABSENCE_CONTROL_INVALID"
+        else:
+            status = "VALID"
+
+        replay_dir = resolve_replay_dir(self.legacy_capture_root, capture_id)
+        ledger_rows = _read_jsonl(replay_dir / "packet_association_ledger.jsonl") if replay_dir else []
+        fallback_ts = manifest.get("created_at_utc") or utc_now()
+        events = [calibration_event_from_ledger_row(row, device_id="AMBIENT_UNKNOWN", capture_id=capture_id, fallback_timestamp=fallback_ts) for row in ledger_rows]
+        false_strong_by_threshold = false_strong_counts_by_threshold(events, _ASSOCIATION_THRESHOLD_GRID)
+
+        result = {
+            "action_id": action_id, "status": status, "capture_id": capture_id, "session_id": session_id,
+            "native_event_count": len(native_rows), "devices_detected": detected,
+            "false_strong_associations_by_threshold_ms": {str(threshold): count for threshold, count in false_strong_by_threshold.items()},
+            "false_strong_associations_total": sum(false_strong_by_threshold.values()),
+        }
+
+        report("persist", 0.95, "Persisting target-absence control artifacts")
+        atomic_json(action_dir / "action_manifest.json", {
+            "action_id": action_id, "action_type": "TARGET_ABSENCE_CONTROL", "operator_id": operator_id,
+            "channel": channel, "capture_duration_s": capture_duration_s, "confirmed_devices_off": confirmed_devices_off,
+            "capture_id": capture_id, "session_id": session_id, "capture_sha256": manifest.get("data_sha256"),
+            "requested_at": utc_now(), "status": "COMPLETED",
+        })
+        (action_dir / "native_events.jsonl").write_text("\n".join(json.dumps(row) for row in native_rows), encoding="utf-8")
+        atomic_json(action_dir / "target_absence_result.json", result)
+        report("done", 1.0, status)
+        return result

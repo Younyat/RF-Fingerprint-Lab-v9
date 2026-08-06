@@ -22,7 +22,6 @@ from typing import Any
 
 from app.infrastructure.ble.capture.ble_capture_metadata import atomic_json
 
-from ..guided_validation import GuidedBleScientificValidationService
 from ..module_logging import build_module_logger
 from .scientific_results_repository import ScientificResultsRepository
 
@@ -34,17 +33,25 @@ def utc_now() -> str:
 
 
 class ScientificResultsJobManager:
-    def __init__(self, repository: ScientificResultsRepository, jobs_root: Path) -> None:
+    def __init__(self, repository: ScientificResultsRepository, jobs_root: Path, campaign_orchestrator: Any | None = None) -> None:
         self.repository = repository
         self.jobs_root = jobs_root
         self.jobs_root.mkdir(parents=True, exist_ok=True)
         self.logger = build_module_logger(jobs_root.parent)
         self._cancel_flags: dict[str, threading.Event] = {}
-        # Reuses repository.freeze_protocol/create_run/build_records and
-        # calibration.select_association_policy unchanged -- see
-        # guided_validation/service.py's own docstring. Never a second
-        # records builder or decoder.
-        self._guided_validation_service = GuidedBleScientificValidationService(repository)
+        # Deferred import -- guided_validation/service.py imports
+        # ScientificResultsRepository from THIS package, so a module-level
+        # import here would be circular. Reuses repository.freeze_protocol/
+        # create_run/build_records and calibration.select_association_policy
+        # unchanged -- see guided_validation/service.py's own docstring.
+        # Never a second records builder or decoder. `campaign_orchestrator`
+        # is the SAME real CampaignOrchestrator ble_rffi_studio's own module
+        # wiring constructs (hybrid_manager/capture_manager/arbiter shared,
+        # never a second competing instance) -- None when ble_lab's shared
+        # managers are unavailable, in which case the two hardware actions
+        # fail closed with a clear error instead of touching hardware.
+        from ..guided_validation import GuidedBleScientificValidationService
+        self._guided_validation_service = GuidedBleScientificValidationService(repository, campaign_orchestrator=campaign_orchestrator)
 
     def _job_dir(self, job_id: str) -> Path:
         if not job_id.startswith("BLE-SCI-RESULTS-JOB-") or any(part in job_id for part in ("/", "\\", "..")):
@@ -225,3 +232,69 @@ class ScientificResultsJobManager:
             self._write(job_dir, "failed", job_type="GUIDED_VALIDATION", error=str(error))
         finally:
             self._cancel_flags.pop(job_id, None)
+
+    # ------------------------------------------------------------------
+    # Guided Validation hardware actions -- Live Timing Diagnostic and
+    # Reinforced Target-Absence Control. Both run a REAL, short, supervised
+    # capture (see guided_validation/service.py's run_timing_diagnostic/
+    # run_target_absence_control -- neither talks to the SDR/native
+    # scanner/arbiter directly, only CampaignOrchestrator.run_session()
+    # does). Same job.json/background-thread pattern as every other job
+    # here; cancellation is NOT supported mid-capture (a real B200 capture
+    # cannot be safely interrupted from outside run_session() itself), so
+    # these two job types never register a cancel flag.
+    # ------------------------------------------------------------------
+
+    def start_timing_diagnostic_job(self, *, run_id: str, physical_unit_id: str, capture_duration_s: float, channel: int, receiver_profile: str | None, operator_id: str | None) -> dict[str, Any]:
+        job_id = self._new_job_id()
+        job_dir = self._job_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=False)
+        atomic_json(job_dir / "job.json", {
+            "schema_version": "ble-scientific-results-job-v1", "job_id": job_id, "job_type": "TIMING_DIAGNOSTIC",
+            "run_id": run_id, "physical_unit_id": physical_unit_id, "state": "queued", "stage": None, "overall_progress": 0.0,
+            "message": None, "warnings": [], "started_at": utc_now(), "updated_at": utc_now(),
+        })
+        threading.Thread(target=self._run_timing_diagnostic_job, args=(job_id, run_id, physical_unit_id, capture_duration_s, channel, receiver_profile, operator_id), daemon=True).start()
+        return self.get_job(job_id)
+
+    def _run_timing_diagnostic_job(self, job_id: str, run_id: str, physical_unit_id: str, capture_duration_s: float, channel: int, receiver_profile: str | None, operator_id: str | None) -> None:
+        job_dir = self._job_dir(job_id)
+        self._write(job_dir, "running", job_type="TIMING_DIAGNOSTIC", run_id=run_id, stage="capture", overall_progress=0.0, message="Starting live timing diagnostic")
+        try:
+            def progress(stage: str, fraction: float, message: str) -> None:
+                self._write(job_dir, "running", job_type="TIMING_DIAGNOSTIC", run_id=run_id, stage=stage, overall_progress=fraction, message=str(message))
+
+            result = self._guided_validation_service.run_timing_diagnostic(
+                run_id=run_id, physical_unit_id=physical_unit_id, capture_duration_s=capture_duration_s, channel=channel,
+                receiver_profile=receiver_profile, operator_id=operator_id, progress=progress,
+            )
+            self._write(job_dir, "completed", job_type="TIMING_DIAGNOSTIC", run_id=run_id, stage="done", overall_progress=1.0, message=result["diagnosis_code"], result=result)
+        except Exception as error:  # noqa: BLE001 -- includes HardwareActionError (B200_BUSY, missing address, etc.)
+            self._write(job_dir, "failed", job_type="TIMING_DIAGNOSTIC", run_id=run_id, error=str(error))
+
+    def start_target_absence_control_job(self, *, run_id: str, confirmed_devices_off: dict[str, bool], capture_duration_s: float, channel: int, operator_id: str | None) -> dict[str, Any]:
+        job_id = self._new_job_id()
+        job_dir = self._job_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=False)
+        atomic_json(job_dir / "job.json", {
+            "schema_version": "ble-scientific-results-job-v1", "job_id": job_id, "job_type": "TARGET_ABSENCE_CONTROL",
+            "run_id": run_id, "state": "queued", "stage": None, "overall_progress": 0.0, "message": None, "warnings": [],
+            "started_at": utc_now(), "updated_at": utc_now(),
+        })
+        threading.Thread(target=self._run_target_absence_control_job, args=(job_id, run_id, confirmed_devices_off, capture_duration_s, channel, operator_id), daemon=True).start()
+        return self.get_job(job_id)
+
+    def _run_target_absence_control_job(self, job_id: str, run_id: str, confirmed_devices_off: dict[str, bool], capture_duration_s: float, channel: int, operator_id: str | None) -> None:
+        job_dir = self._job_dir(job_id)
+        self._write(job_dir, "running", job_type="TARGET_ABSENCE_CONTROL", run_id=run_id, stage="capture", overall_progress=0.0, message="Starting reinforced target-absence control")
+        try:
+            def progress(stage: str, fraction: float, message: str) -> None:
+                self._write(job_dir, "running", job_type="TARGET_ABSENCE_CONTROL", run_id=run_id, stage=stage, overall_progress=fraction, message=str(message))
+
+            result = self._guided_validation_service.run_target_absence_control(
+                run_id=run_id, confirmed_devices_off=confirmed_devices_off, capture_duration_s=capture_duration_s,
+                channel=channel, operator_id=operator_id, progress=progress,
+            )
+            self._write(job_dir, "completed", job_type="TARGET_ABSENCE_CONTROL", run_id=run_id, stage="done", overall_progress=1.0, message=result["status"], result=result)
+        except Exception as error:  # noqa: BLE001
+            self._write(job_dir, "failed", job_type="TARGET_ABSENCE_CONTROL", run_id=run_id, error=str(error))

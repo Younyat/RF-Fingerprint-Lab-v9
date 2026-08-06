@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from app.config.settings import settings
+from app.modules.ble_lab.shared_managers import get_shared_managers
+from app.modules.ble_rffi_studio.api import StudioRepository
+from app.modules.ble_rffi_studio.campaign import CampaignOrchestrator
+from app.modules.ble_rffi_studio.hardware import SdrDeviceArbiter
 from app.modules.types import BackendModuleDefinition
 
 from .api import ScientificResultsJobManager, ScientificResultsRepository, build_ble_scientific_results_router
@@ -11,7 +15,30 @@ def _build(context):
     repository = ScientificResultsRepository(
         root / "scientific_reports" / "ble", ble_rffi_studio_root=root / "ble_rffi_studio",
     )
-    job_manager = ScientificResultsJobManager(repository, root / "scientific_reports" / "ble" / "jobs")
+
+    # Guided Validation's two hardware actions (Live Timing Diagnostic,
+    # Reinforced Target-Absence Control) reuse the SAME real
+    # CampaignOrchestrator machinery ble_rffi_studio's own module wiring
+    # constructs -- the SAME shared hybrid_manager/capture_manager
+    # singletons from ble_lab (never a second, competing manager against
+    # the same USRP B200 -- see shared_managers.py's own docstring) and the
+    # SAME file-based SdrDeviceArbiter lock directory ble_rffi_studio uses,
+    # so both modules' capture requests are correctly serialized against
+    # each other. None when ble_lab is disabled/not yet built, in which
+    # case both hardware actions fail closed (HardwareActionError) instead
+    # of touching hardware.
+    campaign_orchestrator = None
+    shared = get_shared_managers()
+    if shared is not None:
+        arbiter = SdrDeviceArbiter(root / "ble_rffi_studio" / "hardware_locks")
+        studio_repository = StudioRepository(
+            root / "ble_rffi_studio", legacy_capture_root=root / "ble" / "iq_captures", legacy_session_root=root / "ble_lab" / "sessions",
+        )
+        campaign_orchestrator = CampaignOrchestrator(
+            hybrid_manager=shared.hybrid_manager, capture_manager=shared.capture_manager, arbiter=arbiter, repository=studio_repository,
+        )
+
+    job_manager = ScientificResultsJobManager(repository, root / "scientific_reports" / "ble" / "jobs", campaign_orchestrator=campaign_orchestrator)
     return build_ble_scientific_results_router(repository, job_manager)
 
 

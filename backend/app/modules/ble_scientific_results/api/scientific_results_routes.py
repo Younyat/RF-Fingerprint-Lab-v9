@@ -194,4 +194,28 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
     def get_guided_validation(job_id: str):
         return call(lambda: job_manager.get_job(job_id))
 
+    # ------------------------------------------------------------------
+    # Guided Validation hardware actions -- real, short, supervised
+    # captures. See guided_validation/service.py: only CampaignOrchestrator.
+    # run_session() ever touches the SDR/native scanner/arbiter.
+    # ------------------------------------------------------------------
+
+    @router.post("/guided-validation/{run_id}/timing-diagnostic", status_code=202)
+    def start_timing_diagnostic(run_id: str, body: dict):
+        return call(lambda: job_manager.start_timing_diagnostic_job(
+            run_id=run_id, physical_unit_id=body["physical_unit_id"], capture_duration_s=float(body.get("capture_duration_s", 180.0)),
+            channel=int(body.get("channel", 37)), receiver_profile=body.get("receiver_profile"), operator_id=body.get("operator_id"),
+        ))
+
+    @router.post("/guided-validation/{run_id}/target-absence-control", status_code=202)
+    def start_target_absence_control(run_id: str, body: dict):
+        return call(lambda: job_manager.start_target_absence_control_job(
+            run_id=run_id, confirmed_devices_off=body["confirmed_devices_off"], capture_duration_s=float(body.get("capture_duration_s", 180.0)),
+            channel=int(body.get("channel", 37)), operator_id=body.get("operator_id"),
+        ))
+
+    @router.get("/guided-validation/{run_id}/actions/{action_job_id}")
+    def get_guided_validation_action(run_id: str, action_job_id: str):
+        return call(lambda: job_manager.get_job(action_job_id))
+
     return router

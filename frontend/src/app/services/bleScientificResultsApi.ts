@@ -325,6 +325,66 @@ export interface GuidedValidationJob {
   updated_at: string;
 }
 
+export interface TimingDiagnosticResult {
+  action_id: string;
+  physical_unit_id: string;
+  capture_id: string;
+  session_id: string;
+  native_scanner_running_time_s: number;
+  native_event_count: number;
+  target_native_event_count: number;
+  sdr_candidate_count: number;
+  crc_valid_packet_count: number;
+  target_address_packet_count: number;
+  candidate_pair_count: number;
+  narrow_window_valid_count: number;
+  narrow_window_ambiguous_count: number;
+  best_residual_ms_median: number | null;
+  best_residual_ms_p95: number | null;
+  diagnosis_code: string;
+  diagnosis_explanation: string;
+  diagnosis_next_action: string;
+}
+
+export interface TargetAbsenceControlResult {
+  action_id: string;
+  status: string;
+  capture_id: string;
+  session_id: string;
+  native_event_count: number;
+  devices_detected: string[];
+  false_strong_associations_by_threshold_ms: Record<string, number>;
+  false_strong_associations_total: number;
+}
+
+export interface GuidedValidationActionJob {
+  job_id: string;
+  job_type: string;
+  state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  stage: string | null;
+  overall_progress: number;
+  message: string | null;
+  error?: string;
+  result?: TimingDiagnosticResult | TargetAbsenceControlResult;
+  started_at: string;
+  updated_at: string;
+}
+
+export interface StartTimingDiagnosticRequest {
+  physical_unit_id: string;
+  capture_duration_s: number;
+  channel: number;
+  receiver_profile?: string;
+  operator_id?: string;
+}
+
+export interface StartTargetAbsenceControlRequest {
+  confirmed_devices_off: Record<string, boolean>;
+  capture_duration_s: number;
+  channel: number;
+  operator_id?: string;
+}
+
 export class BleScientificResultsApiService {
   constructor(private readonly baseURL = 'http://localhost:8000') {}
   private get root() { return `${this.baseURL}/api/ble-scientific-results`; }
@@ -372,4 +432,14 @@ export class BleScientificResultsApiService {
 
   async startGuidedValidation() { return (await axios.post<GuidedValidationJob>(`${this.root}/guided-validation`)).data; }
   async getGuidedValidationJob(jobId: string) { return (await axios.get<GuidedValidationJob>(`${this.root}/guided-validation/${encodeURIComponent(jobId)}`)).data; }
+
+  async startTimingDiagnostic(runId: string, body: StartTimingDiagnosticRequest) {
+    return (await axios.post<GuidedValidationActionJob>(`${this.root}/guided-validation/${encodeURIComponent(runId)}/timing-diagnostic`, body)).data;
+  }
+  async startTargetAbsenceControl(runId: string, body: StartTargetAbsenceControlRequest) {
+    return (await axios.post<GuidedValidationActionJob>(`${this.root}/guided-validation/${encodeURIComponent(runId)}/target-absence-control`, body)).data;
+  }
+  async getGuidedValidationAction(runId: string, actionJobId: string) {
+    return (await axios.get<GuidedValidationActionJob>(`${this.root}/guided-validation/${encodeURIComponent(runId)}/actions/${encodeURIComponent(actionJobId)}`)).data;
+  }
 }

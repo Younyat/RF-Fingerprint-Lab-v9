@@ -2,13 +2,27 @@ import { useState } from 'react';
 import {
   BleScientificResultsApiService,
   CapabilityFlag,
+  GuidedValidationActionJob,
   GuidedValidationJob,
   GuidedValidationStage,
   GuidedValidationSummary,
+  TargetAbsenceControlResult,
+  TimingDiagnosticResult,
 } from '../../../app/services/bleScientificResultsApi';
 
 const api = new BleScientificResultsApiService();
 const JOB_TERMINAL = new Set(['completed', 'failed', 'cancelled']);
+
+async function pollAction(runId: string, jobId: string, onUpdate: (job: GuidedValidationActionJob) => void): Promise<GuidedValidationActionJob> {
+  let current = await api.getGuidedValidationAction(runId, jobId);
+  onUpdate(current);
+  while (!JOB_TERMINAL.has(current.state)) {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    current = await api.getGuidedValidationAction(runId, jobId);
+    onUpdate(current);
+  }
+  return current;
+}
 
 const STAGE_STATUS_STYLE: Record<string, string> = {
   NOT_STARTED: 'border-slate-700 bg-slate-900/40 text-slate-400',
@@ -85,7 +99,7 @@ export default function GuidedValidationTab() {
           <AssociationResultCard summary={summary} />
           <CapabilityFlags flags={summary.capability_flags} />
           <ConclusionCard summary={summary} />
-          <HardwareActionsCard />
+          <HardwareActionsCard summary={summary} />
           <TechnicalDrilldown summary={summary} show={showTechnical} onToggle={() => setShowTechnical((v) => !v)} />
         </div>
       )}
@@ -283,49 +297,205 @@ function ConclusionCard({ summary }: { summary: GuidedValidationSummary }) {
   );
 }
 
-function HardwareActionsCard() {
+function HardwareActionsCard({ summary }: { summary: GuidedValidationSummary }) {
+  const deviceIds = Object.keys(summary.device_summary);
   return (
     <div className="rounded border border-slate-700 bg-slate-900/30 p-4">
       <div className="text-sm font-semibold text-slate-100">Acciones que requieren hardware fisico</div>
       <p className="mt-1 text-xs text-slate-500">
-        Estas acciones reutilizan <code>CampaignOrchestrator</code>/<code>PaperCampaignRunner</code> para ejecutar una
-        captura real corta. Requieren un operador presente para colocar/retirar dispositivos fisicos antes de
-        iniciar -- no se ejecutan automaticamente desde esta pantalla en esta entrega.
+        Estas acciones reutilizan <code>CampaignOrchestrator</code> (el mismo mecanismo real de captura+escaner
+        nativo) para ejecutar una captura real corta. Requieren que un operador confirme individualmente cada
+        condicion fisica antes de iniciar -- ninguna casilla generica.
       </p>
-      <div className="mt-3 flex flex-wrap gap-3">
-        <HardwareActionButton
-          label="Ejecutar diagnostico de tiempo en vivo"
-          steps={['Selecciona un dispositivo inscrito', 'Manten solo ese dispositivo controlado activo', 'Confirma que el escaner nativo lo detecta', 'Manten el B200 y el adaptador conectados', 'Inicia el diagnostico (3-5 min)']}
-        />
-        <HardwareActionButton
-          label="Ejecutar control reforzado de ausencia de target"
-          steps={['Apaga o retira los cinco dispositivos inscritos', 'El trafico BLE ambiental puede permanecer presente', 'Confirma que el escaner nativo y el SDR estan activos']}
-        />
+      <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <TimingDiagnosticForm runId={summary.run_id} deviceIds={deviceIds} />
+        <TargetAbsenceControlForm runId={summary.run_id} deviceIds={deviceIds} />
       </div>
     </div>
   );
 }
 
-function HardwareActionButton({ label, steps }: { label: string; steps: string[] }) {
-  const [open, setOpen] = useState(false);
+function TimingDiagnosticForm({ runId, deviceIds }: { runId: string; deviceIds: string[] }) {
+  const [physicalUnitId, setPhysicalUnitId] = useState(deviceIds[0] ?? '');
+  const [captureDurationS, setCaptureDurationS] = useState(180);
+  const [channel, setChannel] = useState(37);
+  const [receiverProfile, setReceiverProfile] = useState('');
+  const [operatorId, setOperatorId] = useState('');
+  const [confirmations, setConfirmations] = useState<boolean[]>([false, false, false, false]);
+  const [job, setJob] = useState<GuidedValidationActionJob | null>(null);
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const allConfirmed = confirmations.every(Boolean) && physicalUnitId !== '';
+  const result = job?.result as TimingDiagnosticResult | undefined;
+
+  const start = async () => {
+    setRunning(true);
+    setError(null);
+    setJob(null);
+    try {
+      const started = await api.startTimingDiagnostic(runId, {
+        physical_unit_id: physicalUnitId, capture_duration_s: captureDurationS, channel,
+        receiver_profile: receiverProfile || undefined, operator_id: operatorId || undefined,
+      });
+      const finished = await pollAction(runId, started.job_id, setJob);
+      if (finished.state === 'failed') setError(finished.error || 'El diagnostico fallo.');
+    } catch (err: unknown) {
+      const message = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setError(message || 'No se pudo iniciar el diagnostico.');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const CONFIRM_LABELS = [
+    'Only the selected controlled device is active.',
+    'The native BLE scanner detects the device.',
+    'The B200 is connected and available.',
+    'No other Spectrum Lab process is using the B200.',
+  ];
+
   return (
-    <div>
-      <button
-        className="rounded border border-amber-700 bg-amber-950/20 px-3 py-2 text-xs font-medium text-amber-300 hover:bg-amber-900/30"
-        onClick={() => setOpen((v) => !v)}
-      >
-        {label}
-      </button>
-      {open && (
-        <div className="mt-2 max-w-sm rounded border border-slate-700 bg-slate-950 p-3 text-xs text-slate-300">
-          <ol className="list-decimal space-y-1 pl-4">
-            {steps.map((step, index) => <li key={index}>{step}</li>)}
-          </ol>
-          <div className="mt-2 rounded border border-amber-800 bg-amber-950/30 px-2 py-1 text-[11px] text-amber-300">
-            BLOQUEADO -- requiere accion fisica. No disponible desde esta interfaz en esta entrega.
+    <div className="rounded border border-amber-800 bg-amber-950/10 p-3">
+      <div className="text-xs font-semibold text-amber-300">Run Live Timing Diagnostic</div>
+      <div className="mt-2 space-y-2 text-xs">
+        <div>
+          <label className="mb-0.5 block text-slate-400">physical_unit_id</label>
+          <select className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100" value={physicalUnitId} onChange={(e) => setPhysicalUnitId(e.target.value)}>
+            <option value="">Selecciona...</option>
+            {deviceIds.map((id) => <option key={id} value={id}>{id}</option>)}
+          </select>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="mb-0.5 block text-slate-400">capture_duration_s</label>
+            <input type="number" className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100" value={captureDurationS} onChange={(e) => setCaptureDurationS(Number(e.target.value))} />
+          </div>
+          <div>
+            <label className="mb-0.5 block text-slate-400">channel</label>
+            <input type="number" className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100" value={channel} onChange={(e) => setChannel(Number(e.target.value))} />
           </div>
         </div>
-      )}
+        <div>
+          <label className="mb-0.5 block text-slate-400">receiver_profile</label>
+          <input className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100" value={receiverProfile} onChange={(e) => setReceiverProfile(e.target.value)} placeholder="opcional" />
+        </div>
+        <div>
+          <label className="mb-0.5 block text-slate-400">operator_id</label>
+          <input className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100" value={operatorId} onChange={(e) => setOperatorId(e.target.value)} />
+        </div>
+        <div className="space-y-1 rounded border border-slate-700 bg-slate-950 p-2">
+          {CONFIRM_LABELS.map((label, index) => (
+            <label key={label} className="flex items-start gap-2 text-slate-300">
+              <input type="checkbox" checked={confirmations[index]} onChange={(e) => setConfirmations((prev) => prev.map((v, i) => (i === index ? e.target.checked : v)))} />
+              <span>{label}</span>
+            </label>
+          ))}
+        </div>
+        <button
+          className="w-full rounded bg-amber-700 px-3 py-1.5 font-semibold text-white hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-700"
+          disabled={!allConfirmed || running}
+          onClick={start}
+        >
+          {running ? 'Ejecutando...' : 'Start Live Timing Diagnostic'}
+        </button>
+        {running && job && <div className="text-cyan-300">[{job.stage}] {job.message} -- {Math.round((job.overall_progress ?? 0) * 100)}%</div>}
+        {error && <div className="rounded border border-red-800 bg-red-950/40 px-2 py-1 text-red-300">{error}</div>}
+        {result && (
+          <div className="space-y-1 rounded border border-slate-700 bg-slate-950 p-2">
+            <div className="font-semibold text-slate-100">{result.diagnosis_code}</div>
+            <div className="text-slate-300">{result.diagnosis_explanation}</div>
+            <div className="font-medium text-cyan-300">Siguiente accion: {result.diagnosis_next_action}</div>
+            <table className="mt-1 w-full text-left text-[11px] text-slate-400">
+              <tbody>
+                <tr><td className="pr-2">native_event_count</td><td>{result.native_event_count}</td></tr>
+                <tr><td className="pr-2">target_native_event_count</td><td>{result.target_native_event_count}</td></tr>
+                <tr><td className="pr-2">crc_valid_packet_count</td><td>{result.crc_valid_packet_count}</td></tr>
+                <tr><td className="pr-2">candidate_pair_count</td><td>{result.candidate_pair_count}</td></tr>
+                <tr><td className="pr-2">narrow_window_valid_count</td><td>{result.narrow_window_valid_count}</td></tr>
+                <tr><td className="pr-2">best_residual_ms_median</td><td>{result.best_residual_ms_median ?? '-'}</td></tr>
+                <tr><td className="pr-2">best_residual_ms_p95</td><td>{result.best_residual_ms_p95 ?? '-'}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TargetAbsenceControlForm({ runId, deviceIds }: { runId: string; deviceIds: string[] }) {
+  const [confirmed, setConfirmed] = useState<Record<string, boolean>>({});
+  const [captureDurationS, setCaptureDurationS] = useState(180);
+  const [channel, setChannel] = useState(37);
+  const [operatorId, setOperatorId] = useState('');
+  const [job, setJob] = useState<GuidedValidationActionJob | null>(null);
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const allConfirmed = deviceIds.length > 0 && deviceIds.every((id) => confirmed[id]);
+  const result = job?.result as TargetAbsenceControlResult | undefined;
+
+  const start = async () => {
+    setRunning(true);
+    setError(null);
+    setJob(null);
+    try {
+      const started = await api.startTargetAbsenceControl(runId, { confirmed_devices_off: confirmed, capture_duration_s: captureDurationS, channel, operator_id: operatorId || undefined });
+      const finished = await pollAction(runId, started.job_id, setJob);
+      if (finished.state === 'failed') setError(finished.error || 'El control fallo.');
+    } catch (err: unknown) {
+      const message = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setError(message || 'No se pudo iniciar el control.');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <div className="rounded border border-amber-800 bg-amber-950/10 p-3">
+      <div className="text-xs font-semibold text-amber-300">Run Reinforced Target-Absence Control</div>
+      <p className="mt-1 text-[11px] text-slate-500">Ambient BLE traffic may remain present. Confirma cada dispositivo por separado.</p>
+      <div className="mt-2 space-y-2 text-xs">
+        <div className="space-y-1 rounded border border-slate-700 bg-slate-950 p-2">
+          {deviceIds.map((id) => (
+            <label key={id} className="flex items-center gap-2 text-slate-300">
+              <input type="checkbox" checked={!!confirmed[id]} onChange={(e) => setConfirmed((prev) => ({ ...prev, [id]: e.target.checked }))} />
+              <span className="font-mono">{id} is powered off or removed.</span>
+            </label>
+          ))}
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="mb-0.5 block text-slate-400">capture_duration_s</label>
+            <input type="number" className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100" value={captureDurationS} onChange={(e) => setCaptureDurationS(Number(e.target.value))} />
+          </div>
+          <div>
+            <label className="mb-0.5 block text-slate-400">channel</label>
+            <input type="number" className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100" value={channel} onChange={(e) => setChannel(Number(e.target.value))} />
+          </div>
+        </div>
+        <div>
+          <label className="mb-0.5 block text-slate-400">operator_id</label>
+          <input className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-slate-100" value={operatorId} onChange={(e) => setOperatorId(e.target.value)} />
+        </div>
+        <button
+          className="w-full rounded bg-amber-700 px-3 py-1.5 font-semibold text-white hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-700"
+          disabled={!allConfirmed || running}
+          onClick={start}
+        >
+          {running ? 'Ejecutando...' : 'Start Reinforced Target-Absence Control'}
+        </button>
+        {running && job && <div className="text-cyan-300">[{job.stage}] {job.message} -- {Math.round((job.overall_progress ?? 0) * 100)}%</div>}
+        {error && <div className="rounded border border-red-800 bg-red-950/40 px-2 py-1 text-red-300">{error}</div>}
+        {result && (
+          <div className={`space-y-1 rounded border p-2 ${result.status === 'VALID' ? 'border-emerald-700 bg-emerald-950/20' : 'border-red-800 bg-red-950/20'}`}>
+            <div className="font-semibold text-slate-100">{result.status}</div>
+            {result.devices_detected.length > 0 && <div className="text-red-300">Detectados: {result.devices_detected.join(', ')}</div>}
+            <div className="text-slate-300">false_strong_associations_total: {result.false_strong_associations_total}</div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
