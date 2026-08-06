@@ -7,6 +7,7 @@ from app.modules.ble_scientific_results.statistics.inference import (
     _normal_quantile,
     _t_quantile,
     exact_randomization_test,
+    exact_two_sample_permutation_test,
     hierarchical_cluster_bootstrap,
     holm_correction,
     non_inferiority_test,
@@ -68,6 +69,33 @@ def test_hierarchical_bootstrap_ignores_within_cluster_ordering_only_resamples_c
     result = hierarchical_cluster_bootstrap(clusters, n_resamples=200)
     assert result.ci_low == pytest.approx(result.ci_high)
     assert result.ci_low == pytest.approx(2.0)
+
+
+def test_exact_two_sample_permutation_hand_computed():
+    # Values 0,0,0 in group1 vs 10,10 in group0: the observed partition is
+    # the UNIQUE most-extreme split among C(5,3)=10 possible relabelings
+    # (any other combo mixes at least one 0 into group0 or one 10 into
+    # group1), so p = 1/10 exactly.
+    values = [0.0, 0.0, 0.0, 10.0, 10.0]
+    group_labels = [True, True, True, False, False]
+    result = exact_two_sample_permutation_test(values, group_labels)
+    assert result.exact is True
+    assert result.n_permutations == 10
+    assert result.observed_statistic == pytest.approx(-10.0)
+    assert result.p_value == pytest.approx(0.1)
+
+
+def test_exact_two_sample_permutation_identical_values_gives_p_one():
+    values = [5.0, 5.0, 5.0, 5.0]
+    group_labels = [True, True, False, False]
+    result = exact_two_sample_permutation_test(values, group_labels)
+    assert result.observed_statistic == pytest.approx(0.0)
+    assert result.p_value == pytest.approx(1.0)
+
+
+def test_exact_two_sample_permutation_requires_both_groups_nonempty():
+    with pytest.raises(ValueError):
+        exact_two_sample_permutation_test([1.0, 2.0], [True, True])
 
 
 def test_holm_correction_textbook_example():

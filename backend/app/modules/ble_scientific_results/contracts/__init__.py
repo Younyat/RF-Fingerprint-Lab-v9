@@ -1,3 +1,10 @@
+from .association_policy import (
+    ASSOCIATION_POLICY_SCHEMA_VERSION,
+    CALIBRATION_EVENT_SCHEMA_VERSION,
+    CALIBRATION_GROUND_TRUTH,
+    AssociationPolicy,
+    CalibrationEventRecord,
+)
 from .common import StudioContract, identity_hash
 from .holdout import HOLDOUT_ACCESS_LOG_SCHEMA_VERSION, HoldoutAccessLogEntry, HoldoutChainStatus, HoldoutChainVerificationResult
 from .holdout_groups import HOLDOUT_GROUP_SCHEMA_VERSION, HoldoutGroup, HoldoutGroupAssignment
@@ -67,4 +74,9 @@ __all__ = [
     "DeviationClassification",
     "RECORD_SCHEMA_VERSION",
     "RecordBuildResult",
+    "AssociationPolicy",
+    "CalibrationEventRecord",
+    "ASSOCIATION_POLICY_SCHEMA_VERSION",
+    "CALIBRATION_EVENT_SCHEMA_VERSION",
+    "CALIBRATION_GROUND_TRUTH",
 ]

@@ -16,7 +16,7 @@ import pandas as pd
 from app.infrastructure.ble.capture.ble_capture_metadata import atomic_json
 from app.modules.ble_rffi_studio.contracts import CaptureRecord, DatasetManifest, ExampleRecord, SplitManifest
 
-from ..contracts import RecordBuildResult, ScientificBurstRecord, ScientificCampaignDeviationRecord, ScientificCaptureRecord, ScientificDecisionWindowRecord
+from ..contracts import AssociationPolicy, RecordBuildResult, ScientificBurstRecord, ScientificCampaignDeviationRecord, ScientificCaptureRecord, ScientificDecisionWindowRecord
 from .burst_records import build_burst_records
 from .campaign_deviations import build_campaign_deviations, build_runner_rejection_deviations
 from .capture_records import DEFAULT_WINDOW_DURATION_S, build_capture_record
@@ -51,7 +51,7 @@ def build_records(
     dataset: DatasetManifest, split: SplitManifest, run_dir: Path, ble_root: Path, legacy_capture_root: Path,
     load_capture: Callable[[str], CaptureRecord | None], load_examples: Callable[[str], list[ExampleRecord]],
     window_duration_s: float = DEFAULT_WINDOW_DURATION_S, minimum_eligible_bursts: int = DEFAULT_MINIMUM_ELIGIBLE_BURSTS,
-    schedule_id: str | None = None, progress: ProgressHook = None,
+    schedule_id: str | None = None, association_policy: AssociationPolicy | None = None, progress: ProgressHook = None,
 ) -> RecordBuildResult:
     output_dir = run_dir / "01_inputs" / "canonical_records"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -81,7 +81,7 @@ def build_records(
             captures_without_replay.append(capture_id)
         bursts = build_burst_records(
             capture_id=capture_id, replay_dir=replay_dir, examples=examples, association_policy_hash=association_policy_hash,
-            capture_eligible=bool(capture_record.capture_eligible),
+            capture_eligible=bool(capture_record.capture_eligible), association_policy=association_policy,
         )
         burst_records.extend(bursts)
         window_records.extend(build_decision_window_records(

@@ -90,6 +90,69 @@ def exact_randomization_test(
     return RandomizationTestResult(observed_statistic=observed, p_value=count_as_extreme / n_monte_carlo, n_permutations=n_monte_carlo, exact=False)
 
 
+@dataclass(frozen=True)
+class TwoSamplePermutationResult:
+    observed_statistic: float
+    p_value: float
+    n_permutations: int
+    exact: bool
+
+
+_EXACT_TWO_SAMPLE_MAX_COMBINATIONS = 20000
+
+
+def exact_two_sample_permutation_test(
+    values: Sequence[float], group_labels: Sequence[bool], *,
+    statistic: Callable[[Sequence[float], Sequence[float]], float] | None = None,
+    n_monte_carlo: int = 20000, rng: np.random.Generator | None = None,
+) -> TwoSamplePermutationResult:
+    """Exact permutation test for a two-group comparison of WHOLE UNITS
+    (e.g. which physical units were randomly assigned RESET vs CONTROL) --
+    NOT a paired sign-flip test (see exact_randomization_test above for
+    that). Enumerates every way to relabel which indices belong to group 1,
+    holding both observed group sizes fixed -- the correct null-
+    exchangeability structure under a randomized between-unit assignment.
+    Falls back to Monte Carlo relabeling when the exact count of
+    combinations is impractically large."""
+    n = len(values)
+    if n != len(group_labels):
+        raise ValueError("LENGTH_MISMATCH")
+    if statistic is None:
+        def statistic(a: Sequence[float], b: Sequence[float]) -> float:
+            return (sum(a) / len(a)) - (sum(b) / len(b))
+    indices = list(range(n))
+    group1_indices = [i for i in indices if group_labels[i]]
+    n1 = len(group1_indices)
+    if n1 == 0 or n1 == n:
+        raise ValueError("NEED_BOTH_GROUPS_NONEMPTY")
+    group1_values = [values[i] for i in group1_indices]
+    group0_values = [values[i] for i in indices if not group_labels[i]]
+    observed = statistic(group1_values, group0_values)
+    observed_abs = abs(observed)
+
+    total_combinations = math.comb(n, n1)
+    if total_combinations <= _EXACT_TWO_SAMPLE_MAX_COMBINATIONS:
+        count_extreme = 0
+        for combo in itertools.combinations(indices, n1):
+            combo_set = set(combo)
+            g1 = [values[i] for i in combo_set]
+            g0 = [values[i] for i in indices if i not in combo_set]
+            if abs(statistic(g1, g0)) >= observed_abs - 1e-12:
+                count_extreme += 1
+        return TwoSamplePermutationResult(observed_statistic=observed, p_value=count_extreme / total_combinations, n_permutations=total_combinations, exact=True)
+
+    rng = rng or np.random.default_rng(12345)
+    count_extreme = 0
+    for _ in range(n_monte_carlo):
+        permuted = rng.permutation(n)
+        combo_set = set(int(i) for i in permuted[:n1])
+        g1 = [values[i] for i in combo_set]
+        g0 = [values[i] for i in indices if i not in combo_set]
+        if abs(statistic(g1, g0)) >= observed_abs - 1e-12:
+            count_extreme += 1
+    return TwoSamplePermutationResult(observed_statistic=observed, p_value=count_extreme / n_monte_carlo, n_permutations=n_monte_carlo, exact=False)
+
+
 # ----------------------------------------------------------------------
 # Hierarchical (cluster) bootstrap
 # ----------------------------------------------------------------------

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 from app.modules.ble_scientific_results.api import ScientificResultsRepository
+from app.modules.ble_scientific_results.contracts import AssociationPolicy
 
 from ._helpers import (
     make_candidate,
@@ -64,12 +65,27 @@ def _build_fixture_with_replay(ble_root, *, dataset_id="SCI-REC-DS", dataset_ver
     return dataset_id, dataset_version, scientific_task, capture.capture_id, [c["candidate_id"] for c in candidates]
 
 
+def _frozen_test_policy(*, threshold_ms: float = 250.0) -> AssociationPolicy:
+    """A minimal, directly-constructed AssociationPolicy for tests that
+    need TARGET_ASSOCIATED_PACKET enabled -- real policies come only from
+    calibration/association_calibration.py::select_association_threshold,
+    but a fixture-level frozen object is all the gate itself checks for."""
+    fields = dict(
+        policy_id="test-policy-1", threshold_ms=threshold_ms, threshold_grid=[threshold_ms], selection_rule="test fixture",
+        calibration_campaign_id="TEST-CAL-1", devices_used=["UNIT-A"], captures_used=["SCI-REC-CAP-01"],
+        callback_batching_policy="per-capture", duplicate_policy="first-decoded-wins", field_match_policy="address+PDU-type",
+        ambiguity_policy="test fixture", target_absence_result={}, frozen_at="2026-08-06T00:00:00Z",
+    )
+    unhashed = AssociationPolicy(**fields, policy_hash="")
+    return AssociationPolicy(**fields, policy_hash=unhashed.content_hash(exclude={"policy_hash"}))
+
+
 def test_build_records_classifies_bursts_correctly(tmp_path):
     repository, ble_root = _new_repository(tmp_path)
     dataset_id, dataset_version, task, capture_id, candidate_ids = _build_fixture_with_replay(ble_root)
     run = _freeze_and_create_run(repository, dataset_id=dataset_id, dataset_version=dataset_version, scientific_task=task)
 
-    result = repository.build_records(run.paper_run_id)
+    result = repository.build_records(run.paper_run_id, association_policy=_frozen_test_policy())
     assert result.capture_record_count == 1
     assert result.burst_record_count == 3
     # Real 10s time windows (default window_duration_s=10, sample_rate=
@@ -90,6 +106,25 @@ def test_build_records_classifies_bursts_correctly(tmp_path):
     assert len(windows) == 1
     assert windows[0]["candidate_count"] == 3
     assert windows[0]["window_status"] == "ACTIVE_ELIGIBLE"
+
+
+def test_target_associated_packet_is_disabled_without_a_frozen_association_policy(tmp_path):
+    """STRONG_ASSOCIATION_DISABLED_UNTIL_POLICY_FROZEN: the exact same
+    fixture that produces TARGET_ASSOCIATED_PACKET when a real policy is
+    supplied must NEVER produce it by default -- there is no hardcoded
+    fallback threshold anymore."""
+    repository, ble_root = _new_repository(tmp_path)
+    dataset_id, dataset_version, task, capture_id, candidate_ids = _build_fixture_with_replay(ble_root)
+    run = _freeze_and_create_run(repository, dataset_id=dataset_id, dataset_version=dataset_version, scientific_task=task)
+
+    repository.build_records(run.paper_run_id)  # no association_policy passed
+
+    bursts = repository.list_burst_records(run.paper_run_id, limit=10)
+    classes = {b["candidate_group_id"]: b["burst_class"] for b in bursts}
+    assert "TARGET_ASSOCIATED_PACKET" not in classes.values()
+    assert classes[candidate_ids[0]] == "SOURCE_CONTEXT_ONLY"
+    flagged = next(b for b in bursts if b["candidate_group_id"] == candidate_ids[0])
+    assert "STRONG_ASSOCIATION_DISABLED_UNTIL_POLICY_FROZEN" in flagged["diagnostic_flags"]
 
 
 def test_burst_resolves_to_existing_capture_and_ids_are_unique(tmp_path):
@@ -138,7 +173,7 @@ def test_campaign_accounting_reflects_real_channel_declared_vs_observed(tmp_path
     repository, ble_root = _new_repository(tmp_path)
     dataset_id, dataset_version, task, capture_id, _ = _build_fixture_with_replay(ble_root)
     run = _freeze_and_create_run(repository, dataset_id=dataset_id, dataset_version=dataset_version, scientific_task=task, channels=[37, 38])
-    repository.build_records(run.paper_run_id)
+    repository.build_records(run.paper_run_id, association_policy=_frozen_test_policy())
 
     accounting = repository.build_campaign_accounting(run.paper_run_id)
     counters = accounting["counters"]

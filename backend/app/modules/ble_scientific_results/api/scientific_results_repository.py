@@ -24,6 +24,7 @@ from app.modules.ble_rffi_studio.contracts import CaptureRecord, DatasetManifest
 
 from ..contracts import (
     AnalysisContract,
+    AssociationPolicy,
     DesignCompletenessResult,
     GitDirtyState,
     HoldoutAccessLogEntry,
@@ -529,12 +530,18 @@ class ScientificResultsRepository:
     def _canonical_records_dir(self, paper_run_id: str) -> Path:
         return self._run_dir(paper_run_id) / "01_inputs" / "canonical_records"
 
-    def build_records(self, paper_run_id: str, *, schedule_id: str | None = None, progress=None) -> RecordBuildResult:
+    def build_records(self, paper_run_id: str, *, schedule_id: str | None = None, association_policy: AssociationPolicy | None = None, progress=None) -> RecordBuildResult:
         """`schedule_id`, when the campaign this run covers was executed
         through PaperCampaignRunner, pulls in that schedule's persisted
         pre-capture rejections (see records/build_records.py) as canonical
         PROTOCOL_DEVIATION rows -- optional because most runs today still
-        predate the runner and have no schedule to check."""
+        predate the runner and have no schedule to check.
+
+        `association_policy`: without a real, frozen policy (produced by a
+        real calibration campaign -- see calibration/association_calibration.py),
+        every burst's TARGET_ASSOCIATED_PACKET classification is disabled
+        (STRONG_ASSOCIATION_DISABLED_UNTIL_POLICY_FROZEN) regardless of what
+        the underlying ledger contains -- there is no default threshold."""
         run = self.get_run(paper_run_id)
         contract = self.get_protocol(run.protocol_id, run.protocol_version)
         dataset = self._load_dataset(run.dataset_id, run.dataset_version)
@@ -543,7 +550,8 @@ class ScientificResultsRepository:
             paper_run_id=paper_run_id, protocol_id=run.protocol_id, campaign_id=run.campaign_id,
             association_policy_hash=contract.association_policy_hash, dataset=dataset, split=split,
             run_dir=self._run_dir(paper_run_id), ble_root=self.ble_root, legacy_capture_root=self.legacy_capture_root,
-            load_capture=self._load_capture, load_examples=self._load_examples, schedule_id=schedule_id, progress=progress,
+            load_capture=self._load_capture, load_examples=self._load_examples, schedule_id=schedule_id,
+            association_policy=association_policy, progress=progress,
         )
 
     def get_records_status(self, paper_run_id: str) -> RecordBuildResult | None:

@@ -116,7 +116,15 @@ def build_quality_summary(*, run_dir: Path) -> dict[str, Any]:
     residual_distribution_rows: list[dict[str, Any]] = []
     if not bursts.empty:
         total = len(bursts)
-        crc_valid = int(bursts["burst_class"].isin(["CRC_VALID_PACKET", "TARGET_ASSOCIATED_PACKET"]).sum())
+        # CRC validity is the candidate's OWN decode outcome (crc_status),
+        # never inferred from burst_class -- burst_class encodes IDENTITY
+        # STRENGTH (see burst_records.py), which is an orthogonal axis: a
+        # CRC-valid packet can land in any of the three burst_class values
+        # depending on what identity evidence exists for it (e.g. disabled
+        # via STRONG_ASSOCIATION_DISABLED_UNTIL_POLICY_FROZEN moves a
+        # CRC-valid, operator-declared packet to SOURCE_CONTEXT_ONLY without
+        # its CRC status changing at all).
+        crc_valid = int((bursts["crc_status"] == "VALID").sum())
         associated = int(bursts["association_status"].notna().sum())
         residuals = pd.to_numeric(bursts.get("association_time_residual_ms"), errors="coerce").dropna()
         above_threshold = int((residuals > ASSOCIATION_TIME_THRESHOLD_MS).sum())

@@ -14,9 +14,20 @@ ground truth, no independent cross-check, see
 docs/ble/SCIENTIFIC_STATUS.md), which is a real and useful signal but not a
 strong RFFI association. `TARGET_ASSOCIATED_PACKET` requires the frozen
 native<->SDR criterion below to actually pass for THIS burst's own ledger
-row. `ASSOCIATION_TIME_THRESHOLD_MS` is the exact constant `_associate()`
-already hardcodes in `ble_offline_replay.py` (250 ms) -- restated here, not
-re-derived, so the two can never silently drift apart.
+row.
+
+**STRONG_ASSOCIATION_DISABLED_UNTIL_POLICY_FROZEN (post-calibration-request
+correction)**: `TARGET_ASSOCIATED_PACKET` additionally requires a real,
+frozen `AssociationPolicy` (produced only by a real calibration campaign --
+see calibration/association_calibration.py) to be passed in. Without one,
+`_passes_target_association_criterion` always returns False, regardless of
+what the ledger row itself contains -- there is no default threshold to
+silently fall back to. `ASSOCIATION_TIME_THRESHOLD_MS` (250 ms, the exact
+constant `_associate()` hardcodes in `ble_offline_replay.py`) is kept ONLY
+as a diagnostic reference for `_would_pass_with_legacy_threshold`, which
+flags (never classifies) a burst that would have qualified under the old,
+pre-calibration rule -- so a row disabled purely for lacking a frozen
+policy is visibly distinct from one that genuinely fails association.
 
 Fields whose source was added this pass (synchronization_score, symbol_phase,
 frequency_offset_hz, frequency_fit_quality) are read from the ledger row
@@ -36,12 +47,12 @@ from pathlib import Path
 
 from app.modules.ble_rffi_studio.contracts import ExampleRecord
 
-from ..contracts import BurstClass, ScientificBurstRecord, SourceIdentityOrigin
+from ..contracts import AssociationPolicy, BurstClass, ScientificBurstRecord, SourceIdentityOrigin
 
 # The exact constant _associate() already hardcodes in ble_offline_replay.py
-# (verified this session, not assumed). No association with a larger
-# time_delta_ms may ever be classified as TARGET_ASSOCIATED_PACKET here,
-# regardless of what association_strength the ledger itself reports.
+# (verified this session, not assumed). No longer used to classify a burst
+# (see STRONG_ASSOCIATION_DISABLED_UNTIL_POLICY_FROZEN above) -- kept only
+# as the reference value _would_pass_with_legacy_threshold diagnoses against.
 ASSOCIATION_TIME_THRESHOLD_MS = 250.0
 
 # Genuinely absent everywhere in ble_rffi_studio's real pipeline today
@@ -67,7 +78,7 @@ def _read_jsonl(path: Path) -> list[dict]:
     return rows
 
 
-def _passes_target_association_criterion(ledger_row: dict | None) -> bool:
+def _passes_target_association_criterion(ledger_row: dict | None, association_policy: AssociationPolicy | None) -> bool:
     """The frozen criterion for TARGET_ASSOCIATED_PACKET: unique association
     (address_match_status == MATCHED, i.e. exactly one native candidate in
     the window shared this address -- AMBIGUOUS means more than one),
@@ -76,7 +87,36 @@ def _passes_target_association_criterion(ledger_row: dict | None) -> bool:
     is_target + MATCHED (see ble_offline_replay.py's own
     association_strength computation) -- re-checked explicitly here anyway
     so this function's own criterion is self-contained and never silently
-    depends on the ledger's internal logic staying exactly as-is."""
+    depends on the ledger's internal logic staying exactly as-is.
+
+    STRONG_ASSOCIATION_DISABLED_UNTIL_POLICY_FROZEN: with no real, frozen
+    `association_policy`, this ALWAYS returns False -- there is no default
+    threshold to fall back to. See _would_pass_with_legacy_threshold for
+    the diagnostic-only check against the old hardcoded rule."""
+    if association_policy is None:
+        return False
+    if ledger_row is None:
+        return False
+    if ledger_row.get("association_strength") != "STRONG":
+        return False
+    if ledger_row.get("address_match_status") != "MATCHED":
+        return False
+    if ledger_row.get("association_rejection_reason"):
+        return False
+    if ledger_row.get("target_address_match") is not True:
+        return False
+    time_delta_ms = ledger_row.get("time_delta_ms")
+    if time_delta_ms is None or float(time_delta_ms) > association_policy.threshold_ms:
+        return False
+    return True
+
+
+def _would_pass_with_legacy_threshold(ledger_row: dict | None) -> bool:
+    """Diagnostic only, NEVER used to classify a burst: would this row have
+    qualified under the pre-calibration hardcoded 250ms rule? Lets a burst
+    disabled purely for lacking a frozen AssociationPolicy be flagged as
+    such, distinct from one that genuinely fails association on its own
+    merits."""
     if ledger_row is None:
         return False
     if ledger_row.get("association_strength") != "STRONG":
@@ -93,7 +133,7 @@ def _passes_target_association_criterion(ledger_row: dict | None) -> bool:
     return True
 
 
-def _burst_class_and_origin(candidate: dict, ledger_row: dict | None, physical_unit_id: str | None) -> tuple[BurstClass, SourceIdentityOrigin, str | None]:
+def _burst_class_and_origin(candidate: dict, ledger_row: dict | None, physical_unit_id: str | None, association_policy: AssociationPolicy | None) -> tuple[BurstClass, SourceIdentityOrigin, str | None]:
     """CRC validity comes from the candidate's OWN crc_status
     (candidate_manifest.jsonl) -- never gated on a ledger row existing.
 
@@ -111,9 +151,9 @@ def _burst_class_and_origin(candidate: dict, ledger_row: dict | None, physical_u
     "target-associated content")."""
     crc_valid = candidate.get("processing_status") == "PROCESSED" and candidate.get("crc_status") == "VALID"
 
-    if _passes_target_association_criterion(ledger_row):
+    if _passes_target_association_criterion(ledger_row, association_policy):
         origin: SourceIdentityOrigin = "ASSOCIATION_STRONG"
-        authority = "burst_records._passes_target_association_criterion (native<->SDR STRONG association, <=250ms residual, MATCHED, no rejection)"
+        authority = f"burst_records._passes_target_association_criterion (native<->SDR STRONG association, <={association_policy.threshold_ms}ms residual per frozen policy {association_policy.policy_id}, MATCHED, no rejection)"
         burst_class: BurstClass = "TARGET_ASSOCIATED_PACKET" if crc_valid else "SOURCE_CONTEXT_ONLY"
     elif physical_unit_id is not None:
         origin = "OPERATOR_CONTEXT_DECLARED"
@@ -128,7 +168,7 @@ def _burst_class_and_origin(candidate: dict, ledger_row: dict | None, physical_u
 
 def build_burst_records(
     *, capture_id: str, replay_dir: Path | None, examples: list[ExampleRecord],
-    association_policy_hash: str | None, capture_eligible: bool,
+    association_policy_hash: str | None, capture_eligible: bool, association_policy: AssociationPolicy | None = None,
 ) -> list[ScientificBurstRecord]:
     if replay_dir is None:
         return []
@@ -136,6 +176,10 @@ def build_burst_records(
     candidates = _read_jsonl(replay_dir / "candidate_manifest.jsonl")
     ledger_by_candidate = {row["candidate_id"]: row for row in _read_jsonl(replay_dir / "packet_association_ledger.jsonl") if row.get("candidate_id")}
     example_by_candidate = {example.candidate_id: example for example in examples}
+    # The frozen policy's own hash always wins over whatever hash the
+    # caller passed in -- the two must never silently diverge once a real
+    # policy exists.
+    effective_policy_hash = association_policy.policy_hash if association_policy is not None else association_policy_hash
 
     records: list[ScientificBurstRecord] = []
     for candidate in candidates:
@@ -159,7 +203,7 @@ def build_burst_records(
         if example:
             source_artifact_ids.append(example.example_id)
 
-        burst_class, source_identity_origin, label_authority = _burst_class_and_origin(candidate, ledger_row, physical_unit_id)
+        burst_class, source_identity_origin, label_authority = _burst_class_and_origin(candidate, ledger_row, physical_unit_id, association_policy)
 
         packet_eligible = candidate.get("processing_status") == "PROCESSED" and candidate.get("crc_status") == "VALID"
         label_eligible = source_identity_origin != "NONE"
@@ -179,7 +223,9 @@ def build_burst_records(
         # protocol failure (see campaign_deviations.py's classification).
         if ledger_row and ledger_row.get("association_rejection_reason"):
             diagnostic_flags.append(f"ASSOCIATION_{ledger_row['association_rejection_reason']}")
-        if ledger_row and ledger_row.get("association_strength") == "STRONG" and not _passes_target_association_criterion(ledger_row):
+        if association_policy is None and _would_pass_with_legacy_threshold(ledger_row):
+            diagnostic_flags.append("STRONG_ASSOCIATION_DISABLED_UNTIL_POLICY_FROZEN")
+        elif ledger_row and ledger_row.get("association_strength") == "STRONG" and not _passes_target_association_criterion(ledger_row, association_policy):
             diagnostic_flags.append("STRONG_BUT_FAILED_FULL_CRITERION")
 
         records.append(ScientificBurstRecord(
@@ -196,7 +242,7 @@ def build_burst_records(
             decoded_payload_hash=(ledger_row or {}).get("payload_sha256"),
             native_event_id=None, association_status=(ledger_row or {}).get("association_strength"),
             association_time_residual_ms=(ledger_row or {}).get("time_delta_ms"), association_cost=None,
-            association_policy_hash=association_policy_hash, label_authority=label_authority,
+            association_policy_hash=effective_policy_hash, label_authority=label_authority,
             packet_eligible=packet_eligible, label_eligible=label_eligible, training_eligible=training_eligible,
             blocking_reason_codes=blocking_reason_codes, diagnostic_flags=diagnostic_flags,
             source_artifact_ids=source_artifact_ids, not_documented_fields=sorted(set(not_documented)),
