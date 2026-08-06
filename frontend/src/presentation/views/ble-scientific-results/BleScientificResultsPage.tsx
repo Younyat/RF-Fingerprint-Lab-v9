@@ -34,6 +34,13 @@ const TABS: { id: string; label: string; enabled: boolean }[] = [
 
 export default function BleScientificResultsPage() {
   const [activeTab, setActiveTab] = useState('guided-validation');
+  const [showFutureAnalysisInfo, setShowFutureAnalysisInfo] = useState(false);
+
+  // Rutas y componentes de las 9 pestañas "Fase 3+" NO se eliminan -- solo
+  // se agrupan visualmente detrás de una unica entrada mientras la
+  // identificacion fisica no este disponible (ver GuidedValidationTab).
+  const visibleTabs = TABS.filter((tab) => tab.enabled);
+  const futureTabs = TABS.filter((tab) => !tab.enabled);
 
   return (
     <div>
@@ -46,26 +53,31 @@ export default function BleScientificResultsPage() {
             manifests o artefactos de BLE-RFFI Studio.
           </div>
         </div>
-        <div className="flex flex-wrap gap-1">
-          {TABS.map((tab) => (
+        <div className="flex flex-wrap items-center gap-1">
+          {visibleTabs.map((tab) => (
             <button
               key={tab.id}
-              disabled={!tab.enabled}
               className={`rounded px-2.5 py-1 text-xs transition-colors ${
-                activeTab === tab.id
-                  ? 'bg-cyan-600/30 text-cyan-100'
-                  : tab.enabled
-                    ? 'text-slate-400 hover:bg-slate-800'
-                    : 'cursor-not-allowed text-slate-700'
+                activeTab === tab.id ? 'bg-cyan-600/30 text-cyan-100' : 'text-slate-400 hover:bg-slate-800'
               }`}
-              title={tab.enabled ? undefined : 'Fase 3+'}
-              onClick={() => tab.enabled && setActiveTab(tab.id)}
+              onClick={() => setActiveTab(tab.id)}
             >
               {tab.label}
-              {!tab.enabled && <span className="ml-1 text-[10px] text-slate-700">Fase 3+</span>}
             </button>
           ))}
+          <button
+            className="rounded px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-800 hover:text-slate-400"
+            onClick={() => setShowFutureAnalysisInfo((v) => !v)}
+          >
+            Análisis científicos posteriores
+          </button>
         </div>
+        {showFutureAnalysisInfo && (
+          <div className="mt-2 rounded border border-slate-700 bg-slate-900/60 px-3 py-2 text-xs text-slate-400">
+            Estas funciones ({futureTabs.map((tab) => tab.label).join(', ')}) se habilitarán cuando la asociación
+            física haya sido comprobada.
+          </div>
+        )}
       </div>
 
       {activeTab === 'guided-validation' && <GuidedValidationTab />}
