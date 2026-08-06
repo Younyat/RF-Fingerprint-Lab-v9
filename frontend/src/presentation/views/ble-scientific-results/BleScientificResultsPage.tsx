@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import AcquisitionQualityTab from './AcquisitionQualityTab';
 import CampaignTab from './CampaignTab';
+import GuidedValidationTab from './GuidedValidationTab';
 import IntegrityLeakageTab from './IntegrityLeakageTab';
 import ProtocolTab from './ProtocolTab';
 import ReadinessTab from './ReadinessTab';
@@ -14,6 +15,7 @@ import ReadinessTab from './ReadinessTab';
 // docs/ble/SCIENTIFIC_STATUS.md and the Fase 1/2 plan for what each one
 // will cover.
 const TABS: { id: string; label: string; enabled: boolean }[] = [
+  { id: 'guided-validation', label: 'Guided Validation', enabled: true },
   { id: 'protocol', label: 'Protocol', enabled: true },
   { id: 'readiness', label: 'Readiness', enabled: true },
   { id: 'campaign', label: 'Campaign', enabled: true },
@@ -31,7 +33,7 @@ const TABS: { id: string; label: string; enabled: boolean }[] = [
 ];
 
 export default function BleScientificResultsPage() {
-  const [activeTab, setActiveTab] = useState('protocol');
+  const [activeTab, setActiveTab] = useState('guided-validation');
 
   return (
     <div>
@@ -66,6 +68,7 @@ export default function BleScientificResultsPage() {
         </div>
       </div>
 
+      {activeTab === 'guided-validation' && <GuidedValidationTab />}
       {activeTab === 'protocol' && <ProtocolTab />}
       {activeTab === 'readiness' && <ReadinessTab />}
       {activeTab === 'campaign' && <CampaignTab />}

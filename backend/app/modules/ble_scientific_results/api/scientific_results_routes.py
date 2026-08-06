@@ -178,4 +178,20 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
     def artifacts(paper_run_id: str):
         return call(lambda: {"paper_run_id": paper_run_id, "files": repository.list_run_artifacts(paper_run_id)})
 
+    # ------------------------------------------------------------------
+    # Guided BLE Scientific Validation -- one orchestrator job spanning
+    # every enrolled device's existing dataset. See guided_validation/
+    # service.py: it only invokes repository.freeze_protocol/create_run/
+    # build_records and calibration.select_association_policy, never a
+    # second decoder or records builder.
+    # ------------------------------------------------------------------
+
+    @router.post("/guided-validation", status_code=202)
+    def start_guided_validation():
+        return call(lambda: job_manager.start_guided_validation_job())
+
+    @router.get("/guided-validation/{job_id}")
+    def get_guided_validation(job_id: str):
+        return call(lambda: job_manager.get_job(job_id))
+
     return router

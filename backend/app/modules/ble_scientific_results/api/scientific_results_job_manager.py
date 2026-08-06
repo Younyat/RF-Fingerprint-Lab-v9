@@ -22,6 +22,7 @@ from typing import Any
 
 from app.infrastructure.ble.capture.ble_capture_metadata import atomic_json
 
+from ..guided_validation import GuidedBleScientificValidationService
 from ..module_logging import build_module_logger
 from .scientific_results_repository import ScientificResultsRepository
 
@@ -39,6 +40,11 @@ class ScientificResultsJobManager:
         self.jobs_root.mkdir(parents=True, exist_ok=True)
         self.logger = build_module_logger(jobs_root.parent)
         self._cancel_flags: dict[str, threading.Event] = {}
+        # Reuses repository.freeze_protocol/create_run/build_records and
+        # calibration.select_association_policy unchanged -- see
+        # guided_validation/service.py's own docstring. Never a second
+        # records builder or decoder.
+        self._guided_validation_service = GuidedBleScientificValidationService(repository)
 
     def _job_dir(self, job_id: str) -> Path:
         if not job_id.startswith("BLE-SCI-RESULTS-JOB-") or any(part in job_id for part in ("/", "\\", "..")):
@@ -173,5 +179,49 @@ class ScientificResultsJobManager:
                 self._write(job_dir, "failed", job_type="BUILD_RECORDS", paper_run_id=paper_run_id, error=str(error))
         except Exception as error:  # noqa: BLE001
             self._write(job_dir, "failed", job_type="BUILD_RECORDS", paper_run_id=paper_run_id, error=str(error))
+        finally:
+            self._cancel_flags.pop(job_id, None)
+
+    # ------------------------------------------------------------------
+    # Guided BLE Scientific Validation -- spans every enrolled device's
+    # existing dataset (not one paper_run_id), so it gets its own job type
+    # rather than reusing BUILD_RECORDS's paper_run_id-keyed shape.
+    # ------------------------------------------------------------------
+
+    def start_guided_validation_job(self) -> dict[str, Any]:
+        job_id = self._new_job_id()
+        job_dir = self._job_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=False)
+        cancel_event = threading.Event()
+        self._cancel_flags[job_id] = cancel_event
+        atomic_json(job_dir / "job.json", {
+            "schema_version": "ble-scientific-results-job-v1", "job_id": job_id, "job_type": "GUIDED_VALIDATION",
+            "state": "queued", "stage": None, "overall_progress": 0.0, "message": None, "warnings": [],
+            "started_at": utc_now(), "updated_at": utc_now(),
+        })
+        threading.Thread(target=self._run_guided_validation_job, args=(job_id, cancel_event), daemon=True).start()
+        return self.get_job(job_id)
+
+    def _run_guided_validation_job(self, job_id: str, cancel_event: threading.Event) -> None:
+        job_dir = self._job_dir(job_id)
+        self._write(job_dir, "running", job_type="GUIDED_VALIDATION", stage="discover", overall_progress=0.0, message="Starting guided BLE scientific validation")
+        try:
+            def progress(stage: str, fraction: float, message: str) -> None:
+                if cancel_event.is_set():
+                    raise RuntimeError("GUIDED_VALIDATION_CANCELLED")
+                self._write(job_dir, "running", job_type="GUIDED_VALIDATION", stage=stage, overall_progress=fraction, message=str(message))
+
+            summary = self._guided_validation_service.run(progress=progress)
+            self._write(
+                job_dir, "completed", job_type="GUIDED_VALIDATION", stage="done", overall_progress=1.0,
+                message=summary.overall_status, result=summary.model_dump(mode="json"),
+            )
+        except RuntimeError as error:
+            if str(error) == "GUIDED_VALIDATION_CANCELLED":
+                self._write(job_dir, "cancelled", job_type="GUIDED_VALIDATION", message="Cancelled by operator")
+            else:
+                self._write(job_dir, "failed", job_type="GUIDED_VALIDATION", error=str(error))
+        except Exception as error:  # noqa: BLE001
+            self._write(job_dir, "failed", job_type="GUIDED_VALIDATION", error=str(error))
         finally:
             self._cancel_flags.pop(job_id, None)

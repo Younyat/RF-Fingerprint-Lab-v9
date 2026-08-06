@@ -248,6 +248,83 @@ export interface RunArtifactsResponse {
   files: string[];
 }
 
+// ---------------------------------------------------------------------
+// Guided BLE Scientific Validation -- one orchestrator job spanning every
+// enrolled device's existing dataset. Mirrors guided_validation/contracts.py
+// exactly; the frontend never computes any of these numbers itself.
+// ---------------------------------------------------------------------
+
+export type GuidedValidationStageStatus =
+  | 'NOT_STARTED' | 'RUNNING' | 'PASSED' | 'PARTIALLY_SUPPORTED' | 'BLOCKED' | 'REQUIRES_PHYSICAL_ACTION' | 'COMPLETED';
+
+export interface GuidedValidationStage {
+  stage_id: string;
+  label: string;
+  status: GuidedValidationStageStatus;
+  plain_explanation: string;
+  technical_details: Record<string, unknown>;
+  evidence_artifacts: string[];
+  next_action: string | null;
+}
+
+export interface CapabilityFlag {
+  capability: string;
+  supported: boolean;
+  plain_explanation: string;
+}
+
+export interface GuidedValidationSummary {
+  run_id: string;
+  generated_at: string;
+  overall_status: string;
+  stages: GuidedValidationStage[];
+  capability_flags: CapabilityFlag[];
+  device_summary: Record<string, {
+    capture_count: number;
+    calibration_eligible_or_better_captures: number;
+    native_event_count: number;
+    crc_valid_packet_count: number;
+    strong_association_count: number;
+    active_windows: number;
+    eligible_windows: number;
+  }>;
+  capture_totals: {
+    total_captures: number;
+    association_calibration_eligible: number;
+    qualification_pilot_eligible: number;
+    diagnostic_only: number;
+  };
+  association_summary: {
+    total_calibration_events: number;
+    by_status: Record<string, number>;
+    by_status_percent: Record<string, number>;
+    matched_target_count: number;
+  };
+  target_absence_summary: {
+    candidates_checked: number;
+    valid_reinforced_controls: Record<string, unknown>[];
+    has_valid_control: boolean;
+    invalid_reasons_by_capture: Record<string, string>;
+  };
+  association_policy_summary: Record<string, unknown> | null;
+  simplified_conclusion: string;
+  next_required_action: string;
+  artifact_index: Record<string, unknown>;
+}
+
+export interface GuidedValidationJob {
+  job_id: string;
+  job_type: string;
+  state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  stage: string | null;
+  overall_progress: number;
+  message: string | null;
+  error?: string;
+  result?: GuidedValidationSummary;
+  started_at: string;
+  updated_at: string;
+}
+
 export class BleScientificResultsApiService {
   constructor(private readonly baseURL = 'http://localhost:8000') {}
   private get root() { return `${this.baseURL}/api/ble-scientific-results`; }
@@ -292,4 +369,7 @@ export class BleScientificResultsApiService {
     return (await axios.get<ScientificDecisionWindowRecord[]>(`${this.root}/runs/${encodeURIComponent(paperRunId)}/windows`, { params: { limit, offset, capture_id: captureId } })).data;
   }
   async artifacts(paperRunId: string) { return (await axios.get<RunArtifactsResponse>(`${this.root}/runs/${encodeURIComponent(paperRunId)}/artifacts`)).data; }
+
+  async startGuidedValidation() { return (await axios.post<GuidedValidationJob>(`${this.root}/guided-validation`)).data; }
+  async getGuidedValidationJob(jobId: string) { return (await axios.get<GuidedValidationJob>(`${this.root}/guided-validation/${encodeURIComponent(jobId)}`)).data; }
 }
