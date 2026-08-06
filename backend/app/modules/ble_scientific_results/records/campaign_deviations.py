@@ -24,6 +24,7 @@ deviation-record factory.
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime, timezone
 
 from app.modules.ble_rffi_studio.contracts import DatasetManifest, SplitManifest
@@ -31,6 +32,24 @@ from app.modules.ble_rffi_studio.contracts import DatasetManifest, SplitManifest
 from ..contracts import DeviationClassification, ScientificCampaignDeviationRecord, ScientificCaptureRecord
 
 _NOT_DOCUMENTED_DESIGN_DIMENSIONS = ("pre_post_pairing", "reset_control_pairing", "receiver_epoch_drift", "firmware_configuration_drift", "content_variant_coverage")
+
+# One entry per code PaperCampaignRunner.execute() can detect (see
+# ble_rffi_studio/campaign/paper_campaign_runner.py's own
+# _ATTEMPTED_FIELD_TO_CODE plus its order/schedule-membership checks) --
+# restated here, not re-derived, matching the same "no drift" discipline
+# already used for ASSOCIATION_TIME_THRESHOLD_MS.
+_RUNNER_REJECTION_DESCRIPTIONS: dict[str, str] = {
+    "CAPTURE_OUT_OF_SCHEDULE": "The runner was asked to execute a planned_capture_id that does not exist in the frozen schedule.",
+    "WRONG_CAPTURE_ORDER": "This planned_capture_id is not the next unexecuted entry in the frozen schedule's declared order.",
+    "WRONG_UNIT": "The declared physical_unit_id for this attempt does not match the schedule entry.",
+    "WRONG_CHANNEL": "The declared channel for this attempt does not match the schedule entry.",
+    "WRONG_PRE_POST_STATE": "The declared pre_or_post state for this attempt does not match the schedule entry.",
+    "WRONG_INTERVENTION_ARM": "The declared intervention_arm for this attempt does not match the schedule entry.",
+    "WRONG_PACKET_VARIANT": "The declared packet_variant for this attempt does not match the schedule entry.",
+    "RECEIVER_EPOCH_MISMATCH": "The declared receiver_epoch for this attempt does not match the schedule entry.",
+    "FIRMWARE_MISMATCH": "The declared firmware_hash for this attempt does not match the schedule entry.",
+    "CONFIGURATION_MISMATCH": "The declared configuration_hash for this attempt does not match the schedule entry.",
+}
 
 
 def utc_now() -> str:
@@ -152,4 +171,36 @@ def build_campaign_deviations(
                 source_ids=[],
             )
 
+    return deviations
+
+
+def build_runner_rejection_deviations(*, paper_run_id: str, campaign_id: str, rejections: list[dict]) -> list[ScientificCampaignDeviationRecord]:
+    """Converts PaperCampaignRunner's persisted rejection log (see
+    paper_campaign_runner.py::list_rejections) into canonical
+    ScientificCampaignDeviationRecord rows -- one per violated code, since a
+    single rejected attempt can carry several (e.g. wrong channel AND wrong
+    unit in the same attempt). Every row keeps the runner's own
+    protocol_id/planned_capture_id/operator_id/rejected_at so the deviation
+    is traceable back to the exact attempt that produced it, and is always
+    `blocking=True`: a rejected attempt produced no real capture at all."""
+    deviations: list[ScientificCampaignDeviationRecord] = []
+    for rejection in rejections:
+        codes = [code for code in (rejection.get("reason") or "").split(",") if code]
+        planned_capture_id = rejection.get("planned_capture_id") or "unknown"
+        rejected_at = rejection.get("rejected_at") or ""
+        for code in codes:
+            deviations.append(ScientificCampaignDeviationRecord(
+                deviation_id=_new_id(paper_run_id, "runner_rejection", planned_capture_id, code, rejected_at),
+                paper_run_id=paper_run_id, campaign_id=campaign_id, classification="PROTOCOL_DEVIATION",
+                affected_object_type="planned_capture", affected_object_id=planned_capture_id,
+                deviation_type=code, description=_RUNNER_REJECTION_DESCRIPTIONS.get(code, code),
+                detected_stage="RUNNER_EXECUTE", detected_before_outcome_access=True,
+                severity="HIGH", blocking=True, protocol_rule="PaperCampaignRunner.execute() pre-capture validation",
+                observed_value=json.dumps(rejection.get("attempted") or {}, sort_keys=True), expected_value=None,
+                action="Investigate why the operator/runner attempted a capture inconsistent with the frozen schedule before re-issuing it.",
+                scientific_impact="This attempt was refused before any real acquisition started; no data or evidence exists for it.",
+                source_artifact_ids=[rejection.get("schedule_id") or ""],
+                protocol_id=rejection.get("protocol_id"), planned_capture_id=rejection.get("planned_capture_id"),
+                operator_id=rejection.get("operator_id"), detected_at=rejected_at or None,
+            ))
     return deviations

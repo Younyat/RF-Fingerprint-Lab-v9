@@ -245,6 +245,16 @@ class ScientificCampaignDeviationRecord(StudioContract):
 
     source_artifact_ids: list[str] = []
 
+    # Populated only for PROTOCOL_DEVIATION rows produced from a
+    # PaperCampaignRunner pre-capture rejection (see records/
+    # campaign_deviations.py::build_runner_rejection_deviations) -- the
+    # exact link the runner's own rejection log already carries: which
+    # protocol/planned capture/operator/moment this refusal happened at.
+    protocol_id: str | None = None
+    planned_capture_id: str | None = None
+    operator_id: str | None = None
+    detected_at: str | None = None
+
 
 class RecordBuildResult(StudioContract):
     schema_version: str = RECORD_SCHEMA_VERSION

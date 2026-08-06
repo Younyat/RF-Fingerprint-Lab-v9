@@ -12,10 +12,18 @@ intervention_arm, ...) is written onto the resulting capture's
 ONLY values already frozen in the schedule before the capture was issued --
 never inferred, never reconstructed from anything observed after the fact.
 
-Off-schedule attempts are rejected and recorded as a real
-PROTOCOL_DEVIATION (reusing `ble_scientific_results.records.
-campaign_deviations.make_deviation_record` -- never a second, competing
-deviation format).
+Off-schedule attempts, and attempts whose declared parameters don't match
+the frozen schedule entry (wrong unit/channel/pre-post/arm/variant/order/
+epoch/firmware/configuration), are rejected BEFORE any real capture starts
+and persisted to `<schedule_dir>/rejections.jsonl` -- the attempt itself is
+never discarded, and there is no parameter that bypasses this check. The
+canonical, schema-versioned PROTOCOL_DEVIATION record for each rejection is
+produced later, at record-build time, by `ble_scientific_results` (see
+records/campaign_deviations.py::build_runner_rejection_deviations), which
+reads this log read-only -- this module deliberately never constructs a
+ScientificCampaignDeviationRecord itself, to keep the dependency direction
+one-way (ble_scientific_results depends on ble_rffi_studio, never the
+reverse).
 """
 from __future__ import annotations
 
@@ -37,6 +45,22 @@ def utc_now() -> str:
 
 class PaperCampaignSchedulingError(Exception):
     pass
+
+
+# Maps an `attempted[...]` field the caller declares to the schedule-entry
+# field it must match, and the protocol-deviation code raised on mismatch.
+# Only fields actually present in `attempted` are checked -- absence is
+# "not declared", never treated as a mismatch.
+_ATTEMPTED_FIELD_TO_CODE: tuple[tuple[str, str], ...] = (
+    ("physical_unit_id", "WRONG_UNIT"),
+    ("channel", "WRONG_CHANNEL"),
+    ("pre_or_post", "WRONG_PRE_POST_STATE"),
+    ("intervention_arm", "WRONG_INTERVENTION_ARM"),
+    ("packet_variant", "WRONG_PACKET_VARIANT"),
+    ("receiver_epoch", "RECEIVER_EPOCH_MISMATCH"),
+    ("firmware_hash", "FIRMWARE_MISMATCH"),
+    ("configuration_hash", "CONFIGURATION_MISMATCH"),
+)
 
 
 class PaperCampaignRunner:
@@ -135,18 +159,50 @@ class PaperCampaignRunner:
         manifest.update(self._capture_metadata_payload(entry))
         atomic_json(manifest_path, manifest)
 
-    def execute(self, schedule: PaperCampaignSchedule, planned_capture_id: str, *, build_capture_record: Callable[[str], CaptureRecord], progress: ProgressHook = None, **run_session_kwargs: Any) -> CaptureRecord:
+    def _violations_for_attempt(self, entry: PaperCampaignScheduleEntry, attempted: dict[str, Any]) -> list[str]:
+        return [code for field, code in _ATTEMPTED_FIELD_TO_CODE if field in attempted and attempted[field] != getattr(entry, field)]
+
+    def execute(
+        self, schedule: PaperCampaignSchedule, planned_capture_id: str, *, build_capture_record: Callable[[str], CaptureRecord],
+        attempted: dict[str, Any] | None = None, operator_id: str | None = None, progress: ProgressHook = None, **run_session_kwargs: Any,
+    ) -> CaptureRecord:
         """`build_capture_record` re-reads the just-updated manifest into a
         real CaptureRecord (e.g. StudioRepository/CaptureStage's own
         build_capture, injected so this runner never re-implements that
-        parsing)."""
+        parsing).
+
+        `attempted` is what the caller (CLI operator or an automated
+        cross-check) declares it is ABOUT to run -- any field present there
+        that disagrees with the frozen schedule entry rejects the capture
+        before it starts (see _ATTEMPTED_FIELD_TO_CODE). A capture requested
+        out of the schedule's own execution order is rejected the same way,
+        with no `attempted` declaration required to detect it. There is no
+        parameter that overrides either check."""
         if self.campaign_orchestrator is None:
             raise PaperCampaignSchedulingError("NO_CAMPAIGN_ORCHESTRATOR_CONFIGURED:cannot execute a real capture without one")
         entry = self.find_entry(schedule, planned_capture_id)
         if entry is None:
+            self.reject_out_of_schedule(
+                schedule=schedule, attempted={"planned_capture_id": planned_capture_id, **(attempted or {})},
+                reason="CAPTURE_OUT_OF_SCHEDULE", planned_capture_id=planned_capture_id, operator_id=operator_id,
+            )
             raise PaperCampaignSchedulingError(f"PLANNED_CAPTURE_ID_NOT_IN_SCHEDULE:{planned_capture_id}")
         if entry.executed:
             raise PaperCampaignSchedulingError(f"PLANNED_CAPTURE_ALREADY_EXECUTED:{planned_capture_id}")
+
+        violations: list[str] = []
+        next_entry = self.next_planned_capture(schedule)
+        if next_entry is not None and next_entry.planned_capture_id != planned_capture_id:
+            violations.append("WRONG_CAPTURE_ORDER")
+        if attempted:
+            violations.extend(self._violations_for_attempt(entry, attempted))
+
+        if violations:
+            self.reject_out_of_schedule(
+                schedule=schedule, attempted=attempted or {}, reason=",".join(violations),
+                planned_capture_id=planned_capture_id, operator_id=operator_id,
+            )
+            raise PaperCampaignSchedulingError(f"PROTOCOL_DEVIATION_DETECTED:{planned_capture_id}:{','.join(violations)}")
 
         result = self.campaign_orchestrator.run_session(
             ble_channel=entry.channel, physical_unit_id=entry.physical_unit_id, capture_purpose=entry.capture_purpose,
@@ -165,18 +221,34 @@ class PaperCampaignRunner:
         self._save_schedule(updated_schedule)
         return capture_record
 
-    def reject_out_of_schedule(self, *, schedule: PaperCampaignSchedule, attempted: dict[str, Any], reason: str) -> dict[str, Any]:
-        """Refuses execution (the real enforcement -- execute() itself
-        already raises PaperCampaignSchedulingError for anything not in the
-        schedule) and returns a plain record of the rejection for the
-        caller to log/display. The canonical, schema-versioned
-        PROTOCOL_DEVIATION record for this event is produced later, at
-        record-build time, by ble_scientific_results (which already reads
-        this schedule read-only -- see records/campaign_deviations.py) --
-        this module deliberately never constructs a
-        ScientificCampaignDeviationRecord itself, to keep the dependency
-        direction one-way (ble_scientific_results depends on
-        ble_rffi_studio, never the reverse)."""
-        return {
-            "schedule_id": schedule.schedule_id, "reason": reason, "attempted": attempted, "rejected_at": utc_now(),
+    def reject_out_of_schedule(
+        self, *, schedule: PaperCampaignSchedule, attempted: dict[str, Any], reason: str,
+        planned_capture_id: str | None = None, operator_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Refuses execution (the real enforcement lives in execute() itself,
+        which calls this on every rejection path) and PERSISTS the rejection
+        to `<schedule_dir>/rejections.jsonl` -- appended, never overwritten,
+        so every real attempt (including malformed ones) stays on record.
+        `reason` may be a single code or a comma-joined list of codes (see
+        _ATTEMPTED_FIELD_TO_CODE / the WRONG_CAPTURE_ORDER / CAPTURE_OUT_OF_
+        SCHEDULE codes execute() detects). ble_scientific_results reads this
+        log read-only to build the canonical PROTOCOL_DEVIATION records --
+        see records/campaign_deviations.py::build_runner_rejection_deviations."""
+        record = {
+            "schedule_id": schedule.schedule_id, "protocol_id": schedule.protocol_id, "planned_capture_id": planned_capture_id,
+            "reason": reason, "attempted": attempted, "operator_id": operator_id, "rejected_at": utc_now(),
         }
+        path = self._rejections_path(schedule.schedule_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+        return record
+
+    def _rejections_path(self, schedule_id: str) -> Path:
+        return self._schedule_dir(schedule_id) / "rejections.jsonl"
+
+    def list_rejections(self, schedule_id: str) -> list[dict[str, Any]]:
+        path = self._rejections_path(schedule_id)
+        if not path.is_file():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]

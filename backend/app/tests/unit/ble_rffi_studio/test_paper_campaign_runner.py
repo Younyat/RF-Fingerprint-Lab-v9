@@ -107,3 +107,58 @@ def test_reject_out_of_schedule_returns_a_plain_record_without_executing(tmp_pat
     rejection = runner.reject_out_of_schedule(schedule=schedule, attempted={"physical_unit_id": "UNIT-B"}, reason="CAPTURE_OUT_OF_SCHEDULE")
     assert rejection["reason"] == "CAPTURE_OUT_OF_SCHEDULE"
     assert rejection["schedule_id"] == "SCHED-6"
+
+
+def test_execute_persists_rejection_for_unknown_planned_capture_id(tmp_path):
+    runner = PaperCampaignRunner(storage_root=tmp_path / "storage", legacy_capture_root=tmp_path / "iq_captures", campaign_orchestrator=_StubOrchestrator("X"))
+    schedule = runner.freeze_schedule(schedule_id="SCHED-7", protocol_id="PROTO-1", entries=[_entry(planned_capture_id="p1")])
+    with pytest.raises(PaperCampaignSchedulingError):
+        runner.execute(schedule, "not-scheduled", build_capture_record=lambda cap_id: cap_id, operator_id="OP-1")
+
+    rejections = runner.list_rejections("SCHED-7")
+    assert len(rejections) == 1
+    assert rejections[0]["reason"] == "CAPTURE_OUT_OF_SCHEDULE"
+    assert rejections[0]["operator_id"] == "OP-1"
+    assert rejections[0]["protocol_id"] == "PROTO-1"
+
+
+def test_execute_rejects_out_of_order_capture_before_running(tmp_path):
+    runner = PaperCampaignRunner(storage_root=tmp_path / "storage", legacy_capture_root=tmp_path / "iq_captures", campaign_orchestrator=_StubOrchestrator("X"))
+    schedule = runner.freeze_schedule(schedule_id="SCHED-8", protocol_id="PROTO-1", entries=[_entry(planned_capture_id="p1"), _entry(planned_capture_id="p2", capture_order=2)])
+    with pytest.raises(PaperCampaignSchedulingError):
+        runner.execute(schedule, "p2", build_capture_record=lambda cap_id: cap_id)
+
+    rejections = runner.list_rejections("SCHED-8")
+    assert len(rejections) == 1
+    assert rejections[0]["reason"] == "WRONG_CAPTURE_ORDER"
+    assert rejections[0]["planned_capture_id"] == "p2"
+
+
+def test_execute_rejects_attempted_field_mismatch_and_never_runs_session(tmp_path):
+    orchestrator = _StubOrchestrator("X")
+    runner = PaperCampaignRunner(storage_root=tmp_path / "storage", legacy_capture_root=tmp_path / "iq_captures", campaign_orchestrator=orchestrator)
+    schedule = runner.freeze_schedule(schedule_id="SCHED-9", protocol_id="PROTO-1", entries=[_entry(planned_capture_id="p1")])
+
+    with pytest.raises(PaperCampaignSchedulingError):
+        runner.execute(schedule, "p1", build_capture_record=lambda cap_id: cap_id, attempted={"channel": 99, "physical_unit_id": "UNIT-B"})
+
+    assert orchestrator.calls == []  # no silent override: the real capture never ran
+    rejections = runner.list_rejections("SCHED-9")
+    assert len(rejections) == 1
+    codes = rejections[0]["reason"].split(",")
+    assert "WRONG_CHANNEL" in codes
+    assert "WRONG_UNIT" in codes
+
+
+def test_execute_with_matching_attempted_fields_proceeds_normally(tmp_path):
+    legacy_root = tmp_path / "iq_captures"
+    runner = PaperCampaignRunner(storage_root=tmp_path / "storage", legacy_capture_root=legacy_root, campaign_orchestrator=_StubOrchestrator("REAL-CAP-2"))
+    schedule = runner.freeze_schedule(schedule_id="SCHED-10", protocol_id="PROTO-1", entries=[_entry(planned_capture_id="p1")])
+    _write_real_capture_manifest(legacy_root, "REAL-CAP-2")
+
+    capture_record = runner.execute(
+        schedule, "p1", build_capture_record=lambda cap_id: cap_id,
+        attempted={"channel": 37, "physical_unit_id": "UNIT-A"},
+    )
+    assert capture_record == "REAL-CAP-2"
+    assert runner.list_rejections("SCHED-10") == []

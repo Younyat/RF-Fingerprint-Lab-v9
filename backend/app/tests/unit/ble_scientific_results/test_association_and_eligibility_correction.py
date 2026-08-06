@@ -166,3 +166,61 @@ def test_every_deviation_has_a_classification(tmp_path):
     deviations = repository.list_deviation_records(run.paper_run_id, limit=100)
     assert deviations
     assert all(d["classification"] in ("CANDIDATE_EXCLUSION", "CAPTURE_EXCLUSION", "PROTOCOL_DEVIATION") for d in deviations)
+
+
+def test_runner_rejections_become_protocol_deviations_linked_to_the_attempt(tmp_path):
+    """The runner integration (user point 2 of the post-correction request):
+    a PaperCampaignRunner rejection persisted to
+    <ble_root>/paper_campaign/schedules/<schedule_id>/rejections.jsonl must
+    surface as a real, blocking PROTOCOL_DEVIATION carrying protocol_id/
+    planned_capture_id/operator_id/detected_at -- without this module ever
+    importing PaperCampaignRunner itself (one-way dependency)."""
+    import json as _json
+
+    repository, ble_root = _new_repository(tmp_path)
+    from ._helpers import build_passing_fixture
+
+    dataset_id, dataset_version, task = build_passing_fixture(ble_root)
+    run = _freeze_and_create_run(repository, dataset_id=dataset_id, dataset_version=dataset_version, scientific_task=task)
+
+    rejections_dir = ble_root / "paper_campaign" / "schedules" / "SCHED-X"
+    rejections_dir.mkdir(parents=True)
+    rejection = {
+        "schedule_id": "SCHED-X", "protocol_id": run.protocol_id, "planned_capture_id": "planned-7",
+        "reason": "WRONG_CHANNEL,WRONG_UNIT", "attempted": {"channel": 99, "physical_unit_id": "UNIT-B"},
+        "operator_id": "OP-7", "rejected_at": "2026-08-05T00:00:00Z",
+    }
+    (rejections_dir / "rejections.jsonl").write_text(_json.dumps(rejection) + "\n", encoding="utf-8")
+
+    repository.build_records(run.paper_run_id, schedule_id="SCHED-X")
+    deviations = repository.list_deviation_records(run.paper_run_id, limit=100)
+
+    runner_deviations = [d for d in deviations if d["planned_capture_id"] == "planned-7"]
+    assert {d["deviation_type"] for d in runner_deviations} == {"WRONG_CHANNEL", "WRONG_UNIT"}
+    for deviation in runner_deviations:
+        assert deviation["classification"] == "PROTOCOL_DEVIATION"
+        assert deviation["blocking"] is True
+        assert deviation["protocol_id"] == run.protocol_id
+        assert deviation["operator_id"] == "OP-7"
+        assert deviation["detected_at"] == "2026-08-05T00:00:00Z"
+
+
+def test_build_records_without_schedule_id_ignores_any_rejection_log(tmp_path):
+    """schedule_id is optional -- a run built without it must never read
+    rejections.jsonl at all, so existing (pre-runner) campaigns are
+    unaffected."""
+    import json as _json
+
+    repository, ble_root = _new_repository(tmp_path)
+    from ._helpers import build_passing_fixture
+
+    dataset_id, dataset_version, task = build_passing_fixture(ble_root)
+    run = _freeze_and_create_run(repository, dataset_id=dataset_id, dataset_version=dataset_version, scientific_task=task)
+
+    rejections_dir = ble_root / "paper_campaign" / "schedules" / "SCHED-UNUSED"
+    rejections_dir.mkdir(parents=True)
+    (rejections_dir / "rejections.jsonl").write_text(_json.dumps({"schedule_id": "SCHED-UNUSED", "reason": "WRONG_CHANNEL", "planned_capture_id": "p1"}) + "\n", encoding="utf-8")
+
+    repository.build_records(run.paper_run_id)
+    deviations = repository.list_deviation_records(run.paper_run_id, limit=100)
+    assert not any(d["deviation_type"] == "WRONG_CHANNEL" for d in deviations)

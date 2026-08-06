@@ -18,7 +18,7 @@ from app.modules.ble_rffi_studio.contracts import CaptureRecord, DatasetManifest
 
 from ..contracts import RecordBuildResult, ScientificBurstRecord, ScientificCampaignDeviationRecord, ScientificCaptureRecord, ScientificDecisionWindowRecord
 from .burst_records import build_burst_records
-from .campaign_deviations import build_campaign_deviations
+from .campaign_deviations import build_campaign_deviations, build_runner_rejection_deviations
 from .capture_records import DEFAULT_WINDOW_DURATION_S, build_capture_record
 from .decision_window_records import DEFAULT_MINIMUM_ELIGIBLE_BURSTS, build_decision_window_records
 from .iq_resolution import resolve_replay_dir
@@ -33,12 +33,25 @@ def _write_table(records: list, path_stem: Path) -> None:
     frame.to_parquet(path_stem.with_suffix(".parquet"), index=False)
 
 
+def _load_runner_rejections(ble_root: Path, schedule_id: str) -> list[dict]:
+    """Reads PaperCampaignRunner's own persisted rejection log directly
+    (`<ble_root>/paper_campaign/schedules/<schedule_id>/rejections.jsonl`)
+    rather than importing PaperCampaignRunner -- ble_scientific_results must
+    only ever depend ON ble_rffi_studio's contracts, never call back into its
+    runner/orchestrator code. Matches the path convention the runner itself
+    uses when constructed with storage_root=ble_root."""
+    path = ble_root / "paper_campaign" / "schedules" / schedule_id / "rejections.jsonl"
+    if not path.is_file():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
 def build_records(
     *, paper_run_id: str, protocol_id: str, campaign_id: str, association_policy_hash: str,
     dataset: DatasetManifest, split: SplitManifest, run_dir: Path, ble_root: Path, legacy_capture_root: Path,
     load_capture: Callable[[str], CaptureRecord | None], load_examples: Callable[[str], list[ExampleRecord]],
     window_duration_s: float = DEFAULT_WINDOW_DURATION_S, minimum_eligible_bursts: int = DEFAULT_MINIMUM_ELIGIBLE_BURSTS,
-    progress: ProgressHook = None,
+    schedule_id: str | None = None, progress: ProgressHook = None,
 ) -> RecordBuildResult:
     output_dir = run_dir / "01_inputs" / "canonical_records"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -82,6 +95,11 @@ def build_records(
         paper_run_id=paper_run_id, campaign_id=campaign_id, dataset=dataset, split=split,
         capture_records=capture_records,
     )
+    if schedule_id:
+        deviation_records += build_runner_rejection_deviations(
+            paper_run_id=paper_run_id, campaign_id=campaign_id,
+            rejections=_load_runner_rejections(ble_root, schedule_id),
+        )
 
     if progress:
         progress("writing_tables", 0.95, "Writing canonical record tables")
