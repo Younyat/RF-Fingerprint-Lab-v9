@@ -103,3 +103,52 @@ def select_association_threshold(
     unhashed = AssociationPolicy(**fields, policy_hash="")
     policy_hash = unhashed.content_hash(exclude={"policy_hash"})
     return AssociationPolicy(**fields, policy_hash=policy_hash)
+
+
+def select_association_policy(
+    *, calibration_events: list[CalibrationEventRecord], target_absence_events: list[CalibrationEventRecord],
+    device_family_by_unit: dict[str, str], threshold_grid: list[float], calibration_campaign_id: str,
+    devices_used: list[str], captures_used: list[str], callback_batching_policy: str, duplicate_policy: str,
+    field_match_policy: str, minimum_coverage: float = 0.95,
+) -> AssociationPolicy | dict[str, AssociationPolicy]:
+    """Point 9: try ONE global policy across all enrolled devices first
+    (advertising intervals/callback behavior can differ enough by family
+    that a single threshold may not fit everyone). Only if that fails does
+    this fall back to a policy PER device_family -- never per capture, per
+    the user's explicit rule -- and EVERY family with calibration events
+    must itself succeed before any stratified policy is returned; if even
+    one family fails, the whole selection fails closed (propagates
+    NoThresholdSatisfiesCriteriaError), since a partially-frozen stratified
+    policy would leave some real devices with no valid rule at all."""
+    try:
+        return select_association_threshold(
+            calibration_events=calibration_events, target_absence_events=target_absence_events, threshold_grid=threshold_grid,
+            calibration_campaign_id=calibration_campaign_id, devices_used=devices_used, captures_used=captures_used,
+            callback_batching_policy=callback_batching_policy, duplicate_policy=duplicate_policy,
+            field_match_policy=field_match_policy, minimum_coverage=minimum_coverage,
+        )
+    except NoThresholdSatisfiesCriteriaError:
+        pass
+
+    families = sorted({device_family_by_unit[event.physical_unit_id] for event in calibration_events if event.physical_unit_id in device_family_by_unit})
+    if not families:
+        raise NoThresholdSatisfiesCriteriaError("NO_GLOBAL_THRESHOLD_AND_NO_DEVICE_FAMILY_INFORMATION_TO_STRATIFY_BY")
+
+    policies: dict[str, AssociationPolicy] = {}
+    for family in families:
+        family_calibration = [event for event in calibration_events if device_family_by_unit.get(event.physical_unit_id) == family]
+        family_absence = [event for event in target_absence_events if device_family_by_unit.get(event.physical_unit_id) == family]
+        if not family_calibration:
+            continue
+        # Propagates NoThresholdSatisfiesCriteriaError if THIS family also
+        # fails -- every family must freeze successfully before ANY
+        # stratified policy may be used for the definitive campaign.
+        policies[family] = select_association_threshold(
+            calibration_events=family_calibration, target_absence_events=family_absence, threshold_grid=threshold_grid,
+            calibration_campaign_id=f"{calibration_campaign_id}-{family}",
+            devices_used=sorted({event.physical_unit_id for event in family_calibration}),
+            captures_used=sorted({event.capture_id for event in family_calibration}),
+            callback_batching_policy=callback_batching_policy, duplicate_policy=duplicate_policy,
+            field_match_policy=field_match_policy, minimum_coverage=minimum_coverage,
+        )
+    return policies

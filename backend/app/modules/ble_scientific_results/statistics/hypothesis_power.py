@@ -19,9 +19,17 @@ is the standard, sufficient level of abstraction for paired-test power
 (Cohen's d_z formulation): the paired test's power depends only on that
 distribution, not on how its variance decomposes into unit/day/window
 components, so no separate unit-effect/day-effect Monte Carlo layer is
-needed for a paired contrast. H2's diff-in-differences is NOT paired at the
-unit level (units are BETWEEN groups), so it keeps its own explicit
-unit-level simulation with a genuine exact permutation test.
+needed for a paired contrast.
+
+H2 (post physical-inventory correction) is a WITHIN-DEVICE randomized
+crossover -- the enrolled devices are five heterogeneous transmitters
+(different hardware models), so there is no admissible between-device
+RESET-vs-CONTROL split to begin with; every device supplies its own
+RESET days and its own CONTINUOUS_POWER days, and acts as its own
+control. Every H2 trial runs the real stratified-by-device permutation
+test (statistics/inference.py::stratified_crossover_permutation_test),
+Monte Carlo at realistic day counts (the joint permutation space across
+5+ devices is intractably large to enumerate exactly), not a proxy.
 
 Significance testing inside the OUTER Monte Carlo power loop uses a paired
 t-test (H1, H3a) as a fast, standard asymptotic proxy for the paired
@@ -30,10 +38,8 @@ exact_randomization_test) -- valid by the CLT at the block counts this
 design can reach, and dramatically cheaper than re-running an exact/Monte
 Carlo permutation test inside every one of a few thousand simulated
 trials. The REAL confirmatory analysis on real data must use
-exact_randomization_test directly, not this proxy. H2 uses the real exact
-permutation test (statistics/inference.py::exact_two_sample_permutation_test)
-in every trial, since with only a handful of physical units the exact
-enumeration is cheap enough to not need a proxy at all.
+exact_randomization_test (H1/H3a) or stratified_crossover_permutation_test
+(H2) directly, not any proxy.
 """
 from __future__ import annotations
 
@@ -43,7 +49,7 @@ from typing import Sequence
 
 import numpy as np
 
-from .inference import _t_quantile, exact_two_sample_permutation_test, non_inferiority_test
+from .inference import _t_quantile, non_inferiority_test, stratified_crossover_permutation_test
 
 STATUS_PROVISIONAL_DIAGNOSTIC_ONLY = "PROVISIONAL_DIAGNOSTIC_ONLY"
 
@@ -169,118 +175,151 @@ def simulate_h1_dependence(
 
 
 # ----------------------------------------------------------------------
-# H2 -- power cycle (RESET vs CONTROL), difference-in-differences
+# H2 -- power cycle, WITHIN-DEVICE randomized crossover (post inventory
+# correction: the enrolled devices are five heterogeneous transmitters --
+# CC2541 SensorTag, Shelly Plug, two "keyfobdemo" units, one CC2650
+# SensorTag -- so a between-device RESET-vs-CONTROL split would compare
+# different hardware models as if they were interchangeable. Every device
+# now acts as its own control: each device-day is independently and
+# randomly assigned RESET or CONTINUOUS_POWER, balanced per device across
+# the campaign.
 # ----------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class H2Result:
     status: str
-    power_by_units: dict[int, float]
-    power_by_days: dict[int, float]
+    power_by_devices: dict[int, float]
+    power_by_days_per_device: dict[int, float]
     power_by_valid_blocks: dict[int, float]
     expected_interval_width: float
     probability_of_insufficient_evidence: float
     sensitivity_to_variance: dict[str, float]
 
 
-def _h2_trial(
-    *, n_units: int, n_reset: int, n_days: int, effect_size: float, between_unit_sd: float, between_day_sd: float,
-    within_sd: float, pair_loss_rate: float, alpha: float, rng: np.random.Generator,
-) -> tuple[bool, float]:
-    """One simulated qualification-style RESET/CONTROL campaign: `n_reset`
-    of `n_units` are randomly assigned RESET (the rest CONTROL); each unit
-    is observed across `n_days` days with a PRE and POST capture per day
-    (either capture can be missing at `pair_loss_rate`, simulating a
-    dropped/undocumented capture rather than an imputed one); the per-unit
-    change is the mean POST-PRE difference over its surviving day-pairs.
-    Returns (rejected, observed_diff_in_diff) using the REAL exact
-    permutation test over unit-arm relabeling -- affordable in full at
-    real pilot/campaign unit counts (a handful of units)."""
-    assignment = rng.permutation(n_units) < n_reset  # True = RESET
-    unit_changes = []
-    for unit_index in range(n_units):
-        unit_effect = rng.normal(0.0, between_unit_sd)
-        day_changes = []
-        for _ in range(n_days):
-            if rng.random() < pair_loss_rate:
-                continue  # the whole PRE/POST pair for this day is missing, not imputed
-            day_effect = rng.normal(0.0, between_day_sd)
-            arm_effect = effect_size if assignment[unit_index] else 0.0
-            day_changes.append(unit_effect + day_effect + arm_effect + rng.normal(0.0, within_sd))
-        if day_changes:
-            unit_changes.append(float(np.mean(day_changes)))
-        else:
-            unit_changes.append(float("nan"))
+def _h2_crossover_trial(
+    *, device_ids: Sequence[str], n_days_per_device: int, effect_size: float, between_device_sd: float,
+    within_device_day_sd: float, pair_loss_rate: float, alpha: float, rng: np.random.Generator,
+) -> tuple[bool | None, float]:
+    """One simulated qualification-style crossover campaign: EVERY device in
+    `device_ids` gets its own randomized, balanced sequence of RESET/
+    CONTINUOUS_POWER days (never a between-device split), a device-specific
+    true effect drawn from Normal(effect_size, between_device_sd) (devices
+    may respond differently -- this is the ONLY place device heterogeneity
+    enters, since the crossover design otherwise compares each device only
+    against itself), and per-day noise. A day's pre/post pair can be
+    missing entirely at `pair_loss_rate` (never imputed). Returns
+    (rejected, observed_delta_cycle) using the real stratified-by-device
+    permutation test; `rejected` is None when fewer than 2 devices retain
+    both arms after pair loss (a degenerate draw, never counted as a
+    rejection or a non-rejection)."""
+    n_devices = len(device_ids)
+    if n_days_per_device % 2 != 0:
+        raise ValueError("N_DAYS_PER_DEVICE_MUST_BE_EVEN_FOR_A_BALANCED_CROSSOVER")
+    n_reset_days = n_days_per_device // 2
 
-    valid = [(value, bool(assignment[i])) for i, value in enumerate(unit_changes) if not math.isnan(value)]
-    if len({label for _, label in valid}) < 2 or len(valid) < 3:
-        return False, float("nan")  # a degenerate draw (one whole arm lost) never counts as a rejection
-    values = [value for value, _ in valid]
-    labels = [label for _, label in valid]
-    result = exact_two_sample_permutation_test(values, labels)
+    device_day_values: dict[str, list[float]] = {}
+    device_day_is_reset: dict[str, list[bool]] = {}
+    for device_id in device_ids:
+        device_true_effect = rng.normal(effect_size, between_device_sd)
+        labels = [True] * n_reset_days + [False] * (n_days_per_device - n_reset_days)
+        rng.shuffle(labels)  # the frozen calendar's own randomized, balanced order
+        values, surviving_labels = [], []
+        for is_reset in labels:
+            if rng.random() < pair_loss_rate:
+                continue  # the whole pre/post pair for this device-day is missing
+            arm_effect = device_true_effect if is_reset else 0.0
+            values.append(arm_effect + rng.normal(0.0, within_device_day_sd))
+            surviving_labels.append(is_reset)
+        if values and any(surviving_labels) and not all(surviving_labels):
+            device_day_values[device_id] = values
+            device_day_is_reset[device_id] = surviving_labels
+
+    if len(device_day_values) < 2:
+        return None, float("nan")  # too few devices retained both arms -- degenerate, not a rejection
+    # n_monte_carlo=500 here (vs. stratified_crossover_permutation_test's own
+    # default of 20000) is a deliberate speed/precision trade-off SPECIFIC to
+    # this inner loop: a reject/no-reject decision at alpha=0.05 only needs
+    # ~0.01 p-value resolution, and this call runs inside an outer Monte
+    # Carlo power loop of its own (thousands of times). The real
+    # confirmatory analysis on real data must call
+    # stratified_crossover_permutation_test directly, with its own default
+    # (or higher) n_monte_carlo, never this reduced value.
+    result = stratified_crossover_permutation_test(device_day_values, device_day_is_reset, n_monte_carlo=500, rng=rng)
     return result.p_value < alpha, result.observed_statistic
 
 
 def simulate_h2_power_cycle(
-    *, n_units: int = 5, n_reset: int = 2, n_days: int = 2, alpha: float = 0.05, n_simulations: int = 1500,
-    effect_size: float = 0.08, between_unit_sd: float = 0.05, between_day_sd: float = 0.02, within_sd: float = 0.04,
-    pair_loss_rate: float = 0.05, units_sweep: Sequence[tuple[int, int]] = ((4, 2), (5, 2), (6, 3), (8, 4), (10, 5)),
-    days_sweep: Sequence[int] = (1, 2, 3, 5, 10), rng: np.random.Generator | None = None,
+    *, device_ids: Sequence[str] = ("CC2541SensorTag", "SHELLY-PLUG-01", "keyfobdemo 01", "keyfobdemo 02", "CC2650-UNIT-01"),
+    n_days_per_device: int = 20, alpha: float = 0.05, n_simulations: int = 800,
+    effect_size: float = 0.08, between_device_sd: float = 0.05, within_device_day_sd: float = 0.04,
+    pair_loss_rate: float = 0.05, devices_sweep: Sequence[int] = (2, 3, 5, 8, 10),
+    days_sweep: Sequence[int] = (2, 6, 10, 20, 40), rng: np.random.Generator | None = None,
 ) -> H2Result:
-    """H2: does the RESET arm show a systematically different POST-PRE
-    change than CONTROL (difference-in-differences), under a real
-    randomized RESET/CONTROL unit assignment (admissible splits declared
-    via `units_sweep`, e.g. 2 RESET / 2 CONTROL out of 4 units)? Every
-    trial re-draws which units got which arm AND runs the exact
-    permutation test on that trial's own draw -- this is not a Monte Carlo
-    approximation of the test itself, only of the population of possible
-    campaigns."""
+    """H2: within-device randomized crossover (each of the 5 enrolled,
+    heterogeneous devices acts as its own control). `devices_sweep` is
+    informational only -- with 5 REAL enrolled devices there is no
+    physical population to enlarge; the sweep shows how the tool's power
+    would behave with a different device COUNT, never a claim that more
+    devices are available. Interpretation of the resulting effect is
+    "average reset-associated displacement across the enrolled devices
+    under the randomized crossover protocol", never "effect in the CC2650
+    population" or any other device-family population."""
     rng = rng or np.random.default_rng(20260806)
 
-    def _power_for(units: int, reset: int, days: int) -> tuple[float, float]:
-        rejections = 0
-        diffs = []
-        counted = 0
+    def _power_for(devices: Sequence[str], days: int) -> tuple[float, float]:
+        rejections, counted, observed_values = 0, 0, []
         for _ in range(n_simulations):
-            rejected, observed = _h2_trial(n_units=units, n_reset=reset, n_days=days, effect_size=effect_size, between_unit_sd=between_unit_sd, between_day_sd=between_day_sd, within_sd=within_sd, pair_loss_rate=pair_loss_rate, alpha=alpha, rng=rng)
-            if math.isnan(observed):
+            rejected, observed = _h2_crossover_trial(
+                device_ids=devices, n_days_per_device=days, effect_size=effect_size, between_device_sd=between_device_sd,
+                within_device_day_sd=within_device_day_sd, pair_loss_rate=pair_loss_rate, alpha=alpha, rng=rng,
+            )
+            if rejected is None:
                 continue
             counted += 1
-            diffs.append(observed)
+            observed_values.append(observed)
             if rejected:
                 rejections += 1
         power = rejections / counted if counted else float("nan")
-        width = float(np.std(diffs, ddof=1)) if len(diffs) > 1 else float("nan")
+        width = float(np.std(observed_values, ddof=1)) if len(observed_values) > 1 else float("nan")
         return power, width
 
-    power_by_units = {units: _power_for(units, reset, n_days)[0] for units, reset in units_sweep}
-    power_by_days = {days: _power_for(n_units, n_reset, days)[0] for days in days_sweep}
-    power_by_valid_blocks = {days * n_units: _power_for(n_units, n_reset, days)[0] for days in days_sweep}
-    power_declared, width_declared = _power_for(n_units, n_reset, n_days)
+    synthetic_device_ids = [f"DEVICE-{i}" for i in range(max(devices_sweep))]
+    power_by_devices = {n: _power_for(synthetic_device_ids[:n], n_days_per_device)[0] for n in devices_sweep}
+    power_by_days_per_device = {days: _power_for(device_ids, days)[0] for days in days_sweep}
+    power_by_valid_blocks = {days * len(device_ids): _power_for(device_ids, days)[0] for days in days_sweep}
+    power_declared, width_declared = _power_for(device_ids, n_days_per_device)
 
     sensitivity = {}
     for label, multiplier in (("low_variance", 0.6), ("pilot_estimated_variance", 1.0), ("high_variance", 1.6)):
-        sensitivity[label] = _h2_sensitivity_power(n_units=n_units, n_reset=n_reset, n_days=n_days, effect_size=effect_size, between_unit_sd=between_unit_sd * multiplier, between_day_sd=between_day_sd * multiplier, within_sd=within_sd * multiplier, pair_loss_rate=pair_loss_rate, alpha=alpha, n_simulations=n_simulations, rng=rng)
+        power, _ = _h2_sensitivity_power(
+            device_ids=device_ids, n_days_per_device=n_days_per_device, effect_size=effect_size,
+            between_device_sd=between_device_sd * multiplier, within_device_day_sd=within_device_day_sd * multiplier,
+            pair_loss_rate=pair_loss_rate, alpha=alpha, n_simulations=n_simulations, rng=rng,
+        )
+        sensitivity[label] = power
 
     return H2Result(
         status=STATUS_PROVISIONAL_DIAGNOSTIC_ONLY,
-        power_by_units=power_by_units, power_by_days=power_by_days, power_by_valid_blocks=power_by_valid_blocks,
+        power_by_devices=power_by_devices, power_by_days_per_device=power_by_days_per_device, power_by_valid_blocks=power_by_valid_blocks,
         expected_interval_width=width_declared, probability_of_insufficient_evidence=1 - power_declared if not math.isnan(power_declared) else float("nan"),
         sensitivity_to_variance=sensitivity,
     )
 
 
-def _h2_sensitivity_power(*, n_units, n_reset, n_days, effect_size, between_unit_sd, between_day_sd, within_sd, pair_loss_rate, alpha, n_simulations, rng) -> float:
-    rejections = 0
-    counted = 0
+def _h2_sensitivity_power(*, device_ids, n_days_per_device, effect_size, between_device_sd, within_device_day_sd, pair_loss_rate, alpha, n_simulations, rng) -> tuple[float, float]:
+    rejections, counted = 0, 0
     for _ in range(n_simulations):
-        rejected, observed = _h2_trial(n_units=n_units, n_reset=n_reset, n_days=n_days, effect_size=effect_size, between_unit_sd=between_unit_sd, between_day_sd=between_day_sd, within_sd=within_sd, pair_loss_rate=pair_loss_rate, alpha=alpha, rng=rng)
-        if math.isnan(observed):
+        rejected, _observed = _h2_crossover_trial(
+            device_ids=device_ids, n_days_per_device=n_days_per_device, effect_size=effect_size, between_device_sd=between_device_sd,
+            within_device_day_sd=within_device_day_sd, pair_loss_rate=pair_loss_rate, alpha=alpha, rng=rng,
+        )
+        if rejected is None:
             continue
         counted += 1
         if rejected:
             rejections += 1
-    return rejections / counted if counted else float("nan")
+    power = rejections / counted if counted else float("nan")
+    return power, float("nan")
 
 
 # ----------------------------------------------------------------------

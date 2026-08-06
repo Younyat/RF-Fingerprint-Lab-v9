@@ -65,6 +65,22 @@ class AnalysisContract(StudioContract):
     intervention_schedule: dict[str, Any] = {}
     content_variants: list[str] = []
 
+    # Real enrolled inventory is heterogeneous (see
+    # docs/ble/physical_device_inventory.json) -- there is no verified
+    # same-model population, so the primary claim is scoped to the ENROLLED
+    # units themselves, never generalized to "the CC2650 population" or any
+    # other device family.
+    primary_population: str = ""  # e.g. "ENROLLED_HETEROGENEOUS_DEVICES"
+    primary_unit_ids: list[str] = []
+    # {"group_name": str, "unit_ids": [...], "verified": bool,
+    #  "verification_basis": str} -- verified must be True for len>1, see
+    # _canonicalize_before_construction.
+    secondary_same_model_subset: dict[str, Any] = {}
+    configurable_content_subset: list[str] = []  # unit_ids eligible for RQ4 (content controls)
+    device_specific_packet_profiles: dict[str, Any] = {}  # per-unit observed PDU type/interval/length, etc.
+    crossover_intervention_schedule: dict[str, Any] = {}  # frozen device-day RESET/CONTINUOUS_POWER assignment
+    population_claim_boundary: str = ""  # free text: exactly what population the paper's conclusions may generalize to
+
     # Policy hashes -- each is a content_hash() of the actual policy object
     # (association resolution, dataset quality gate, dataset admission,
     # a specific split manifest) as it exists in ble_rffi_studio at freeze
@@ -114,6 +130,30 @@ class AnalysisContract(StudioContract):
         empty_fields = [field for field in _REQUIRED_NON_EMPTY_STRING_FIELDS if isinstance(data.get(field), str) and data[field].strip() == ""]
         if empty_fields:
             raise ValueError(f"ANALYSIS_CONTRACT_EMPTY_CONFIRMATORY_FIELDS:{','.join(sorted(empty_fields))}")
+
+        # Real inventory correction: the enrolled devices are five
+        # heterogeneous BLE transmitters (CC2541 SensorTag, Shelly Plug,
+        # two "keyfobdemo" units, one CC2650 SensorTag) -- there is no
+        # verified same-model five-unit population. A protocol that still
+        # asserts one must fail to freeze, not just be discouraged in docs.
+        primary_population = str(data.get("primary_population") or "")
+        forbidden_terms = ("five cc2650", "5 cc2650", "same-model five-unit", "same model five-unit")
+        if any(term in primary_population.lower() for term in forbidden_terms):
+            raise ValueError(f"ANALYSIS_CONTRACT_RETAINS_FALSIFIED_SAME_MODEL_ASSUMPTION:primary_population={primary_population!r}")
+        if primary_population and not data.get("primary_unit_ids"):
+            raise ValueError("ANALYSIS_CONTRACT_PRIMARY_POPULATION_WITHOUT_PRIMARY_UNIT_IDS")
+
+        same_model_subset = data.get("secondary_same_model_subset") or {}
+        if isinstance(same_model_subset, dict) and same_model_subset:
+            unit_ids = same_model_subset.get("unit_ids") or []
+            verified = same_model_subset.get("verified")
+            if len(unit_ids) > 1 and verified is not True:
+                raise ValueError(
+                    f"ANALYSIS_CONTRACT_UNVERIFIED_SAME_MODEL_GROUP:secondary_same_model_subset claims {len(unit_ids)} "
+                    "units without verified=True -- a same-model group with more than one member requires an explicit, "
+                    "documented verification_basis (hardware_revision/firmware_hash/radio_chip match), never an assumption."
+                )
+
         timestamp = data.get("creation_timestamp_utc")
         if isinstance(timestamp, str) and timestamp.endswith("+00:00"):
             data = {**data, "creation_timestamp_utc": timestamp[: -len("+00:00")] + "Z"}

@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.modules.ble_scientific_results.calibration import NoThresholdSatisfiesCriteriaError, select_association_threshold
-from app.modules.ble_scientific_results.contracts import CalibrationEventRecord
+from app.modules.ble_scientific_results.calibration import NoThresholdSatisfiesCriteriaError, select_association_policy, select_association_threshold
+from app.modules.ble_scientific_results.contracts import AssociationPolicy, CalibrationEventRecord
 
 
 def _event(residual: float, *, second: float | None = None, address_match: bool = True, field_match: bool = True, unit="UNIT-A", capture="CAP-1", absence=False) -> CalibrationEventRecord:
@@ -84,6 +84,51 @@ def test_never_selects_a_threshold_purely_because_it_maximizes_associations():
     control_events = [_event(500.0, absence=True)]
     policy = select_association_threshold(calibration_events=calibration_events, target_absence_events=control_events, minimum_coverage=0.95, **_policy_kwargs())
     assert policy.threshold_ms == 100
+
+
+def test_select_association_policy_returns_a_single_global_policy_when_it_succeeds():
+    calibration_events = [_event(30.0, unit="unit-A"), _event(40.0, unit="unit-A"), _event(45.0, unit="unit-A")]
+    control_events = [_event(300.0, unit="unit-A", absence=True)]
+    result = select_association_policy(
+        calibration_events=calibration_events, target_absence_events=control_events, device_family_by_unit={"unit-A": "FAMILY_A"},
+        minimum_coverage=0.95, **_policy_kwargs(),
+    )
+    assert isinstance(result, AssociationPolicy)
+    assert result.threshold_ms == 50
+
+
+def test_select_association_policy_falls_back_to_per_family_stratification_when_global_fails():
+    # Family A needs only t=50 for 100% coverage; family B needs t=200.
+    # Family A's own control (100) is safely above A's own needed threshold
+    # but sits BELOW family B's needed threshold -- so a single global
+    # threshold covering both families always drags family A's control
+    # into the accepted gate. Global must fail at every grid point; each
+    # family stratified on its own must succeed.
+    calibration_events = [
+        _event(20.0, unit="unit-A", capture="CAP-A"), _event(25.0, unit="unit-A", capture="CAP-A"), _event(30.0, unit="unit-A", capture="CAP-A"),
+        _event(150.0, unit="unit-B", capture="CAP-B"), _event(160.0, unit="unit-B", capture="CAP-B"), _event(170.0, unit="unit-B", capture="CAP-B"),
+    ]
+    control_events = [_event(100.0, unit="unit-A", capture="CAP-A", absence=True), _event(500.0, unit="unit-B", capture="CAP-B", absence=True)]
+    device_family_by_unit = {"unit-A": "FAMILY_A", "unit-B": "FAMILY_B"}
+
+    result = select_association_policy(
+        calibration_events=calibration_events, target_absence_events=control_events, device_family_by_unit=device_family_by_unit,
+        minimum_coverage=0.95, **_policy_kwargs(),
+    )
+    assert isinstance(result, dict)
+    assert set(result.keys()) == {"FAMILY_A", "FAMILY_B"}
+    assert result["FAMILY_A"].threshold_ms == 50
+    assert result["FAMILY_B"].threshold_ms == 200
+
+
+def test_select_association_policy_fails_closed_when_a_family_also_fails():
+    calibration_events = [_event(20.0, unit="unit-A"), _event(9999.0, unit="unit-A")]  # unit-A itself never reaches 95% coverage
+    control_events = []
+    with pytest.raises(NoThresholdSatisfiesCriteriaError):
+        select_association_policy(
+            calibration_events=calibration_events, target_absence_events=control_events, device_family_by_unit={"unit-A": "FAMILY_A"},
+            minimum_coverage=0.95, **_policy_kwargs(),
+        )
 
 
 def test_policy_hash_changes_when_selected_threshold_changes():

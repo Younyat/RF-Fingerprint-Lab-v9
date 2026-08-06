@@ -50,35 +50,42 @@ def test_h1_interval_widths_are_positive():
     assert result.expected_interval_width_future > 0
 
 
+_H2_DEVICE_IDS = ("D1", "D2", "D3")
+
+
 def test_h2_status_is_always_provisional_diagnostic_only():
-    result = simulate_h2_power_cycle(n_units=5, n_reset=2, n_days=2, units_sweep=((5, 2),), days_sweep=(2,), **_FAST_SIM)
+    result = simulate_h2_power_cycle(
+        device_ids=_H2_DEVICE_IDS, n_days_per_device=4, devices_sweep=(3,), days_sweep=(4,),
+        n_simulations=30, rng=np.random.default_rng(3),
+    )
     assert result.status == STATUS_PROVISIONAL_DIAGNOSTIC_ONLY
 
 
-def test_h2_five_units_two_reset_can_never_reach_significance_regardless_of_effect_size():
-    # C(5,2) = 10 possible unit-arm relabelings -> the smallest achievable
-    # exact p-value is 1/10 = 0.1, which is never < alpha=0.05. A huge
-    # effect size with near-zero noise still cannot buy significance here
-    # -- this is a real combinatorial ceiling, not underpowering.
+def test_h2_crossover_power_is_near_zero_with_no_true_effect():
     result = simulate_h2_power_cycle(
-        n_units=5, n_reset=2, n_days=2, alpha=0.05, effect_size=1.0,
-        between_unit_sd=0.001, between_day_sd=0.001, within_sd=0.001, pair_loss_rate=0.0,
-        units_sweep=((5, 2),), days_sweep=(2,), n_simulations=100, rng=np.random.default_rng(3),
+        device_ids=_H2_DEVICE_IDS, n_days_per_device=4, alpha=0.05, effect_size=0.0,
+        between_device_sd=0.01, within_device_day_sd=0.02, pair_loss_rate=0.0,
+        devices_sweep=(3,), days_sweep=(4,), n_simulations=40, rng=np.random.default_rng(3),
     )
-    assert result.power_by_units[5] == 0.0
-    assert result.probability_of_insufficient_evidence == 1.0
+    assert result.power_by_days_per_device[4] < 0.2
 
 
-def test_h2_eight_units_four_reset_can_reach_significance_with_a_large_effect():
-    # C(8,4) = 70 -> minimum exact p-value ~0.0143 < 0.05, so significance
-    # is at least combinatorially possible; with a huge effect and tiny
-    # noise it should be reached almost every trial.
+def test_h2_crossover_power_is_high_with_a_large_effect_and_low_noise():
     result = simulate_h2_power_cycle(
-        n_units=8, n_reset=4, n_days=2, alpha=0.05, effect_size=1.0,
-        between_unit_sd=0.001, between_day_sd=0.001, within_sd=0.001, pair_loss_rate=0.0,
-        units_sweep=((8, 4),), days_sweep=(2,), n_simulations=200, rng=np.random.default_rng(4),
+        device_ids=_H2_DEVICE_IDS, n_days_per_device=4, alpha=0.05, effect_size=1.0,
+        between_device_sd=0.001, within_device_day_sd=0.001, pair_loss_rate=0.0,
+        devices_sweep=(3,), days_sweep=(4,), n_simulations=40, rng=np.random.default_rng(4),
     )
-    assert result.power_by_units[8] > 0.9
+    assert result.power_by_days_per_device[4] > 0.9
+    assert result.probability_of_insufficient_evidence < 0.1
+
+
+def test_h2_crossover_rejects_odd_days_per_device():
+    with pytest.raises(ValueError):
+        simulate_h2_power_cycle(
+            device_ids=_H2_DEVICE_IDS, n_days_per_device=3, devices_sweep=(3,), days_sweep=(3,),
+            n_simulations=5, rng=np.random.default_rng(5),
+        )
 
 
 def test_h3_status_is_always_provisional_diagnostic_only():

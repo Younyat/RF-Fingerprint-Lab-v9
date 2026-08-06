@@ -40,6 +40,39 @@ def test_analysis_contract_content_hash_changes_with_content():
     assert a.content_hash() != b.content_hash()
 
 
+def test_analysis_contract_rejects_the_falsified_five_cc2650_claim():
+    with pytest.raises(ValidationError):
+        _minimal_contract(primary_population="five CC2650 same-model enrolled units", primary_unit_ids=["A", "B", "C", "D", "E"])
+
+
+def test_analysis_contract_accepts_the_real_heterogeneous_population():
+    contract = _minimal_contract(
+        primary_population="ENROLLED_HETEROGENEOUS_DEVICES",
+        primary_unit_ids=["CC2541SensorTag", "SHELLY-PLUG-01", "keyfobdemo 01", "keyfobdemo 02", "CC2650-UNIT-01"],
+        population_claim_boundary="Conclusions generalize only to these five enrolled transmitters, not to any device family or model population.",
+    )
+    assert contract.primary_population == "ENROLLED_HETEROGENEOUS_DEVICES"
+    assert len(contract.primary_unit_ids) == 5
+
+
+def test_analysis_contract_requires_primary_unit_ids_when_primary_population_is_declared():
+    with pytest.raises(ValidationError):
+        _minimal_contract(primary_population="ENROLLED_HETEROGENEOUS_DEVICES", primary_unit_ids=[])
+
+
+def test_analysis_contract_rejects_an_unverified_multi_unit_same_model_claim():
+    with pytest.raises(ValidationError):
+        _minimal_contract(secondary_same_model_subset={"group_name": "KEYFOB", "unit_ids": ["keyfobdemo 01", "keyfobdemo 02"], "verified": False})
+
+
+def test_analysis_contract_accepts_a_verified_same_model_claim_with_a_basis():
+    contract = _minimal_contract(secondary_same_model_subset={
+        "group_name": "KEYFOB", "unit_ids": ["keyfobdemo 01", "keyfobdemo 02"], "verified": True,
+        "verification_basis": "matching hardware_revision and firmware_hash confirmed by real inspection",
+    })
+    assert contract.secondary_same_model_subset["verified"] is True
+
+
 def test_analysis_contract_round_trips_through_json():
     contract = _minimal_contract(channels=[37, 38], device_ids=["UNIT-A", "UNIT-B"])
     payload = contract.model_dump(mode="json")

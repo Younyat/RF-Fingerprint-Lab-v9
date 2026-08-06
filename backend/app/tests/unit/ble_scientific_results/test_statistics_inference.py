@@ -13,6 +13,7 @@ from app.modules.ble_scientific_results.statistics.inference import (
     non_inferiority_test,
     paired_contrast,
     risk_coverage_curve,
+    stratified_crossover_permutation_test,
 )
 
 
@@ -96,6 +97,38 @@ def test_exact_two_sample_permutation_identical_values_gives_p_one():
 def test_exact_two_sample_permutation_requires_both_groups_nonempty():
     with pytest.raises(ValueError):
         exact_two_sample_permutation_test([1.0, 2.0], [True, True])
+
+
+def test_stratified_crossover_hand_computed_single_device():
+    # Hand-enumerated: 4 days, 2 RESET/2 CONTROL, values [10,10,0,0].
+    # Of the C(4,2)=6 label patterns, only the observed one and its exact
+    # mirror reach |effect|=10; the other 4 give effect=0. p = 2/6 = 1/3.
+    result = stratified_crossover_permutation_test({"D1": [10.0, 10.0, 0.0, 0.0]}, {"D1": [True, True, False, False]})
+    assert result.exact is True
+    assert result.n_permutations == 6
+    assert result.observed_statistic == pytest.approx(10.0)
+    assert result.p_value == pytest.approx(1 / 3)
+
+
+def test_stratified_crossover_multi_device_averages_device_effects_equally():
+    # Device A: reset=[4,4], control=[0,0] -> effect 4. Device B: reset=[0],
+    # control=[0] -> effect 0 (identical values, trivially zero). Average
+    # across the 2 devices (equal device weight, not equal day weight) = 2.
+    values = {"A": [4.0, 4.0, 0.0, 0.0], "B": [0.0, 0.0]}
+    labels = {"A": [True, True, False, False], "B": [True, False]}
+    result = stratified_crossover_permutation_test(values, labels)
+    assert result.observed_statistic == pytest.approx(2.0)
+
+
+def test_stratified_crossover_requires_both_arms_present_per_device():
+    with pytest.raises(ValueError):
+        stratified_crossover_permutation_test({"D1": [1.0, 2.0]}, {"D1": [True, True]})
+
+
+def test_stratified_crossover_zero_effect_gives_p_value_one():
+    result = stratified_crossover_permutation_test({"D1": [5.0, 5.0, 5.0, 5.0]}, {"D1": [True, True, False, False]})
+    assert result.observed_statistic == pytest.approx(0.0)
+    assert result.p_value == pytest.approx(1.0)
 
 
 def test_holm_correction_textbook_example():

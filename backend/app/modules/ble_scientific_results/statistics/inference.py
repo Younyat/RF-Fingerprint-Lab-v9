@@ -153,6 +153,100 @@ def exact_two_sample_permutation_test(
     return TwoSamplePermutationResult(observed_statistic=observed, p_value=count_extreme / n_monte_carlo, n_permutations=n_monte_carlo, exact=False)
 
 
+@dataclass(frozen=True)
+class StratifiedCrossoverTestResult:
+    observed_statistic: float
+    p_value: float
+    n_permutations: int
+    exact: bool
+
+
+_EXACT_STRATIFIED_MAX_TOTAL_COMBINATIONS = 20000
+
+
+def _crossover_delta_cycle(device_ids: Sequence[str], values_by_device: dict[str, Sequence[float]], labels_by_device: dict[str, Sequence[bool]]) -> float:
+    device_effects = []
+    for device_id in device_ids:
+        values = values_by_device[device_id]
+        labels = labels_by_device[device_id]
+        reset_values = [value for value, is_reset in zip(values, labels) if is_reset]
+        control_values = [value for value, is_reset in zip(values, labels) if not is_reset]
+        device_effects.append((sum(reset_values) / len(reset_values)) - (sum(control_values) / len(control_values)))
+    return sum(device_effects) / len(device_effects)
+
+
+def stratified_crossover_permutation_test(
+    device_day_values: dict[str, Sequence[float]], device_day_is_reset: dict[str, Sequence[bool]], *,
+    n_monte_carlo: int = 20000, rng: np.random.Generator | None = None,
+) -> StratifiedCrossoverTestResult:
+    """Within-device randomized crossover test (each enrolled device acts as
+    its OWN control -- no device is ever permanently assigned RESET or
+    CONTROL). The statistic is delta_cycle = mean over devices of
+    (mean(D | RESET, device) - mean(D | CONTROL, device)), one number per
+    device averaged with equal device weight. The null distribution
+    re-permutes WHICH of each device's own days are labeled RESET --
+    stratified BY DEVICE, preserving each device's own RESET/CONTROL day
+    count (its balance), never pooling days across devices. Enumerates the
+    exact joint permutation space when small enough (small pilot-sized day
+    counts); falls back to Monte Carlo relabeling for realistic campaign
+    sizes, where the joint space across 5+ devices is intractably large."""
+    device_ids = list(device_day_values.keys())
+    if not device_ids:
+        raise ValueError("NEED_AT_LEAST_ONE_DEVICE")
+    for device_id in device_ids:
+        values = device_day_values[device_id]
+        labels = device_day_is_reset[device_id]
+        if len(values) != len(labels):
+            raise ValueError(f"LENGTH_MISMATCH:{device_id}")
+        if not any(labels) or all(labels):
+            raise ValueError(f"DEVICE_NEEDS_BOTH_ARMS:{device_id}")
+
+    observed = _crossover_delta_cycle(device_ids, device_day_values, device_day_is_reset)
+    observed_abs = abs(observed)
+
+    per_device_combo_counts = [math.comb(len(device_day_is_reset[d]), sum(device_day_is_reset[d])) for d in device_ids]
+    total_joint = 1
+    for count in per_device_combo_counts:
+        total_joint *= count
+        if total_joint > _EXACT_STRATIFIED_MAX_TOTAL_COMBINATIONS:
+            break
+
+    if total_joint <= _EXACT_STRATIFIED_MAX_TOTAL_COMBINATIONS:
+        per_device_patterns: list[list[list[bool]]] = []
+        for device_id in device_ids:
+            n_days = len(device_day_is_reset[device_id])
+            n_reset = sum(device_day_is_reset[device_id])
+            patterns = []
+            for combo in itertools.combinations(range(n_days), n_reset):
+                pattern = [False] * n_days
+                for index in combo:
+                    pattern[index] = True
+                patterns.append(pattern)
+            per_device_patterns.append(patterns)
+        count_extreme = 0
+        total = 0
+        for joint in itertools.product(*per_device_patterns):
+            labels_by_device = {device_id: joint[i] for i, device_id in enumerate(device_ids)}
+            permuted = _crossover_delta_cycle(device_ids, device_day_values, labels_by_device)
+            total += 1
+            if abs(permuted) >= observed_abs - 1e-12:
+                count_extreme += 1
+        return StratifiedCrossoverTestResult(observed_statistic=observed, p_value=count_extreme / total, n_permutations=total, exact=True)
+
+    rng = rng or np.random.default_rng(12345)
+    count_extreme = 0
+    for _ in range(n_monte_carlo):
+        labels_by_device = {}
+        for device_id in device_ids:
+            shuffled = list(device_day_is_reset[device_id])
+            rng.shuffle(shuffled)
+            labels_by_device[device_id] = shuffled
+        permuted = _crossover_delta_cycle(device_ids, device_day_values, labels_by_device)
+        if abs(permuted) >= observed_abs - 1e-12:
+            count_extreme += 1
+    return StratifiedCrossoverTestResult(observed_statistic=observed, p_value=count_extreme / n_monte_carlo, n_permutations=n_monte_carlo, exact=False)
+
+
 # ----------------------------------------------------------------------
 # Hierarchical (cluster) bootstrap
 # ----------------------------------------------------------------------

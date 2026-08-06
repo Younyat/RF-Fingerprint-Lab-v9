@@ -28,9 +28,10 @@ reverse).
 from __future__ import annotations
 
 import json
+import random
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from app.infrastructure.ble.capture.ble_capture_metadata import atomic_json
 
@@ -252,3 +253,29 @@ class PaperCampaignRunner:
         if not path.is_file():
             return []
         return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def build_balanced_crossover_assignment(*, device_ids: Sequence[str], n_days: int, seed: int = 20260806) -> dict[str, list[str]]:
+    """The frozen calendar for H2's within-device crossover (see
+    statistics/hypothesis_power.py's H2 docstring): every device in
+    `device_ids` gets exactly n_days//2 RESET days and n_days//2 CONTROL
+    days (CONTROL here means CONTINUOUS_POWER -- the schedule keeps
+    PaperCampaignScheduleEntry.intervention_arm's existing "RESET"/"CONTROL"
+    vocabulary unchanged rather than adding a third literal, since the
+    crossover design only changes WHO gets which arm and WHEN, not the arm
+    vocabulary itself), independently shuffled per device -- no device is
+    ever permanently assigned one arm, and no day is ever split between
+    devices. Returns {device_id: [arm_for_day_0, arm_for_day_1, ...]},
+    ready for the caller to attach day_id/capture_order/etc. onto each
+    PaperCampaignScheduleEntry pair (one PRE + one POST) before freezing
+    the real schedule via freeze_schedule()."""
+    if n_days % 2 != 0:
+        raise ValueError("N_DAYS_MUST_BE_EVEN_FOR_A_BALANCED_CROSSOVER")
+    half = n_days // 2
+    rng = random.Random(seed)
+    assignment: dict[str, list[str]] = {}
+    for device_id in device_ids:
+        labels = ["RESET"] * half + ["CONTROL"] * half
+        rng.shuffle(labels)
+        assignment[device_id] = labels
+    return assignment

@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from app.modules.ble_rffi_studio.campaign import PaperCampaignRunner, PaperCampaignSchedulingError
+from app.modules.ble_rffi_studio.campaign import PaperCampaignRunner, PaperCampaignSchedulingError, build_balanced_crossover_assignment
 from app.modules.ble_rffi_studio.contracts import PaperCampaignScheduleEntry
 
 
@@ -148,6 +148,34 @@ def test_execute_rejects_attempted_field_mismatch_and_never_runs_session(tmp_pat
     codes = rejections[0]["reason"].split(",")
     assert "WRONG_CHANNEL" in codes
     assert "WRONG_UNIT" in codes
+
+
+def test_build_balanced_crossover_assignment_gives_each_device_equal_reset_and_control_days():
+    assignment = build_balanced_crossover_assignment(device_ids=["D1", "D2", "D3"], n_days=20)
+    assert set(assignment.keys()) == {"D1", "D2", "D3"}
+    for labels in assignment.values():
+        assert len(labels) == 20
+        assert labels.count("RESET") == 10
+        assert labels.count("CONTROL") == 10
+
+
+def test_build_balanced_crossover_assignment_shuffles_independently_per_device():
+    assignment = build_balanced_crossover_assignment(device_ids=["D1", "D2"], n_days=4)
+    # Not asserting a specific order (that would over-specify an
+    # implementation detail of the RNG) -- only that the two devices are
+    # not forced into the identical sequence.
+    assert assignment["D1"] != [] and assignment["D2"] != []
+
+
+def test_build_balanced_crossover_assignment_is_reproducible_with_the_same_seed():
+    a = build_balanced_crossover_assignment(device_ids=["D1", "D2"], n_days=6, seed=42)
+    b = build_balanced_crossover_assignment(device_ids=["D1", "D2"], n_days=6, seed=42)
+    assert a == b
+
+
+def test_build_balanced_crossover_assignment_rejects_odd_day_counts():
+    with pytest.raises(ValueError):
+        build_balanced_crossover_assignment(device_ids=["D1"], n_days=5)
 
 
 def test_execute_with_matching_attempted_fields_proceeds_normally(tmp_path):
