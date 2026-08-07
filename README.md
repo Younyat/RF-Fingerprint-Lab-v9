@@ -11,18 +11,92 @@ FastAPI backend and a React/TypeScript frontend.
 > Spectrum Lab uses real SDR samples. The live spectrum, waterfall, captures,
 > triggered pre-buffer, demodulation, and dataset artifacts are not mock data.
 
+## Terminology
+
+Every code, acronym, and status label used anywhere below is defined here
+first. Nothing is used elsewhere in this document before its definition
+appears in this section.
+
+**Core acronyms**: SDR = Software-Defined Radio (the USRP B200 in this
+project). IQ = In-phase/Quadrature, the raw complex baseband samples the SDR
+outputs. CFO = Carrier Frequency Offset, a hardware-level RF-fingerprint
+feature. PDU = (BLE) Protocol Data Unit, one decoded packet. CRC = Cyclic
+Redundancy Check, the packet-integrity check a decode must pass to be
+CRC-valid. GFSK = Gaussian Frequency-Shift Keying, BLE's physical-layer
+modulation. TVB = `TARGET_VS_BACKGROUND`, one of BLE-RFFI Studio's scientific
+tasks, used as a dataset-naming suffix (e.g. `SHELLY-PLUG-01-AUTO-TVB`).
+
+**RF Experiment Lab technique codes (`/rf-experiment-lab`)**: each code below
+names one specific, literature-referenced RF-fingerprinting technique this
+module can implement and compare -- not a generic experiment number. Source
+of record: `backend/app/modules/rf_experiment_lab/experiment_registry.py`.
+
+| Code | Technique | Real implementation status |
+|---|---|---|
+| E0 | Morphological heuristic waterfall-region detector (no training) | Implemented |
+| S1 | PSD/energy detection | Not implemented |
+| S2 | SCD/CSP cyclostationary alpha-profile classification | Not implemented |
+| S4 | Unknown dynamic RF classification | Not implemented |
+| E1 | Raw-IQ CNN fingerprinting (1D CNN / ResNet1D) | Implemented (1D-CNN baseline) |
+| E2 | Edge IQ Transformer (lightweight CNN1D / transformer encoder) | Not implemented |
+| E3 | Spectrogram/waterfall CNN (CNN2D / ResNet18 / VGG11) | Implemented (simple 2D-CNN, optional torchvision backbones) |
+| E5 | PSD/MFCC/LFCC classical ML (SVM / random forest / KNN) | Partially implemented (basic PSD only) |
+| E8 | Bispectrum and cyclostationary statistics (SVM / MLP / RF) | Not implemented |
+| E9 | Metric-learning open-set fingerprinting (siamese / triplet / prototypical / ArcFace-like) | Not implemented |
+| E10 | Quantized edge inference (TFLite / quantized CNN / transformer) | Not implemented |
+
+There is no code named **E4** in this registry -- E3 is followed directly by
+E5. An unrelated, unconnected use of "E4" exists only in the superseded BLE
+Dataset Studio Pilot v1 section below, in that pilot's own, different
+numbering (defined there). The two must never be conflated.
+
+**E6 Oracle-Style Lab** (`/e6-oracle-style-lab`) is a separate module, not
+part of the E0-E10 registry above: a classical (non-CNN) RF fingerprinting
+lab over external, non-BLE reference datasets, with 8 classical algorithms
+(HistGradientBoosting, random forest, extra trees, MLP, SVM-RBF, SVM-linear,
+KNN, logistic regression).
+
+**BLE-RFFI Studio** and **Guided BLE Scientific Validation** (both described
+in full below) use **no E/S code at all** -- they are independent modules
+with their own vocabulary (`capture_purpose`, `association_status`,
+`ScientificTask`, etc.), never numbered like RF Experiment Lab's techniques.
+
 ## BLE Dataset Studio Pilot v1 (superseded)
 
-> **Superseded.** Everything below describes a frozen, early baseline that
-> predates the BLE-RFFI End-to-End Studio module. It is kept only as a
-> reproducibility record (the hashes below still resolve to real, unmodified
-> local artifacts) -- it does **not** describe the current state of BLE work
-> in this repository. For the real, current BLE capability (device capture,
-> evidence, datasets, trained models, and live detection), see
-> [BLE-RFFI Studio](#ble-rffi-studio) below.
+> **Superseded, and its reproducibility claim below is no longer true.**
+> Everything in this section describes a frozen, early baseline that
+> predates the BLE-RFFI End-to-End Studio module. It does **not** describe
+> the current state of BLE work in this repository -- for that, see
+> [BLE-RFFI Studio](#ble-rffi-studio) below. This section is kept only as a
+> historical record of what this pilot once measured, with an honest note on
+> what can and cannot still be verified today.
 
-`BLE Dataset Studio Pilot v1` is the frozen reproducible baseline for the BLE
-methodology implemented and verified in this repository. Its current state is:
+`BLE Dataset Studio Pilot v1`'s own campaign-status vocabulary, defined here
+before use (this is a separate, older scale from the RF Experiment Lab codes
+in [Terminology](#terminology) above -- the two share digits but not
+meaning):
+
+- **Evidence-level ladder** (`E1`-`E4`, cumulative, each level implying the
+  ones below it -- source: `backend/app/infrastructure/ble/dataset_studio_manager.py`):
+  `E1` = BLE activity detected at all; `E2` = at least one CRC-valid decoded
+  packet; `E3` = the native Windows Bluetooth scan and the B200 decode
+  corroborate the same event; `E4` = the corroborated packet's address
+  matches the declared target device (logical device identification /
+  RF-fingerprint-ready evidence).
+- **Positive E4 campaign**: a session run with the target device present
+  that reached evidence level `E4`.
+- **Exploratory E2 campaign**: a session run to search for a target that
+  reached at least evidence level `E2`.
+- **Declared negative control**: a session where the operator declared the
+  target absent, with no false positive attribution.
+- **Reinforced negative control**: a declared negative control run
+  *alongside* an active positive reference, so "no detection" is shown to
+  mean "correctly absent," not "receiver was not working."
+- **Clean capture**: a session with zero recorded RF overflows or
+  discontinuities.
+
+Its last-measured state (a historical record, not re-verified against live
+data -- see the reproducibility note below for why):
 
 - Historical campaigns: 3.
 - Generated examples: 338.
@@ -36,30 +110,43 @@ methodology implemented and verified in this repository. Its current state is:
 - Training: `NOT_READY`.
 - Fingerprinting: `NOT_VALIDATED`.
 
-The frozen 30-second protocol and its hashes belong only to this BLE Dataset
-Studio pilot. They are not the definitive scientific protocol for the whole
-RF-Fingerprint-Lab platform. That global protocol remains pending until a
-consolidated scientific roadmap defines the research gap, questions,
-hypotheses, experimental design, datasets, baselines, metrics, controls, and
-acceptance criteria. No additional experimental BLE development is part of
-this baseline.
+The frozen 30-second protocol and its hashes below belong only to this BLE
+Dataset Studio pilot. They were never the definitive scientific protocol for
+the whole RF-Fingerprint-Lab platform.
 
-Reproducibility anchors for the local historical evidence:
+**Reproducibility note, checked directly against disk on 2026-08-07: this
+pilot's underlying artifacts are no longer present, and the hashes below
+cannot currently be re-verified.**
 
-- Frozen pilot protocol SHA-256:
-  `752bb3b437ccf6500376366774a330ea626cd06bc5b4429632b311997c3511f1`.
-- `BLE-IQ-ce737e9e9711` data SHA-256:
-  `9e24df1820de5d569578faa61a8dbe4a2fe59ee9bdcfbf1bdc88ec4f5181d2bf`.
-- `BLE-IQ-e5615d8d54cc` data SHA-256:
-  `1361b16462b05938c90fc37ae8353bee01d056156bec0145a6b4c94f96efda64`.
-- `BLE-IQ-cf8a55ff592f` data SHA-256:
-  `dd8c8daaa6eee968361abb9ee7aa52c10830f58f288affbe5d5f6006474914e9`.
+- Frozen pilot protocol SHA-256
+  (`752bb3b437ccf6500376366774a330ea626cd06bc5b4429632b311997c3511f1`): no
+  file with this hash exists anywhere in the repository or local storage
+  today; the string is recorded only here.
+- `BLE-IQ-ce737e9e9711` (claimed data SHA-256
+  `9e24df1820de5d569578faa61a8dbe4a2fe59ee9bdcfbf1bdc88ec4f5181d2bf`): the
+  original raw capture no longer exists at its expected path. One derived
+  fragment (`burst-000013.cf32`, a single extracted burst, not the whole
+  capture) survives under an unrelated dataset export directory
+  (`ble_lab/datasets/BLE-EVIDENCE-DS01/1.0.0/exports/e4-c7b5c35d/iq_segments/`),
+  which is not what this hash was computed against.
+- `BLE-IQ-e5615d8d54cc` (claimed data SHA-256
+  `1361b16462b05938c90fc37ae8353bee01d056156bec0145a6b4c94f96efda64`): not
+  found anywhere in local storage.
+- `BLE-IQ-cf8a55ff592f` (claimed data SHA-256
+  `dd8c8daaa6eee968361abb9ee7aa52c10830f58f288affbe5d5f6006474914e9`): not
+  found anywhere in local storage.
 
-The RF artifacts remain in ignored local storage and are not embedded in Git.
-The hashes above bind them to this pilot baseline without modifying them.
+These captures were most likely removed by a later, unrelated storage
+cleanup; nothing indicates the hashes themselves were ever wrong, only that
+the files they describe are gone now. Do not cite this pilot's specific
+hash values as independently reproducible evidence going forward -- cite the
+current, on-disk, re-verifiable BLE-RFFI Studio and Guided BLE Scientific
+Validation evidence documented below instead.
 
 ## Contents
 
+- [Terminology](#terminology)
+- [BLE Dataset Studio Pilot v1 (superseded)](#ble-dataset-studio-pilot-v1-superseded)
 - [Main capabilities](#main-capabilities)
 - [Quick start](#quick-start)
 - [Recommended workflow](#recommended-workflow)
