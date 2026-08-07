@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   BleScientificResultsApiService,
+  CapturableDevice,
+  CleanupRunEntry,
   GuidedValidationActionJob,
   GuidedValidationJob,
   GuidedValidationStage,
@@ -112,7 +114,179 @@ function stageStatus(summary: GuidedValidationSummary, stageId: string): string 
   return summary.stages.find((stage) => stage.stage_id === stageId)?.status;
 }
 
+// Prueba/control de radio en vivo: una captura continua real está limitada
+// a 60s en todo el sistema (ver ble_hybrid_campaign_manager.py /
+// ble_capture_job_manager.py -- las 140 grabaciones reales existentes
+// usaron 10s cada una). El formulario pide la duración directamente en
+// segundos dentro de ese rango real para no poder solicitar nunca una
+// prueba que el hardware fuera a rechazar.
+const MIN_TEST_DURATION_S = 5;
+const MAX_TEST_DURATION_S = 60;
+const DEFAULT_TEST_DURATION_S = 60;
+function clampDurationSeconds(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_TEST_DURATION_S;
+  return Math.min(MAX_TEST_DURATION_S, Math.max(MIN_TEST_DURATION_S, Math.round(value)));
+}
+
+const ACTION_ERROR_ES: Record<string, string> = {
+  INVALID_HYBRID_CONFIGURATION: 'La configuración de la prueba no es válida. Revisa el canal BLE y el dispositivo seleccionado.',
+  MISSING_INDIVIDUAL_CONFIRMATION: 'Debes confirmar individualmente que cada dispositivo está apagado o retirado antes de continuar.',
+  NO_BOUND_ADDRESS_FOR_DEVICE: 'Este dispositivo no tiene todavía una dirección BLE vinculada.',
+  NO_CAMPAIGN_ORCHESTRATOR_CONFIGURED: 'El hardware no está disponible en este momento. Vuelve a intentarlo más tarde.',
+};
+function actionErrorEs(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  return ACTION_ERROR_ES[raw.split(':')[0]] ?? raw;
+}
+
+// A process that never reaches a terminal state (backend crash, hung
+// hardware handshake, etc.) must never leave the operator stuck watching a
+// spinner with no way out -- every "en curso" indicator gets a Detener
+// button next to it, wired to the SAME generic cancel_job() endpoint the
+// backend already exposes for every job type.
+function StopButton({ onStop, stopping }: { onStop: () => void; stopping: boolean }) {
+  return (
+    <button
+      className="rounded border border-red-800 bg-red-950/30 px-2 py-0.5 text-xs font-semibold text-red-300 hover:bg-red-900/40 disabled:cursor-not-allowed disabled:opacity-50"
+      disabled={stopping}
+      onClick={onStop}
+    >
+      {stopping ? 'Deteniendo...' : 'Detener'}
+    </button>
+  );
+}
+
+function CancelledNotice() {
+  return (
+    <div className="mt-2 rounded border border-slate-700 bg-slate-900/40 px-3 py-2 text-sm text-slate-400">
+      Cancelado por el operador. Puedes iniciar una nueva prueba cuando quieras.
+    </div>
+  );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+const CLEANUP_KIND_ES: Record<string, string> = {
+  FULL_RUN: 'Análisis completo',
+  CAPTURE_ONLY: 'Solo captura',
+  UNKNOWN: 'Desconocido',
+};
+
+// Every "Comprobar mis grabaciones BLE" / prueba de sincronización / control
+// sin dispositivos writes its own reconstruction to disk, and nothing ever
+// removed the old ones -- real, measured: 10+ GB across 23 runs and 86
+// paper-run-* directories accumulated from repeated real usage. All of it
+// is derived/reproducible from the real I/Q captures (never those
+// themselves), so it is always safe to delete and always regenerable by
+// running the same action again.
+function CleanupCenter() {
+  const [open, setOpen] = useState(false);
+  const [runs, setRuns] = useState<CleanupRunEntry[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoadError(null);
+    try {
+      setRuns(await api.listCleanupRuns());
+    } catch (err: unknown) {
+      const message = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setLoadError(message || 'No se pudieron cargar los datos de limpieza.');
+    }
+  };
+
+  useEffect(() => {
+    if (open && runs === null) load();
+  }, [open]);
+
+  const remove = async (runId: string) => {
+    if (!window.confirm(`¿Eliminar todos los artefactos generados por la ejecución ${runId}?\n\nEsto no se puede deshacer, pero puedes volver a generarlos repitiendo la misma prueba. Nunca elimina tus capturas de radio reales.`)) return;
+    setDeletingId(runId);
+    try {
+      await api.deleteCleanupRun(runId);
+      setRuns((prev) => (prev ?? []).filter((r) => r.run_id !== runId));
+    } catch (err: unknown) {
+      const message = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setLoadError(message || 'No se pudo eliminar.');
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const totalBytes = (runs ?? []).reduce((sum, r) => sum + r.size_bytes, 0);
+
+  return (
+    <div className="rounded border border-slate-700 bg-slate-900/20 p-3">
+      <div className="flex items-center justify-between">
+        <button className="text-xs font-semibold text-slate-400 underline hover:text-slate-200" onClick={() => setOpen((v) => !v)}>
+          {open ? 'Ocultar centro de limpieza' : 'Centro de limpieza (espacio en disco)'}
+        </button>
+        {open && runs && runs.length > 0 && (
+          <span className="text-xs font-mono text-slate-400">Total: {formatBytes(totalBytes)}</span>
+        )}
+      </div>
+      {open && (
+        <div className="mt-3 space-y-2">
+          <p className="text-xs text-slate-400">
+            Cada vez que compruebas tus grabaciones o ejecutas una prueba, la plataforma guarda una copia de los
+            resultados en disco. Todo esto se puede volver a generar en cualquier momento repitiendo la prueba, así
+            que es seguro eliminarlo -- esto nunca borra tus capturas de radio reales.
+          </p>
+          {loadError && <div className="rounded border border-red-800 bg-red-950/40 px-3 py-2 text-xs text-red-300">{loadError}</div>}
+          {runs === null && !loadError && <div className="text-xs text-slate-400">Cargando...</div>}
+          {runs && runs.length === 0 && <div className="text-xs text-slate-500">No hay artefactos guardados todavía.</div>}
+          {runs && runs.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs text-slate-300">
+                <thead className="text-slate-500">
+                  <tr>
+                    <th className="py-1 pr-3">Ejecución</th>
+                    <th className="py-1 pr-3">Fecha</th>
+                    <th className="py-1 pr-3">Tipo</th>
+                    <th className="py-1 pr-3">Espacio</th>
+                    <th className="py-1 pr-3" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {runs.map((r) => (
+                    <tr key={r.run_id} className="border-t border-slate-800">
+                      <td className="py-1 pr-3 font-mono">{r.run_id}</td>
+                      <td className="py-1 pr-3">{r.generated_at ? new Date(r.generated_at).toLocaleString() : '--'}</td>
+                      <td className="py-1 pr-3">{CLEANUP_KIND_ES[r.kind] ?? r.kind}</td>
+                      <td className="py-1 pr-3 font-mono">{formatBytes(r.size_bytes)}</td>
+                      <td className="py-1 pr-3">
+                        <button
+                          className="rounded border border-red-800 bg-red-950/30 px-2 py-0.5 text-[11px] font-semibold text-red-300 hover:bg-red-900/40 disabled:cursor-not-allowed disabled:opacity-50"
+                          disabled={deletingId === r.run_id}
+                          onClick={() => remove(r.run_id)}
+                        >
+                          {deletingId === r.run_id ? 'Eliminando...' : 'Limpiar'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function GuidedValidationTab() {
+  const [mode, setMode] = useState<'choose' | 'existing' | 'capture'>('choose');
   const [job, setJob] = useState<GuidedValidationJob | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -121,6 +295,8 @@ export default function GuidedValidationTab() {
   const [showTechnical, setShowTechnical] = useState(false);
   const [diagnosticResult, setDiagnosticResult] = useState<TimingDiagnosticResult | null>(null);
   const [absenceResult, setAbsenceResult] = useState<TargetAbsenceControlResult | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelledNotice, setCancelledNotice] = useState(false);
 
   const summary: GuidedValidationSummary | undefined = job?.result;
   const jobFailed = job?.state === 'failed';
@@ -128,6 +304,7 @@ export default function GuidedValidationTab() {
   const start = async () => {
     setRunning(true);
     setError(null);
+    setCancelledNotice(false);
     setJob(null);
     setDiagnosticResult(null);
     setAbsenceResult(null);
@@ -140,11 +317,24 @@ export default function GuidedValidationTab() {
         setJob(current);
       }
       if (current.state === 'failed') setError(current.error || 'No se pudieron revisar las grabaciones.');
+      else if (current.state === 'cancelled') setCancelledNotice(true);
     } catch (err: unknown) {
       const message = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       setError(message || 'No se pudieron revisar las grabaciones.');
     } finally {
       setRunning(false);
+    }
+  };
+
+  const stop = async () => {
+    if (!job) return;
+    setCancelling(true);
+    try {
+      await api.cancelJob(job.job_id);
+    } catch {
+      // best-effort -- the next poll reflects whatever the backend state actually ends up being
+    } finally {
+      setCancelling(false);
     }
   };
 
@@ -169,20 +359,58 @@ export default function GuidedValidationTab() {
         </div>
       </div>
 
-      {!summary && (
-        <div className="rounded border border-slate-700 bg-slate-900/40 p-4">
+      <CleanupCenter />
+
+      {!summary && mode === 'choose' && (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <button
-            className="rounded bg-cyan-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-cyan-600 disabled:cursor-not-allowed disabled:bg-slate-700"
-            disabled={running}
-            onClick={start}
+            className="rounded border border-slate-700 bg-slate-900/40 p-4 text-left hover:border-cyan-600 hover:bg-slate-900/70"
+            onClick={() => setMode('existing')}
           >
-            {running ? 'Revisando grabaciones...' : 'Comprobar mis grabaciones BLE'}
+            <div className="text-sm font-bold text-slate-100">Usar mis grabaciones ya existentes</div>
+            <p className="mt-1 text-xs text-slate-400">
+              Analiza lo que ya has capturado hasta ahora para ver si se puede identificar físicamente algún
+              dispositivo. No se realiza ninguna captura nueva.
+            </p>
           </button>
-          {running && job && (
-            <div className="mt-2 text-xs text-cyan-300">[{job.stage ?? '...'}] {job.message ?? 'Procesando'} -- {Math.round((job.overall_progress ?? 0) * 100)}%</div>
-          )}
-          {error && <div className="mt-2 rounded border border-red-800 bg-red-950/40 px-3 py-2 text-sm text-red-300">{error}</div>}
+          <button
+            className="rounded border border-slate-700 bg-slate-900/40 p-4 text-left hover:border-cyan-600 hover:bg-slate-900/70"
+            onClick={() => setMode('capture')}
+          >
+            <div className="text-sm font-bold text-slate-100">Capturar más datos o un dispositivo nuevo</div>
+            <p className="mt-1 text-xs text-slate-400">
+              Realiza una nueva grabación real con el USRP B200 de un dispositivo que ya tienes registrado, tenga o
+              no grabaciones previas.
+            </p>
+          </button>
         </div>
+      )}
+
+      {!summary && mode === 'existing' && (
+        <div className="rounded border border-slate-700 bg-slate-900/40 p-4">
+          <button className="mb-3 text-xs text-slate-400 underline hover:text-slate-200" onClick={() => setMode('choose')}>‹ Volver</button>
+          <div>
+            <button
+              className="rounded bg-cyan-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-cyan-600 disabled:cursor-not-allowed disabled:bg-slate-700"
+              disabled={running}
+              onClick={start}
+            >
+              {running ? 'Revisando grabaciones...' : 'Comprobar mis grabaciones BLE'}
+            </button>
+            {running && job && (
+              <div className="mt-2 flex items-center gap-2 text-xs text-cyan-300">
+                <span>[{job.stage ?? '...'}] {job.message ?? 'Procesando'} -- {Math.round((job.overall_progress ?? 0) * 100)}%</span>
+                <StopButton onStop={stop} stopping={cancelling} />
+              </div>
+            )}
+            {cancelledNotice && <CancelledNotice />}
+            {error && <div className="mt-2 rounded border border-red-800 bg-red-950/40 px-3 py-2 text-sm text-red-300">{error}</div>}
+          </div>
+        </div>
+      )}
+
+      {!summary && mode === 'capture' && (
+        <NewCaptureView onBack={() => setMode('choose')} onAnalyzeAll={() => { setMode('existing'); start(); }} />
       )}
 
       {summary && (
@@ -292,7 +520,7 @@ function NextStepFlow({
             automáticamente si el adaptador BLE y el USRP B200 están registrando el mismo evento en tiempos
             compatibles.
           </p>
-          <TimingDiagnosticWizard runId={summary.run_id} deviceIds={deviceIds} onResult={setDiagnosticResult} result={diagnosticResult} />
+          <TimingDiagnosticWizard runId={summary.run_id} deviceOptions={deviceIds.map((id) => ({ physical_unit_id: id }))} onResult={setDiagnosticResult} result={diagnosticResult} />
         </ActiveStepCard>
         <DisabledPreviewCard title="Paso posterior: comprobar el entorno sin los dispositivos inscritos." />
       </div>
@@ -345,10 +573,81 @@ function DisabledPreviewCard({ title }: { title: string }) {
   );
 }
 
-function TimingDiagnosticWizard({ runId, deviceIds, onResult, result }: { runId: string; deviceIds: string[]; onResult: (r: TimingDiagnosticResult | null) => void; result: TimingDiagnosticResult | null }) {
+interface DeviceOption { physical_unit_id: string; badge?: string }
+
+function NewCaptureView({ onBack, onAnalyzeAll }: { onBack: () => void; onAnalyzeAll: () => void }) {
+  const [devices, setDevices] = useState<CapturableDevice[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [runId, setRunId] = useState<string | null>(null);
+  const [result, setResult] = useState<TimingDiagnosticResult | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [deviceList, session] = await Promise.all([api.listCapturableDevices(), api.newCaptureSession()]);
+        if (cancelled) return;
+        setDevices(deviceList);
+        setRunId(session.run_id);
+      } catch (err: unknown) {
+        if (cancelled) return;
+        const message = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+        setLoadError(message || 'No se pudieron cargar los dispositivos disponibles.');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const deviceOptions: DeviceOption[] = (devices ?? []).map((d) => ({
+    physical_unit_id: d.physical_unit_id,
+    badge: d.existing_capture_count === 0
+      ? 'todavía sin grabaciones'
+      : d.has_dataset
+        ? `${d.existing_capture_count} grabaciones ya analizadas`
+        : `${d.existing_capture_count} grabaciones sin analizar todavía`,
+  }));
+
+  return (
+    <div className="space-y-4 rounded border border-slate-700 bg-slate-900/40 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-bold text-slate-100">Capturar más datos o un dispositivo nuevo</div>
+          <p className="mt-1 max-w-xl text-xs text-slate-400">
+            Elige un dispositivo ya registrado y realiza una nueva grabación real con el USRP B200. Si el
+            dispositivo que buscas no aparece en la lista, primero debes registrarlo en la pestaña BLE-RFFI Studio.
+          </p>
+        </div>
+        <button className="shrink-0 text-xs text-slate-400 underline hover:text-slate-200" onClick={onBack}>‹ Volver</button>
+      </div>
+
+      {!devices && !loadError && <div className="text-xs text-slate-400">Cargando dispositivos disponibles...</div>}
+      {loadError && <div className="rounded border border-red-800 bg-red-950/40 px-3 py-2 text-xs text-red-300">{loadError}</div>}
+      {devices && devices.length === 0 && (
+        <div className="rounded border border-amber-700 bg-amber-950/20 px-3 py-2 text-xs text-amber-300">
+          Todavía no tienes ningún dispositivo registrado. Regístralo primero en la pestaña BLE-RFFI Studio.
+        </div>
+      )}
+
+      {devices && devices.length > 0 && runId && (
+        <TimingDiagnosticWizard runId={runId} deviceOptions={deviceOptions} onResult={setResult} result={result} />
+      )}
+
+      {result && (
+        <button
+          className="rounded bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600"
+          onClick={onAnalyzeAll}
+        >
+          Analizar todas mis grabaciones (incluida esta nueva)
+        </button>
+      )}
+    </div>
+  );
+}
+
+function TimingDiagnosticWizard({ runId, deviceOptions, onResult, result }: { runId: string; deviceOptions: DeviceOption[]; onResult: (r: TimingDiagnosticResult | null) => void; result: TimingDiagnosticResult | null }) {
   const [expanded, setExpanded] = useState(false);
-  const [deviceId, setDeviceId] = useState(deviceIds[0] ?? '');
-  const [durationMinutes, setDurationMinutes] = useState(3);
+  const [deviceId, setDeviceId] = useState(deviceOptions[0]?.physical_unit_id ?? '');
+  const [durationSeconds, setDurationSeconds] = useState(DEFAULT_TEST_DURATION_S);
   const [channel, setChannel] = useState(37);
   const [operatorName, setOperatorName] = useState('');
   const [showAdvancedFields, setShowAdvancedFields] = useState(false);
@@ -357,24 +656,40 @@ function TimingDiagnosticWizard({ runId, deviceIds, onResult, result }: { runId:
   const [job, setJob] = useState<GuidedValidationActionJob | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelledNotice, setCancelledNotice] = useState(false);
 
   const start = async () => {
     setRunning(true);
     setError(null);
+    setCancelledNotice(false);
     onResult(null);
     try {
       const started = await api.startTimingDiagnostic(runId, {
-        physical_unit_id: deviceId, capture_duration_s: durationMinutes * 60, channel,
+        physical_unit_id: deviceId, capture_duration_s: durationSeconds, channel,
         receiver_profile: receiverProfile || undefined, operator_id: operatorName || undefined,
       });
       const finished = await pollAction(runId, started.job_id, setJob);
-      if (finished.state === 'failed') setError(finished.error || 'La prueba de sincronización falló.');
+      if (finished.state === 'failed') setError(actionErrorEs(finished.error) || 'La prueba de sincronización falló.');
+      else if (finished.state === 'cancelled') setCancelledNotice(true);
       else onResult((finished.result as TimingDiagnosticResult) ?? null);
     } catch (err: unknown) {
       const message = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(message || 'No se pudo iniciar la prueba de sincronización.');
+      setError(actionErrorEs(message) || 'No se pudo iniciar la prueba de sincronización.');
     } finally {
       setRunning(false);
+    }
+  };
+
+  const stop = async () => {
+    if (!job) return;
+    setCancelling(true);
+    try {
+      await api.cancelJob(job.job_id);
+    } catch {
+      // best-effort
+    } finally {
+      setCancelling(false);
     }
   };
 
@@ -394,13 +709,23 @@ function TimingDiagnosticWizard({ runId, deviceIds, onResult, result }: { runId:
         <label className="mb-1 block text-xs text-slate-400">Dispositivo que vas a probar</label>
         <select className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-100" value={deviceId} onChange={(e) => setDeviceId(e.target.value)}>
           <option value="">Selecciona...</option>
-          {deviceIds.map((id) => <option key={id} value={id}>{id}</option>)}
+          {deviceOptions.map((d) => (
+            <option key={d.physical_unit_id} value={d.physical_unit_id}>
+              {d.physical_unit_id}{d.badge ? ` -- ${d.badge}` : ''}
+            </option>
+          ))}
         </select>
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="mb-1 block text-xs text-slate-400">Duración de la prueba (minutos)</label>
-          <input type="number" className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-100" value={durationMinutes} onChange={(e) => setDurationMinutes(Number(e.target.value))} />
+          <label className="mb-1 block text-xs text-slate-400">Duración de la prueba (segundos, máx. {MAX_TEST_DURATION_S})</label>
+          <input
+            type="number" min={MIN_TEST_DURATION_S} max={MAX_TEST_DURATION_S}
+            className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-100"
+            value={durationSeconds}
+            onChange={(e) => setDurationSeconds(Number(e.target.value))}
+            onBlur={(e) => setDurationSeconds(clampDurationSeconds(Number(e.target.value)))}
+          />
         </div>
         <div>
           <label className="mb-1 block text-xs text-slate-400">Canal BLE</label>
@@ -438,8 +763,8 @@ function TimingDiagnosticWizard({ runId, deviceIds, onResult, result }: { runId:
       </div>
 
       <p className="text-xs text-slate-400">
-        La prueba durará aproximadamente {durationMinutes} minutos. La plataforma iniciará el escáner BLE y la
-        captura de radio, analizará los paquetes recuperados y te explicará automáticamente el resultado.
+        La captura de radio durará {durationSeconds} segundos. Después, la plataforma analizará los paquetes
+        recuperados -- este análisis puede tardar varios minutos más, y su progreso se mostrará aquí mientras tanto.
       </p>
 
       <button
@@ -449,7 +774,13 @@ function TimingDiagnosticWizard({ runId, deviceIds, onResult, result }: { runId:
       >
         {running ? 'Realizando la prueba...' : 'Comenzar prueba de sincronización'}
       </button>
-      {running && job && <div className="text-xs text-cyan-300">[{job.stage}] {job.message} -- {Math.round((job.overall_progress ?? 0) * 100)}%</div>}
+      {running && job && (
+        <div className="flex items-center gap-2 text-xs text-cyan-300">
+          <span>[{job.stage}] {job.message} -- {Math.round((job.overall_progress ?? 0) * 100)}%</span>
+          <StopButton onStop={stop} stopping={cancelling} />
+        </div>
+      )}
+      {cancelledNotice && <CancelledNotice />}
       {error && <div className="rounded border border-red-800 bg-red-950/40 px-2 py-1 text-xs text-red-300">{error}</div>}
       {result && diagnosis && (
         <div className={`space-y-1 rounded border p-3 ${result.diagnosis_code === 'ASSOCIATION_CALIBRATION_POSSIBLE' ? 'border-emerald-700 bg-emerald-950/20' : 'border-amber-700 bg-amber-950/20'}`}>
@@ -464,29 +795,45 @@ function TimingDiagnosticWizard({ runId, deviceIds, onResult, result }: { runId:
 
 function TargetAbsenceWizard({ runId, deviceIds, onResult, result }: { runId: string; deviceIds: string[]; onResult: (r: TargetAbsenceControlResult | null) => void; result: TargetAbsenceControlResult | null }) {
   const [confirmed, setConfirmed] = useState<Record<string, boolean>>({});
-  const [durationMinutes, setDurationMinutes] = useState(3);
+  const [durationSeconds, setDurationSeconds] = useState(DEFAULT_TEST_DURATION_S);
   const [channel, setChannel] = useState(37);
   const [operatorName, setOperatorName] = useState('');
   const [job, setJob] = useState<GuidedValidationActionJob | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelledNotice, setCancelledNotice] = useState(false);
 
   const allConfirmed = deviceIds.length > 0 && deviceIds.every((id) => confirmed[id]);
 
   const start = async () => {
     setRunning(true);
     setError(null);
+    setCancelledNotice(false);
     onResult(null);
     try {
-      const started = await api.startTargetAbsenceControl(runId, { confirmed_devices_off: confirmed, capture_duration_s: durationMinutes * 60, channel, operator_id: operatorName || undefined });
+      const started = await api.startTargetAbsenceControl(runId, { confirmed_devices_off: confirmed, capture_duration_s: durationSeconds, channel, operator_id: operatorName || undefined });
       const finished = await pollAction(runId, started.job_id, setJob);
-      if (finished.state === 'failed') setError(finished.error || 'El control sin dispositivos falló.');
+      if (finished.state === 'failed') setError(actionErrorEs(finished.error) || 'El control sin dispositivos falló.');
+      else if (finished.state === 'cancelled') setCancelledNotice(true);
       else onResult((finished.result as TargetAbsenceControlResult) ?? null);
     } catch (err: unknown) {
       const message = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(message || 'No se pudo iniciar el control sin dispositivos.');
+      setError(actionErrorEs(message) || 'No se pudo iniciar el control sin dispositivos.');
     } finally {
       setRunning(false);
+    }
+  };
+
+  const stop = async () => {
+    if (!job) return;
+    setCancelling(true);
+    try {
+      await api.cancelJob(job.job_id);
+    } catch {
+      // best-effort
+    } finally {
+      setCancelling(false);
     }
   };
 
@@ -503,8 +850,14 @@ function TargetAbsenceWizard({ runId, deviceIds, onResult, result }: { runId: st
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="mb-1 block text-xs text-slate-400">Duración de la prueba (minutos)</label>
-          <input type="number" className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-100" value={durationMinutes} onChange={(e) => setDurationMinutes(Number(e.target.value))} />
+          <label className="mb-1 block text-xs text-slate-400">Duración de la prueba (segundos, máx. {MAX_TEST_DURATION_S})</label>
+          <input
+            type="number" min={MIN_TEST_DURATION_S} max={MAX_TEST_DURATION_S}
+            className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-slate-100"
+            value={durationSeconds}
+            onChange={(e) => setDurationSeconds(Number(e.target.value))}
+            onBlur={(e) => setDurationSeconds(clampDurationSeconds(Number(e.target.value)))}
+          />
         </div>
         <div>
           <label className="mb-1 block text-xs text-slate-400">Canal BLE</label>
@@ -522,7 +875,13 @@ function TargetAbsenceWizard({ runId, deviceIds, onResult, result }: { runId: st
       >
         {running ? 'Realizando el control...' : 'Iniciar control sin dispositivos'}
       </button>
-      {running && job && <div className="text-xs text-cyan-300">[{job.stage}] {job.message} -- {Math.round((job.overall_progress ?? 0) * 100)}%</div>}
+      {running && job && (
+        <div className="flex items-center gap-2 text-xs text-cyan-300">
+          <span>[{job.stage}] {job.message} -- {Math.round((job.overall_progress ?? 0) * 100)}%</span>
+          <StopButton onStop={stop} stopping={cancelling} />
+        </div>
+      )}
+      {cancelledNotice && <CancelledNotice />}
       {error && <div className="rounded border border-red-800 bg-red-950/40 px-2 py-1 text-xs text-red-300">{error}</div>}
       {result && (
         <div className={`space-y-1 rounded border p-3 text-xs ${result.status === 'VALID' ? 'border-emerald-700 bg-emerald-950/20' : 'border-red-800 bg-red-950/20'}`}>

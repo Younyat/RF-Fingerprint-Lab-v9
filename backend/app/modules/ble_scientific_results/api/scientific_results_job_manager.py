@@ -195,6 +195,18 @@ class ScientificResultsJobManager:
     # rather than reusing BUILD_RECORDS's paper_run_id-keyed shape.
     # ------------------------------------------------------------------
 
+    def list_capturable_devices(self) -> list[dict[str, Any]]:
+        return self._guided_validation_service.list_enrolled_devices_for_capture()
+
+    def new_capture_session(self) -> dict[str, Any]:
+        return {"run_id": self._guided_validation_service.new_capture_session()}
+
+    def list_guided_validation_runs_for_cleanup(self) -> list[dict[str, Any]]:
+        return self._guided_validation_service.list_runs_for_cleanup()
+
+    def delete_guided_validation_run(self, run_id: str) -> dict[str, Any]:
+        return self._guided_validation_service.delete_run(run_id)
+
     def start_guided_validation_job(self) -> dict[str, Any]:
         job_id = self._new_job_id()
         job_dir = self._job_dir(job_id)
@@ -240,24 +252,29 @@ class ScientificResultsJobManager:
     # run_target_absence_control -- neither talks to the SDR/native
     # scanner/arbiter directly, only CampaignOrchestrator.run_session()
     # does). Same job.json/background-thread pattern as every other job
-    # here; cancellation is NOT supported mid-capture (a real B200 capture
-    # cannot be safely interrupted from outside run_session() itself), so
-    # these two job types never register a cancel flag.
+    # here. cancel_job() (the same generic method used for preflight/
+    # build-records/guided-validation above) now also works for these two:
+    # CampaignOrchestrator checks the shared cancel_event during both the
+    # RF-acquisition and replay/decode polling loops and stops the real
+    # session via hybrid_manager.stop()/capture_manager.cancel_offline_replay()
+    # rather than abandoning it -- see campaign_orchestrator.py.
     # ------------------------------------------------------------------
 
     def start_timing_diagnostic_job(self, *, run_id: str, physical_unit_id: str, capture_duration_s: float, channel: int, receiver_profile: str | None, operator_id: str | None) -> dict[str, Any]:
         job_id = self._new_job_id()
         job_dir = self._job_dir(job_id)
         job_dir.mkdir(parents=True, exist_ok=False)
+        cancel_event = threading.Event()
+        self._cancel_flags[job_id] = cancel_event
         atomic_json(job_dir / "job.json", {
             "schema_version": "ble-scientific-results-job-v1", "job_id": job_id, "job_type": "TIMING_DIAGNOSTIC",
             "run_id": run_id, "physical_unit_id": physical_unit_id, "state": "queued", "stage": None, "overall_progress": 0.0,
             "message": None, "warnings": [], "started_at": utc_now(), "updated_at": utc_now(),
         })
-        threading.Thread(target=self._run_timing_diagnostic_job, args=(job_id, run_id, physical_unit_id, capture_duration_s, channel, receiver_profile, operator_id), daemon=True).start()
+        threading.Thread(target=self._run_timing_diagnostic_job, args=(job_id, run_id, physical_unit_id, capture_duration_s, channel, receiver_profile, operator_id, cancel_event), daemon=True).start()
         return self.get_job(job_id)
 
-    def _run_timing_diagnostic_job(self, job_id: str, run_id: str, physical_unit_id: str, capture_duration_s: float, channel: int, receiver_profile: str | None, operator_id: str | None) -> None:
+    def _run_timing_diagnostic_job(self, job_id: str, run_id: str, physical_unit_id: str, capture_duration_s: float, channel: int, receiver_profile: str | None, operator_id: str | None, cancel_event: threading.Event) -> None:
         job_dir = self._job_dir(job_id)
         self._write(job_dir, "running", job_type="TIMING_DIAGNOSTIC", run_id=run_id, stage="capture", overall_progress=0.0, message="Starting live timing diagnostic")
         try:
@@ -266,25 +283,32 @@ class ScientificResultsJobManager:
 
             result = self._guided_validation_service.run_timing_diagnostic(
                 run_id=run_id, physical_unit_id=physical_unit_id, capture_duration_s=capture_duration_s, channel=channel,
-                receiver_profile=receiver_profile, operator_id=operator_id, progress=progress,
+                receiver_profile=receiver_profile, operator_id=operator_id, progress=progress, cancel_event=cancel_event,
             )
             self._write(job_dir, "completed", job_type="TIMING_DIAGNOSTIC", run_id=run_id, stage="done", overall_progress=1.0, message=result["diagnosis_code"], result=result)
-        except Exception as error:  # noqa: BLE001 -- includes HardwareActionError (B200_BUSY, missing address, etc.)
-            self._write(job_dir, "failed", job_type="TIMING_DIAGNOSTIC", run_id=run_id, error=str(error))
+        except Exception as error:  # noqa: BLE001 -- includes HardwareActionError (B200_BUSY, missing address, operator-requested cancel, etc.)
+            if "CANCELLED_BY_OPERATOR" in str(error):
+                self._write(job_dir, "cancelled", job_type="TIMING_DIAGNOSTIC", run_id=run_id, message="Cancelled by operator")
+            else:
+                self._write(job_dir, "failed", job_type="TIMING_DIAGNOSTIC", run_id=run_id, error=str(error))
+        finally:
+            self._cancel_flags.pop(job_id, None)
 
     def start_target_absence_control_job(self, *, run_id: str, confirmed_devices_off: dict[str, bool], capture_duration_s: float, channel: int, operator_id: str | None) -> dict[str, Any]:
         job_id = self._new_job_id()
         job_dir = self._job_dir(job_id)
         job_dir.mkdir(parents=True, exist_ok=False)
+        cancel_event = threading.Event()
+        self._cancel_flags[job_id] = cancel_event
         atomic_json(job_dir / "job.json", {
             "schema_version": "ble-scientific-results-job-v1", "job_id": job_id, "job_type": "TARGET_ABSENCE_CONTROL",
             "run_id": run_id, "state": "queued", "stage": None, "overall_progress": 0.0, "message": None, "warnings": [],
             "started_at": utc_now(), "updated_at": utc_now(),
         })
-        threading.Thread(target=self._run_target_absence_control_job, args=(job_id, run_id, confirmed_devices_off, capture_duration_s, channel, operator_id), daemon=True).start()
+        threading.Thread(target=self._run_target_absence_control_job, args=(job_id, run_id, confirmed_devices_off, capture_duration_s, channel, operator_id, cancel_event), daemon=True).start()
         return self.get_job(job_id)
 
-    def _run_target_absence_control_job(self, job_id: str, run_id: str, confirmed_devices_off: dict[str, bool], capture_duration_s: float, channel: int, operator_id: str | None) -> None:
+    def _run_target_absence_control_job(self, job_id: str, run_id: str, confirmed_devices_off: dict[str, bool], capture_duration_s: float, channel: int, operator_id: str | None, cancel_event: threading.Event) -> None:
         job_dir = self._job_dir(job_id)
         self._write(job_dir, "running", job_type="TARGET_ABSENCE_CONTROL", run_id=run_id, stage="capture", overall_progress=0.0, message="Starting reinforced target-absence control")
         try:
@@ -293,8 +317,13 @@ class ScientificResultsJobManager:
 
             result = self._guided_validation_service.run_target_absence_control(
                 run_id=run_id, confirmed_devices_off=confirmed_devices_off, capture_duration_s=capture_duration_s,
-                channel=channel, operator_id=operator_id, progress=progress,
+                channel=channel, operator_id=operator_id, progress=progress, cancel_event=cancel_event,
             )
             self._write(job_dir, "completed", job_type="TARGET_ABSENCE_CONTROL", run_id=run_id, stage="done", overall_progress=1.0, message=result["status"], result=result)
         except Exception as error:  # noqa: BLE001
-            self._write(job_dir, "failed", job_type="TARGET_ABSENCE_CONTROL", run_id=run_id, error=str(error))
+            if "CANCELLED_BY_OPERATOR" in str(error):
+                self._write(job_dir, "cancelled", job_type="TARGET_ABSENCE_CONTROL", run_id=run_id, message="Cancelled by operator")
+            else:
+                self._write(job_dir, "failed", job_type="TARGET_ABSENCE_CONTROL", run_id=run_id, error=str(error))
+        finally:
+            self._cancel_flags.pop(job_id, None)

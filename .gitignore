@@ -87,3 +87,5 @@ backend/app/modules/rf_signal_understanding/models/mlp_spectral_classifier/model
 backend/app/modules/rf_signal_understanding/models/mlp_spectral_classifier/metadata.json
 
 
+
+backend.venv-validation/

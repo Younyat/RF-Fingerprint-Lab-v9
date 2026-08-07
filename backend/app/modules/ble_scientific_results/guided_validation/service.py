@@ -12,6 +12,7 @@ this module reads only real, already-frozen datasets/splits/replays.
 from __future__ import annotations
 
 import json
+import shutil
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
@@ -87,6 +88,12 @@ def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8-sig")) if path.is_file() else {}
 
 
+def _dir_size_bytes(path: Path) -> int:
+    if not path.is_dir():
+        return 0
+    return sum(entry.stat().st_size for entry in path.rglob("*") if entry.is_file())
+
+
 class GuidedBleScientificValidationService:
     def __init__(self, repository: ScientificResultsRepository, campaign_orchestrator: Any = None) -> None:
         self.repository = repository
@@ -159,6 +166,118 @@ class GuidedBleScientificValidationService:
             if unit and address and data.get("binding_status") == "BOUND":
                 result[unit] = address
         return result
+
+    # ------------------------------------------------------------------
+    # Capture-first entry point -- lets the operator go straight to
+    # capturing MORE data (an already-enrolled device that just needs
+    # more captures, or one that has none yet) WITHOUT first running the
+    # full existing-data analysis below. Deliberately cheap: only reads
+    # the registry/address-binding/capture-index JSON files already read
+    # elsewhere in this class, never builds datasets or records.
+    # ------------------------------------------------------------------
+
+    def list_enrolled_devices_for_capture(self) -> list[dict[str, Any]]:
+        device_ids = self._discover_enrolled_devices()
+        device_addresses = self._device_addresses()
+        device_datasets = self._discover_device_datasets(device_ids)
+        capture_counts: Counter = Counter()
+        captures_dir = self.ble_root / "captures"
+        if captures_dir.is_dir():
+            for path in captures_dir.glob("*.json"):
+                target = _read_json(path).get("target_reference_id")
+                if target in device_ids:
+                    capture_counts[target] += 1
+        return [
+            {
+                "physical_unit_id": device_id,
+                "has_bound_address": device_id in device_addresses,
+                "has_dataset": device_id in device_datasets,
+                "existing_capture_count": capture_counts.get(device_id, 0),
+            }
+            for device_id in device_ids
+        ]
+
+    def new_capture_session(self) -> str:
+        """A run_id namespace for capture-only hardware actions requested
+        before (or without) running the full guided-validation analysis.
+        Same run_id shape/output_root layout run() uses -- run_timing_
+        diagnostic/run_target_absence_control only need a run_id to
+        namespace their own artifacts, never the rest of run()'s output."""
+        run_id = "GVAL-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
+        run_dir = self.output_root / run_id
+        run_dir.mkdir(parents=True, exist_ok=False)
+        atomic_json(run_dir / "session_manifest.json", {"run_id": run_id, "kind": "CAPTURE_ONLY", "created_at": utc_now()})
+        return run_id
+
+    # ------------------------------------------------------------------
+    # Cleanup center -- every run() / capture-only session under
+    # output_root is pure derived/reproducible output: build_records()
+    # reconstructs it from the real I/Q captures under
+    # legacy_capture_root/ble_root, which this never touches. Listing and
+    # deleting here is always safe and always regenerable by running the
+    # guided validation flow again -- see the user-facing "Centro de
+    # limpieza" this backs.
+    # ------------------------------------------------------------------
+
+    def _paper_run_ids_for(self, summary: dict[str, Any]) -> list[str]:
+        return sorted({
+            entry.get("paper_run_id")
+            for entry in (summary.get("artifact_index") or {}).values()
+            if entry.get("paper_run_id")
+        })
+
+    def list_runs_for_cleanup(self) -> list[dict[str, Any]]:
+        if not self.output_root.is_dir():
+            return []
+        entries: list[dict[str, Any]] = []
+        for run_dir in self.output_root.iterdir():
+            if not run_dir.is_dir():
+                continue
+            run_id = run_dir.name
+            summary = _read_json(run_dir / "guided_validation_summary.json")
+            session_manifest = _read_json(run_dir / "session_manifest.json")
+            paper_run_ids = self._paper_run_ids_for(summary)
+            own_size = _dir_size_bytes(run_dir)
+            paper_run_size = sum(_dir_size_bytes(self.repository.root / paper_run_id) for paper_run_id in paper_run_ids)
+            if summary:
+                kind, generated_at, overall_status = "FULL_RUN", summary.get("generated_at"), summary.get("overall_status")
+            elif session_manifest:
+                kind, generated_at, overall_status = "CAPTURE_ONLY", session_manifest.get("created_at"), None
+            else:
+                kind, generated_at, overall_status = "UNKNOWN", None, None
+            entries.append({
+                "run_id": run_id, "kind": kind, "generated_at": generated_at, "overall_status": overall_status,
+                "paper_run_count": len(paper_run_ids), "size_bytes": own_size + paper_run_size,
+            })
+        entries.sort(key=lambda entry: entry["generated_at"] or "", reverse=True)
+        return entries
+
+    def delete_run(self, run_id: str) -> dict[str, Any]:
+        """Deletes ONE guided-validation run's entire artifact tree: the
+        run_id directory itself (including any timing_diagnostics/
+        target_absence_controls it created) plus every paper-run-*
+        directory build_records() built for it. Never touches
+        storage/ble/iq_captures -- the real I/Q the paper runs were
+        reconstructed FROM -- so re-running the guided validation flow
+        regenerates everything deleted here identically."""
+        if not run_id or any(part in run_id for part in ("/", "\\", "..")):
+            raise ValueError(f"INVALID_RUN_ID:{run_id}")
+        run_dir = self.output_root / run_id
+        if run_dir.resolve().parent != self.output_root.resolve() or not run_dir.is_dir():
+            raise FileNotFoundError(f"GUIDED_VALIDATION_RUN_NOT_FOUND:{run_id}")
+
+        summary = _read_json(run_dir / "guided_validation_summary.json")
+        paper_run_ids = self._paper_run_ids_for(summary)
+
+        deleted_paper_runs: list[str] = []
+        for paper_run_id in paper_run_ids:
+            paper_run_dir = self.repository.root / paper_run_id
+            if paper_run_dir.resolve().parent == self.repository.root.resolve() and paper_run_dir.is_dir():
+                shutil.rmtree(paper_run_dir)
+                deleted_paper_runs.append(paper_run_id)
+
+        shutil.rmtree(run_dir)
+        return {"deleted": True, "run_id": run_id, "deleted_paper_runs": deleted_paper_runs}
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -558,6 +677,7 @@ class GuidedBleScientificValidationService:
     def run_timing_diagnostic(
         self, *, run_id: str, physical_unit_id: str, capture_duration_s: float, channel: int,
         receiver_profile: str | None, operator_id: str | None, progress: ProgressHook = None,
+        cancel_event: Any = None,
     ) -> dict[str, Any]:
         if self.campaign_orchestrator is None:
             raise HardwareActionError("NO_CAMPAIGN_ORCHESTRATOR_CONFIGURED:real ble_lab hardware managers are not available in this process")
@@ -580,7 +700,7 @@ class GuidedBleScientificValidationService:
                 ble_channel=channel, duration_seconds=capture_duration_s, gain_db=20.0,
                 condition_label=f"guided-validation-timing-diagnostic-{action_id}", physical_unit_id=physical_unit_id,
                 project_id="GUIDED-VALIDATION-DIAGNOSTIC", campaign_id="GUIDED-VALIDATION-DIAGNOSTIC", session_index=1,
-                isolation_declared=True, capture_purpose="TARGET_DEVICE_ON",
+                isolation_declared=True, capture_purpose="TARGET_DEVICE_ON", cancel_event=cancel_event, progress=progress,
             )
         except Exception as error:
             atomic_json(action_dir / "action_manifest.json", {
@@ -647,7 +767,7 @@ class GuidedBleScientificValidationService:
 
     def run_target_absence_control(
         self, *, run_id: str, confirmed_devices_off: dict[str, bool], capture_duration_s: float, channel: int,
-        operator_id: str | None, progress: ProgressHook = None,
+        operator_id: str | None, progress: ProgressHook = None, cancel_event: Any = None,
     ) -> dict[str, Any]:
         if self.campaign_orchestrator is None:
             raise HardwareActionError("NO_CAMPAIGN_ORCHESTRATOR_CONFIGURED:real ble_lab hardware managers are not available in this process")
@@ -671,6 +791,7 @@ class GuidedBleScientificValidationService:
                 condition_label=f"guided-validation-target-absence-control-{action_id}", physical_unit_id=None,
                 project_id="GUIDED-VALIDATION-DIAGNOSTIC", campaign_id="GUIDED-VALIDATION-DIAGNOSTIC", session_index=1,
                 isolation_declared=False, capture_purpose="BACKGROUND_TARGET_OFF", operator_confirmed_target_absent=True,
+                cancel_event=cancel_event, progress=progress,
             )
         except Exception as error:
             atomic_json(action_dir / "action_manifest.json", {

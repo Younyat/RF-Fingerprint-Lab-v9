@@ -370,6 +370,32 @@ export interface GuidedValidationActionJob {
   updated_at: string;
 }
 
+export interface CapturableDevice {
+  physical_unit_id: string;
+  has_bound_address: boolean;
+  has_dataset: boolean;
+  existing_capture_count: number;
+}
+
+export interface NewCaptureSessionResponse {
+  run_id: string;
+}
+
+export interface CleanupRunEntry {
+  run_id: string;
+  kind: 'FULL_RUN' | 'CAPTURE_ONLY' | 'UNKNOWN';
+  generated_at: string | null;
+  overall_status: string | null;
+  paper_run_count: number;
+  size_bytes: number;
+}
+
+export interface DeleteCleanupRunResponse {
+  deleted: boolean;
+  run_id: string;
+  deleted_paper_runs: string[];
+}
+
 export interface StartTimingDiagnosticRequest {
   physical_unit_id: string;
   capture_duration_s: number;
@@ -432,6 +458,14 @@ export class BleScientificResultsApiService {
 
   async startGuidedValidation() { return (await axios.post<GuidedValidationJob>(`${this.root}/guided-validation`)).data; }
   async getGuidedValidationJob(jobId: string) { return (await axios.get<GuidedValidationJob>(`${this.root}/guided-validation/${encodeURIComponent(jobId)}`)).data; }
+
+  async listCapturableDevices() { return (await axios.get<CapturableDevice[]>(`${this.root}/guided-validation/capturable-devices`)).data; }
+  async newCaptureSession() { return (await axios.post<NewCaptureSessionResponse>(`${this.root}/guided-validation/new-capture-session`)).data; }
+
+  async listCleanupRuns() { return (await axios.get<CleanupRunEntry[]>(`${this.root}/guided-validation/cleanup/runs`)).data; }
+  async deleteCleanupRun(runId: string) {
+    return (await axios.delete<DeleteCleanupRunResponse>(`${this.root}/guided-validation/cleanup/runs/${encodeURIComponent(runId)}`)).data;
+  }
 
   async startTimingDiagnostic(runId: string, body: StartTimingDiagnosticRequest) {
     return (await axios.post<GuidedValidationActionJob>(`${this.root}/guided-validation/${encodeURIComponent(runId)}/timing-diagnostic`, body)).data;

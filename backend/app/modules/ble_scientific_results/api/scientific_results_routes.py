@@ -190,6 +190,36 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
     def start_guided_validation():
         return call(lambda: job_manager.start_guided_validation_job())
 
+    # ------------------------------------------------------------------
+    # Capture-first entry point -- lets the UI offer "capture more data /
+    # a new device" as its own option, independent of (and before) running
+    # the full existing-data analysis above. Registered BEFORE
+    # /guided-validation/{job_id} so these literal paths are never
+    # swallowed by that path-parameter route.
+    # ------------------------------------------------------------------
+
+    @router.get("/guided-validation/capturable-devices")
+    def capturable_devices():
+        return call(lambda: job_manager.list_capturable_devices())
+
+    @router.post("/guided-validation/new-capture-session", status_code=201)
+    def new_capture_session():
+        return call(lambda: job_manager.new_capture_session())
+
+    # ------------------------------------------------------------------
+    # Cleanup center -- lists/deletes guided-validation runs' own derived
+    # artifacts (never the real I/Q captures they were built from). See
+    # guided_validation/service.py::list_runs_for_cleanup/delete_run.
+    # ------------------------------------------------------------------
+
+    @router.get("/guided-validation/cleanup/runs")
+    def list_cleanup_runs():
+        return call(lambda: job_manager.list_guided_validation_runs_for_cleanup())
+
+    @router.delete("/guided-validation/cleanup/runs/{run_id}")
+    def delete_cleanup_run(run_id: str):
+        return call(lambda: job_manager.delete_guided_validation_run(run_id))
+
     @router.get("/guided-validation/{job_id}")
     def get_guided_validation(job_id: str):
         return call(lambda: job_manager.get_job(job_id))

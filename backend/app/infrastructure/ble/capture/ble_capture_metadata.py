@@ -19,10 +19,23 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _long_path(path: Path) -> str:
+    """Windows silently refuses to create/replace a file whose absolute
+    path exceeds MAX_PATH (260 chars, including the .tmp atomic-write
+    suffix) unless given the \\\\?\\ extended-length prefix -- observed for
+    real: a guided-validation run_id/action_id nesting pushed an artifact
+    path to exactly 260 chars and CreateFileW failed with "path not
+    found" instead of a clearer length error. No-op on non-Windows."""
+    resolved = str(path.resolve())
+    if os.name == "nt" and not resolved.startswith("\\\\?\\"):
+        return "\\\\?\\" + resolved
+    return resolved
+
+
 def atomic_json(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    os.makedirs(_long_path(path.parent), exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+    with open(_long_path(temporary), "w", encoding="utf-8", newline="\n") as handle:
         json.dump(value, handle, indent=2, sort_keys=True)
         handle.write("\n")
         handle.flush()
@@ -35,7 +48,7 @@ def atomic_json(path: Path, value: Any) -> None:
     last_error: OSError | None = None
     for attempt in range(6):
         try:
-            os.replace(temporary, path)
+            os.replace(_long_path(temporary), _long_path(path))
             return
         except PermissionError as error:
             last_error = error

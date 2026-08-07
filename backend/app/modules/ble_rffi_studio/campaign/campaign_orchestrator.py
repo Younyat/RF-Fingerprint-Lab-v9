@@ -31,6 +31,7 @@ for callers that want the old, simpler all-in-one behavior.
 """
 from __future__ import annotations
 
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -193,14 +194,24 @@ class CampaignOrchestrator:
         self, *, resolved_device_id: str, ble_channel: int, duration_seconds: float, gain_db: float,
         condition_label: str, physical_unit_id: str | None, project_id: str, campaign_id: str,
         session_index: int, capture_purpose: str, progress: ProgressHook | None,
+        cancel_event: threading.Event | None = None,
     ) -> tuple[str, str]:
         """Runs the real B200+native-scan session (with transient-RF-overflow
         retry), returning (session_id, capture_id). Never touches the offline
         replay/evidence pipeline -- callers decide separately whether/when to
-        run that (see run_capture_only vs. run_session)."""
+        run that (see run_capture_only vs. run_session).
+
+        `cancel_event`, when set by the caller (an operator-requested stop --
+        see ScientificResultsJobManager.cancel_job), stops the real B200
+        session via hybrid_manager.stop() (the same mechanism the manager
+        already uses internally) rather than abandoning it: the RF hardware
+        is released properly instead of continuing to run unobserved."""
         def report(phase: str, fraction: float, message: str) -> None:
             if progress:
                 progress(phase, fraction, message)
+
+        if cancel_event is not None and cancel_event.is_set():
+            raise CampaignSessionError("CANCELLED_BY_OPERATOR")
 
         payload = self._hybrid_payload(
             device_id=resolved_device_id, ble_channel=ble_channel, duration_seconds=duration_seconds, gain_db=gain_db,
@@ -216,6 +227,13 @@ class CampaignOrchestrator:
             session_id = session["session_id"]
 
             while session.get("state") not in _HYBRID_TERMINAL:
+                if cancel_event is not None and cancel_event.is_set():
+                    self.hybrid_manager.stop(session_id)
+                    deadline = time.time() + 15.0
+                    while session.get("state") not in _HYBRID_TERMINAL and time.time() < deadline:
+                        time.sleep(0.5)
+                        session = self.hybrid_manager.get(session_id)
+                    raise CampaignSessionError("CANCELLED_BY_OPERATOR")
                 time.sleep(1.0)
                 session = self.hybrid_manager.get(session_id)
                 report("CAPTURING", 0.25, f"Sesion {session_id}: {session.get('state')} (intento {capture_attempt}/{_MAX_CAPTURE_ATTEMPTS})")
@@ -432,11 +450,19 @@ class CampaignOrchestrator:
         finally:
             self.arbiter.release(resolved_device_id, owner="ble_rffi_studio_campaign", operation_id=operation_id)
 
-    def _run_replay_and_evidence(self, *, capture: Any, capture_id: str, project_id: str, ble_channel: int, progress: ProgressHook | None) -> dict[str, Any]:
+    def _run_replay_and_evidence(
+        self, *, capture: Any, capture_id: str, project_id: str, ble_channel: int, progress: ProgressHook | None,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
         """The slow part: resumable OFFLINE_REPLAY (decode) until
         FULLY_PROCESSED, then Evidence Stage. Pure CPU work on an
         already-recorded IQ file -- never touches the B200, so callers never
-        need to hold the device arbiter lease for this."""
+        need to hold the device arbiter lease for this.
+
+        `cancel_event`, when set, stops the in-flight replay job via
+        capture_manager.cancel_offline_replay() -- same rationale as
+        _acquire_capture's cancel_event: a real, acknowledged stop rather
+        than an abandoned background job."""
         def report(phase: str, fraction: float, message: str) -> None:
             if progress:
                 progress(phase, fraction, message)
@@ -447,6 +473,13 @@ class CampaignOrchestrator:
         replay_state = replay_job
         for resume_attempt in range(_MAX_REPLAY_RESUMES):
             while replay_state.get("state") not in _JOB_TERMINAL:
+                if cancel_event is not None and cancel_event.is_set():
+                    self.capture_manager.cancel_offline_replay(capture_id, replay_run_id)
+                    deadline = time.time() + 15.0
+                    while replay_state.get("state") not in _JOB_TERMINAL and time.time() < deadline:
+                        time.sleep(0.5)
+                        replay_state = self.capture_manager.offline_replay_job(capture_id, replay_run_id)
+                    raise CampaignSessionError("CANCELLED_BY_OPERATOR")
                 time.sleep(2.0)
                 replay_state = self.capture_manager.offline_replay_job(capture_id, replay_run_id)
                 coverage = ((replay_state.get("progress") or {}).get("coverage_percentage"))
@@ -560,12 +593,19 @@ class CampaignOrchestrator:
         capture_purpose: str = "TARGET_DEVICE_ON",
         operator_confirmed_target_absent: bool = False,
         progress: ProgressHook | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         """Capture + OFFLINE_REPLAY + evidence in one call -- the original,
         all-in-one behavior. Prefer run_capture_only() + a later
         run_replay_and_evidence_for_capture() when capturing several devices
         in a hurry (this call holds the B200 arbiter lease for the ENTIRE
-        decode, not just the RF acquisition)."""
+        decode, not just the RF acquisition).
+
+        `cancel_event`: optional, operator-controlled stop signal checked
+        during both the RF-acquisition and the replay/decode phases (see
+        _acquire_capture/_run_replay_and_evidence). The arbiter lease is
+        always released via the existing finally block below, cancelled or
+        not, so a stopped session never leaves the B200 marked busy."""
         capture_purpose, target_state, dataset_role, background_kind, target_reference_id, isolation_declared = self._validate_and_derive(
             capture_purpose=capture_purpose, physical_unit_id=physical_unit_id,
             operator_confirmed_target_absent=operator_confirmed_target_absent, isolation_declared=isolation_declared,
@@ -583,7 +623,7 @@ class CampaignOrchestrator:
                 resolved_device_id=resolved_device_id, ble_channel=ble_channel, duration_seconds=duration_seconds,
                 gain_db=gain_db, condition_label=condition_label, physical_unit_id=physical_unit_id,
                 project_id=project_id, campaign_id=campaign_id, session_index=session_index,
-                capture_purpose=capture_purpose, progress=progress,
+                capture_purpose=capture_purpose, progress=progress, cancel_event=cancel_event,
             )
             if progress:
                 progress("CAPTURE_STAGE", 0.5, f"Construyendo CaptureRecord para {capture_id}")
@@ -602,7 +642,7 @@ class CampaignOrchestrator:
                 target_reference_id=target_reference_id, dataset_role=dataset_role,
             )
 
-            tail = self._run_replay_and_evidence(capture=capture, capture_id=capture_id, project_id=project_id, ble_channel=ble_channel, progress=progress)
+            tail = self._run_replay_and_evidence(capture=capture, capture_id=capture_id, project_id=project_id, ble_channel=ble_channel, progress=progress, cancel_event=cancel_event)
 
             return {
                 "session_id": session_id, "capture_id": capture_id, "replay_run_id": tail["replay_run_id"],

@@ -14,6 +14,7 @@ fraction of the capture.
 """
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 import pytest
@@ -531,4 +532,123 @@ def test_run_session_still_does_capture_and_replay_and_evidence_all_in_one_call(
     assert result["replay_run_id"] == "BLE-RFFI-REPLAY-fake"
     assert result["evidence_summary"] == {"eligible_examples": 5}
     assert fakes["repository"].evidence_calls
+
+
+# ------------------------------------------------------------------
+# Operator-requested cancellation (Stop button) -- a real user-reported
+# need: a hung/misbehaving hardware action must be abortable without
+# leaving the B200 arbiter lease stuck or the underlying session running
+# unobserved. See scientific_results_job_manager.py's cancel_job().
+# ------------------------------------------------------------------
+
+class HangingThenStoppableHybridManager:
+    """Never reaches a terminal state on its own -- models a capture that
+    needs an explicit operator stop. stop() flips the session to
+    "cancelled" the next time get() is polled, exactly like the real
+    BleHybridCampaignManager.stop()/_run() interaction."""
+    def __init__(self, capture_id: str = "BLE-IQ-fake") -> None:
+        self.capture_id = capture_id
+        self.stopped_sessions: list[str] = []
+        self._state = "capturing"
+
+    def start(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {"session_id": "BLE-HYBRID-fake-0001", "state": self._state, "capture_id": self.capture_id, "error": None}
+
+    def get(self, session_id):
+        return {"session_id": session_id, "state": self._state, "capture_id": self.capture_id}
+
+    def stop(self, session_id: str) -> None:
+        self.stopped_sessions.append(session_id)
+        self._state = "cancelled"
+
+
+def test_run_session_never_starts_hardware_when_already_cancelled_before_launch():
+    hybrid_manager = FakeHybridManager()
+    cancel_event = threading.Event()
+    cancel_event.set()
+    orchestrator, fakes = _orchestrator(hybrid_manager=hybrid_manager)
+
+    with pytest.raises(CampaignSessionError, match="CANCELLED_BY_OPERATOR"):
+        _run(orchestrator, cancel_event=cancel_event)
+
+    assert not hybrid_manager.started_payloads  # never touched hardware for an already-cancelled request
+    assert fakes["arbiter"].released  # lease still cleanly released
+
+
+def test_run_session_stops_a_real_in_flight_capture_on_operator_cancel(monkeypatch):
+    import app.modules.ble_rffi_studio.campaign.campaign_orchestrator as campaign_orchestrator_module
+    monkeypatch.setattr(campaign_orchestrator_module.time, "sleep", lambda seconds: None)
+
+    hybrid_manager = HangingThenStoppableHybridManager()
+    cancel_event = threading.Event()
+    orchestrator, fakes = _orchestrator(hybrid_manager=hybrid_manager)
+
+    # Simulate the operator clicking "Detener" once the poll loop is running:
+    # the FIRST get() call still sees the pre-cancel state; stop() flips it
+    # to terminal only once actually invoked.
+    original_get = hybrid_manager.get
+    calls = {"n": 0}
+
+    def get_then_cancel(session_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            cancel_event.set()
+        return original_get(session_id)
+
+    monkeypatch.setattr(hybrid_manager, "get", get_then_cancel)
+
+    with pytest.raises(CampaignSessionError, match="CANCELLED_BY_OPERATOR"):
+        _run(orchestrator, cancel_event=cancel_event)
+
+    assert hybrid_manager.stopped_sessions == ["BLE-HYBRID-fake-0001"]  # real session actually stopped, not abandoned
+    assert fakes["arbiter"].released  # B200 never left locked after a cancel
+
+
+class SlowThenStoppableCaptureManager:
+    """A replay job that never finishes on its own until cancel_offline_replay
+    is called -- models the operator stopping a long decode instead of a
+    long RF capture."""
+    def __init__(self) -> None:
+        self.cancelled: list[tuple[str, str]] = []
+        self._state = "running"
+
+    def resolve_device_id(self, requested_device_id=None):
+        return requested_device_id or "sdr-fake"
+
+    def start_offline_replay(self, capture_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        return {"replay_run_id": "BLE-RFFI-REPLAY-fake", "state": self._state}
+
+    def offline_replay_job(self, capture_id: str, replay_run_id: str) -> dict[str, Any]:
+        return {"state": self._state}
+
+    def cancel_offline_replay(self, capture_id: str, replay_run_id: str) -> dict[str, Any]:
+        self.cancelled.append((capture_id, replay_run_id))
+        self._state = "cancelled"
+        return {"state": "cancelled"}
+
+
+def test_run_session_stops_an_in_flight_replay_on_operator_cancel(monkeypatch):
+    import app.modules.ble_rffi_studio.campaign.campaign_orchestrator as campaign_orchestrator_module
+    monkeypatch.setattr(campaign_orchestrator_module.time, "sleep", lambda seconds: None)
+
+    capture_manager = SlowThenStoppableCaptureManager()
+    cancel_event = threading.Event()
+    orchestrator, fakes = _orchestrator(capture_manager=capture_manager)
+
+    calls = {"n": 0}
+    original_poll = capture_manager.offline_replay_job
+
+    def poll_then_cancel(capture_id, replay_run_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            cancel_event.set()
+        return original_poll(capture_id, replay_run_id)
+
+    monkeypatch.setattr(capture_manager, "offline_replay_job", poll_then_cancel)
+
+    with pytest.raises(CampaignSessionError, match="CANCELLED_BY_OPERATOR"):
+        _run(orchestrator, cancel_event=cancel_event)
+
+    assert capture_manager.cancelled == [("BLE-IQ-fake", "BLE-RFFI-REPLAY-fake")]
+    assert fakes["arbiter"].released
     assert len(fakes["arbiter"].acquired) == 1 and fakes["arbiter"].released

@@ -202,6 +202,28 @@ def test_run_target_absence_control_invalid_when_a_device_is_still_detected(tmp_
     assert result["devices_detected"] == ["DEV-1"]
 
 
+def test_run_timing_diagnostic_forwards_cancel_event_to_the_orchestrator(tmp_path):
+    import threading
+
+    repository, ble_root, legacy_capture_root, native_scan_root = _new_repository_and_paths(tmp_path)
+    _register_physical_unit(ble_root, "DEV-1")
+    _register_address_binding(ble_root, binding_id="bind-1", unit_id="DEV-1", address="AA:BB:CC:DD:EE:FF")
+    capture_id, session_id = "CAP-DIAG-CANCEL", "SESSION-DIAG-CANCEL"
+    _write_capture_manifest(legacy_capture_root, capture_id, created_at_utc="2026-08-06T00:00:00.000000Z")
+    write_replay_artifacts(ble_root, capture_id=capture_id, candidates=[], ledger_rows=[])
+
+    orchestrator = _StubOrchestrator({"capture_id": capture_id, "session_id": session_id})
+    service = GuidedBleScientificValidationService(repository, campaign_orchestrator=orchestrator)
+    cancel_event = threading.Event()
+
+    service.run_timing_diagnostic(
+        run_id="RUN-CANCEL", physical_unit_id="DEV-1", capture_duration_s=60, channel=37,
+        receiver_profile="default", operator_id="OP-1", cancel_event=cancel_event,
+    )
+
+    assert orchestrator.calls[0]["cancel_event"] is cancel_event
+
+
 def test_run_target_absence_control_invalid_with_no_native_coverage(tmp_path):
     repository, ble_root, legacy_capture_root, native_scan_root = _new_repository_and_paths(tmp_path)
     _register_physical_unit(ble_root, "DEV-1")
@@ -215,3 +237,100 @@ def test_run_target_absence_control_invalid_with_no_native_coverage(tmp_path):
 
     result = service.run_target_absence_control(run_id="RUN-7", confirmed_devices_off={"DEV-1": True}, capture_duration_s=180, channel=37, operator_id="OP-1")
     assert result["status"] == "TARGET_ABSENCE_CONTROL_INVALID_NO_NATIVE_COVERAGE"
+
+
+# ------------------------------------------------------------------
+# Cleanup center -- every run() invocation reconstructs a fresh set of
+# paper-run-* directories from the real I/Q captures (build_records());
+# nothing ever removes the old ones, so they accumulate indefinitely.
+# These tests verify the disk-usage listing and the delete-the-whole-tree
+# behavior, never touching the real captures themselves.
+# ------------------------------------------------------------------
+
+def test_list_runs_for_cleanup_reports_size_including_its_paper_runs(tmp_path):
+    repository, ble_root, *_ = _new_repository_and_paths(tmp_path)
+    service = GuidedBleScientificValidationService(repository, campaign_orchestrator=_StubOrchestrator())
+
+    run_dir = service.output_root / "GVAL-TEST-1"
+    run_dir.mkdir(parents=True)
+    _write_json(run_dir / "guided_validation_summary.json", {
+        "generated_at": "2026-08-07T10:00:00Z", "overall_status": "BLOCKED",
+        "artifact_index": {"DEV-1": {"paper_run_id": "paper-run-aaa"}, "DEV-2": {"paper_run_id": "paper-run-bbb"}},
+    })
+    (run_dir / "calibration_records.csv").write_text("x" * 1000, encoding="utf-8")
+
+    paper_run_1 = repository.root / "paper-run-aaa"
+    paper_run_1.mkdir(parents=True)
+    (paper_run_1 / "records.json").write_text("y" * 2000, encoding="utf-8")
+    paper_run_2 = repository.root / "paper-run-bbb"
+    paper_run_2.mkdir(parents=True)
+    (paper_run_2 / "records.json").write_text("z" * 3000, encoding="utf-8")
+
+    entries = service.list_runs_for_cleanup()
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["run_id"] == "GVAL-TEST-1"
+    assert entry["kind"] == "FULL_RUN"
+    assert entry["paper_run_count"] == 2
+    # >= the three payloads we control (own dir's calibration_records.csv
+    # plus both paper-run-* dirs) -- exact total also includes
+    # guided_validation_summary.json's own serialized size, which isn't
+    # worth hand-computing here.
+    assert entry["size_bytes"] >= 1000 + 2000 + 3000
+
+
+def test_list_runs_for_cleanup_reports_capture_only_sessions(tmp_path):
+    repository, *_ = _new_repository_and_paths(tmp_path)
+    service = GuidedBleScientificValidationService(repository, campaign_orchestrator=_StubOrchestrator())
+
+    run_id = service.new_capture_session()
+
+    entries = service.list_runs_for_cleanup()
+    assert len(entries) == 1
+    assert entries[0]["run_id"] == run_id
+    assert entries[0]["kind"] == "CAPTURE_ONLY"
+    assert entries[0]["paper_run_count"] == 0
+
+
+def test_delete_run_removes_the_whole_tree_but_never_the_real_captures(tmp_path):
+    repository, ble_root, legacy_capture_root, *_ = _new_repository_and_paths(tmp_path)
+    service = GuidedBleScientificValidationService(repository, campaign_orchestrator=_StubOrchestrator())
+
+    run_dir = service.output_root / "GVAL-TEST-2"
+    run_dir.mkdir(parents=True)
+    _write_json(run_dir / "guided_validation_summary.json", {
+        "generated_at": "2026-08-07T10:00:00Z",
+        "artifact_index": {"DEV-1": {"paper_run_id": "paper-run-ccc"}},
+    })
+    (run_dir / "timing_diagnostics" / "TIMING-DIAG-1").mkdir(parents=True)
+
+    paper_run = repository.root / "paper-run-ccc"
+    paper_run.mkdir(parents=True)
+    (paper_run / "records.json").write_text("data", encoding="utf-8")
+
+    # A real capture, completely unrelated to this run's own output tree --
+    # must survive the delete untouched.
+    real_capture_id = "BLE-IQ-real-untouched"
+    _write_capture_manifest(legacy_capture_root, real_capture_id, created_at_utc="2026-08-06T00:00:00Z")
+
+    result = service.delete_run("GVAL-TEST-2")
+
+    assert result == {"deleted": True, "run_id": "GVAL-TEST-2", "deleted_paper_runs": ["paper-run-ccc"]}
+    assert not run_dir.exists()
+    assert not paper_run.exists()
+    assert (legacy_capture_root / real_capture_id / "capture_manifest.json").is_file()
+    assert service.list_runs_for_cleanup() == []
+
+
+def test_delete_run_rejects_a_run_id_that_does_not_exist(tmp_path):
+    repository, *_ = _new_repository_and_paths(tmp_path)
+    service = GuidedBleScientificValidationService(repository, campaign_orchestrator=_StubOrchestrator())
+    with pytest.raises(FileNotFoundError):
+        service.delete_run("GVAL-NEVER-EXISTED")
+
+
+def test_delete_run_rejects_path_traversal_in_run_id(tmp_path):
+    repository, *_ = _new_repository_and_paths(tmp_path)
+    service = GuidedBleScientificValidationService(repository, campaign_orchestrator=_StubOrchestrator())
+    with pytest.raises(ValueError):
+        service.delete_run("../../etc")
