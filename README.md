@@ -1,21 +1,33 @@
-# Spectrum Lab
+# RF-Fingerprint-Lab
 
-Spectrum Lab is a browser-based RF laboratory for real-time spectrum monitoring,
-controlled I/Q acquisition, dataset curation, demodulation, RF scene analysis,
-model training, validation, and inference.
+**Software-defined radio research platform for RF acquisition, signal
+analysis, dataset construction, physical-layer device fingerprinting,
+demodulation, model evaluation, and experimental live inference.**
 
-The primary hardware path uses an **Ettus Research USRP-B200** through
-**UHD/GNU Radio** in a RadioConda environment. The platform consists of a
-FastAPI backend and a React/TypeScript frontend.
+RF-Fingerprint-Lab integrates real software-defined radio acquisition with
+signal-processing and machine-learning workflows in a browser-based
+laboratory environment.
 
-> Spectrum Lab uses real SDR samples. The live spectrum, waterfall, captures,
-> triggered pre-buffer, demodulation, and dataset artifacts are not mock data.
+The primary hardware path uses an **Ettus Research USRP B200** through **UHD
+and GNU Radio**. The application combines a **FastAPI backend** with a
+**React/TypeScript frontend** and provides a common workflow from RF
+observation to controlled I/Q acquisition, dataset curation, model
+development, validation, and inference.
+
+> **Real RF data by default.**
+> Hardware-facing acquisition, live spectrum visualization, waterfall
+> analysis, triggered I/Q capture, BLE decoding, and dataset artifacts
+> operate on samples acquired from SDR hardware. Synthetic or test-only
+> evidence is explicitly distinguished from real acquisitions.
+
+![Live Monitor spectrum](readme_img/live_monitor.png)
+
+---
 
 ## Terminology
 
 Every code, acronym, and status label used anywhere below is defined here
-first. Nothing is used elsewhere in this document before its definition
-appears in this section.
+first, before its first use elsewhere in this document.
 
 **Core acronyms**: SDR = Software-Defined Radio (the USRP B200 in this
 project). IQ = In-phase/Quadrature, the raw complex baseband samples the SDR
@@ -46,9 +58,10 @@ of record: `backend/app/modules/rf_experiment_lab/experiment_registry.py`.
 | E10 | Quantized edge inference (TFLite / quantized CNN / transformer) | Not implemented |
 
 There is no code named **E4** in this registry -- E3 is followed directly by
-E5. An unrelated, unconnected use of "E4" exists only in the superseded BLE
-Dataset Studio Pilot v1 section below, in that pilot's own, different
-numbering (defined there). The two must never be conflated.
+E5. An unrelated, unconnected use of "E4" (a different, older numbering)
+exists only in the legacy BLE Dataset Studio Pilot v1 record -- see
+[`docs/ble/PILOT_V1_LEGACY.md`](docs/ble/PILOT_V1_LEGACY.md). The two must
+never be conflated.
 
 **E6 Oracle-Style Lab** (`/e6-oracle-style-lab`) is a separate module, not
 part of the E0-E10 registry above: a classical (non-CNN) RF fingerprinting
@@ -61,140 +74,130 @@ in full below) use **no E/S code at all** -- they are independent modules
 with their own vocabulary (`capture_purpose`, `association_status`,
 `ScientificTask`, etc.), never numbered like RF Experiment Lab's techniques.
 
-## BLE Dataset Studio Pilot v1 (superseded)
+---
 
-> **Superseded, and its reproducibility claim below is no longer true.**
-> Everything in this section describes a frozen, early baseline that
-> predates the BLE-RFFI End-to-End Studio module. It does **not** describe
-> the current state of BLE work in this repository -- for that, see
-> [BLE-RFFI Studio](#ble-rffi-studio) below. This section is kept only as a
-> historical record of what this pilot once measured, with an honest note on
-> what can and cannot still be verified today.
+## Overview
 
-`BLE Dataset Studio Pilot v1`'s own campaign-status vocabulary, defined here
-before use (this is a separate, older scale from the RF Experiment Lab codes
-in [Terminology](#terminology) above -- the two share digits but not
-meaning):
+RF-Fingerprint-Lab is organized around five complementary research
+functions:
 
-- **Evidence-level ladder** (`E1`-`E4`, cumulative, each level implying the
-  ones below it -- source: `backend/app/infrastructure/ble/dataset_studio_manager.py`):
-  `E1` = BLE activity detected at all; `E2` = at least one CRC-valid decoded
-  packet; `E3` = the native Windows Bluetooth scan and the B200 decode
-  corroborate the same event; `E4` = the corroborated packet's address
-  matches the declared target device (logical device identification /
-  RF-fingerprint-ready evidence).
-- **Positive E4 campaign**: a session run with the target device present
-  that reached evidence level `E4`.
-- **Exploratory E2 campaign**: a session run to search for a target that
-  reached at least evidence level `E2`.
-- **Declared negative control**: a session where the operator declared the
-  target absent, with no false positive attribution.
-- **Reinforced negative control**: a declared negative control run
-  *alongside* an active positive reference, so "no detection" is shown to
-  mean "correctly absent," not "receiver was not working."
-- **Clean capture**: a session with zero recorded RF overflows or
-  discontinuities.
+1. **RF observation and acquisition** -- real-time spectrum monitoring,
+   waterfall visualization, markers, spectrum statistics, immediate capture,
+   and triggered capture with pre-trigger buffering.
+2. **Signal analysis and demodulation** -- RF activity analysis,
+   signal-family hypotheses, analog demodulation, digital/IoT decoding
+   pipelines, and protocol-specific evidence.
+3. **Dataset engineering** -- capture metadata, quality control, labeling,
+   session-aware splitting, checksums, and controlled dataset construction.
+4. **RF fingerprinting experimentation** -- classical machine learning, raw
+   I/Q models, spectrogram-based models, validation, model registry, and
+   inference.
+5. **BLE physical-layer identification research** -- a dedicated BLE-RFFI
+   workflow spanning B200 acquisition, packet evidence, dataset generation,
+   model training, and experimental live-spectrum identification.
 
-Its last-measured state (a historical record, not re-verified against live
-data -- see the reproducibility note below for why):
+The platform is intended as a **research and experimentation environment**.
+Capability status and scientific limitations are reported explicitly;
+implementation of a feature does not by itself imply population-level
+generalization, receiver invariance, forensic attribution, or deployment
+readiness.
 
-- Historical campaigns: 3.
-- Generated examples: 338.
-- Included examples: 0.
-- Quarantined examples: 338.
-- Positive E4 campaign: `PASSED_SINGLE_RUN`.
-- Exploratory E2 campaign: `PASSED`.
-- Declared negative control: `PASSED_SINGLE_RUN`.
-- Reinforced negative control: `PENDING`.
-- Clean captures: `PENDING`.
-- Training: `NOT_READY`.
-- Fingerprinting: `NOT_VALIDATED`.
+## Core workflow
 
-The frozen 30-second protocol and its hashes below belong only to this BLE
-Dataset Studio pilot. They were never the definitive scientific protocol for
-the whole RF-Fingerprint-Lab platform.
+```text
+USRP B200
+    |
+    v
+Live RF Observation
+    |
+    +-- Spectrum / Waterfall / Spectrum Tools
+    +-- RF Intelligence
+    +-- Marker-selected signal region
+                 |
+                 v
+             Capture Lab
+                 |
+          Real complex I/Q
+                 |
+                 v
+          Dataset Builder
+          /      |       \
+         v       v        v
+   Training   Validation  Inference
+        |        |         |
+        +--------+---------+
+                 |
+                 v
+          Model Registry
+```
 
-**Reproducibility note, checked directly against disk on 2026-08-07: this
-pilot's underlying artifacts are no longer present, and the hashes below
-cannot currently be re-verified.**
+For BLE-specific physical-layer experiments:
 
-- Frozen pilot protocol SHA-256
-  (`752bb3b437ccf6500376366774a330ea626cd06bc5b4429632b311997c3511f1`): no
-  file with this hash exists anywhere in the repository or local storage
-  today; the string is recorded only here.
-- `BLE-IQ-ce737e9e9711` (claimed data SHA-256
-  `9e24df1820de5d569578faa61a8dbe4a2fe59ee9bdcfbf1bdc88ec4f5181d2bf`): the
-  original raw capture no longer exists at its expected path. One derived
-  fragment (`burst-000013.cf32`, a single extracted burst, not the whole
-  capture) survives under an unrelated dataset export directory
-  (`ble_lab/datasets/BLE-EVIDENCE-DS01/1.0.0/exports/e4-c7b5c35d/iq_segments/`),
-  which is not what this hash was computed against.
-- `BLE-IQ-e5615d8d54cc` (claimed data SHA-256
-  `1361b16462b05938c90fc37ae8353bee01d056156bec0145a6b4c94f96efda64`): not
-  found anywhere in local storage.
-- `BLE-IQ-cf8a55ff592f` (claimed data SHA-256
-  `dd8c8daaa6eee968361abb9ee7aa52c10830f58f288affbe5d5f6006474914e9`): not
-  found anywhere in local storage.
-
-These captures were most likely removed by a later, unrelated storage
-cleanup; nothing indicates the hashes themselves were ever wrong, only that
-the files they describe are gone now. Do not cite this pilot's specific
-hash values as independently reproducible evidence going forward -- cite the
-current, on-disk, re-verifiable BLE-RFFI Studio and Guided BLE Scientific
-Validation evidence documented below instead.
-
-## Contents
-
-- [Terminology](#terminology)
-- [BLE Dataset Studio Pilot v1 (superseded)](#ble-dataset-studio-pilot-v1-superseded)
-- [Main capabilities](#main-capabilities)
-- [Quick start](#quick-start)
-- [Recommended workflow](#recommended-workflow)
-- [Platform views](#platform-views)
-- [Live Monitor and Spectrum Tools](#live-monitor-and-spectrum-tools)
-- [Capture and dataset workflow](#capture-and-dataset-workflow)
-- [BLE-RFFI Studio](#ble-rffi-studio)
-- [Demodulation capabilities](#demodulation-capabilities)
-- [Architecture](#architecture)
-- [Hardware and runtime](#hardware-and-runtime)
-- [Testing](#testing)
-- [Troubleshooting](#troubleshooting)
+```text
+USRP B200
+    |
+    v
+Real BLE I/Q
+    |
+    v
+Burst Detection
+    |
+    v
+BLE Synchronization / GFSK Recovery
+    |
+    v
+Dewhitening -> PDU -> CRC
+    |
+    v
+Evidence Construction
+    |
+    v
+Quality-Gated Dataset
+    |
+    v
+Session-Disjoint Split
+    |
+    v
+Model Training / Evaluation
+    |
+    v
+Experimental Live-Spectrum Inference
+```
 
 ## Main capabilities
 
-- Real-time FFT/PSD spectrum monitoring from a USRP.
-- Spectrum and waterfall split view.
-- Frequency, span, sample-rate, gain, antenna, RBW, VBW, reference-level,
-  detector, trace, averaging, and display controls.
-- Interactive markers, marker-band filtering, automatic peaks, pan, zoom,
-  freeze, and CSV/PNG export.
-- Simultaneous Spectrum Tools traces and statistical layers.
-- Manual and triggered I/Q acquisition with pre-trigger buffering.
-- Capture metadata, checksums, experimental splits, and quality control.
-- RF Intelligence hypotheses with explicit confidence and evidence.
-- Waterfall-based RF Signal Understanding.
-- Analog, digital, and IoT demodulation workflows.
-- Dataset governance for training, validation, and prediction.
-- Model training, retraining, external validation, registry, and inference.
-- BLE-RFFI Studio: real B200 capture -> evidence -> dataset -> training ->
-  live device detection/identification pipeline, with per-device model
-  training, a device-scrubbing technique for always-on devices, and
-  simultaneous multi-device live watching directly on the spectrum.
-- Reproducible E0/E1/E3/E5 experiments and E6 classical-ML workflows.
-- KiwiSDR receiver discovery and remote receiver map.
-- Persisted runtime settings with hardware and scientific-policy limits.
+| Area | Capability |
+|---|---|
+| SDR acquisition | UHD/GNU Radio acquisition from USRP B200/B210-class receivers |
+| Spectrum analysis | FFT/PSD visualization, waterfall, markers, peak inspection, pan, zoom, freeze, export |
+| Spectrum statistics | Max Hold, Min Hold, averaging, RMS, EWMA, percentiles, trace history, persistence, occupancy |
+| I/Q capture | Immediate and triggered acquisition with circular pre-trigger buffering |
+| Capture provenance | Metadata, acquisition configuration, timing information, labels, splits, and SHA-256 checksums |
+| RF analysis | Signal-region detection and evidence-based RF hypotheses |
+| Demodulation | Analog, digital, BLE, IEEE 802.15.4, OOK/FSK and experimental protocol pipelines |
+| Dataset governance | Offline QC, labeling, review states, experimental split control, duplicate/leakage safeguards |
+| Machine learning | Classical ML, raw-IQ CNN, spectrogram CNN, training, validation, model registry, inference |
+| RF research | E0-E10/S1/S2/S4 experiment workflows (see [Terminology](#terminology)) and the independent E6 classical-ML workflow |
+| BLE-RFFI | Real B200 BLE acquisition -> evidence -> dataset -> training -> experimental live inference |
+| Remote SDR | KiwiSDR receiver discovery and inspection |
+
+---
 
 ## Quick start
 
 ### Requirements
 
-- Windows 10/11.
-- Node.js and npm.
-- Python environment for the FastAPI backend.
-- RadioConda with GNU Radio and UHD for real SDR workers.
-- USRP-B200/B210 or another UHD-compatible receiver.
+Recommended development environment:
 
-Confirm that UHD can discover and open the radio:
+- Windows 10/11
+- Ettus Research USRP B200/B210 or compatible UHD receiver
+- UHD
+- GNU Radio
+- RadioConda Python environment
+- Python environment for the FastAPI backend
+- Node.js and npm
+
+Verify the USRP before starting the application:
 
 ```powershell
 & "C:\Users\Usuario\radioconda\Library\bin\uhd_find_devices.exe"
@@ -209,47 +212,35 @@ From the repository root:
 powershell -ExecutionPolicy Bypass -File .\start_unified.ps1
 ```
 
-With an explicit RadioConda interpreter:
+To specify the RadioConda Python executable explicitly:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\start_unified.ps1 `
   -RadioCondaPythonPath "C:\Users\Usuario\radioconda\python.exe"
 ```
 
-Current command (with the remote training target and BLE-RFFI Studio's
-live decode explicit on the command line -- see BLE-RFFI Studio README's
-"Live BLE decode" section for what `-EnableBleLiveDecode` does; it already
-defaults to `$true` even if omitted, this just makes it visible/overridable
-directly here):
+The launcher starts the backend and frontend while preserving the separation
+between the application Python environment and the RadioConda GNU
+Radio/UHD runtime.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\start_unified.ps1 -RemoteUser "assouyat" -RemoteHost "192.168.193.49" -EnableBleLiveDecode $true
-```
-
-Older command, kept for reference (still works -- `-RemoteUser`/`-RemoteHost`
-already default to the same values, and `-EnableBleLiveDecode` defaults to
-`$true` on its own, so this is functionally equivalent to the one above):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\start_unified.ps1 -RemoteUser "assouyat" -RemoteHost "192.168.193.49"
-```
-
-The launcher starts the backend on `http://127.0.0.1:8000`, starts Vite, and
-propagates the SDR and polling configuration required by the frontend.
+> Machine-specific remote usernames, IP addresses, development paths, and
+> laboratory credentials should not be documented as canonical project
+> defaults in this README. Keep them in local configuration or dedicated
+> deployment documentation.
 
 ### Manual development
 
-Backend:
+**Backend**
 
 ```powershell
 cd backend
 python -m venv venv
 .\venv\Scripts\python.exe -m pip install -r requirements.dev-windows.txt
-$env:RADIOCONDA_PYTHON="C:\Users\Usuario\radioconda\python.exe"
+$env:RADIOCONDA_PYTHON="C:\path\to\radioconda\python.exe"
 .\venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Frontend:
+**Frontend**
 
 ```powershell
 cd frontend
@@ -283,365 +274,284 @@ Live Monitor -> Mark signal band -> Capture Lab
 4. Place M1 and M2 around the signal of interest.
 5. Open Capture Lab and select immediate or triggered capture.
 6. Review the saved I/Q and metadata in Dataset Builder.
-7. Recompute QC, confirm the label, and accept, reject, or mark the capture as
-   doubtful.
+7. Recompute QC, confirm the label, and accept, reject, or mark the capture
+   as doubtful.
 8. Route accepted captures to training, validation, inference, demodulation,
    RF Signal Understanding, or RF Experiment Lab.
 
-## Platform views
+---
 
-The following sections correspond to the routes registered under
-`frontend/src/app/modules/`. Every navigation view is documented even when a
-dedicated screenshot is not yet available.
+## Platform
 
-### Mission Control — `/`
+### Mission Control -- `/`
 
 Mission Control is the top-level operational dashboard. It summarizes
-acquisition, dataset readiness, training state, validation evidence, inference,
-and model availability. Use it to identify the next blocked or incomplete stage
-in the RF fingerprinting workflow.
+acquisition, dataset readiness, training state, validation evidence,
+inference, and model availability, so an operator can identify the next
+blocked or incomplete stage in the workflow.
 
-### Live Monitor — `/spectrum`
+### Live Monitor -- `/spectrum`
 
-Live Monitor is the main real-time analyzer. It provides SDR connection and
-streaming controls, spectrum navigation, markers, analyzer settings, optional
-waterfall, overlays, freeze, exports, and Spectrum Tools.
+Live Monitor is the primary real-time RF workspace: SDR connection and
+stream controls together with frequency, span, sample-rate, gain, antenna,
+RBW, VBW, detector, averaging, reference-level, marker, and visualization
+controls.
 
 ![Live Monitor spectrum](readme_img/live_monitor.png)
 
-The split workspace keeps the live spectrum and recent spectral history in the
-same view:
+The spectrum can be combined with recent spectral history:
 
 ![Live Monitor with waterfall](readme_img/live_monitor_waterfall.png)
 
-RF Intelligence can be displayed directly over the live workspace without
-changing the underlying spectrum data:
+RF Intelligence can be overlaid without replacing or modifying the
+underlying spectrum data:
 
 ![Live Monitor with RF Intelligence overlay](readme_img/live_monitor_rf_intelligence_overlay.png)
 
-An older split-view reference is retained for comparison:
-
 <details>
-<summary>Legacy Live Monitor and waterfall screenshot</summary>
+<summary>Legacy Live Monitor / waterfall reference</summary>
 
 ![Legacy Live Monitor waterfall](readme_img/live_monitor_waterfall_legacy.png)
 
 </details>
 
-See [Live Monitor and Spectrum Tools](#live-monitor-and-spectrum-tools) for the
-complete technique reference.
+### Spectrum Tools
 
-Exact formulas and automated scientific checks are recorded in
-[Spectrum Tools Critical Validation](frontend/src/features/spectrum-tools/VALIDATION.md).
+Spectrum Tools extends Live Monitor with independent statistical and
+temporal representations of the same incoming spectrum frames. It is always
+available from the upper-right corner and opens over the canvas without
+reducing the spectrum workspace. Several tools can run simultaneously
+because every processor receives the same original Live frame rather than
+the output of another technique.
 
-### Capture Lab — `/capture`
+![Spectrum Tools with Max Hold, Min Hold, averages, RMS, EWMA and statistical layers](readme_img/live_monitor_spectrum_tools.png)
 
-Capture Lab performs controlled real-I/Q acquisition. It can derive capture
-limits from M1/M2, the live peak, the visible monitor window, or custom
-frequencies. Before capture it reports center, bandwidth, peak, noise floor,
-SNR, and scientific suitability.
+![Animated Spectrum Tools demonstration](readme_img/live_monitor_spectrum_tools.gif)
+
+| Technique | Purpose | Main limitation |
+|---|---|---|
+| Live Trace | Current FFT/PSD observation | Represents the current frame only |
+| Max Hold | Retains the highest observed value per frequency bin | Does not preserve event time or duration |
+| Min Hold | Tracks lowest observed values | Outliers persist until reset |
+| Power Average | Stable mean-power estimate | Smooths short events |
+| RMS Power | Effective accumulated power | Can resemble averaged PSD for some inputs |
+| EWMA | Time-weighted spectral smoothing | Large constants reduce responsiveness |
+| Percentiles | P50/P90/P95/P99 distributions | Requires an observation window |
+| Trace History | Visualizes previous spectrum frames | Can become visually dense |
+| Density / Persistence | Shows repeated spectral states | Represents observed frames, not regulatory occupancy |
+| Spectrum Mask | Visual threshold comparison | Currently a visualization function |
+| Observed-frame Occupancy | Fraction of observations above threshold | Depends on threshold and observation conditions |
+| Gated Spectrum | Spectrum over a selected temporal interval | Requires appropriately synchronized I/Q |
+| Zero Span | Power evolution at a selected frequency | Requires continuous timed samples |
+
+Visual representations and analytical inputs remain separate. Enabling a
+display technique does not silently replace the signal used by another
+analysis module. Detailed formulas and validation checks are maintained in
+[`frontend/src/features/spectrum-tools/VALIDATION.md`](frontend/src/features/spectrum-tools/VALIDATION.md).
+
+### Capture Lab -- `/capture`
+
+Capture Lab performs controlled acquisition of **real complex I/Q samples**.
+Acquisition limits can be derived from markers, the live peak, the visible
+spectrum window, or explicitly configured frequencies.
 
 ![Capture Lab](readme_img/capture_lab.png)
 
-Supported capture modes:
+Two acquisition modes are available:
 
-- **Immediate**: records the requested duration immediately.
-- **Triggered Burst**: waits for an event and preserves samples from the
-  circular pre-trigger buffer.
+- **Immediate capture** -- records a specified RF interval for a fixed
+  duration.
+- **Triggered burst capture** -- continuously monitors the source and
+  preserves the event together with samples from a bounded pre-trigger
+  buffer.
 
-Each capture stores raw complex I/Q and JSON metadata including frequency
-limits, sample rate, gain, antenna, format, labels, split, timing, and checksum.
-
-The following screenshot shows the earlier signal-analysis capture interface,
-which is now represented by the Capture Lab route and aliases
-`/guided-capture` and `/modulated-analysis`:
+Each capture can preserve: raw complex I/Q; acquisition frequency and
+bandwidth; sample rate; gain and antenna; timing information;
+trigger/pre-trigger metadata; labels and experimental split; quality
+metadata; SHA-256 checksum.
 
 <details>
-<summary>Capture Lab signal-analysis interface</summary>
+<summary>Earlier Capture Lab signal-analysis interface</summary>
 
 ![Capture Lab signal analysis](readme_img/capture_lab_signal_analysis.png)
 
 </details>
 
-### Dataset Builder — `/dataset-builder`
+### Dataset Builder -- `/dataset-builder`
 
 Dataset Builder is the governance gate between acquisition and model use. It
-does not capture RF. It reviews saved I/Q, recomputes offline QC, manages
-labels and experimental splits, and prevents doubtful or invalid samples from
-silently entering training or validation.
+does not capture RF -- it reviews saved I/Q, recomputes offline QC, manages
+labels and experimental splits, and prevents doubtful or invalid samples
+from silently entering training or validation.
 
 ![Dataset Builder](readme_img/dataset_builder.png)
 
-The view separates:
-
-- `capture_quality`: `valid`, `warning`, `doubtful`, or `invalid`.
-- `label_status`: `unlabeled`, `weak_label`, or `strong_label`.
-- `review_status`: `needs_review`, `accepted`, `doubtful`, or `rejected`.
-- `split`: `train`, `val`, or `predict`.
+| Property | Example states |
+|---|---|
+| Capture quality | `valid`, `warning`, `doubtful`, `invalid` |
+| Label status | `unlabeled`, `weak_label`, `strong_label` |
+| Review status | `needs_review`, `accepted`, `doubtful`, `rejected` |
+| Split | `train`, `val`, `predict` |
 
 QC includes SNR, clipping, silence/near-zero content, occupied bandwidth,
 frequency offset, sample count, file consistency, and burst suitability.
 
-### Training — `/training`
-
-Training launches controlled RF fingerprinting jobs from canonicalized captures
-assigned to the training registry. It exposes dataset readiness,
-hyperparameters, remote execution status, logs, metrics, and generated model
-artifacts. Strict mode requires accepted, strongly labelled, technically valid
-captures.
-
-### Retraining — `/retraining`
-
-Retraining updates an existing model using the current curated training
-registry. It preserves lineage between the source model, dataset fingerprint,
-configuration, new metrics, and replacement candidate.
-
-### RF Intelligence — `/rf-intelligence`
+### RF Intelligence -- `/rf-intelligence`
 
 RF Intelligence performs real-time RF object detection and cautious
-rule/profile-based protocol hypotheses. It shows the estimated noise floor,
-detection threshold, minimum SNR, detected objects, temporal behavior,
-confidence, and the evidence supporting each hypothesis.
+rule/profile-based protocol hypotheses: estimated noise floor, detection
+threshold, minimum SNR, detected objects, temporal behavior, confidence, and
+the evidence supporting each hypothesis.
 
 ![RF Intelligence](readme_img/rf_intelligence.png)
 
-The output is intentionally phrased as a hypothesis unless enough evidence is
-available. RF energy alone is not treated as a decoded or identified protocol.
+Energy in a frequency region is not treated as proof that a protocol has
+been decoded. Hypotheses remain explicitly distinct from packet- or
+frame-level confirmation.
 
-### RF Experiment Lab — `/rf-experiment-lab`
+### RF Experiment Lab -- `/rf-experiment-lab`
 
-RF Experiment Lab provides reproducible research workflows with strict dataset
-splits, dry-run validation, representation extraction, metrics, exports, and
-benchmark reports.
+RF Experiment Lab provides reproducible research workflows over curated RF
+datasets: strict dataset splits, dry-run validation, representation
+extraction, metrics, exports, and benchmark reports, for every technique
+code defined in [Terminology](#terminology) above. Codes marked "not
+implemented" there are registered but deliberately not presented as
+available functionality. The view records configuration, dataset manifest,
+label schema, preprocessing, split policy, artifacts, metrics, and
+scientific traceability.
 
-Implemented experiment families include:
+### E6 Oracle-Style Lab -- `/e6-oracle-style-lab`
 
-- **E0**: morphological waterfall/spectrogram baseline.
-- **E1**: raw-I/Q 1D CNN workflow.
-- **E3**: spectrogram/waterfall 2D CNN workflow.
-- **E5**: engineered spectral-feature classical ML baseline.
+E6 (defined in [Terminology](#terminology)) supports local dataset creation,
+SigMF and reference-dataset import, feature extraction, training,
+benchmarking, pre-trained model import, registry management, and file/live
+prediction, over its 8 classical algorithms. It is intentionally separate
+from the E0-E10/S1/S2/S4 workflows and from BLE-RFFI Studio.
 
-The view records configuration, dataset manifest, label schema, preprocessing,
-split policy, artifacts, metrics, and scientific traceability.
-
-### E6 Oracle-Style Lab — `/e6-oracle-style-lab`
-
-E6 is an oracle-style classical RF fingerprinting laboratory. It supports local
-dataset creation, SigMF and reference-dataset import, feature extraction,
-training, benchmarking, pre-trained model import, registry management, and
-file/live prediction.
-
-Available algorithms:
-
-- HistGradientBoosting
-- Random Forest
-- Extra Trees
-- MLP
-- SVM RBF
-- SVM linear
-- KNN
-- Logistic Regression
-
-Models are isolated by dataset and algorithm, and long-running jobs report
-progress, elapsed time, current stage, metrics, model size, and inference
-latency.
-
-### RF Signal Understanding — `/rf-signal-understanding`
+### RF Signal Understanding -- `/rf-signal-understanding`
 
 RF Signal Understanding analyzes I/Q-derived waterfall representations,
 detects time-frequency regions, extracts spectral evidence, and produces
-cautious signal-family hypotheses. The view can compare newer region/feature
-pipelines with legacy analysis results.
+cautious signal-family hypotheses. The view can compare newer
+region/feature pipelines with legacy analysis results.
 
-### Validation — `/validation`
+### Training -- `/training`
 
-Validation evaluates selected models against canonicalized validation captures
-that are kept separate from training groups. It checks leakage, label
-compatibility, artifact readiness, per-class results, aggregate metrics, and
+Training launches controlled RF fingerprinting jobs from canonicalized
+captures assigned to the training registry: dataset readiness,
+hyperparameters, remote execution status, logs, metrics, and generated
+model artifacts. Strict mode requires accepted, strongly labelled,
+technically valid captures.
+
+### Retraining -- `/retraining`
+
+Retraining updates an existing model using the current curated training
+registry, preserving lineage between the source model, dataset fingerprint,
+configuration, new metrics, and replacement candidate.
+
+### Validation -- `/validation`
+
+Validation evaluates selected models against canonicalized validation
+captures kept separate from training groups: leakage, label compatibility,
+artifact readiness, per-class results, aggregate metrics, and
 external-validation evidence.
 
-### Inference — `/inference`
+### Inference -- `/inference`
 
-Inference runs asynchronous predictions on captures assigned to the prediction
-split. It resolves the selected capture and model, validates required metadata,
-tracks job state, and presents ranked predictions and confidence evidence.
+Inference runs asynchronous predictions on captures assigned to the
+prediction split: resolves the selected capture and model, validates
+required metadata, tracks job state, and presents ranked predictions and
+confidence evidence.
 
-### Models — `/models`
+### Models -- `/models`
 
-Models is the registry and model-card view. It presents model identity, task,
-algorithm, dataset lineage, label schema, validation evidence, artifact paths,
-readiness, and whether a model is enabled for live use.
+Models is the registry and model-card view: model identity, task,
+algorithm, dataset lineage, label schema, validation evidence, artifact
+paths, readiness, and whether a model is enabled for live use.
 
-### BLE-RFFI Studio — `/ble-rffi-studio`
+### Waterfall -- `/waterfall`
 
-BLE-RFFI Studio is a separate, independent module (it does not modify or
-replace RF Experiment Lab, E6, or Models) that detects and identifies
-specific BLE devices by their real radio signal: capture, evidence, dataset,
-training, export, and live inference, all against real USRP B200
-acquisitions. See [BLE-RFFI Studio](#ble-rffi-studio) below for the full
-pipeline, current real model inventory, Live Monitor integration, and
-documented findings.
+Waterfall visualizes spectral power over time -- useful for bursts,
+frequency hopping, drift, intermittent interference, and temporal
+occupancy. The standalone view complements the split waterfall available in
+Live Monitor.
 
-### Waterfall — `/waterfall`
+### Recordings -- `/recordings`
 
-Waterfall visualizes spectral power over time. It is useful for bursts,
-frequency hopping, drift, intermittent interference, and temporal occupancy.
-The standalone view complements the split waterfall available in Live Monitor.
+Recordings provides a library of recording sessions and saved artifacts, to
+locate, inspect, and manage I/Q or audio recordings independently of the
+curated Dataset Builder registry.
 
-### Recordings — `/recordings`
+### KiwiSDR Map -- `/kiwisdr`
 
-Recordings provides a library of recording sessions and saved artifacts. It is
-used to locate, inspect, and manage I/Q or audio recordings independently of
-the curated Dataset Builder registry.
+KiwiSDR Map discovers and catalogs remote KiwiSDR receivers, displays them
+on a map, exposes receiver filters, and supports selecting a remote
+receiver for inspection. This module is separate from the local UHD/USRP
+hardware path.
 
-### Demodulation — `/demodulation`
+### Settings -- `/settings`
 
-Demodulation processes a marker-selected live band or a stored dataset capture
-through analog, digital, or IoT pipelines. Results distinguish RF activity,
-synchronization, bit recovery, frame reconstruction, CRC validation, and
-successfully decoded payloads.
+Settings exposes persisted application, analyzer, hardware, polling,
+capture, QC, and RF Intelligence parameters. Each setting documents its
+active value, default, source, allowed range, affected workflow, restart
+requirement, and whether the limit is imposed by hardware, software, or
+scientific policy.
+
+### Demodulation -- `/demodulation`
+
+The Demodulation workspace processes a marker-selected live band or a
+stored acquisition through analog, digital, or IoT pipelines.
 
 ![Demodulation](readme_img/demodulation.png)
 
-### Live Demodulation — `/live-demodulation`
+```text
+RF activity -> synchronization -> symbol/bit recovery -> frame
+reconstruction -> integrity check -> decoded payload
+```
 
-Live Demodulation provides real-time AM, FM, NFM, and WFM audio recovery from
-the current SDR stream. It includes tuning, bandwidth and gain controls, Web
+A signal is not reported as successfully decoded merely because RF energy
+was observed.
+
+| Pipeline | Status | Primary output |
+|---|---|---|
+| `wfm_broadcast` | Basic implementation | WFM audio |
+| `nfm` | Basic implementation | NFM audio |
+| `am` | Basic implementation | AM audio |
+| `ble_advertising` | Experimental decoding path | BLE packet candidates / CRC evidence |
+| `wifi_80211` | Experimental scaffold | 802.11 activity/frame evidence |
+| `generic_gfsk_iot` | Physical-layer estimator | GFSK bitstream candidate |
+| `ook_ask_iot_sensor` | Physical-layer estimator | OOK/ASK bitstream candidate |
+| `generic_fsk_iot` | Physical-layer estimator | FSK bitstream candidate |
+| `zigbee_ieee802154` | Implemented | IEEE 802.15.4 frames and FCS evidence |
+| `ieee802154_oqpsk` | Experimental scaffold | O-QPSK candidates |
+| `adsb_1090` | Experimental scaffold | ADS-B candidates |
+| `lora_css` | Experimental scaffold | LoRa candidates |
+| `ook_433_remote` | Implemented | EV1527/PT2262 evidence |
+
+Persisted outputs depend on the decoder and can include packet/frame JSON,
+CSV reports, bitstreams, burst candidates, logs, audio, and other
+protocol-specific artifacts.
+
+### Live Demodulation -- `/live-demodulation`
+
+Live Demodulation provides continuous AM, FM, NFM, and WFM audio recovery
+from the active SDR stream, with tuning, bandwidth and gain controls, Web
 Audio playback, stream status, level monitoring, and optional persistence.
 
 ![Live Demodulation](readme_img/live_demodulation.png)
 
-### KiwiSDR Map — `/kiwisdr`
-
-KiwiSDR Map discovers and catalogs remote KiwiSDR receivers, displays them on a
-map, exposes receiver filters, and supports selecting a remote receiver for
-inspection. This module is separate from the local UHD/USRP hardware path.
-
-### Settings — `/settings`
-
-Settings exposes persisted application, analyzer, hardware, polling, capture,
-QC, and RF Intelligence parameters. Each setting documents its active value,
-default, source, allowed range, affected workflow, restart requirement, and
-whether the limit is imposed by hardware, software, or scientific policy.
-
-## Live Monitor and Spectrum Tools
-
-Spectrum Tools is always available from the upper-right corner of Live Monitor.
-The menu opens over the canvas and does not reduce the spectrum workspace.
-Several tools can run simultaneously because every processor receives the same
-original Live frame rather than the output of another technique.
-
-### Static overview
-
-![Spectrum Tools with Max Hold, Min Hold, averages, RMS, EWMA and statistical layers](readme_img/live_monitor_spectrum_tools.png)
-
-### Animated overview
-
-![Animated Spectrum Tools demonstration](readme_img/live_monitor_spectrum_tools.gif)
-
-### Display controls
-
-- **Live Trace** shows or hides only the original blue trace. Hiding it does not
-  stop acquisition, analysis, markers, waterfall, captures, or tool updates.
-- The **eye** hides a tool representation while its processor keeps collecting.
-- **Reset** clears only that tool's accumulated history.
-- **Disable** stops the tool and releases its accumulated state.
-- **Reset all histories** keeps tools enabled but clears their buffers.
-- **Disable all tools** disables every optional tool but leaves Live running.
-- Tooltips appear after approximately 350 ms and explain purpose, use cases,
-  limitations, requirements, impact, and parameter direction.
-
-### Technique reference
-
-| Technique | What it shows | Best used for | Important limitation |
-|---|---|---|---|
-| Live Trace | Current FFT/PSD frame | Immediate spectrum inspection | Hiding it is visual only; acquisition continues |
-| Max Hold | Highest observed power per bin | Bursts, hopping, intermittent signals, spurs | Does not preserve occurrence time or duration |
-| Min Hold | Lowest observed power per bin | Noise-floor inspection and persistent-channel analysis | A low outlier remains until reset |
-| Power Average | Mean power calculated in linear domain | Stable estimates of persistent energy | Smooths short events |
-| RMS Power | Effective accumulated power per bin | Energy comparison for varying signals | PSD-only RMS can resemble Power Average |
-| EWMA | Timestamp-aware exponential average | Adjustable smoothing with recent-frame emphasis | Large time constants respond slowly |
-| Percentiles | P50, P90, P95, and P99 per bin | Typical level versus rare peaks | Needs a sample window and additional processing |
-| Trace History | Previous traces with fading opacity | Drift, movement, and intermittent activity | Many traces can make the graph visually dense |
-| Density / Persistence | Distribution of observed power levels | Multiple signal states and persistence | Observed-frame density, not a regulatory measurement |
-| Spectrum Mask | Configurable upper limit line | Visual emission-limit comparison | Currently visual; it does not trigger IQ capture |
-| Observed-frame Occupancy | Time fraction above a threshold | Comparing activity across the span | Not absolute or regulatory occupancy |
-| Gated Spectrum | Spectrum inside a precise time gate | A selected part of a burst or pulse | Requires synchronized real IQ; unavailable on PSD-only Live input |
-| Zero Span | Power versus time at one selected frequency | Pulses, duty cycle, and temporal modulation | Requires continuous timed IQ and a separate time-axis panel |
-
-### Parameter behavior
-
-| Parameter | Increase it | Decrease it |
-|---|---|---|
-| EWMA time constant | Smoother, steadier trace with slower response | Faster response with more visible noise |
-| Spectrum Mask level | Fewer crossings; only stronger signals exceed the mask | More sensitivity and more noise-related crossings |
-| Occupancy threshold | Counts only stronger signals; lower reported occupancy | Includes weaker signals/noise; higher apparent occupancy |
-
-### Freeze and geometry changes
-
-Freeze pauses visual tool updates without deleting accumulated state. Changes
-to acquisition geometry—center frequency, span, bin count, or frequency grid—
-reset incompatible buffers so values from different grids are never mixed.
-
-### Analysis source and legacy Max Hold
-
-Display and analysis remain separate concepts. Enabling a visual tool does not
-automatically change RF Intelligence, RF Signal Understanding, markers, or
-prediction input. The existing **Use Peak For Detection** control explicitly
-selects the legacy peak trace when required. Permanent and decay Max Hold,
-Reset Peaks, marker band-pass, and Freeze behavior remain available.
-
-## Capture and dataset workflow
-
-### Immediate capture
-
-Immediate mode records the selected RF window for a fixed duration. It is best
-for continuous signals, controlled transmitters, or cases where the signal is
-already active.
-
-### Triggered capture
-
-Triggered mode continuously observes the source and writes an event only after
-the configured condition is met. A bounded circular buffer preserves samples
-from before the trigger so the beginning of a burst is not lost.
-
-Typical targets include OOK remotes, LoRa, FSK, BLE-like bursts, short packets,
-and intermittent emitters.
-
-### Capture artifacts
-
-Each successful acquisition can produce:
-
-- `.cfile` or `.iq` complex-sample file.
-- JSON metadata sidecar.
-- SHA-256 checksum.
-- Capture configuration and RF context.
-- Trigger and pre-trigger metadata when applicable.
-- Dataset split and label fields.
+---
 
 ## BLE-RFFI Studio
 
-BLE-RFFI Studio (`/ble-rffi-studio`) covers the complete real pipeline for
-detecting and identifying specific BLE devices by their radio signal:
-**capture -> evidence -> dataset -> split -> training -> export -> live
-inference**, all against real USRP B200 acquisitions, never synthetic data
-for anything operational. It is a separate, independent module and does not
-modify or replace RF Experiment Lab, E6, or Models.
+**Route:** `/ble-rffi-studio`
 
-**Research motivation.** BLE device identity as normally observed
-(advertised MAC address, device name, protocol-level fields) is trivial to
-clone or spoof: an attacker only needs to copy those values into their own
-transmitter. Physical-layer RF fingerprinting investigates a different,
-complementary identity signal -- hardware-level imperfections of the actual
-analog transmitter (carrier frequency offset, IQ imbalance, transient shape)
-that are not controlled by firmware and are far harder to replicate. This
-project treats that as an open research question, not a solved one: every
-claim below is stated with its real evidence and its real limitations, and
-no result here is presented as a deployed anti-spoofing or forensic system.
-See also Guided BLE Scientific Validation below, which investigates the
-opposite direction -- whether device identity can be corroborated
-*independently* of the trained classifier, purely from timing -- and reports
-a real, current negative result for that specific approach.
+BLE-RFFI Studio is a dedicated, independent research workflow (it does not
+modify or replace RF Experiment Lab, E6, or Models) for investigating
+identification of physical BLE transmitters from their radio-frequency
+characteristics: capture -> evidence -> dataset -> split -> training ->
+export -> live inference, all against real USRP B200 acquisitions, never
+synthetic data for anything operational.
 
 Current real state of this module (all counts below are real, on-disk
 artifacts, not targets or plans):
@@ -652,34 +562,62 @@ artifacts, not targets or plans):
 - **8** frozen, quality-gated, single-device datasets.
 - **27** trained and `APPROVED_FOR_LIVE_PILOT` models, covering **5** real
   physical devices (`CC2541SensorTag`, `CC2650-UNIT-01`, `SHELLY-PLUG-01`,
-  `keyfobdemo 01`, `keyfobdemo 02`), 5 model architectures each (logistic
-  regression, SVM-RBF, random forest, 1D CNN, 2D CNN) -- every architecture
-  is always trained and exported, never only the best-scoring one, so the
-  real comparison between them stays visible.
+  `keyfobdemo 01`, `keyfobdemo 02`), 5 model architectures each -- every
+  architecture is always trained and exported, never only the
+  best-scoring one, so the real comparison between them stays visible.
 
-### Pipeline stages
+### Research objective
 
-1. **Capture**: real B200 I/Q acquisition, registered with its own
-   `capture_purpose` (`TARGET_DEVICE_ON`, `BACKGROUND_TARGET_OFF`,
-   `BACKGROUND_GENERAL`, or `UNKNOWN_DEVICE_COLLECTION`) -- never a generic,
-   ambiguous "background" bucket.
+Protocol-level identifiers such as addresses, names, and advertised fields
+describe logical BLE identity and can be changed or imitated: an attacker
+only needs to copy those values into their own transmitter. RF fingerprinting
+investigates a different, complementary source of information -- hardware
+imperfections of the actual analog transmitter (carrier frequency offset, IQ
+imbalance, transient shape) that are not controlled by firmware and are far
+harder to replicate.
+
+RF-Fingerprint-Lab therefore treats BLE physical-layer identification as an
+**experimental research problem**, not as a solved identity or anti-spoofing
+mechanism. Every claim in this section is stated with its real evidence and
+its real limitations. No BLE-RFFI result should be interpreted automatically
+as forensic attribution, population-level identification,
+receiver-independent performance, or channel-independent generalization. See
+also Guided BLE Scientific Validation below, which investigates the opposite
+direction -- whether identity can be corroborated *independently* of the
+trained classifier, purely from timing -- and reports a real, current
+negative result for that specific approach.
+
+### Evidence chain
+
+BLE-RFFI Studio keeps acquisition, decoding, labeling, and classification as
+distinct stages.
+
+1. **Acquisition**: real B200 I/Q, registered with its own `capture_purpose`
+   (`TARGET_DEVICE_ON`, `BACKGROUND_TARGET_OFF`, `BACKGROUND_GENERAL`, or
+   `UNKNOWN_DEVICE_COLLECTION`) -- never a generic, ambiguous "background"
+   bucket.
 2. **Evidence**: every decoded packet is resolved to a registered physical
-   device through address bindings (never trusted blindly -- a declared
+   device through address bindings, never trusted blindly -- a declared
    "device off" capture that still shows the device's real address is
-   flagged as a contradiction, not silently counted as negative evidence).
+   flagged as a contradiction, not silently counted as negative evidence.
 3. **Dataset**: a frozen, hashed selection of evidence examples, gated on
    quality (duplicate/overlap checks) before it can be used at all.
 4. **Split**: session-disjoint TRAIN/VALIDATION/TEST partitions, with an
    explicit minimum-evidence rule per scientific task -- a task reports
    `NOT_FEASIBLE` with a real reason rather than training on an
    under-evidenced split.
-5. **Training**: 5 candidate model architectures per run; a VALIDATION-only
-   composite score picks a recommended one (single, guaranteed TEST
-   evaluation, no multiple-comparison leakage), while every other candidate
-   can still be exported with its own real, separately-run TEST evaluation.
-6. **Live inference**: the trained model scores real, decoded BLE bursts from
-   the same live B200 stream Live Monitor already uses -- never a second SDR
-   session.
+5. **Training and evaluation**: 5 candidate model architectures per run
+   (logistic regression, SVM-RBF, random forest, 1D CNN, 2D CNN); a
+   VALIDATION-only composite score picks a recommended one (single,
+   guaranteed TEST evaluation, no multiple-comparison leakage), while every
+   other candidate can still be exported with its own real, separately-run
+   TEST evaluation.
+6. **Experimental live inference**: eligible models score real, decoded BLE
+   bursts from the same live B200 stream Live Monitor already uses, never a
+   second SDR session. This path is described as **live-spectrum
+   inference** or **online experimental inference** -- end-to-end latency,
+   throughput, and dropped-window behavior have not been characterized, so
+   "real-time" is never claimed for this reason.
 
 ### Live Monitor integration
 
@@ -690,68 +628,27 @@ Panel in the top-right corner of the spectrum:
   real device from the real environment, instead of trusting a good TEST
   score blindly.
 - **Simultaneous multi-device watching**: several already-trained,
-  single-device models run in parallel against the *same* decoded burst (one
-  decode, N classifications -- never a separate capture per model, no
+  single-device models run in parallel against the *same* decoded burst
+  (one decode, N classifications -- never a separate capture per model, no
   bottleneck). Each watched device gets its own compact status badge
   (`PRESENTE`/`AUSENTE`) and a small on-spectrum band at its real training
-  frequency, so a positive detection is visible directly on the spectrum, not
-  only inside a dropdown list.
+  frequency.
 - A **Training Service** panel lets an operator pick any already-frozen,
   already-labeled dataset plus exactly which model architectures to train,
-  with an internally-generated run name (date, time, and target device) and
-  both automatic and explicit export buttons.
+  with an internally-generated run name and both automatic and explicit
+  export buttons.
 
-### Real, investigated findings
+### Current scientific scope
 
-Documented in full in [`backend/README.md`](backend/README.md) and the
-module's own
-[`backend/app/modules/ble_rffi_studio/README.md`](backend/app/modules/ble_rffi_studio/README.md):
-
-- An **always-on device** (e.g. `SHELLY-PLUG-01`, a mains smart plug with no
-  accessible off switch) structurally never produces a real "device absent"
-  example. A **device-scrubbing** technique -- surgically removing that
-  device's own decoded-packet windows from real IQ captures and replacing
-  each with a real quiet segment copied from elsewhere in the *same*
-  recording (never a synthetic/averaged fill) -- was designed, implemented,
-  and verified live: after scrubbing and capturing 8 real background
-  sessions, `SHELLY-PLUG-01`'s best model reached TEST macro-F1 = 1.0 and was
-  confirmed live, correctly reporting `IDENTIFIED` against real traffic.
-- A real cross-device dataset-contamination bug was found (one device's
-  packets leaking into another device's "single-device" training set when
-  both were physically nearby) and fixed at the dataset-building layer.
-- A real hardware artifact (LO leakage, a direct-conversion USRP B200/AD9361
-  characteristic) was investigated, root-caused, and mitigated via LO-offset
-  tuning -- see `backend/README.md`.
-- A pre-existing multi-class "which of N devices is this" task was found to
-  structurally exclude any "no device" example from its own training split
-  -- documented rather than silently worked around, which is why
-  simultaneous multi-device watching (above) exists as the practical
-  solution instead of a single combined classifier.
-
-### Scientific status
-
-Full detail, per-capability status table, the complete acquisition-chain
-trace (native scan -> B200 IQ -> burst detection -> sync -> GFSK demod ->
-dewhitening -> PDU/CRC -> native/SDR association -> Evidence Stage ->
-dataset -> split -> training -> export -> live inference), every real
-execution on disk (favorable and unfavorable alike), and the exact
-reproduction sequence live in
-[`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md). This
-summary states the essentials only.
-
-**BLE-RFFI Studio is not an E-code.** It is a third module, independent
-from `rf_experiment_lab` (E0/E1/E2/E3/E5/E8/E9/E10/S1/S2/S4, general RF
-technique replications, not all BLE) and from `e6_oracle_style` (E6,
-classical fingerprinting over external non-BLE reference datasets). No code,
-dataset schema, or metric implementation is shared between these three
-systems. BLE-RFFI Studio's own taxonomy is a `ScientificTask` enum
-(`TARGET_VS_BACKGROUND`, `MULTI_DEVICE_CLASSIFICATION`,
-`SAME_MODEL_UNIT_IDENTIFICATION`, `UNKNOWN_DEVICE_REJECTION`) and a
-`ModelType` enum (`logistic_regression`, `svm_rbf`, `random_forest`,
-`cnn1d`, `cnn2d`) -- no other architecture (no Transformer, no ResNet
-variant, no MFCC/LFCC representation) is implemented, UI-exposed, or
-planned inside this module. No experimental code was renamed to produce
-this section.
+Real evidence covers **5 physical devices** (a heterogeneous population,
+not identical units), **1 receiver** (USRP B200, serial `E3R04Z1B2`), **1
+BLE channel per device's training set**, across **146 real+synthetic
+capture sessions** (2026-07-28 to 2026-08-03), all at a single physical
+location. Accordingly, the existing results do **not** establish
+population-level generalization, receiver invariance, channel invariance,
+location invariance, robustness against deliberate waveform imitation, or
+forensic source attribution -- no such claim is made anywhere in this
+project.
 
 **The single most important label-quality caveat**: `association_status`
 (the independently-corroborated, address + native-Windows-timestamp match)
@@ -763,72 +660,85 @@ decisions instead relies on `PHYSICAL_ISOLATION_DECLARED` -- the operator's
 declaration that only one device was transmitting nearby, explicitly
 documented in code as weaker ground truth with no independent cross-check.
 This does not block training (per-device `physical_unit_id` resolution is a
-separate, address-binding-registry mechanism that both paths feed), but it
-means no claim of address-and-timestamp-corroborated ground truth can
-currently be made for any real device in this project.
+separate, address-binding-registry mechanism both paths feed), but it means
+no claim of address-and-timestamp-corroborated ground truth can currently
+be made for any real device in this project.
 
-Current real capability status (7 of 19 tracked capabilities shown; full
-table in the linked doc):
+The full per-capability status table, the complete acquisition-chain trace,
+every real execution on disk (favorable and unfavorable alike), and the
+exact reproduction sequence live in
+[`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md).
 
-| Capability | State | Real evidence |
-|---|---|---|
-| USRP B200 real IQ acquisition | REPEATED | 140/146 captures `REAL_B200` |
-| BLE PDU/CRC decode (Gate 2A.2, external `ble-worker-lab` decoder) | TESTED_REAL_IQ | Spec-correct CRC-24/dewhitening; explicitly **not frozen** -- best dev-sweep 381/384, `iq_recovery_validated=false` |
-| Native<->SDR packet association | TESTED_REAL_IQ | 0 `STRONG` matches among real evidence (see caveat above) |
-| Dataset quality gate | REPEATED | 34 reports ever generated: 32 `ACCEPTED_FOR_TRAINING`, 2 `NOT_ACCEPTED_FOR_TRAINING` |
-| Session-disjoint split + leakage check | VALIDATED | 2 of 8 currently-frozen datasets' splits are `NOT_FEASIBLE` -- a real, on-disk case of the gate rejecting contaminated real data |
-| Device Scrubbing | REPEATED | `SHELLY-PLUG-01`: unscrubbed background structurally untrainable (leakage `NOT_FEASIBLE`); scrubbed background reached TEST macro-F1 = 1.000 (`random_forest`, n=122) and live `IDENTIFIED` on 6/10 real samples |
-| Live-spectrum inference latency/throughput/dropped-window measurement | PENDING | No latency, dropped-window, or offline/live agreement-reconciliation code exists for the live path -- "real-time" is never claimed for this reason; use "online experimental inference" or "live-spectrum inference" |
-
-Current scientific scope, stated once: real evidence covers **5 physical
-devices**, **1 receiver** (USRP B200, serial `E3R04Z1B2`), **1 BLE channel
-per device's training set**, across **146 real+synthetic capture sessions**
-(2026-07-28 to 2026-08-03), all at a single physical location. No
-population-, receiver-, or channel-generalization claim is made anywhere in
-this project, and none is currently measurable from the evidence on disk.
-
-BLE-RFFI Studio implements a real, end-to-end capture-to-inference pipeline
-against genuine USRP B200 acquisitions, with per-device classification
-scores traceable to raw IQ; it does not currently constitute a deployed
-industrial identification system, and no output of this pipeline should be
-read as forensic attribution without an explicit population definition, a
-stated set of alternative-source propositions, and an independent
-validation study.
-
-### Guided BLE Scientific Validation
+### Independent BLE association validation (Guided BLE Scientific Validation)
 
 A third, independent verification path (`BLE Scientific Results Studio ->
 Guided Validation`), read-only over BLE-RFFI Studio's own manifests and
 artifacts. It asks a narrower, more skeptical question than the trained
 classifier above: **could device identity be corroborated without trusting
 the operator's declared label at all**, purely by cross-referencing the
-SDR's decoded packet timestamps against an *independent* observation source
--- the host's native Windows Bluetooth adapter, scanning in parallel with
-the same B200 capture. A packet only counts as a strong, source-corroborated
-association if both sources report the same advertising address within a
-250 ms window.
+SDR's decoded packet timestamps against an *independent* observation
+source -- the host's native Windows Bluetooth adapter, scanning in parallel
+with the same B200 capture. A packet only counts as a strong,
+source-corroborated association if both sources report the same
+advertising address within a 250 ms window.
 
 Real result, reproduced against the full corpus (138 real captures, 5
-devices): **zero strong associations**, for every device, including ones the
-trained classifier already identifies successfully from RF fingerprint
+devices): **zero strong associations**, for every device, including ones
+the trained classifier already identifies successfully from RF fingerprint
 alone. For `SHELLY-PLUG-01` specifically, the SDR correctly decodes 52
 packets carrying the device's real, registered address -- proving capture
-and decode are not the problem -- yet all 52 fail independent corroboration:
-40 because the native-adapter and SDR timestamps never agree within the
-accepted window even under a widened search
-(`ASSOCIATION_TIME_DELTA_ABOVE_THRESHOLD`), 10 because a native event exists
-nearby in time but reports a different address
+and decode are not the problem -- yet all 52 fail independent
+corroboration: 40 because the native-adapter and SDR timestamps never
+agree within the accepted window even under a widened search
+(`ASSOCIATION_TIME_DELTA_ABOVE_THRESHOLD`), 10 because a native event
+exists nearby in time but reports a different address
 (`ASSOCIATION_ADDRESS_MISMATCH`), 2 because multiple native events compete
 for the same window (`ASSOCIATION_MULTIPLE_NATIVE_CALLBACKS`).
 
 This is read as a real, unresolved clock-domain calibration gap between the
 native Windows Bluetooth stack and the B200/host capture pipeline -- no
-field calibration of that offset has been performed -- not as evidence that
-association is impossible or that the underlying RF-fingerprint classifier
-is wrong. The two mechanisms answer different questions: the classifier
-learns from labels the operator already controls experimentally; this
-module tries to generate that same label independently, and currently
-cannot. Closing this gap is a stated open item, not a claimed result.
+field calibration of that offset has been performed -- not as evidence
+that association is impossible or that the underlying RF-fingerprint
+classifier is wrong. The two mechanisms answer different questions: the
+classifier learns from labels the operator already controls
+experimentally; this module tries to generate that same label
+independently, and currently cannot. Closing this gap is a stated open
+item, not a claimed result.
+
+### Device Scrubbing
+
+An **always-on device** (e.g. `SHELLY-PLUG-01`, a mains smart plug with no
+accessible off switch) structurally never produces a real "device absent"
+example. **Device scrubbing** -- surgically removing that device's own
+decoded-packet windows from real IQ captures and replacing each with a real
+quiet segment copied from elsewhere in the *same* recording, never a
+synthetic/averaged fill -- was designed, implemented, and verified live:
+after scrubbing and capturing 8 real background sessions,
+`SHELLY-PLUG-01`'s best model reached TEST macro-F1 = 1.0 and was confirmed
+live, correctly reporting `IDENTIFIED` against real traffic.
+
+Scrubbed data remains distinguishable from directly-acquired target-absent
+evidence in every record -- the method generates usable negative examples,
+it does not manufacture an independent physical observation of the device
+being absent.
+
+### Other real, investigated findings
+
+Documented in full in [`backend/README.md`](backend/README.md) and the
+module's own
+[`backend/app/modules/ble_rffi_studio/README.md`](backend/app/modules/ble_rffi_studio/README.md):
+
+- A real cross-device dataset-contamination bug was found (one device's
+  packets leaking into another device's "single-device" training set when
+  both were physically nearby) and fixed at the dataset-building layer.
+- A real hardware artifact (LO leakage, a direct-conversion USRP
+  B200/AD9361 characteristic) was investigated, root-caused, and mitigated
+  via LO-offset tuning.
+- A pre-existing multi-class "which of N devices is this" task was found to
+  structurally exclude any "no device" example from its own training split
+  -- documented rather than silently worked around, which is why
+  simultaneous multi-device watching (above) exists as the practical
+  solution instead of a single combined classifier.
 
 ### Engineering obstacles encountered
 
@@ -855,12 +765,9 @@ same problems are not silently rediscovered:
   direct-conversion architecture (local-oscillator energy leaking into the
   received band near DC) was investigated, root-caused, and mitigated via
   LO-offset tuning rather than post-hoc filtering.
-- **Always-on devices structurally break "device absent" sampling**: a
+- **Always-on IoT devices structurally break "device absent" sampling**: a
   mains-powered device with no accessible off switch can never produce a
-  real negative example. Solved with device scrubbing (surgically removing
-  the device's own decoded-packet windows from real IQ and backfilling with
-  a real quiet segment from elsewhere in the same recording, never a
-  synthetic fill) rather than by pretending the device could be turned off.
+  real negative example -- see Device Scrubbing above.
 - **Windows `MAX_PATH` (260 characters)**: deeply nested run-artifact paths
   (timestamped run ID + timestamped action ID + filename) silently failed
   to write, surfacing as a bare `[Errno 2] No such file or directory` with
@@ -873,10 +780,11 @@ same problems are not silently rediscovered:
   each caught by the freeze/hash check refusing to proceed rather than
   silently accepting a drifted run.
 - **Physical device population, not device count**: the original device
-  inventory assumption (five identical `CC2650` units) was corrected to what
-  is physically true -- five heterogeneous BLE transmitters of different
-  models. This matters scientifically: population homogeneity directly
-  affects what generalization claim, if any, the results can support.
+  inventory assumption (five identical `CC2650` units) was corrected to
+  what is physically true -- five heterogeneous BLE transmitters of
+  different models. This matters scientifically: population homogeneity
+  directly affects what generalization claim, if any, the results can
+  support.
 
 **Model-training obstacles**:
 
@@ -887,182 +795,244 @@ same problems are not silently rediscovered:
   confident score.
 - **Live inference is structurally narrower than offline inference**: the
   live spectrum stream only ever exposes FFT/PSD data, never raw IQ, so any
-  task requiring raw IQ (e.g. `E1`) or a spectrogram (`E3`) is rejected for
-  the live path by construction, not by a missing feature -- the same model
+  task requiring raw IQ (e.g. E1) or a spectrogram (E3) is rejected for the
+  live path by construction, not by a missing feature -- the same model
   class can be offline-trainable and live-inference-ineligible at once.
 - A model is only considered live-ready above a fixed
   `READINESS_MIN_MACRO_F1 = 0.50` gate on its held-out TEST score.
 - No latency, throughput, or dropped-window measurement code exists for the
-  live inference path. This is stated explicitly rather than assumed: the
-  project deliberately never uses the phrase "real-time" for this reason,
-  using "online experimental inference" or "live-spectrum inference"
-  instead throughout the UI and docs.
+  live inference path -- stated explicitly rather than assumed, which is
+  why "real-time" is avoided project-wide in favor of "online experimental
+  inference" or "live-spectrum inference."
 
-## Demodulation capabilities
+BLE-RFFI Studio implements a real, end-to-end capture-to-inference pipeline
+against genuine USRP B200 acquisitions, with per-device classification
+scores traceable to raw IQ; it does not currently constitute a deployed
+industrial identification system, and no output of this pipeline should be
+read as forensic attribution without an explicit population definition, a
+stated set of alternative-source propositions, and an independent
+validation study.
 
-The demodulation registry supports analog audio, digital protocols, and IoT
-pipelines. A signal is not reported as decoded merely because energy exists in
-the selected band.
-
-| Pipeline | Status | Main output |
-|---|---|---|
-| `wfm_broadcast` | Basic implementation | Recovered WFM audio and report |
-| `nfm` | Basic implementation | Recovered NFM audio and report |
-| `am` | Basic implementation | Recovered AM audio and report |
-| `ble_advertising` | RF activity and synchronization scaffold | BLE CH37–CH39 packet candidates and CRC evidence |
-| `wifi_80211` | RF activity and frame scaffold | 2.4/5 GHz frame candidates and report |
-| `generic_gfsk_iot` | Physical bitstream estimator | Bitstream, payload candidate, and report |
-| `ook_ask_iot_sensor` | Physical bitstream estimator | Generic OOK/ASK bitstream and payload candidate |
-| `generic_fsk_iot` | Physical bitstream estimator | Generic FSK bitstream and payload candidate |
-| `zigbee_ieee802154` | Implemented | IEEE 802.15.4 frames, MAC fields, and FCS evidence |
-| `ieee802154_oqpsk` | RF activity and synchronization scaffold | O-QPSK packet candidates and report |
-| `adsb_1090` | RF activity and synchronization scaffold | ADS-B packet candidates and report |
-| `ook_fsk_generic` | Symbol-estimation scaffold | Generic OOK/FSK/GFSK bitstream diagnostics |
-| `lora_css` | Experimental scaffold | LoRa payload candidates and report |
-| `ook_433_remote` | Implemented | EV1527/PT2262 frames, address/button fields, and bitstream |
-| `fsk_remote_decoder` | Candidate decoder | ISM remote bursts, two-tone FSK candidates, and repetition evidence |
-| `dvbt` | External chain required | Detection/report only |
-| `dvbs_s2` | Experimental; external RF front end required | Detection/report only |
-
-Depending on the pipeline, persisted results can include:
-
-- `demodulation_report.json`
-- `decoded_packets.json`
-- `decoded_frames.json` or `decoded_frames.csv`
-- `recovered_bitstream.bin`
-- `burst_candidates.json`
-- recovered `.wav` or `.ts` media
-- `logs.txt`
+---
 
 ## Architecture
 
 ```text
-frontend/                         React, TypeScript, Vite, Tailwind
-  src/app/modules/                Route and navigation module definitions
-  src/presentation/views/         Operator-facing views
-  src/features/spectrum-tools/    Multi-technique spectrum processing and UI
-
-backend/                          FastAPI application
-  app/infrastructure/web/         Controllers and API routes
-  app/infrastructure/sdr/         Real spectrum stream and SDR safety
-  app/modules/fingerprinting/     Operational RF fingerprinting
-  app/modules/rf_intelligence/    RF scene detection and hypotheses
-  app/modules/rf_signal_understanding/
-  app/modules/rf_experiment_lab/  E0/E1/E3/E5 workflows
-  app/modules/e6_oracle_style/    E6 classical-ML workflows
-  app/modules/mlops/              Training, validation, registry lifecycle
-
-backend/tools/                    GNU Radio/UHD capture and stream workers
-readme_img/                       View-aligned README screenshots
-start_unified.ps1                 Unified Windows launcher
+RF-Fingerprint-Lab
+|
++-- frontend/
+|   +-- React
+|   +-- TypeScript
+|   +-- Vite
+|   +-- operator-facing views
+|   +-- spectrum visualization / Spectrum Tools
+|
++-- backend/
+|   +-- FastAPI
+|   +-- SDR control
+|   +-- acquisition
+|   +-- persistence
+|   +-- dataset governance
+|   +-- demodulation
+|   +-- RF fingerprinting
+|   +-- BLE-RFFI Studio
+|   +-- ML workflows
+|   +-- validation / model registry
+|
++-- backend/tools/
+|   +-- GNU Radio / UHD workers
+|
++-- docs/
+|   +-- scientific and technical documentation
+|
++-- readme_img/
+|   +-- README figures and demonstrations
+|
++-- start_unified.ps1
 ```
 
-The backend owns hardware access, capture, pre-trigger buffering, persistence,
-QC, demodulation, training, validation, and inference. The frontend owns the
-operator workflow and visualization.
+The **backend owns hardware-facing and scientific processing state**. The
+frontend provides the operator workflow and visualization layer. This
+separation avoids making the browser responsible for SDR acquisition or
+authoritative experiment state.
 
 ## Hardware and runtime
 
-| Component | Default |
+| Component | Current primary path |
 |---|---|
-| SDR | Ettus Research USRP-B200 |
-| Driver/runtime | UHD + GNU Radio |
-| SDR Python | RadioConda Python |
-| Antenna | `RX2` |
-| Center frequency | `89.4 MHz` |
-| Sample rate | `2 MS/s` |
-| Span | `2 MHz` |
-| Gain | `20 dB` |
+| SDR | Ettus Research USRP B200 |
+| SDR API | UHD |
+| DSP runtime | GNU Radio |
+| SDR Python environment | RadioConda |
+| Default receive antenna | `RX2` |
+| Backend | FastAPI / Python |
+| Frontend | React / TypeScript / Vite |
 
-Important environment variables:
+Acquisition parameters such as center frequency, sample rate, bandwidth,
+gain, antenna, FFT size, and polling interval are runtime configuration
+values rather than scientific constants.
 
 | Variable | Purpose |
 |---|---|
 | `RADIOCONDA_PYTHON` | Python executable used by GNU Radio/UHD workers |
-| `UHD_DEVICE_ARGS` | Device selector such as `serial=...` or `addr=...` |
-| `DEFAULT_CENTER_FREQUENCY_HZ` | Initial analyzer center |
+| `UHD_DEVICE_ARGS` | UHD device selector |
+| `DEFAULT_CENTER_FREQUENCY_HZ` | Initial analyzer center frequency |
 | `DEFAULT_SAMPLE_RATE_HZ` | Initial sample rate |
-| `DEFAULT_SPAN_HZ` | Initial acquisition span |
+| `DEFAULT_SPAN_HZ` | Initial span |
 | `DEFAULT_GAIN_DB` | Initial receiver gain |
 | `DEFAULT_ANTENNA` | Initial receive antenna |
-| `REAL_SDR_FPS` | Target live spectrum worker frame rate |
+| `REAL_SDR_FPS` | Live spectrum target frame rate |
 | `REAL_SDR_MAX_FFT_SIZE` | Maximum accepted FFT size |
 | `VITE_SPECTRUM_POLL_INTERVAL_MS` | Frontend spectrum polling interval |
 | `VITE_WATERFALL_POLL_INTERVAL_MS` | Frontend waterfall polling interval |
-| `QC_MIN_VALID_SNR_DB` | Minimum SNR for valid dataset captures |
-| `RF_INTELLIGENCE_MIN_SNR_DB` | Minimum SNR for RF Intelligence candidates |
+| `QC_MIN_VALID_SNR_DB` | Dataset QC threshold |
+| `RF_INTELLIGENCE_MIN_SNR_DB` | RF Intelligence candidate threshold |
 
-Persisted runtime settings are stored under:
-
-```text
-backend/app/infrastructure/persistence/storage/config/runtime_settings.json
-```
+Persisted runtime settings are stored under
+`backend/app/infrastructure/persistence/storage/config/runtime_settings.json`.
 
 ## Testing
 
-Backend unit tests:
+**Backend**
 
 ```powershell
 cd backend
 python -m pytest app/tests/unit -q
 ```
 
-Frontend production build:
+**Frontend**
 
 ```powershell
 cd frontend
 npm run build
 ```
 
-Before accepting hardware-facing changes, also verify:
+Hardware-facing changes should additionally be tested against the actual
+SDR path, including:
 
-1. `uhd_find_devices` and `uhd_usrp_probe`.
-2. Connect/disconnect and start/stop stream.
-3. Frequency, span, sample rate, gain, antenna, RBW, and VBW.
-4. Markers, Freeze, waterfall, Spectrum Tools, and overlays.
-5. Immediate and triggered capture with pre-trigger data.
-6. Dataset Builder QC and split routing.
-7. Demodulation, training, validation, and inference paths in scope.
+1. UHD device discovery and probe.
+2. Connect/disconnect.
+3. Stream start/stop.
+4. Frequency, sample-rate, span, gain, antenna, RBW and VBW controls.
+5. Live spectrum and waterfall.
+6. Markers and Spectrum Tools.
+7. Immediate capture.
+8. Triggered capture and pre-trigger preservation.
+9. Dataset QC and split routing.
+10. Any demodulation, training, validation, BLE-RFFI, or inference path
+    affected by the change.
+
+A passing frontend build or unit-test suite alone is not evidence that a
+hardware-dependent workflow has been validated over real RF input.
+
+## Scientific reporting principles
+
+RF-Fingerprint-Lab follows several project-level rules intended to keep
+experimental and operational claims distinguishable:
+
+- Real, synthetic, derived, and test-only data remain distinguishable.
+- RF activity is not automatically called protocol decoding.
+- A CRC-valid packet is distinguished from an RF burst candidate.
+- Logical device identification is distinguished from physical RF
+  fingerprinting.
+- Dataset labels retain their provenance.
+- Training, validation, and test groups do not silently share related
+  sessions.
+- Unsupported experimental conditions fail or report `NOT_FEASIBLE` rather
+  than silently weaken a scientific requirement.
+- Negative or unfavorable validation results remain part of the documented
+  project state.
+- Implementation status is not equivalent to scientific validation.
+- A successful experiment over a bounded device set is not automatically
+  generalized to unseen devices, receivers, channels, locations, or
+  acquisition conditions.
+
+For the current BLE evidence boundary and validation state, see
+[`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md).
 
 ## Troubleshooting
 
 ### UHD reports `No devices found`
 
-Run the UHD discovery and probe tools shown in [Quick start](#quick-start). If
-the radio is detected intermittently:
+Verify the receiver independently:
 
-- reconnect the USB cable and prefer a USB 3.x port;
-- close other applications that may own the USRP;
-- wait for Windows device enumeration before pressing Connect;
-- configure `UHD_DEVICE_ARGS=serial=<serial>` instead of empty autodetection;
-- verify that the UHD version used by RadioConda can probe the device.
+```powershell
+uhd_find_devices
+uhd_usrp_probe
+```
+
+Then check: USB enumeration; USB 3.x connectivity; whether another
+application owns the SDR; UHD/RadioConda compatibility; `UHD_DEVICE_ARGS`
+when more than one device is available.
 
 ### The Settings API returns 404
 
-The frontend and backend processes are from different revisions. Stop both and
-restart from the repository root with `start_unified.ps1`.
+Confirm the backend process actually mounts the Settings router for the
+running `app.main:app` entry point, and that the frontend's configured API
+base URL matches the backend's real host/port.
+
+### Frontend and backend appear inconsistent
+
+Stop both processes and restart them from the same repository revision
+using `start_unified.ps1`.
 
 ### A capture cannot enter training
 
-Check Dataset Builder. Strict training normally requires valid technical QC, a
-strong label, accepted human review, required metadata, and a training split.
+Inspect Dataset Builder and verify acquisition quality, required metadata,
+label status, review status, selected split, and dataset-specific
+scientific gates.
 
 ### E1, E3, or E5 refuses to train
 
-Verify dataset readiness, group-disjoint splits, at least two target classes,
-compatible representations, and the selected label field. Draft policies are
-for exploration and should not replace strict evaluation evidence.
+Check dataset readiness, number of target classes, class presence in each
+required split, session/group leakage, representation compatibility, label
+field, and minimum evidence requirements. A failed scientific gate should
+normally be investigated rather than bypassed.
 
 ### Spectrum Tools obscures the Live trace
 
-Use the `Live Trace` checkbox or eye control to hide only the original trace.
-Acquisition and every processor continue running. Hide individual tools with
-their eye controls, or reset/disable only the tool whose history is no longer
-needed.
+Toggle off unused overlays -- Trace History and Density/Persistence in
+particular render dense layers that can visually dominate a thin Live
+trace at some display scales; this is a rendering-order effect, not a data
+issue.
 
-## Additional documentation
+## Documentation
 
-- [Backend documentation](backend/README.md)
+Detailed implementation and scientific documentation is intentionally
+separated from this root overview:
+
+- [Backend documentation](backend/README.md) -- backend architecture, APIs,
+  workers, and hardware integration.
 - [Backend setup](backend/README_SETUP.md)
 - [Frontend documentation](frontend/README.md)
+- [`frontend/src/features/spectrum-tools/VALIDATION.md`](frontend/src/features/spectrum-tools/VALIDATION.md)
+  -- Spectrum Tools definitions and scientific checks.
 - [BLE-RFFI Studio module documentation](backend/app/modules/ble_rffi_studio/README.md)
+- [`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md) -- current
+  BLE scientific evidence, capability status, limitations, and reproduction
+  information.
+- [`docs/ble/PILOT_V1_LEGACY.md`](docs/ble/PILOT_V1_LEGACY.md) -- the
+  superseded BLE Dataset Studio Pilot v1 baseline, including an honest,
+  disk-verified note on which of its cited artifacts no longer exist.
+
+Historical or superseded experiments are maintained under `docs/` rather
+than placed before the active project description in this README.
+
+## Project status
+
+RF-Fingerprint-Lab is an **active research platform**. Several workflows
+operate end-to-end against real SDR data, while other modules remain
+experimental, partially implemented, or scientifically under validation.
+The authoritative state of a capability should therefore be determined from
+its corresponding module documentation, artifacts, tests, and
+scientific-status records rather than inferred only from the existence of a
+user-interface control.
+
+## Citation and research release
+
+For academic use or publication, the repository should maintain
+machine-readable citation metadata through a root-level `CITATION.cff` and
+an explicit software license. When experimental results from
+RF-Fingerprint-Lab are reported, the software revision, hardware
+configuration, dataset version, acquisition conditions, and relevant
+validation state should be recorded alongside the result.
