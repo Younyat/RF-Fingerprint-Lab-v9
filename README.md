@@ -541,6 +541,21 @@ inference**, all against real USRP B200 acquisitions, never synthetic data
 for anything operational. It is a separate, independent module and does not
 modify or replace RF Experiment Lab, E6, or Models.
 
+**Research motivation.** BLE device identity as normally observed
+(advertised MAC address, device name, protocol-level fields) is trivial to
+clone or spoof: an attacker only needs to copy those values into their own
+transmitter. Physical-layer RF fingerprinting investigates a different,
+complementary identity signal -- hardware-level imperfections of the actual
+analog transmitter (carrier frequency offset, IQ imbalance, transient shape)
+that are not controlled by firmware and are far harder to replicate. This
+project treats that as an open research question, not a solved one: every
+claim below is stated with its real evidence and its real limitations, and
+no result here is presented as a deployed anti-spoofing or forensic system.
+See also Guided BLE Scientific Validation below, which investigates the
+opposite direction -- whether device identity can be corroborated
+*independently* of the trained classifier, purely from timing -- and reports
+a real, current negative result for that specific approach.
+
 Current real state of this module (all counts below are real, on-disk
 artifacts, not targets or plans):
 
@@ -692,6 +707,109 @@ industrial identification system, and no output of this pipeline should be
 read as forensic attribution without an explicit population definition, a
 stated set of alternative-source propositions, and an independent
 validation study.
+
+### Guided BLE Scientific Validation
+
+A third, independent verification path (`BLE Scientific Results Studio ->
+Guided Validation`), read-only over BLE-RFFI Studio's own manifests and
+artifacts. It asks a narrower, more skeptical question than the trained
+classifier above: **could device identity be corroborated without trusting
+the operator's declared label at all**, purely by cross-referencing the
+SDR's decoded packet timestamps against an *independent* observation source
+-- the host's native Windows Bluetooth adapter, scanning in parallel with
+the same B200 capture. A packet only counts as a strong, source-corroborated
+association if both sources report the same advertising address within a
+250 ms window.
+
+Real result, reproduced against the full corpus (138 real captures, 5
+devices): **zero strong associations**, for every device, including ones the
+trained classifier already identifies successfully from RF fingerprint
+alone. For `SHELLY-PLUG-01` specifically, the SDR correctly decodes 52
+packets carrying the device's real, registered address -- proving capture
+and decode are not the problem -- yet all 52 fail independent corroboration:
+40 because the native-adapter and SDR timestamps never agree within the
+accepted window even under a widened search
+(`ASSOCIATION_TIME_DELTA_ABOVE_THRESHOLD`), 10 because a native event exists
+nearby in time but reports a different address
+(`ASSOCIATION_ADDRESS_MISMATCH`), 2 because multiple native events compete
+for the same window (`ASSOCIATION_MULTIPLE_NATIVE_CALLBACKS`).
+
+This is read as a real, unresolved clock-domain calibration gap between the
+native Windows Bluetooth stack and the B200/host capture pipeline -- no
+field calibration of that offset has been performed -- not as evidence that
+association is impossible or that the underlying RF-fingerprint classifier
+is wrong. The two mechanisms answer different questions: the classifier
+learns from labels the operator already controls experimentally; this
+module tries to generate that same label independently, and currently
+cannot. Closing this gap is a stated open item, not a claimed result.
+
+### Engineering obstacles encountered
+
+Documented here (rather than only in code comments) so the real difficulty
+of running this pipeline against physical hardware is visible, and so the
+same problems are not silently rediscovered:
+
+- **RF acquisition overflow**: a real, measured ~46% single-attempt failure
+  rate for continuous USB3 B200 streaming in this environment, even with no
+  other USB load -- the host cannot always keep up with sample delivery.
+  Absorbed with automatic, bounded retry (`_MAX_CAPTURE_ATTEMPTS`), never
+  silently retried without limit and never reported as a clean capture when
+  it was not.
+- **USB3 vs. USB2**: an earlier capture/analysis pass run over USB2 was
+  identified as unreliable and redone entirely over USB3 once the
+  difference was traced.
+- **A non-atomic hardware-session race**: the capture manager's background
+  thread writes its terminal state and clears its own "session active" flag
+  as two separate steps. An immediate retry right after a session ends can
+  observe the stale "still active" state and be rejected even though the
+  device is free -- absorbed with a short backoff-retry, not a longer
+  timeout that would slow every normal capture down.
+- **LO leakage**: a real hardware artifact of the B200/AD9361's
+  direct-conversion architecture (local-oscillator energy leaking into the
+  received band near DC) was investigated, root-caused, and mitigated via
+  LO-offset tuning rather than post-hoc filtering.
+- **Always-on devices structurally break "device absent" sampling**: a
+  mains-powered device with no accessible off switch can never produce a
+  real negative example. Solved with device scrubbing (surgically removing
+  the device's own decoded-packet windows from real IQ and backfilling with
+  a real quiet segment from elsewhere in the same recording, never a
+  synthetic fill) rather than by pretending the device could be turned off.
+- **Windows `MAX_PATH` (260 characters)**: deeply nested run-artifact paths
+  (timestamped run ID + timestamped action ID + filename) silently failed
+  to write, surfacing as a bare `[Errno 2] No such file or directory` with
+  no indication of the real cause. Fixed with the `\\?\` extended-length
+  path prefix at the file-write layer.
+- **Protocol-freeze drift**: the positive-pilot protocol required several
+  corrective passes (channel/duration/gain drift from the frozen
+  specification, a stale protocol revision hash, a capture-request freeze
+  under specific timing) before it reproduced identically on every run --
+  each caught by the freeze/hash check refusing to proceed rather than
+  silently accepting a drifted run.
+- **Physical device population, not device count**: the original device
+  inventory assumption (five identical `CC2650` units) was corrected to what
+  is physically true -- five heterogeneous BLE transmitters of different
+  models. This matters scientifically: population homogeneity directly
+  affects what generalization claim, if any, the results can support.
+
+**Model-training obstacles**:
+
+- Only five architectures are implemented and compared side by side every
+  run -- logistic regression, SVM-RBF, random forest, 1D CNN, 2D CNN. CNN
+  training refuses to run below 15 real examples per class rather than
+  training on an under-evidenced split and reporting a misleadingly
+  confident score.
+- **Live inference is structurally narrower than offline inference**: the
+  live spectrum stream only ever exposes FFT/PSD data, never raw IQ, so any
+  task requiring raw IQ (e.g. `E1`) or a spectrogram (`E3`) is rejected for
+  the live path by construction, not by a missing feature -- the same model
+  class can be offline-trainable and live-inference-ineligible at once.
+- A model is only considered live-ready above a fixed
+  `READINESS_MIN_MACRO_F1 = 0.50` gate on its held-out TEST score.
+- No latency, throughput, or dropped-window measurement code exists for the
+  live inference path. This is stated explicitly rather than assumed: the
+  project deliberately never uses the phrase "real-time" for this reason,
+  using "online experimental inference" or "live-spectrum inference"
+  instead throughout the UI and docs.
 
 ## Demodulation capabilities
 
