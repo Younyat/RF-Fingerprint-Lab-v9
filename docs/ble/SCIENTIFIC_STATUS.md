@@ -943,6 +943,36 @@ that a real campaign produced a result meeting the four RQs' scientific
 criteria. See the root README's Current scientific status table for what
 "EXPERIMENTALLY VALIDATED" requires beyond a passing test suite.
 
+### 16.12 Preprocessing profiles: `paper-eq6-7-v1`, `offset-retaining-v1`, `cfo-compensated-v1` (legacy)
+
+**Correction: this section was missing from this document until now**,
+despite being summarized in the root README and derived in full in
+[`docs/ble/PREPROCESSING.md`](PREPROCESSING.md) — added here so this
+document's own claim to be "the complete evidence-to-decision trace" holds.
+
+`preprocessing/paper_compliant_cfo.py` implements the paper's real
+Eq.(6)-(7): a frozen BLE reference waveform `q[n]`, `z_b[n] = x_b[n]·q*[n]`,
+unwrapped phase `ψ_b[n]`, a frozen fitting interval `I_b` (the burst's own
+`PRE_PDU` span), a real joint least-squares estimate of `(φ_b0, f_b)` via
+`np.linalg.lstsq`, and affine compensation
+`x̃_b[n] = x_b[n]·exp(-j(φ_b0 + 2π·f_b·n/Fs))` applied to the whole burst.
+Per-burst provenance (reference-waveform hash, `I_b`, `φ_b0`, `f_b`,
+`compensation_status`) is persisted for every TRAIN example and every
+inference decision, via one shared function
+(`apply_base_preprocessing_with_provenance`) — never two implementations.
+Registered as profile `paper-eq6-7-v1`; `offset-retaining-v1` is the
+identical pipeline with the offset deliberately left uncompensated, for
+sensitivity analysis. The older, simpler `cfo-compensated-v1` (mean
+phase-step CFO + first-sample phase zeroing) remains available for
+historical/ablation use only and is explicitly labeled
+**heuristic/legacy** — no reference waveform, no frozen `I_b`, no joint
+regression, no per-burst persisted parameters, and it must never be
+described as Eq.(6)-(7).
+
+IMPLEMENTED AND TESTED (injected-known-offset recovery of `φ_b0`/`f_b` to
+~1e-6 rad / ~1 Hz). **No definitive model bundle has been trained under
+`paper-eq6-7-v1` by a real campaign yet.**
+
 ---
 
 ## 17. Association semantics, eligibility, decision windows, campaign runner, holdout groups, and Guided Validation

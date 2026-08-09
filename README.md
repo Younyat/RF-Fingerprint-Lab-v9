@@ -171,8 +171,8 @@ at all in that variant.
 
 ## Implemented BLE-RFFI benchmark
 
-RQ2's four real, executable branches — the only model families BLE-RFFI
-Studio trains:
+RQ2's four real, executable signal-analysis branches — the only ones
+BLE-RFFI Studio trains:
 
 | Representation | Model(s) |
 |---|---|
@@ -181,8 +181,8 @@ Studio trains:
 | Time-frequency (STFT) | CNN2D |
 | Coarse time-frequency morphology | Frozen morphological baseline (nearest-centroid, no iterative training) |
 
-No other model family is implemented, exposed, or planned for BLE-RFFI
-Studio. Ideas beyond this table (edge transformers, metric learning,
+No other signal-analysis branch is implemented, exposed, or planned for
+BLE-RFFI Studio. Ideas beyond this table (edge transformers, metric learning,
 quantized inference, and similar) are tracked separately, explicitly not
 mixed with the table above, in
 [`docs/research/TECHNIQUE_ROADMAP.md`](docs/research/TECHNIQUE_ROADMAP.md).
