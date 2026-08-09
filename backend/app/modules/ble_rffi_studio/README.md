@@ -9,6 +9,131 @@ This README is part of the project audit trail. Any meaningful change to this
 module must update this file in the same work item: what changed, why it
 changed, what scientific/UX assumption it protects, and how it was verified.
 
+## 2026-08-09 update: protocol-adaptation and scientific-rigor correction pass
+
+Everything below is real, implemented, and covered by real tests unless
+marked otherwise. Distinction used throughout, matching the root README and
+`docs/ble/SCIENTIFIC_STATUS.md` §16: **IMPLEMENTED** = exists in code, wired
+into the real pipeline, tested. **EXPERIMENTALLY VALIDATED** = additionally
+exercised by a real campaign meeting an explicit criterion. This section
+never claims the second for something that is only the first. Full detail,
+real numbers, and per-item tests: `docs/ble/SCIENTIFIC_STATUS.md` §16;
+Eq.(6)-(7) full derivation: `docs/ble/PREPROCESSING.md`.
+
+- **RQ4 artifacts**: `ADVA_MASKED` (zero-filled in place) is retired --
+  replaced by `packet_content/field_mapping.py`'s `ADVA_EXCLUDED`, which
+  genuinely splices the AdvA sample range OUT of the analytical window
+  (shorter array, no synthetic zero block standing in for it, no mask
+  channel). `PRE_PDU` is unchanged and re-verified: `preamble + access
+  address`, ending exactly before the PDU header starts. IMPLEMENTED, no
+  definitive RQ4 campaign yet.
+- **Preprocessing**: `preprocessing/paper_compliant_cfo.py` implements the
+  paper's real Eq.(6)-(7) (`q[n]` frozen reference, `z_b[n]`, `ψ_b[n]`,
+  frozen `I_b` = `PRE_PDU`, joint least-squares `(φ_b0, f_b)`, affine
+  compensation, per-burst provenance) under profile `paper-eq6-7-v1`, with
+  `offset-retaining-v1` as its sensitivity-analysis counterpart (same
+  pipeline, offset not compensated). The older `cfo-compensated-v1` remains
+  available for historical/ablation use only and is explicitly labeled
+  **heuristic/legacy** -- it is not Eq.(6)-(7) (no reference waveform, no
+  frozen index set, no joint regression, nothing persisted per burst) and
+  must not be described as such anywhere in this file. IMPLEMENTED AND
+  TESTED; no definitive real model bundle has been trained under
+  `paper-eq6-7-v1` by a real campaign yet.
+- **RQ2's 4th branch**: `training/frozen_reference_baseline.py` -- a frozen
+  (no iterative optimization), nearest-centroid classifier over an
+  L2-normalized coarse time-frequency representation
+  (`frozen_morphological_baseline`, `ModelType` in `contracts/training.py`
+  now has 6 values, not 5). Deliberately not `rf_experiment_lab`'s E0 (a
+  region detector, not a device-fingerprinting baseline). IMPLEMENTED,
+  wired into `prepare_and_train`'s "normal" speed profile; no definitive
+  common RQ2 benchmark run yet.
+- **Decision windows / abstention / coverage**:
+  `OfflineInferenceService.run_decision_windows()` groups examples into real
+  time windows, scores each burst with the bundle's own frozen model,
+  aggregates by a declared, frozen rule (median probability per class), and
+  abstains (`INSUFFICIENT_EVIDENCE`) below a minimum eligible-burst count --
+  before the acceptance threshold is ever applied. `risk_coverage_curve`
+  and `hierarchical_cluster_bootstrap` (previously real but
+  production-unused) are now wired to real results:
+  `SplitEvaluationReport.risk_coverage` and
+  `StudioRepository.bootstrap_accuracy_ci` (session-clustered, never
+  per-burst). IMPLEMENTED; no definitive campaign report produced yet.
+- **Protected future holdout / confirmatory eligibility**:
+  `export_and_approve_all_candidates` no longer opens TEST for any
+  non-recommended candidate -- selection is VALIDATION-only; TEST opens
+  exactly once, for the recommended candidate, freezing a real
+  `ble_scientific_results.AnalysisContract` and logging a real,
+  hash-chained holdout-access entry. `ModelBundleManifest.confirmatory_
+  eligible` is a new, enforced field: **the 22 already-exported
+  `OPT_IN_MULTI_CANDIDATE_COMPARISON` bundles remain `APPROVED_FOR_LIVE_
+  PILOT` (status preserved) but now carry `confirmatory_eligible=False`,
+  permanently, and must not be read as confirmatory evidence for any
+  paper-level claim.** 5 bundles (the real VALIDATION-recommended
+  candidate per device) carry `confirmatory_eligible=True`. IMPLEMENTED
+  AND VERIFIED against the real 27-bundle migration; no paper-level
+  confirmatory result has been produced through this mechanism yet.
+- **RQ3 / RESET-CONTROL pairing**: `campaign/pre_post_pairing.py` pairs a
+  physical unit's PRE/POST captures within one device-day and intervention
+  arm, invalidating a pair when `receiver_epoch` (or, if supplied, the
+  qualified preprocessing profile) differs between the two captures.
+  IMPLEMENTED and tested; **0 real pairs exist** --
+  `campaign_period`/`pre_or_post`/`intervention_arm`/`packet_variant`
+  remain undeclared on every real capture (0/150), matching this file's
+  own long-standing honesty about undeclared paper-campaign metadata.
+- **Receiver identity / `receiver_epoch`**: `acquisition/receiver_identity.py`
+  now separates `receiver_identity_id` (canonical physical B200 -- SDR
+  model + real hardware serial ONLY, never the old, unreliable `device_id`
+  field) from `qualified_acquisition_profile_hash` (sample rate, bandwidth,
+  gain/mode, antenna/RX channel, clock/time source, capture-tool version).
+  `receiver_epoch` (`acquisition/receiver_epoch_assignment.py`) is a real
+  sequential session id: a new epoch starts at the first capture of an
+  identity, on a qualified-profile change, or when the gap since the
+  previous capture of the same identity exceeds a documented 1-hour proxy
+  threshold (checked against real gap statistics, not an arbitrary
+  constant) -- **not direct physical evidence of a B200 restart**, since no
+  field anywhere upstream records a real boot/reconnect event. Real bug
+  found and fixed: the old logic split the SAME physical B200 into 2
+  spurious epochs (133 vs. 11 captures) because the legacy `device_id`
+  field inconsistently held a hashed id for some captures and the raw
+  serial for others. `migrate_v3_receiver_epoch.py`, run for real: 144 real
+  captures unified under 1 identity, resolving into 10 real sessions.
+- **`day_id` provenance**: now sourced from `capture_manifest.json`'s real
+  `b200_rf_started_at` (actual RF-sampling start) first, falling back to
+  `created_at_utc` (job start) only when absent; `day_id_source` is
+  persisted (`B200_RF_STARTED_AT` / `CREATED_AT_FALLBACK` /
+  `MANIFEST_DECLARED`). Checked against all 148 real captures with both
+  fields: 0 produce a different calendar day under the old vs. new source
+  -- no historical rewrite was needed.
+- **Inference provenance**: every real offline inference run now persists a
+  manifest (`inference_runs/<id>.json`) binding the real bundle content
+  hash (`bundle_sha256`) and the real source capture's `iq_sha256` to every
+  prediction -- `run_inference()`'s own public return shape is unchanged.
+- **Migration ledger**: `migrations/migration_ledger.py`, a general,
+  append-only audit mechanism for any script that rewrites already-persisted
+  metadata (never I/Q). 150 real, non-retroactive entries plus 214
+  retroactively reconstructed entries (explicitly flagged
+  `retroactive: true`, using each artifact's real on-disk modification time
+  as a documented timestamp proxy, never the exact original edit instant)
+  for migrations performed before this ledger existed.
+- **Association mechanism**: `ScientificResultsRepository.
+  find_frozen_association_policy()` is implemented and **fail-closed** --
+  scans real calibration attempts for one with `status=FROZEN`. **Current
+  real state: it returns `None`.** All 4 real calibration attempts on disk
+  show `NO_THRESHOLD_SATISFIES_CRITERIA` (coverage=0.0, false_strong=0 at
+  every threshold tried), and the real corpus contains **0 STRONG
+  associations among any real (`REAL_B200`) example** -- unchanged by this
+  correction pass, and not weakened to produce a different result. Strong,
+  source-corroborated labeling stays structurally disabled
+  (`STRONG_ASSOCIATION_DISABLED_UNTIL_POLICY_FROZEN`) until a real
+  calibration produces a policy that satisfies the criteria.
+
+None of the above changes any model architecture, adds a new one, or alters
+any earlier dated entry below -- they are historical records of what was
+true when written and are left as-is. Where an earlier entry below describes
+a state one of the items above has since changed, this block is the
+authoritative current state; the entry below remains the accurate record of
+what was known at that entry's own date.
+
 ## 2026-07-31 update: real identity diagnostic, see `BLE_RFFI_IDENTITY_DIAGNOSTIC_2026-07-31.md`
 
 Ran the first-ever `SAME_MODEL_UNIT_IDENTIFICATION` training attempt with real B200 data (`keyfobdemo 01`,
@@ -521,7 +646,10 @@ Every layer of that result was wrong, for three separate reasons:
    so the gate and the real training labels can never drift apart), if
    `len(train_labels) < 2` the split itself becomes `NOT_FEASIBLE` with
    reason `TRAINING_REQUIRES_AT_LEAST_TWO_CLASSES: ...` -- before any model
-   type ever sees the data, so this blocks all five model types uniformly.
+   type ever sees the data, so this blocks every model type uniformly
+   (five at the time this gate was written; a sixth was added 2026-08-09,
+   see the update block at the top of this file -- the gate is
+   task-agnostic and applies to it unchanged).
    `evaluation/evaluator.py`'s `SplitEvaluationReport.evaluation_validity`
    additionally carries `INVALID_SINGLE_CLASS_EVALUATION` if `evaluate_split`
    is ever reached with under 2 known classes -- defense in depth, expected

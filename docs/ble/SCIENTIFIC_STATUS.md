@@ -1,6 +1,12 @@
 # BLE Scientific Status
 
-Snapshot commit: `5f1ddbba` (2026-08-05). Repo root below is `spectrum-lab/`.
+Snapshot commit: `5f1ddbba` (2026-08-05) for §1-§15 below (left as originally
+written and verified, except for the specific in-place corrections marked
+`[2026-08-09 correction]`). §16 (2026-08-09) documents a real, substantial
+correction pass over the working tree at commit `0d00bb7f` — not yet
+committed at the time §16 was written, so treat §16 as describing the
+current working tree, not a tagged release. Repo root below is
+`spectrum-lab/`.
 
 This document is the detailed technical companion to the `## BLE-RFFI Studio`
 section of the root [`README.md`](../../README.md). It exists because BLE
@@ -120,12 +126,20 @@ pass/fail outcome recorded on disk (not merely "code exists").
 | 11 | Evidence Stage (per-packet example + annotation generation, contradiction detection) | REPEATED | `evidence/evidence_stage.py`; 47,051 examples generated to date |
 | 12 | Dataset Builder (freeze, quality gate, `class_distribution`) | REPEATED | `dataset/dataset_builder.py`; 34 quality reports ever generated (32 `ACCEPTED_FOR_TRAINING`), 8 datasets currently frozen |
 | 13 | Split Builder (capture/execution/session/candidate/packet/sample-range-disjoint TRAIN/VALIDATION/TEST + leakage check) | VALIDATED | `split_builder.py`; **2 of the 8 currently-frozen datasets' splits are `NOT_FEASIBLE`** with the recorded reason `Leakage check failed on field(s): ['capture_id','execution_id','session_id']` — a real, on-disk case of the gate actually rejecting real data |
-| 14 | Model training, 5 architectures (`logistic_regression`,`svm_rbf`,`random_forest`,`cnn1d`,`cnn2d`) | REPEATED | `training_service.py`; 173 `TrainingRun` records ever generated |
+| 14 | Model training, 5 architectures (`logistic_regression`,`svm_rbf`,`random_forest`,`cnn1d`,`cnn2d`) — **[2026-08-09: a 6th, `frozen_morphological_baseline`, was added; see §9 and §16.9]** | REPEATED | `training_service.py`; 173 `TrainingRun` records ever generated (all under the original 5 -- no real run yet exists under the 6th) |
 | 15 | VALIDATION-only composite-score selection + single guaranteed TEST evaluation | REPEATED | `model_selector.py:37-68`; every training run |
 | 16 | Opt-in multi-candidate TEST comparison (`evaluate_training_run_on_test_opt_in`) | REPEATED | 22 of the 27 currently-exported bundles carry `test_evaluation_provenance=OPT_IN_MULTI_CANDIDATE_COMPARISON` |
 | 17 | Device Scrubbing (packet-window excision + real quiet-segment substitution) | REPEATED | `scrubbing/device_scrubber.py`; 2 independent real rounds for `SHELLY-PLUG-01` (3-session and 8-session), see `backend/README.md` |
 | 18 | Live-spectrum single-model health check (baseline-vs-device-on comparison) | TESTED_REAL_IQ | `real_spectrum_stream.py`; `SHELLY-PLUG-01` `random_forest` bundle, 10 real live samples, 6/10 crossed `acceptance_threshold=0.7` and returned `IDENTIFIED` (`backend/README.md:1080-1089`) |
 | 19 | Simultaneous multi-device live watching (N bundles vs. one shared decoded burst) | IMPLEMENTED | `_live_check_worker_loop()`, `real_spectrum_stream.py`; wired end-to-end and used interactively, but **no dedicated on-disk log of a multi-device-simultaneous real session exists** — `NOT DOCUMENTED — requires experimental confirmation` for a quantified multi-device live accuracy claim |
+
+**Capabilities added 2026-08-09** (confirmatory-evaluation discipline,
+receiver-epoch redesign, `day_id` source correction, RQ2's 4th model
+branch, RQ3/RQ4 infrastructure, decision windows, coverage/risk-coverage,
+fixed seed set, inference provenance manifest, migration ledger) are not
+retrofitted into the table above — they use the same evidence discipline
+but are documented in full, with the explicit IMPLEMENTED vs.
+EXPERIMENTALLY VALIDATED distinction, in **§16**.
 
 ---
 
@@ -235,6 +249,25 @@ times in the current corpus.** This is the single most important caveat for
 any claim about label quality: no real example currently in this repository
 has ever been confirmed via the independently-corroborated (address +
 Windows-native-timestamp) path.
+
+**[2026-08-09 addition — `ble_scientific_results`'s parallel labeling
+mechanism, not `ble_rffi_studio`'s own `_associate()` above]**
+`ble_scientific_results` (the separate, paper-evidence layer) has its own,
+structurally distinct STRONG-labeling gate:
+`burst_records.py::_passes_target_association_criterion` returns `False`
+unconditionally whenever no real, frozen `AssociationPolicy` is supplied —
+this was already correctly fail-closed before 2026-08-09. What changed:
+`ScientificResultsRepository.find_frozen_association_policy()` now scans
+every real `guided_validation/*/association_policy.json` calibration attempt
+and auto-supplies the first one with `status=FROZEN` to `build_records()` —
+closing a real gap where nothing ever looked one up automatically. **Current
+real state, checked 2026-08-09**: all 4 real calibration attempts on disk
+show `status=NO_THRESHOLD_SATISFIES_CRITERIA` (coverage=0.0 and
+false_strong=0 at every threshold in the grid `[50, 100, 150, 200, 250, 300,
+400, 500]` ms); `find_frozen_association_policy()` correctly returns `None`.
+**Mechanism: IMPLEMENTED, fail-closed, verified. Experimental calibration:
+NOT YET VALIDATED — no frozen policy exists, and none is fabricated.** See
+§16.7.
 
 **(b) Evidence Stage's own registry resolution**
 (`evidence_stage.py:90-160`, via `registry.find_binding_for_address()`
@@ -372,10 +405,26 @@ i.e. none are derived from another frozen dataset in the current corpus),
 
 **Disjointness fields actually enforced by the leakage check**
 (`split_builder.py`, `_LEAKAGE_FIELDS`): `capture_id`, `execution_id`,
-`session_id`, `candidate_id`, `packet_id`, `sample_range`. **Not enforced**:
-day-disjointness, receiver-disjointness, channel-disjointness — none of
-these are fields on `ExampleRecord`, and none appear in
-`_LEAKAGE_FIELDS`.
+`session_id`, `candidate_id`, `packet_id`, `sample_range`. **Not enforced as
+a leakage field**: day-disjointness, receiver-disjointness — deliberately
+not added (single-receiver study; a day-disjoint requirement was never part
+of any of the four `ScientificTask` designs) — see §16.3.
+
+**[2026-08-09 correction]** Channel is handled differently from the other
+two: `SplitBuilder.build()` now excludes every example whose `channel != 37`
+from the split ENTIRELY, before assignment, for all four current
+`ScientificTask`s — a real, scoped **split policy**, not a leakage-field
+addition. Real finding from applying this for the first time: 4 already-frozen
+real datasets (`CC2541SensorTag-AUTO-TVB`, `CC2650-UNIT-01-AUTO-TVB`,
+`keyfobdemo 01-AUTO-TVB`, `keyfobdemo 02-AUTO-TVB`) had real channel-38
+examples mixed into TRAIN/VALIDATION/TEST — 1,995 / 2,646 / 2,696 / 1,481
+examples respectively, now excluded and recorded on each split's own
+`channel_scope_excluded_example_ids` field. The excluded examples are never
+deleted — they remain in `evidence/*/examples.jsonl`, available to a future,
+distinct channel-transport analysis (RQ4-adjacent, not yet implemented) —
+this is a scoping decision for the current benchmark, not a data-retention
+decision. See §16.3 for the full correction and §16.9 for the migration
+ledger entries this produced.
 
 **Quality gate** (`DatasetQualityReport`, `contracts/quality_report.py`):
 `ExactDuplicatesResult`, `SampleOverlapResult` (both real, blocking checks),
@@ -393,13 +442,18 @@ but has never actually been assigned in this corpus.
 
 ## 9. Real BLE models actually available
 
-All from `ModelType` (`contracts/training.py:11`): exactly
-`logistic_regression`, `svm_rbf`, `random_forest`, `cnn1d`, `cnn2d`. **No
-other architecture is implemented, UI-exposed, or planned for BLE-RFFI
-Studio** — in particular, no Transformer, no ResNet variant, no MFCC/LFCC
-representation exists inside this module (those specific
-not-implemented items belong to `rf_experiment_lab`'s E1/E5, a different
-module — see §1).
+**[2026-08-09 correction]** `ModelType` (`contracts/training.py`) now has
+**six** values, not five: `logistic_regression`, `svm_rbf`, `random_forest`,
+`cnn1d`, `cnn2d`, and `frozen_morphological_baseline` (added as RQ2's 4th
+representation branch — a frozen, non-iterative nearest-centroid classifier
+over an L2-normalized coarse time-frequency representation,
+`training/frozen_reference_baseline.py`; deliberately not a copy of
+`rf_experiment_lab`'s E0, which is a region detector, not a
+device-fingerprinting baseline). **No other architecture is implemented,
+UI-exposed, or planned for BLE-RFFI Studio** — in particular, no
+Transformer, no ResNet variant, no MFCC/LFCC representation exists inside
+this module (those specific not-implemented items belong to
+`rf_experiment_lab`'s E1/E5, a different module — see §1).
 
 | Model type | Backing implementation | Representation |
 |---|---|---|
@@ -409,12 +463,22 @@ module — see §1).
 | `cnn1d` | custom 2-conv-layer `nn.Module` | raw IQ, `raw_iq-v1`, shape `[2, 800]` |
 | `cnn2d` | custom 2-conv-layer `nn.Module` | `spectrogram-v1` — **docstring says one-sided `[1, n_fft//2+1, target_frames]`, but `scipy.signal.stft(..., return_onesided=False)` actually produces a two-sided `[1,64,32]` tensor** — a real code/docstring discrepancy, not corrected here |
 
-`random_seed=42` is hardcoded in `prepare_and_train()`
-(`api/studio_repository.py:1586`) — every training run in this module uses
-the same seed; no seed-sensitivity study exists.
+**[2026-08-09 correction]** `random_seed=42` is no longer a bare literal:
+`FROZEN_TRAINING_SEEDS = (42, 137, 2024)` (`api/studio_repository.py`) is a
+real, explicit, frozen seed SET. `42` (the set's first element) is still
+what every normal training run uses — unchanged real behavior — while
+`train_seed_variability_analysis()` retrains the same configuration under
+the other two frozen seeds, VALIDATION-only, real per-run results, never
+opening TEST. IMPLEMENTED and tested (§16.9); **no real optimization-
+variability report over a definitive campaign has been produced from it
+yet** — the 173 real `TrainingRun` records below all still used only the
+single seed `42`, since seed-variability analysis is a distinct, separately
+invoked diagnostic, not run automatically by `prepare_and_train`.
 
-Currently exported and `APPROVED_FOR_LIVE_PILOT`: **27 bundles** — 25 are
-all 5 architectures × 5 real physical devices (`CC2541SensorTag`,
+Currently exported and `APPROVED_FOR_LIVE_PILOT`: **27 bundles**, all
+trained before the 6th architecture (§9's 2026-08-09 correction, above)
+existed — 25 are all 5 architectures × 5 real physical devices
+(`CC2541SensorTag`,
 `CC2650-UNIT-01`, `SHELLY-PLUG-01` [scrubbed-background dataset only, see
 §12], `keyfobdemo 01`, `keyfobdemo 02`); the remaining 2
 (`TRAIN-20260803T144755-SHELLY-PLUG-01-random_forest`/`-svm_rbf`) are a
@@ -590,18 +654,25 @@ sibling repo, referenced only by path, never pinned to a commit inside
 BLE-RFFI Studio's real evidence, as of commit `5f1ddbba` (2026-08-05),
 covers: **5 physical BLE devices** (`CC2541SensorTag`, `CC2650-UNIT-01`,
 `SHELLY-PLUG-01`, `keyfobdemo 01`, `keyfobdemo 02`), **1 receiver**
-(USRP B200, serial `E3R04Z1B2`), **1 BLE channel per device's training set**
-(no dataset currently mixes examples from more than one of channels
-37/38/39 in the frozen `class_distribution`s inspected), across
-**146 real+synthetic capture sessions spanning 2026-07-28 to 2026-08-03**,
-all recorded at a single physical location on a single set of RF hardware.
-Every trained-and-exported model's TRAIN/VALIDATION/TEST split is disjoint
-only on the fields listed in §8 (capture/execution/session/candidate/
-packet/sample-range) — not on day, receiver, or channel, because no
-dataset currently spans more than one of any of those. No population,
-receiver, or channel generalization claim is made anywhere in this
-document or the README, and none is currently measurable from the evidence
-on disk.
+(USRP B200, serial `E3R04Z1B2`), across **146 real+synthetic capture
+sessions spanning 2026-07-28 to 2026-08-03**, all recorded at a single
+physical location on a single set of RF hardware.
+
+**[2026-08-09 correction]** The channel claim above ("1 BLE channel per
+device's training set, no dataset currently mixes...") was **checked and
+found false** for the frozen `DatasetManifest`s themselves — real channel-38
+examples were present and, before this correction, were being assigned into
+TRAIN/VALIDATION/TEST by `SplitBuilder`. The dataset-level composition is
+unchanged (datasets are frozen, never rewritten), but the *split* is now
+channel-37-only by policy for the main benchmark — see §8 and §16.3. Every
+trained-and-exported model's TRAIN/VALIDATION/TEST split is disjoint on the
+fields listed in §8 (capture/execution/session/candidate/packet/sample-range)
+AND, since 2026-08-09, scoped to channel 37 only — not on day or receiver,
+because no dataset currently spans more than one receiver, and a day-disjoint
+requirement was never part of any of the four `ScientificTask` designs (see
+§16.3). No population, receiver, or channel generalization claim is made
+anywhere in this document or the README, and none is currently measurable
+from the evidence on disk.
 
 ---
 
@@ -616,6 +687,261 @@ population definition, a stated set of alternative-source propositions, and
 an independent validation study — none of which exist for this module as
 of this document.* No score produced by any bundle in §9/§12 is called an
 "attribution" anywhere in this document, consistent with that constraint.
+
+---
+
+## 16. 2026-08-09 correction pass — protocol-adaptation and scientific-rigor fixes
+
+A real, substantial correction pass over the working tree (not yet
+committed as of this writing — HEAD is `0d00bb7f`). Every item below
+follows the same `IMPLEMENTED` vs. `EXPERIMENTALLY VALIDATED` distinction
+the rest of this document already uses: **IMPLEMENTED** means the code
+exists, is wired into the real pipeline, and has real tests passing.
+**EXPERIMENTALLY VALIDATED** means, additionally, that a real campaign was
+run and produced evidence meeting an explicit, stated criterion.
+Implementation is never described as validation anywhere below.
+
+### 16.1 Confirmatory-evaluation discipline (TRAIN → VALIDATION → FREEZE → FUTURE TEST)
+
+**IMPLEMENTED.** `export_and_approve_all_candidates` no longer opens TEST
+for any non-recommended candidate — model selection uses VALIDATION only;
+TEST opens exactly once, for the VALIDATION-recommended candidate, via
+`_freeze_and_log_test_access`, which freezes a real
+`ble_scientific_results.AnalysisContract` (capturing the run's actual
+frozen seed/dataset/split hashes, never a placeholder) and appends a real,
+hash-chained entry to `ble_scientific_results`'s holdout access log —
+independently verifiable via `verify_holdout_access_chain()`. A
+`ModelBundleManifest.confirmatory_eligible` field now exists and is
+enforced by `approve_for_live_pilot`: a bundle whose TEST evaluation is
+`OPT_IN_MULTI_CANDIDATE_COMPARISON` (an operator explicitly comparing
+several candidates against TEST) can never be approved for live pilot use,
+and is never presented as confirmatory evidence.
+
+**Real migration of the 22 already-exported `OPT_IN_MULTI_CANDIDATE_
+COMPARISON` bundles**: all 22 remain `APPROVED_FOR_LIVE_PILOT` (status
+preserved, per an explicit decision not to revoke already-approved bundles)
+but now carry `confirmatory_eligible=False`, permanently. **These 22
+bundles must not be read as confirmatory evidence for any paper-level
+claim** — they were multiple-comparison-exposed to TEST by design, a real,
+documented statistical caveat, not a defect being hidden. 5 bundles (one
+per real device, the actual VALIDATION-recommended candidate in each case)
+carry `confirmatory_eligible=True`.
+
+**EXPERIMENTALLY VALIDATED**: the mechanism itself — verified against real
+training runs (5 new tests, `test_export_and_approve_all_candidates.py`)
+and the real 27-bundle migration. **NOT experimentally validated**: no
+paper-level confirmatory result has been produced through this mechanism
+yet — that requires a real, definitive campaign run, not yet executed.
+
+### 16.2 Association-policy hash — see §5's 2026-08-09 addition
+
+Unchanged summary: **IMPLEMENTED, fail-closed, verified**.
+`association_policy_hash` on a frozen `AnalysisContract` now reflects a real
+calibrated `AssociationPolicy` when one exists (prefixed
+`NO_CALIBRATED_POLICY_YET:` otherwise, honestly) instead of a bare
+source-code hash. **No such policy currently exists** — 0/4 real
+calibration attempts reached `FROZEN`. Strong, source-corroborated
+association remains structurally disabled until one does.
+
+### 16.3 Split policy: channel scope, split completeness, and no indiscriminate leakage fields
+
+**IMPLEMENTED.** `SplitBuilder` now excludes non-channel-37 examples before
+building any of the four `ScientificTask` splits — a scoped **split
+policy**, deliberately not a blanket leakage-field addition (day and
+receiver disjointness were deliberately NOT added as leakage fields: this
+is a single-receiver study, and no `ScientificTask` design requires
+day-disjointness). See §8's 2026-08-09 correction for the real, on-disk
+finding this produced (4 datasets had channel-38 examples mixed into
+TRAIN/VALIDATION/TEST). A new, independent gate also now rejects a split
+where VALIDATION or TEST is missing real support for a class TRAIN has
+(`SPLIT_INCOMPLETE_MISSING_CLASS_SUPPORT`) — `balanced_accuracy`/`macro_f1`
+formulas themselves are unchanged (a missing class is treated as an
+incomplete split, never papered over by excluding it from the metric).
+
+**EXPERIMENTALLY VALIDATED**: the channel-scope exclusion, against the 4
+real datasets above (real, on-disk before/after counts). The
+split-completeness gate has not yet rejected any real split (every
+currently-READY split already had full class coverage by construction) —
+its correctness is unit-tested, not yet exercised by a real rejection.
+
+### 16.4 `receiver_epoch` — identity, qualified acquisition profile, and session boundary
+
+**IMPLEMENTED.** Three real, separate fields replace the old bare-hash
+`receiver_epoch`: `receiver_identity_id` (canonical physical receiver —
+SDR model + real hardware serial ONLY, never the legacy `device_id` field),
+`qualified_acquisition_profile_hash` (every acquisition-chain parameter
+that can plausibly change what the receiver measures: sample rate,
+bandwidth, gain/mode, antenna/RX channel, clock/time source, capture-tool
+version), and `receiver_epoch` itself — a sequential session id, assigned
+by `acquisition/receiver_epoch_assignment.py` over every real capture of
+one identity, ordered by acquisition time. A new epoch starts at the first
+capture of an identity, whenever the qualified profile hash changes, or
+whenever the gap since the previous capture of the same identity exceeds
+`RECEIVER_SESSION_GAP_S = 3600.0` seconds — **a documented proxy for
+reinitialization/reconnection, not direct physical evidence of a B200
+restart**: no field anywhere in the legacy `capture_manifest.json` records
+a real USRP boot/session id. The threshold is not an arbitrary guess: of
+154 real captures (single physical serial `E3R04Z1B2`), exactly 9 gaps
+exceed 1 hour (from ~1.7h to ~4 days), consistent with real distinct
+capture-day boundaries in this campaign's actual history.
+
+**Real bug found and fixed**: the previous `receiver_epoch` used the
+legacy `device_id` field, which real data showed inconsistently held either
+a normalized/hashed id (133 captures) or the raw hardware serial (11
+captures) for the **same physical B200** — silently splitting one real
+receiver into two epochs with no real hardware event behind the split.
+`migrate_v3_receiver_epoch.py`, run for real against the on-disk corpus:
+**144 real captures unified under 1 receiver identity, resolving into 10
+real sequential sessions** (previously: 2 spurious identities). Verified
+idempotent (a second run makes 0 further changes).
+
+**EXPERIMENTALLY VALIDATED**: the identity-unification fix, against the
+real 144-capture corpus. **NOT experimentally validated**: the
+session-gap proxy's correspondence to genuine B200 reinitialization events
+— that would require a real capture campaign with logged, ground-truth
+restart timestamps to compare against, which does not exist. RQ3's
+PRE/POST pairing (§16.6) inherits this same limitation.
+
+### 16.5 `day_id` — real RF-acquisition timestamp, not job-start time
+
+**[correction to a distinction §4/§14 did not previously draw]**
+`day_id` is now derived from `capture_manifest.json`'s real
+`b200_rf_started_at` field (the actual RF-sampling start) when present,
+falling back to `created_at_utc` (the acquisition job's own start time,
+which real data shows can precede real RF sampling by several seconds)
+only when `b200_rf_started_at` is absent. `day_id_source` is persisted
+(`B200_RF_STARTED_AT` / `CREATED_AT_FALLBACK` / `MANIFEST_DECLARED`) so the
+provenance is auditable. **Checked against all 148 real captures with both
+fields**: 0 produce a different calendar day under the old vs. new source —
+the historical `day_id` values were never actually wrong for this corpus,
+only derived from the less-precise field by design; no historical rewrite
+was needed or performed.
+
+### 16.6 RQ3 infrastructure — device-day PRE/POST pairing
+
+**IMPLEMENTED, no real pairs yet.** `campaign/pre_post_pairing.py` pairs a
+physical unit's PRE and POST captures within one device-day and
+intervention arm (RESET/CONTROL), invalidating a pair when
+`receiver_epoch` differs between the two captures (or, when supplied, when
+the qualified preprocessing profile differs) — real, tested logic (10
+tests), including the exact real "same B200, spurious split" scenario from
+§16.4. **`campaign_period`/`pre_or_post`/`intervention_arm`/`packet_variant`
+remain undeclared on every real capture in the corpus** (0/150) — these
+fields have no derivation fallback (nothing else recorded implies a real
+intervention/arm), matching the same honest gap already documented for
+`campaign_period` elsewhere in this document. Confirmed directly:
+`build_pre_post_pairs()` against the real 150-capture corpus returns `[]`.
+**A definitive PRE/RESET/POST vs. PRE/CONTINUOUS/POST campaign has not been
+run.** See §16.4's limitation note — the receiver-epoch invalidation this
+pairing relies on uses the same session-gap proxy, not confirmed restart
+evidence.
+
+### 16.7 RQ4 infrastructure — FULL_BURST / ADVA_EXCLUDED / PRE_PDU
+
+**IMPLEMENTED, no definitive campaign yet.**
+`packet_content/field_mapping.py` derives, from the same original I/Q a
+burst's `ExampleRecord` already points to: `FULL_BURST` (the original
+window, byte-for-byte, never mutated), `PRE_PDU` (preamble + access
+address only, ending exactly where the PDU header starts — unchanged from
+before, verified against the real BLE field layout), and `ADVA_EXCLUDED`
+(the AdvA sample range **genuinely spliced out** — `np.concatenate` of the
+samples before and after it, producing a shorter array). This corrects a
+real design flaw caught during review: an earlier `ADVA_MASKED` variant
+zero-filled the AdvA range in place, leaving a fixed-size, fixed-position,
+exactly-zero block in every masked burst — itself a trivially learnable
+digital artifact, unrelated to any RF fingerprint. The shorter
+`ADVA_EXCLUDED` window's length is recovered by the SAME zero-pad-at-end
+convention every representation function already applies to any short
+window (`REPRESENTATION_OWN_ZERO_PAD_AT_END`) — no special-casing, no mask
+channel or flag marking where the exclusion happened. `adv_address`
+(hence `ADVA_EXCLUDED`) is `None` for any PDU type outside
+`{ADV_IND, ADV_NONCONN_IND, ADV_SCAN_IND, ADV_DIRECT_IND, SCAN_RSP}` —
+`pdu_type_name` is read from the same `packet_association_ledger.jsonl`
+row the real decoder already produced, never assumed. 14 tests
+(`test_packet_content.py`). **No RQ2-style common benchmark comparing
+FULL_BURST/ADVA_EXCLUDED/PRE_PDU has been run against real data.**
+
+### 16.8 Decision windows, abstention, and coverage/risk-coverage
+
+**IMPLEMENTED, no definitive campaign yet.**
+`OfflineInferenceService.run_decision_windows()` groups examples into real
+time windows (the same formula `ble_scientific_results`'s own accounting
+already uses), scores every burst with the bundle's existing frozen model
+(never a second scoring path), aggregates each window by a declared,
+frozen rule (median probability per class — robust to one outlier burst,
+no fitted combination weights), and applies the bundle's own calibrated
+`acceptance_threshold` to the aggregated distribution. A window with fewer
+than `minimum_eligible_bursts` scored bursts abstains
+(`INSUFFICIENT_EVIDENCE`) before the threshold check ever runs. Real,
+previously-production-unused statistical primitives are now wired to real
+results: `risk_coverage_curve` → `SplitEvaluationReport.risk_coverage`
+(per-split, sweeping every achievable confidence threshold);
+`hierarchical_cluster_bootstrap` → `StudioRepository.bootstrap_accuracy_ci`
+(a session-clustered percentile CI — resampling whole sessions, never
+individual bursts, matching the same clustering unit the leakage check
+itself uses). 11 tests across both. **No real decision-window campaign or
+coverage/risk-coverage report over a definitive real evaluation has been
+produced** — these are real, tested capabilities exercised so far only
+against synthetic fixtures and existing training-run predictions, not a
+purpose-run campaign.
+
+### 16.9 Fixed seed set and inference provenance manifest
+
+**IMPLEMENTED.** `FROZEN_TRAINING_SEEDS = (42, 137, 2024)` replaces the
+previous bare, uncontextualized `random_seed=42` literal — the first
+element is still what every normal training run uses (unchanged behavior),
+while `train_seed_variability_analysis()` retrains the same configuration
+under the other frozen seeds, VALIDATION-only (never opens TEST for a
+seed-variability run — verified directly: `analysis_contract_protocol_id`
+stays `None` on every seed-variant run). Every real offline inference run
+now produces a persisted manifest (`inference_runs/<id>.json`) binding the
+real bundle content hash (`bundle_sha256`) and the real source capture's
+`iq_sha256` to every prediction — closing a real, previously-true finding
+that "the provenance chain terminates at the model." 9 tests across both.
+
+### 16.10 Migration-provenance ledger
+
+**IMPLEMENTED.** `migrations/migration_ledger.py` provides a general,
+append-only audit mechanism (`migration_id`, `migration_version`,
+`timestamp_utc`, `code_revision` — a real `git rev-parse HEAD`,
+`artifact_type`, `artifact_id`, `field`, `old_value`, `new_value`,
+`reason`, `migration_tool`, `status`, `retroactive`) — every migration
+script in this correction pass uses it. Real counts on the current corpus:
+**150 real, non-retroactive entries** (`migrate_v3_receiver_epoch.py`) plus
+**214 retroactively reconstructed entries**, explicitly flagged
+`retroactive: true`, for the 5 real migrations performed earlier in this
+same correction pass before this ledger existed (6 synthetic-capture
+frequency corrections, 150 `day_id` backfills, 4 split regenerations, 27
+`confirmatory_eligible` additions, 27 `resolved_flags` additions). **The
+retroactive entries' `timestamp_utc` is each artifact file's own real
+on-disk modification time — a documented proxy for when the edit actually
+happened, not the exact original instant** (which was not captured at the
+time, since the ledger did not yet exist). No I/Q file was ever written by
+any migration in this pass, confirmed directly (every migration script only
+opens `.json`/`.jsonl` metadata files).
+
+### 16.11 Test suite state
+
+`714 passed, 38 skipped` (full backend suite) at the time of this section.
+**18 pre-existing failures are unrelated to this correction pass** —
+`rf_experiment_lab` integration tests, `test_rf_intelligence.py`, and
+`test_ti_cc2650_sensortag.py` — confirmed via `git status` (none of their
+underlying modules were touched) and by reproducing the same 18 failures in
+complete isolation from every other test file. **One known flaky test**,
+`test_run_frozen_reference_baseline_trains_and_beats_chance_on_separable_
+synthetic_data` (RQ2's frozen-baseline branch, §9): passes reliably in
+isolation (confirmed 3/3), fails intermittently only in full-suite runs —
+apparent test-order-dependent RNG interaction in the shared synthetic-data
+helper, not yet root-caused. **This is real, open technical debt, tracked
+here explicitly rather than hidden — it should be resolved before any
+capability described in this document is treated as ready for a frozen,
+citable release, but does not block the correction-pass work itself.**
+
+**None of the passing test counts above is evidence of scientific
+validation** — they confirm the code does what its own tests assert, not
+that a real campaign produced a result meeting the four RQs' scientific
+criteria. See the root README's Current scientific status table for what
+"EXPERIMENTALLY VALIDATED" requires beyond a passing test suite.
 
 ---
 
@@ -635,3 +961,12 @@ reproduction, not a claim that results already reproduce.
 **"receiver-invariant"** and **"forensic attribution"** are not used as
 unqualified claims anywhere in this document (§15 uses "forensic
 attribution" only inside an explicit negation).
+
+**§16 (2026-08-09) self-check**: every capability in §16 is explicitly
+labeled `IMPLEMENTED` and, where applicable, separately marked
+`EXPERIMENTALLY VALIDATED` only for the specific, narrower thing a real
+execution actually checked (e.g. "the identity-unification fix, against the
+real 144-capture corpus" — never the broader mechanism it's part of). Every
+subsection that has no real campaign behind it yet says so explicitly
+("no definitive campaign yet", "no real pairs yet", "not yet exercised"),
+rather than being silently omitted.
