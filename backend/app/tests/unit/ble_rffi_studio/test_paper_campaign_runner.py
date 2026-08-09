@@ -16,7 +16,7 @@ def _entry(**overrides) -> dict:
     fields = dict(
         planned_capture_id="planned-1", protocol_id="PROTO-1", day_id="DAY-1", campaign_period="qualification",
         physical_unit_id="UNIT-A", capture_order=1, pre_or_post="PRE", intervention_arm="CONTROL",
-        packet_variant="original", channel=37, receiver_epoch="EPOCH-1",
+        packet_condition="original", channel=37, receiver_epoch="EPOCH-1",
     )
     fields.update(overrides)
     return fields
@@ -190,3 +190,36 @@ def test_execute_with_matching_attempted_fields_proceeds_normally(tmp_path):
     )
     assert capture_record == "REAL-CAP-2"
     assert runner.list_rejections("SCHED-10") == []
+
+
+def test_freeze_schedule_gives_every_entry_the_same_receiver_session_id(tmp_path):
+    runner = PaperCampaignRunner(storage_root=tmp_path / "storage", legacy_capture_root=tmp_path / "iq_captures")
+    schedule = runner.freeze_schedule(
+        schedule_id="SCHED-11", protocol_id="PROTO-1",
+        entries=[_entry(planned_capture_id="p1"), _entry(planned_capture_id="p2", capture_order=2, pre_or_post="POST")],
+    )
+    assert schedule.receiver_session_id
+    assert all(e.receiver_session_id == schedule.receiver_session_id for e in schedule.entries)
+
+
+def test_freeze_schedule_honors_an_operator_supplied_receiver_session_id(tmp_path):
+    runner = PaperCampaignRunner(storage_root=tmp_path / "storage", legacy_capture_root=tmp_path / "iq_captures")
+    schedule = runner.freeze_schedule(
+        schedule_id="SCHED-12", protocol_id="PROTO-1", entries=[_entry(planned_capture_id="p1")],
+        receiver_session_id="operator-declared-session",
+    )
+    assert schedule.receiver_session_id == "operator-declared-session"
+    assert schedule.entries[0].receiver_session_id == "operator-declared-session"
+
+
+def test_execute_rejects_attempted_receiver_session_id_mismatch(tmp_path):
+    orchestrator = _StubOrchestrator("X")
+    runner = PaperCampaignRunner(storage_root=tmp_path / "storage", legacy_capture_root=tmp_path / "iq_captures", campaign_orchestrator=orchestrator)
+    schedule = runner.freeze_schedule(schedule_id="SCHED-13", protocol_id="PROTO-1", entries=[_entry(planned_capture_id="p1")])
+
+    with pytest.raises(PaperCampaignSchedulingError):
+        runner.execute(schedule, "p1", build_capture_record=lambda cap_id: cap_id, attempted={"receiver_session_id": "a-different-session"})
+
+    assert orchestrator.calls == []
+    rejections = runner.list_rejections("SCHED-13")
+    assert rejections[0]["reason"] == "RECEIVER_SESSION_ID_MISMATCH"

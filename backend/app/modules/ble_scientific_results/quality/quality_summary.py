@@ -7,7 +7,7 @@ RQ1-4/S1-S2, explicitly out of scope here).
 Operates only on the canonical capture_records/burst_records/
 decision_window_records tables Section B already wrote -- never re-reads
 ble_rffi_studio directly. Grouping dimensions this repository's real
-capture schema cannot populate today (intervention_arm, packet_variant,
+capture schema cannot populate today (intervention_arm, packet_condition,
 receiver_epoch, day_id -- unless a capture went through
 paper_campaign_runner.py) collapse to a single NOT_DOCUMENTED group rather
 than being silently dropped -- the descriptive table for that dimension
@@ -44,7 +44,7 @@ from app.infrastructure.ble.capture.ble_capture_metadata import atomic_json
 
 from .._shared_pandas import fillna_not_documented, read_table
 
-GROUP_DIMENSIONS = ["physical_unit_id", "day_id", "session_id", "pre_or_post", "intervention_arm", "channel", "packet_variant", "receiver_epoch"]
+GROUP_DIMENSIONS = ["physical_unit_id", "day_id", "session_id", "pre_or_post", "intervention_arm", "channel", "packet_condition", "receiver_epoch"]
 
 # The exact constant records/burst_records.py enforces -- restated here for
 # the docstring above, never re-derived independently.

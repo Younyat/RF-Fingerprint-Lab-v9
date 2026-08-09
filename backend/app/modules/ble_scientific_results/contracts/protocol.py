@@ -112,6 +112,57 @@ class AnalysisContract(StudioContract):
     minimum_independent_blocks: dict[str, Any] = {}
     interpretation_matrix_hash: str
 
+    # Protocol-freeze close-out (2026-08-09): primary-analysis assignment for
+    # RQ2/RQ3/RQ4, decided from DEVELOPMENT/VALIDATION only (never TEST --
+    # see model_selector.py's select_primary_rq2_branch_from_validation,
+    # whose own input type structurally excludes TEST results) and frozen
+    # here BEFORE FUTURE TEST ever opens. None is a valid, honest state
+    # meaning "not yet decided" -- freeze_protocol() requires these to be
+    # populated (see _REQUIRED_NON_EMPTY_STRING_FIELDS below and
+    # scientific_results_repository.freeze_protocol's own validation), it
+    # never invents a value.
+    rq2_primary_branch: Literal["engineered_rf", "raw_iq", "stft", "coarse_morphology"] | None = None
+    rq2_branch_selection_rule: str | None = None
+    rq3_primary_analysis: str | None = None
+    rq4_primary_analysis: str | None = None
+    sensitivity_analyses: list[str] = []
+    rq3_reset_control_definition: str | None = None
+    rq4_representation_definitions: dict[str, str] = {}
+
+    # Decision-window / scoring contract (mirrors ble_rffi_studio's real,
+    # frozen constants -- inference/decision_windows.py's
+    # DEFAULT_WINDOW_DURATION_S/DEFAULT_MINIMUM_ELIGIBLE_BURSTS/
+    # AGGREGATION_RULE -- never a second, independently-chosen definition).
+    decision_window_duration_s: float | None = None
+    minimum_eligible_bursts: int | None = None
+    score_aggregation_rule: str | None = None  # must equal AGGREGATION_RULE ("MEDIAN_PROBABILITY_PER_CLASS") when set
+    threshold_selection_procedure: str | None = None
+
+    # One-sided non-inferiority (RQ4) -- the margin/direction/alpha/family
+    # must be pre-registered before FUTURE TEST; freeze_protocol() enforces
+    # they are non-empty, but this module never chooses a number for the
+    # caller (see protocol.py module docstring's own "store, not invent"
+    # principle).
+    non_inferiority_margin: float | None = None
+    non_inferiority_direction: Literal["HIGHER_IS_BETTER", "LOWER_IS_BETTER"] | None = None
+    alpha: float | None = None
+    confirmatory_hypotheses: list[str] = []
+    holm_family: list[str] = []
+    decision_rule: str | None = None
+
+    # Pointer to the real, already-implemented mechanism that gates any
+    # FUTURE_TEST read (ScientificResultsRepository.read_group /
+    # HoldoutAccessLogEntry hash chain) -- a description of WHICH mechanism
+    # governs access, not a second, competing access-control system.
+    future_test_access_policy_ref: str | None = None
+
+    # Content hash of this frozen contract itself (every other field, in
+    # canonical JSON) -- computed by freeze_protocol() AFTER construction,
+    # same self-referential pattern SplitManifest.split_manifest_sha256 /
+    # ModelBundleManifest already use elsewhere in this codebase. Empty only
+    # transiently, between construction and the repository's model_copy.
+    contract_sha256: str = ""
+
     @model_validator(mode="before")
     @classmethod
     def _canonicalize_before_construction(cls, data: Any) -> Any:

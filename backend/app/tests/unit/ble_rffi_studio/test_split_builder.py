@@ -292,6 +292,54 @@ def test_split_completeness_gate_rejects_a_split_where_validation_is_missing_a_t
     assert "SYN-UNIT-01" in tampered_report.infeasibility_reason
 
 
+def test_build_rq1_dependence_diagnostic_is_non_confirmatory_and_bypasses_leakage(split_builder, tmp_path):
+    # RQ1's whole point: deliberately hold out examples from the SAME
+    # session/capture as TRAIN. The normal leakage check must still run and
+    # be recorded (never hidden), but must NOT block this split -- unlike
+    # every split build() itself produces.
+    examples = make_multi_unit_multi_session_examples(units=2, sessions_per_unit=3, examples_per_session=4)
+    dataset = _frozen_dataset(tmp_path, examples)
+    confirmatory = split_builder.build(dataset=dataset, examples=examples, scientific_task="SAME_MODEL_UNIT_IDENTIFICATION", created_at="2026-07-26T00:00:00Z")
+    assert confirmatory.split_purpose == "CONFIRMATORY"
+    assert confirmatory.non_confirmatory is False
+
+    diagnostic = split_builder.build_rq1_dependence_diagnostic(
+        dataset=dataset, examples=examples, scientific_task="SAME_MODEL_UNIT_IDENTIFICATION",
+        confirmatory_split=confirmatory, created_at="2026-07-26T00:00:00Z",
+    )
+    assert diagnostic.split_purpose == "RQ1_ACQUISITION_DEPENDENCE_DIAGNOSTIC"
+    assert diagnostic.non_confirmatory is True
+    assert diagnostic.split_status == "READY"
+    # The held-out VALIDATION examples share a session_id (and therefore
+    # capture identity) with TRAIN -- the leakage check must report this
+    # honestly as FAILED, proving it wasn't silently skipped.
+    assert diagnostic.leakage_check.status == "FAILED"
+    assert "session_id" in diagnostic.leakage_check.overlapping_keys
+
+
+def test_build_rq1_dependence_diagnostic_never_reachable_from_build(split_builder, tmp_path):
+    examples = make_multi_unit_multi_session_examples(units=2, sessions_per_unit=3, examples_per_session=4)
+    dataset = _frozen_dataset(tmp_path, examples)
+    manifest = split_builder.build(dataset=dataset, examples=examples, scientific_task="SAME_MODEL_UNIT_IDENTIFICATION", created_at="2026-07-26T00:00:00Z")
+    # build() itself never produces anything but CONFIRMATORY, regardless of
+    # leakage outcome -- confirmed here it stays strictly capture-disjoint.
+    assert manifest.split_purpose == "CONFIRMATORY"
+    assert manifest.leakage_check.status == "PASSED"
+
+
+def test_build_rq1_dependence_diagnostic_not_feasible_with_single_example_sessions(split_builder, tmp_path):
+    examples = make_multi_unit_multi_session_examples(units=2, sessions_per_unit=3, examples_per_session=1)
+    dataset = _frozen_dataset(tmp_path, examples)
+    confirmatory = split_builder.build(dataset=dataset, examples=examples, scientific_task="SAME_MODEL_UNIT_IDENTIFICATION", created_at="2026-07-26T00:00:00Z")
+
+    diagnostic = split_builder.build_rq1_dependence_diagnostic(
+        dataset=dataset, examples=examples, scientific_task="SAME_MODEL_UNIT_IDENTIFICATION",
+        confirmatory_split=confirmatory, created_at="2026-07-26T00:00:00Z",
+    )
+    assert diagnostic.split_status == "NOT_FEASIBLE"
+    assert diagnostic.split_purpose == "RQ1_ACQUISITION_DEPENDENCE_DIAGNOSTIC"
+
+
 def test_split_manifest_round_trips_through_canonical_json(split_builder, tmp_path):
     import json
 

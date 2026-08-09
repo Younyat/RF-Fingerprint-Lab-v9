@@ -13,6 +13,7 @@ ambiguous downstream.
 """
 from __future__ import annotations
 
+import zlib
 from typing import Any
 
 import numpy as np
@@ -65,7 +66,12 @@ class SyntheticDemoSeeder:
         return {"project_id": DEMO_PROJECT_ID, "campaign_id": DEMO_CAMPAIGN_ID, "capture_ids": capture_ids, "physical_unit_ids": physical_unit_ids}
 
     def _write_capture(self, capture_id, session_id, unit_id, cfo_hz, examples_per_session, samples_per_example, sample_rate, noise_scale, ble_channel, created_at) -> None:
-        rng = np.random.default_rng(abs(hash((unit_id, session_id))) % (2**32))
+        # Not Python's built-in hash() -- str/tuple hashing is randomized
+        # per-process (PYTHONHASHSEED, not pinned anywhere in this project),
+        # so a seed built from it would make this "synthetic but
+        # reproducible" demo data actually change across process runs.
+        seed = zlib.crc32(f"{unit_id}:{session_id}".encode("utf-8")) % (2**32)
+        rng = np.random.default_rng(seed)
         total_samples = examples_per_session * samples_per_example
         n = np.arange(total_samples)
         carrier = np.exp(1j * 2 * np.pi * cfo_hz * n / sample_rate)

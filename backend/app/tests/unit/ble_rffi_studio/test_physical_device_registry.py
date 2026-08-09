@@ -113,3 +113,51 @@ def test_find_binding_for_address_tries_both_address_types(registry):
 
 def test_find_binding_for_unknown_address_is_none(registry):
     assert registry.find_binding_for_address("P1", "FF:FF:FF:FF:FF:FF") is None
+
+
+def test_new_units_default_to_not_confirmed_and_not_eligible(registry):
+    unit = registry.register_physical_unit(physical_unit_id="U1", project_id="P1", device_family="TI", operator_declaration_id="d1", first_registered_at="2026-07-24T00:00:00Z")
+    assert unit.same_model_confirmation == "NOT_CONFIRMED"
+    assert unit.rq4_eligibility == "NOT_ELIGIBLE"
+
+
+def test_confirm_same_model_requires_a_real_basis(registry):
+    registry.register_physical_unit(physical_unit_id="U1", project_id="P1", device_family="TI", operator_declaration_id="d1", first_registered_at="2026-07-24T00:00:00Z")
+    with pytest.raises(ValueError):
+        registry.confirm_same_model("U1", basis="   ")
+
+
+def test_confirm_same_model_with_a_real_basis_persists(registry):
+    registry.register_physical_unit(physical_unit_id="U1", project_id="P1", device_family="TI", operator_declaration_id="d1", first_registered_at="2026-07-24T00:00:00Z")
+    updated = registry.confirm_same_model("U1", basis="internal_serial prefix match + operator physical inspection")
+    assert updated.same_model_confirmation == "CONFIRMED"
+    assert registry.get_physical_unit("U1").same_model_confirmation == "CONFIRMED"
+
+
+def test_set_rq4_eligibility_requires_a_reason(registry):
+    registry.register_physical_unit(physical_unit_id="U1", project_id="P1", device_family="TI", operator_declaration_id="d1", first_registered_at="2026-07-24T00:00:00Z")
+    with pytest.raises(ValueError):
+        registry.set_rq4_eligibility("U1", eligible=True, reason="")
+
+
+def test_set_rq4_eligibility_true_and_false_both_persist_with_a_reason(registry):
+    registry.register_physical_unit(physical_unit_id="U1", project_id="P1", device_family="TI", operator_declaration_id="d1", first_registered_at="2026-07-24T00:00:00Z")
+    eligible = registry.set_rq4_eligibility("U1", eligible=True, reason="supports controlled AdvA content variants")
+    assert eligible.rq4_eligibility == "ELIGIBLE"
+    assert eligible.rq4_eligibility_reason == "supports controlled AdvA content variants"
+
+    not_eligible = registry.set_rq4_eligibility("U1", eligible=False, reason="firmware does not allow content variant control")
+    assert not_eligible.rq4_eligibility == "NOT_ELIGIBLE"
+
+
+def test_eligibility_actions_never_deduce_from_device_family_or_model(registry):
+    # Real, confirmed finding this correction protects against: a unit's
+    # device_family/model string is operator-entered free text and can be
+    # wrong (keyfobdemo 01's own device_family says "TI sensortag") --
+    # neither eligibility action reads those fields at all.
+    unit = registry.register_physical_unit(
+        physical_unit_id="keyfobdemo-01", project_id="P1", device_family="TI sensortag",
+        model="keyfobdemo", operator_declaration_id="d1", first_registered_at="2026-07-24T00:00:00Z",
+    )
+    assert unit.same_model_confirmation == "NOT_CONFIRMED"
+    assert unit.rq4_eligibility == "NOT_ELIGIBLE"

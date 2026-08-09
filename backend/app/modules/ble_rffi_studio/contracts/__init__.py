@@ -30,7 +30,7 @@ from .quality_report import (
     SampleOverlapResult,
 )
 from .paper_campaign import PAPER_CAMPAIGN_SCHEDULE_SCHEMA_VERSION, PaperCampaignSchedule, PaperCampaignScheduleEntry
-from .split import LeakageCheckResult, SplitAssignment, SplitManifest
+from .split import LeakageCheckResult, SplitAssignment, SplitManifest, SplitPurpose
 from .training import TRAINING_RUN_SCHEMA_VERSION, OperationalUse, TrainingRun
 
 __all__ = [
@@ -63,6 +63,7 @@ __all__ = [
     "DATASET_SCHEMA_VERSION",
     "SplitAssignment",
     "SplitManifest",
+    "SplitPurpose",
     "LeakageCheckResult",
     "TrainingRun",
     "TRAINING_RUN_SCHEMA_VERSION",

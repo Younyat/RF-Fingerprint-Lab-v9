@@ -5,11 +5,21 @@ independent of any specific capture.
 """
 from __future__ import annotations
 
+import zlib
 from pathlib import Path
 
 import numpy as np
 
 from app.modules.ble_rffi_studio.contracts import ExampleRecord
+
+
+def _stable_seed(*parts: object) -> int:
+    """Deterministic RNG seed from arbitrary parts -- NOT Python's built-in
+    hash() (str/tuple hashing is randomized per-process by PYTHONHASHSEED,
+    which is not pinned anywhere in this project, so a seed built from
+    hash() changes across test-process runs even though it's stable within
+    one run). zlib.crc32 has no such randomization."""
+    return zlib.crc32(str(parts).encode("utf-8")) % (2**32)
 
 
 def make_example(
@@ -83,7 +93,7 @@ def _write_session_iq(
     tmp_path: Path, capture_id: str, cfo_hz: float, examples_per_session: int, samples_per_example: int,
     sample_rate: float, noise_scale: float, seed_key: tuple,
 ) -> Path:
-    rng = np.random.default_rng(abs(hash(seed_key)) % (2**32))
+    rng = np.random.default_rng(_stable_seed(seed_key))
     total_samples = examples_per_session * samples_per_example
     n = np.arange(total_samples)
     carrier = np.exp(1j * 2 * np.pi * cfo_hz * n / sample_rate)

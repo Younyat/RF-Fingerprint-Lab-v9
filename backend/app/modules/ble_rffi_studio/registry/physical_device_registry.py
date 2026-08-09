@@ -83,6 +83,37 @@ class PhysicalDeviceRegistry:
     def list_physical_units(self) -> list[PhysicalUnitRecord]:
         return [PhysicalUnitRecord.model_validate(read_json(p)) for p in sorted(self.units_dir.glob("*.json"))]
 
+    def confirm_same_model(self, physical_unit_id: str, *, basis: str) -> PhysicalUnitRecord:
+        """The ONLY way same_model_confirmation becomes CONFIRMED -- never
+        inferred from device_family/model/commercial name (see
+        PhysicalUnitRecord's own docstring on this field for the real,
+        confirmed reason why name-based inference is unsafe here).
+        `basis` must be real, non-empty evidence (e.g. "internal_serial
+        prefix match + operator physical inspection"), never a placeholder."""
+        if not basis.strip():
+            raise ValueError("BASIS_REQUIRED_TO_CONFIRM_SAME_MODEL")
+        unit = self.get_physical_unit(physical_unit_id)
+        if unit is None:
+            raise ValueError(f"UNKNOWN_PHYSICAL_UNIT_ID:{physical_unit_id}")
+        updated = unit.model_copy(update={"same_model_confirmation": "CONFIRMED", "same_model_confirmation_basis": basis})
+        write_json(self._unit_path(physical_unit_id), updated.model_dump(mode="json"))
+        return updated
+
+    def set_rq4_eligibility(self, physical_unit_id: str, *, eligible: bool, reason: str) -> PhysicalUnitRecord:
+        """RQ4 (packet-content-dependence) eligibility -- always an explicit
+        operator decision with a stated reason, in either direction (marking
+        NOT_ELIGIBLE with a reason is just as real a decision as ELIGIBLE)."""
+        if not reason.strip():
+            raise ValueError("REASON_REQUIRED_TO_SET_RQ4_ELIGIBILITY")
+        unit = self.get_physical_unit(physical_unit_id)
+        if unit is None:
+            raise ValueError(f"UNKNOWN_PHYSICAL_UNIT_ID:{physical_unit_id}")
+        updated = unit.model_copy(update={
+            "rq4_eligibility": "ELIGIBLE" if eligible else "NOT_ELIGIBLE", "rq4_eligibility_reason": reason,
+        })
+        write_json(self._unit_path(physical_unit_id), updated.model_dump(mode="json"))
+        return updated
+
     # ------------------------------------------------------------------
     # Address bindings
     # ------------------------------------------------------------------

@@ -72,7 +72,7 @@ def _describe(entry) -> str:
         f"capture_order:           {entry.capture_order}",
         f"pre/post:                {entry.pre_or_post}",
         f"reset/control:           {entry.intervention_arm}",
-        f"packet_variant:          {entry.packet_variant}",
+        f"packet_condition:        {entry.packet_condition}",
         f"required waiting time:   time_since_power_on_s={entry.time_since_power_on_s}, "
         f"time_since_intervention_s={entry.time_since_intervention_s}",
         f"receiver_epoch:          {entry.receiver_epoch}",
@@ -92,6 +92,7 @@ def _load_schedule(runner: PaperCampaignRunner, *, schedule_id: str, protocol_id
     schedule = runner.freeze_schedule(
         schedule_id=schedule_id, protocol_id=protocol_id, entries=entries,
         qualification_only=bool(schedule_input.get("qualification_only", False)),
+        receiver_session_id=schedule_input.get("receiver_session_id"),
     )
     print(f"Calendario '{schedule_id}' congelado (versión {schedule.schedule_version}, {len(schedule.entries)} capturas planificadas).")
     return schedule

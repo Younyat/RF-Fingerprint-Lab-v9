@@ -1,9 +1,20 @@
-"""RQ3 real PRE/POST pairing (2026-08-08): pairs a physical unit's PRE and
-POST captures within one device-day and one intervention_arm (RESET or
-CONTROL), invalidating a pair whose two captures do not share a receiver_epoch
-or (when the caller is about to analyze them together) a qualified
-preprocessing profile -- comparing PRE against POST is only meaningful when
-nothing about the receiver/analysis pipeline itself changed between them.
+"""RQ3 real PRE/POST pairing (2026-08-08, extended 2026-08-09): pairs a
+physical unit's PRE and POST captures within one device-day and one
+intervention_arm (RESET or CONTROL), invalidating a pair whose two captures
+do not share a receiver_epoch, a receiver_session_id, or (when the caller is
+about to analyze them together) a qualified preprocessing profile --
+comparing PRE against POST is only meaningful when nothing about the
+receiver/analysis pipeline itself changed between them.
+
+receiver_session_id is operator-attested (see contracts/capture.py), never
+auto-detected -- no subsystem in this codebase observes a real USRP B200
+boot/reconnect event, since every real capture opens/closes its own SDR
+device handle in a fresh subprocess. It is checked in ADDITION to
+receiver_epoch, never instead of it: historical captures with no session
+attestation still rely on receiver_epoch's >1h gap proxy alone and are
+correctly invalidated here (RECEIVER_SESSION_ID_NOT_DOCUMENTED_OR_CHANGED)
+for lacking the newer, stronger evidence -- a real, honest limitation
+of pre-2026-08-09 data, not a bug.
 
 day_id/intervention_arm/pre_or_post/receiver_epoch are the same CaptureRecord
 fields P0's "adapt the protocol" work already made available (day_id/
@@ -32,6 +43,8 @@ class PrePostPair:
     post_capture_id: str
     pre_receiver_epoch: str | None
     post_receiver_epoch: str | None
+    pre_receiver_session_id: str | None
+    post_receiver_session_id: str | None
     valid: bool
     invalidation_reason: str | None
 
@@ -74,6 +87,7 @@ def build_pre_post_pairs(
                     physical_unit_id=unit_id, day_id=day_id, intervention_arm=arm,
                     pre_capture_id=pres[0].capture_id, post_capture_id=posts[0].capture_id,
                     pre_receiver_epoch=pres[0].receiver_epoch, post_receiver_epoch=posts[0].receiver_epoch,
+                    pre_receiver_session_id=pres[0].receiver_session_id, post_receiver_session_id=posts[0].receiver_session_id,
                     valid=False, invalidation_reason=f"AMBIGUOUS_PRE_OR_POST_COUNT:{len(pres)}_pre,{len(posts)}_post",
                 ))
             continue
@@ -84,6 +98,15 @@ def build_pre_post_pairs(
             invalidation_reason = "RECEIVER_EPOCH_NOT_DOCUMENTED_ON_ONE_OR_BOTH_CAPTURES"
         elif pre.receiver_epoch != post.receiver_epoch:
             invalidation_reason = f"RECEIVER_EPOCH_CHANGED_BETWEEN_PRE_AND_POST:{pre.receiver_epoch}!={post.receiver_epoch}"
+        elif pre.receiver_session_id is None or post.receiver_session_id is None:
+            # Operator-attested (see contracts/capture.py's receiver_session_id
+            # docstring) -- for NEW captures declared through the paper
+            # campaign runner this is required; historical captures with no
+            # attestation continue to rely solely on the receiver_epoch check
+            # above, which is why this is checked AFTER, not instead of, it.
+            invalidation_reason = "RECEIVER_SESSION_ID_NOT_DOCUMENTED_OR_CHANGED"
+        elif pre.receiver_session_id != post.receiver_session_id:
+            invalidation_reason = f"RECEIVER_SESSION_ID_NOT_DOCUMENTED_OR_CHANGED:{pre.receiver_session_id}!={post.receiver_session_id}"
         else:
             pre_profile = preprocessing_profile_by_capture_id.get(pre.capture_id)
             post_profile = preprocessing_profile_by_capture_id.get(post.capture_id)
@@ -94,6 +117,7 @@ def build_pre_post_pairs(
             physical_unit_id=unit_id, day_id=day_id, intervention_arm=arm,
             pre_capture_id=pre.capture_id, post_capture_id=post.capture_id,
             pre_receiver_epoch=pre.receiver_epoch, post_receiver_epoch=post.receiver_epoch,
+            pre_receiver_session_id=pre.receiver_session_id, post_receiver_session_id=post.receiver_session_id,
             valid=invalidation_reason is None, invalidation_reason=invalidation_reason,
         ))
     return pairs

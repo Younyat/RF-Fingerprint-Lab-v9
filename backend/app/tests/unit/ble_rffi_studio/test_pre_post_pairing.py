@@ -18,6 +18,7 @@ PROJECT_ID = "P1"
 def _capture(
     capture_id: str, *, target_reference_id: str | None = "UNIT-A", day_id: str | None = "2026-08-01",
     intervention_arm: str | None = "RESET", pre_or_post: str | None, receiver_epoch: str | None = "epoch-1",
+    receiver_session_id: str | None = "session-1",
 ) -> CaptureRecord:
     return CaptureRecord(
         project_id=PROJECT_ID, campaign_id="C1", capture_id=capture_id, session_id=f"S-{capture_id}",
@@ -29,6 +30,7 @@ def _capture(
         capture_duration_s=1.0, capture_tool="real", iq_path="iq.cf32", iq_size_bytes=1, iq_sha256="sha",
         acquisition_quality="PASSED", discontinuities=0, replay_status="FULLY_PROCESSED", created_at="2026-08-01T00:00:00Z",
         day_id=day_id, intervention_arm=intervention_arm, pre_or_post=pre_or_post, receiver_epoch=receiver_epoch,
+        receiver_session_id=receiver_session_id,
     )
 
 
@@ -76,6 +78,42 @@ def test_invalidates_a_pair_when_receiver_epoch_is_not_documented_on_either_side
     pairs = build_pre_post_pairs(captures)
     assert pairs[0].valid is False
     assert pairs[0].invalidation_reason == "RECEIVER_EPOCH_NOT_DOCUMENTED_ON_ONE_OR_BOTH_CAPTURES"
+
+
+def test_invalidates_a_pair_when_receiver_session_id_changed_between_pre_and_post():
+    captures = [
+        _capture("CAP-PRE", pre_or_post="PRE", receiver_session_id="session-1"),
+        _capture("CAP-POST", pre_or_post="POST", receiver_session_id="session-2"),
+    ]
+    pairs = build_pre_post_pairs(captures)
+    assert pairs[0].valid is False
+    assert "RECEIVER_SESSION_ID_NOT_DOCUMENTED_OR_CHANGED" in pairs[0].invalidation_reason
+
+
+def test_invalidates_a_pair_when_receiver_session_id_is_not_documented_on_either_side():
+    # Historical captures (before this field existed) never populate it --
+    # a real B200 restart between PRE/POST is only caught by the
+    # receiver_epoch check above in that case; a pair with a matching
+    # receiver_epoch but no session attestation is still fail-closed, never
+    # silently treated as valid.
+    captures = [
+        _capture("CAP-PRE", pre_or_post="PRE", receiver_session_id=None),
+        _capture("CAP-POST", pre_or_post="POST", receiver_session_id="session-1"),
+    ]
+    pairs = build_pre_post_pairs(captures)
+    assert pairs[0].valid is False
+    assert pairs[0].invalidation_reason == "RECEIVER_SESSION_ID_NOT_DOCUMENTED_OR_CHANGED"
+
+
+def test_a_pair_with_matching_receiver_epoch_and_session_id_stays_valid():
+    captures = [
+        _capture("CAP-PRE", pre_or_post="PRE", receiver_epoch="epoch-1", receiver_session_id="session-1"),
+        _capture("CAP-POST", pre_or_post="POST", receiver_epoch="epoch-1", receiver_session_id="session-1"),
+    ]
+    pairs = build_pre_post_pairs(captures)
+    assert pairs[0].valid is True
+    assert pairs[0].pre_receiver_session_id == "session-1"
+    assert pairs[0].post_receiver_session_id == "session-1"
 
 
 def test_invalidates_a_pair_when_the_qualified_preprocessing_profile_changed():

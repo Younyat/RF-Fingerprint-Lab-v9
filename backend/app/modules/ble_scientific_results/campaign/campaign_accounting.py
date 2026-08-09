@@ -9,7 +9,7 @@ over those tables -- never a hardcoded number, never a ratio computed
 against an assumed denominator.
 
 Dimensions the protocol's real capture schema cannot populate today
-(day_id, capture_order, pre_or_post, intervention_arm, packet_variant,
+(day_id, capture_order, pre_or_post, intervention_arm, packet_condition,
 receiver_epoch -- see capture_records.py) collapse to a single
 "NOT_DOCUMENTED" bucket in every balance matrix rather than silently
 omitting the dimension or fabricating values for it. This is the expected,
@@ -127,7 +127,7 @@ def build_campaign_accounting(*, run_dir: Path, contract: AnalysisContract) -> d
     # ------------------------------------------------------------------
     balance: dict[str, Any] = {}
     if not captures.empty:
-        filled = fillna_not_documented(captures, ["day_id", "capture_order", "intervention_arm", "packet_variant", "receiver_epoch", "pre_or_post", "physical_unit_id", "channel"])
+        filled = fillna_not_documented(captures, ["day_id", "capture_order", "intervention_arm", "packet_condition", "receiver_epoch", "pre_or_post", "physical_unit_id", "channel"])
         filled["physical_unit_id"] = filled["physical_unit_id"].fillna(NOT_DOCUMENTED)
 
         def pivot(index: str, column: str) -> dict[str, Any]:
@@ -138,7 +138,7 @@ def build_campaign_accounting(*, run_dir: Path, contract: AnalysisContract) -> d
         balance["unit_by_acquisition_position"] = pivot("physical_unit_id", "capture_order")
         balance["unit_by_intervention_arm"] = pivot("physical_unit_id", "intervention_arm")
         balance["unit_by_channel"] = pivot("physical_unit_id", "channel")
-        balance["unit_by_packet_variant"] = pivot("physical_unit_id", "packet_variant")
+        balance["unit_by_packet_condition"] = pivot("physical_unit_id", "packet_condition")
         balance["day_by_receiver_epoch"] = pivot("day_id", "receiver_epoch")
         balance["day_by_pre_post"] = pivot("day_id", "pre_or_post")
     atomic_json(accounting_dir / "campaign_balance_report.json", balance)

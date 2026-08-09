@@ -580,7 +580,8 @@ def capture(request_path: Path, output: Path) -> int:
             # None on the manifest and, downstream, on CaptureRecord too.
             "day_id": request.get("day_id"), "campaign_period": request.get("campaign_period"),
             "pre_or_post": request.get("pre_or_post"), "intervention_arm": request.get("intervention_arm"),
-            "packet_variant": request.get("packet_variant"), "receiver_epoch": request.get("receiver_epoch"),
+            "packet_condition": request.get("packet_condition"), "receiver_epoch": request.get("receiver_epoch"),
+            "receiver_session_id": request.get("receiver_session_id"),
             "firmware_hash": request.get("firmware_hash"), "configuration_hash": request.get("configuration_hash"),
             "time_since_power_on_s": request.get("time_since_power_on_s"),
             "time_since_intervention_s": request.get("time_since_intervention_s"),

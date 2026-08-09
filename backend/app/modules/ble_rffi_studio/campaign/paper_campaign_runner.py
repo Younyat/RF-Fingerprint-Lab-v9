@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import random
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -57,8 +58,9 @@ _ATTEMPTED_FIELD_TO_CODE: tuple[tuple[str, str], ...] = (
     ("channel", "WRONG_CHANNEL"),
     ("pre_or_post", "WRONG_PRE_POST_STATE"),
     ("intervention_arm", "WRONG_INTERVENTION_ARM"),
-    ("packet_variant", "WRONG_PACKET_VARIANT"),
+    ("packet_condition", "WRONG_PACKET_CONDITION"),
     ("receiver_epoch", "RECEIVER_EPOCH_MISMATCH"),
+    ("receiver_session_id", "RECEIVER_SESSION_ID_MISMATCH"),
     ("firmware_hash", "FIRMWARE_MISMATCH"),
     ("configuration_hash", "CONFIGURATION_MISMATCH"),
 )
@@ -92,8 +94,24 @@ class PaperCampaignRunner:
                 continue
         return versions
 
-    def freeze_schedule(self, *, schedule_id: str, protocol_id: str, entries: list[dict], qualification_only: bool = False) -> PaperCampaignSchedule:
-        entry_models = [PaperCampaignScheduleEntry(**entry) for entry in entries]
+    def freeze_schedule(
+        self, *, schedule_id: str, protocol_id: str, entries: list[dict], qualification_only: bool = False,
+        receiver_session_id: str | None = None,
+    ) -> PaperCampaignSchedule:
+        """`receiver_session_id` is the operator's real-world attestation that
+        the B200 stayed connected/powered for this whole schedule (see
+        contracts/paper_campaign.py -- there is no software signal for
+        connection continuity, so this is never auto-detected). Defaults to a
+        freshly generated id when the operator doesn't supply their own; every
+        entry in this schedule shares the SAME id, since a schedule is one
+        continuous attestation by construction. A genuine reconnect/power-
+        cycle mid-campaign means freezing a NEW schedule, never editing this
+        one."""
+        resolved_session_id = receiver_session_id or f"session-{uuid.uuid4().hex[:16]}"
+        entry_models = [
+            PaperCampaignScheduleEntry(**{**entry, "receiver_session_id": entry.get("receiver_session_id") or resolved_session_id})
+            for entry in entries
+        ]
         planned_ids = [entry.planned_capture_id for entry in entry_models]
         if len(planned_ids) != len(set(planned_ids)):
             raise PaperCampaignSchedulingError(f"DUPLICATE_PLANNED_CAPTURE_ID_IN_SCHEDULE:{schedule_id}")
@@ -102,6 +120,7 @@ class PaperCampaignRunner:
         schedule = PaperCampaignSchedule(
             schedule_id=schedule_id, schedule_version=next_version, protocol_id=protocol_id,
             entries=entry_models, qualification_only=qualification_only, frozen_at=utc_now(),
+            receiver_session_id=resolved_session_id,
         )
         atomic_json(self._schedule_dir(schedule_id) / f"{next_version}.json", schedule.model_dump(mode="json"))
         return schedule
@@ -143,7 +162,8 @@ class PaperCampaignRunner:
             "day_id": entry.day_id, "campaign_period": entry.campaign_period,
             "pre_or_post": None if entry.pre_or_post == "NOT_APPLICABLE" else entry.pre_or_post,
             "intervention_arm": None if entry.intervention_arm == "NOT_APPLICABLE" else entry.intervention_arm,
-            "packet_variant": entry.packet_variant, "receiver_epoch": entry.receiver_epoch,
+            "packet_condition": entry.packet_condition, "receiver_epoch": entry.receiver_epoch,
+            "receiver_session_id": entry.receiver_session_id,
             "firmware_hash": entry.firmware_hash, "configuration_hash": entry.configuration_hash,
             "time_since_power_on_s": entry.time_since_power_on_s, "time_since_intervention_s": entry.time_since_intervention_s,
             "capture_order": entry.capture_order, "planned_capture_id": entry.planned_capture_id,

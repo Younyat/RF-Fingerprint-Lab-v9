@@ -180,14 +180,18 @@ class CaptureStage:
             # present (written by ble_sdr_capture_worker.py from
             # request.json, itself declared by the paper campaign runner
             # before capture -- see paper_campaign_runner.py).
-            # campaign_period/pre_or_post/intervention_arm/packet_variant
+            # campaign_period/pre_or_post/intervention_arm/packet_condition
             # have no fallback and stay None, never reconstructed or guessed
             # here.
             day_id=day_id, day_id_source=day_id_source, campaign_period=manifest.get("campaign_period"),
             pre_or_post=manifest.get("pre_or_post"), intervention_arm=manifest.get("intervention_arm"),
-            packet_variant=manifest.get("packet_variant"),
+            packet_condition=manifest.get("packet_condition"),
             receiver_identity_id=receiver_identity_id, qualified_acquisition_profile_hash=qualified_acquisition_profile_hash,
             receiver_epoch=receiver_epoch, receiver_epoch_boundary_reason=receiver_epoch_boundary_reason,
+            # Operator-attested, not auto-detected (see contracts/capture.py
+            # docstring on this field) -- read straight from the manifest,
+            # never inferred here.
+            receiver_session_id=manifest.get("receiver_session_id"),
             host_id=manifest.get("host_id"), firmware_hash=manifest.get("firmware_hash"),
             configuration_hash=manifest.get("configuration_hash"),
             time_since_power_on_s=manifest.get("time_since_power_on_s"),

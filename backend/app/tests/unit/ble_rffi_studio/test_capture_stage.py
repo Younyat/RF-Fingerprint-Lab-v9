@@ -56,13 +56,13 @@ def test_build_capture_record_from_real_capture(stage):
     assert capture.qualified_acquisition_profile_hash is not None and capture.qualified_acquisition_profile_hash.startswith("profile-")
     assert capture.receiver_epoch is None
     assert capture.receiver_epoch_boundary_reason is None
-    # campaign_period/intervention_arm/packet_variant have no equivalent
+    # campaign_period/intervention_arm/packet_condition have no equivalent
     # fallback -- nothing else recorded implies a real intervention/arm, so
     # they correctly stay undeclared for a capture no paper campaign runner
     # ever ran.
     assert capture.campaign_period is None
     assert capture.intervention_arm is None
-    assert capture.packet_variant is None
+    assert capture.packet_condition is None
 
 
 def test_receiver_identity_and_profile_hash_are_stable_across_two_builds_of_the_same_capture(stage):

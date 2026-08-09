@@ -45,8 +45,9 @@ _RUNNER_REJECTION_DESCRIPTIONS: dict[str, str] = {
     "WRONG_CHANNEL": "The declared channel for this attempt does not match the schedule entry.",
     "WRONG_PRE_POST_STATE": "The declared pre_or_post state for this attempt does not match the schedule entry.",
     "WRONG_INTERVENTION_ARM": "The declared intervention_arm for this attempt does not match the schedule entry.",
-    "WRONG_PACKET_VARIANT": "The declared packet_variant for this attempt does not match the schedule entry.",
+    "WRONG_PACKET_CONDITION": "The declared packet_condition for this attempt does not match the schedule entry.",
     "RECEIVER_EPOCH_MISMATCH": "The declared receiver_epoch for this attempt does not match the schedule entry.",
+    "RECEIVER_SESSION_ID_MISMATCH": "The declared receiver_session_id for this attempt does not match the schedule entry.",
     "FIRMWARE_MISMATCH": "The declared firmware_hash for this attempt does not match the schedule entry.",
     "CONFIGURATION_MISMATCH": "The declared configuration_hash for this attempt does not match the schedule entry.",
 }
@@ -159,7 +160,7 @@ def build_campaign_deviations(
     dimension_fields = {
         "pre_post_pairing": "pre_or_post", "reset_control_pairing": "intervention_arm",
         "receiver_epoch_drift": "receiver_epoch", "firmware_configuration_drift": "firmware_hash",
-        "content_variant_coverage": "packet_variant",
+        "content_variant_coverage": "packet_condition", "receiver_session_attestation": "receiver_session_id",
     }
     for dimension, field_name in dimension_fields.items():
         if all(getattr(record, field_name, None) is None for record in capture_records):

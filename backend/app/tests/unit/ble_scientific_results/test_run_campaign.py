@@ -12,7 +12,7 @@ from app.modules.ble_scientific_results.run_campaign import _describe, _load_sch
 def _entry_dict(**overrides) -> dict:
     fields = dict(
         planned_capture_id="planned-1", protocol_id="PROTO-1", day_id="DAY-1", physical_unit_id="UNIT-A", capture_order=1,
-        pre_or_post="PRE", intervention_arm="CONTROL", packet_variant="original", channel=37,
+        pre_or_post="PRE", intervention_arm="CONTROL", packet_condition="original", channel=37,
         receiver_epoch="EPOCH-1", time_since_power_on_s=30.0, time_since_intervention_s=None,
     )
     fields.update(overrides)

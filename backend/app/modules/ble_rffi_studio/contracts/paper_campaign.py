@@ -28,13 +28,20 @@ class PaperCampaignScheduleEntry(StudioContract):
     capture_order: int
     pre_or_post: PrePost
     intervention_arm: InterventionArm
-    packet_variant: str
+    packet_condition: str
     channel: int
     time_since_power_on_s: float | None = None
     time_since_intervention_s: float | None = None
     firmware_hash: str | None = None
     configuration_hash: str | None = None
     receiver_epoch: str
+    # Operator-attested marker of receiver-connection continuity for this
+    # whole schedule (see contracts/capture.py's receiver_session_id
+    # docstring for why this can't be auto-detected: every real capture
+    # opens/closes its own SDR device handle, so there is no software signal
+    # for "same physical connection" across captures). Propagated from
+    # PaperCampaignSchedule.receiver_session_id at freeze time.
+    receiver_session_id: str
     capture_purpose: str = "TARGET_DEVICE_ON"
 
     # Set only once the entry has actually been executed -- never true at
@@ -57,4 +64,10 @@ class PaperCampaignSchedule(StudioContract):
     # see PILOT_CHECKLIST.md. A schedule frozen for the real campaign must
     # leave this False.
     qualification_only: bool = False
+    # Operator-attested: "the B200 stayed connected/powered for this whole
+    # schedule." Generated once at freeze time (see
+    # PaperCampaignRunner.freeze_schedule) unless the operator supplies
+    # their own value. A genuine physical disconnect/power-cycle mid-campaign
+    # means freezing a NEW schedule (hence a new id), never mutating this one.
+    receiver_session_id: str
     frozen_at: str

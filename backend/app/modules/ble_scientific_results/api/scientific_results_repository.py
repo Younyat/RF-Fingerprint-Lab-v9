@@ -47,6 +47,8 @@ from ..module_logging import build_module_logger
 from ..quality import build_quality_summary as _build_quality_summary
 from ..records import build_records as _build_records
 from ..records import resolve_iq_path
+from ..statistics.confirmatory_analysis_runner import confirmatory_statistical_plan_to_dict
+from ..statistics.confirmatory_analysis_runner import run_confirmatory_statistical_plan as _run_confirmatory_statistical_plan
 
 RUN_SUBDIRS = [
     "00_contract", "01_inputs", "02_integrity", "03_campaign_accounting", "04_quality",
@@ -200,7 +202,19 @@ class ScientificResultsRepository:
             non_inferiority_margins=payload.get("non_inferiority_margins", {}),
             minimum_independent_blocks=payload.get("minimum_independent_blocks", {}),
             interpretation_matrix_hash=payload["interpretation_matrix_hash"],
+            rq2_primary_branch=payload.get("rq2_primary_branch"), rq2_branch_selection_rule=payload.get("rq2_branch_selection_rule"),
+            rq3_primary_analysis=payload.get("rq3_primary_analysis"), rq4_primary_analysis=payload.get("rq4_primary_analysis"),
+            sensitivity_analyses=payload.get("sensitivity_analyses", []),
+            rq3_reset_control_definition=payload.get("rq3_reset_control_definition"),
+            rq4_representation_definitions=payload.get("rq4_representation_definitions", {}),
+            decision_window_duration_s=payload.get("decision_window_duration_s"), minimum_eligible_bursts=payload.get("minimum_eligible_bursts"),
+            score_aggregation_rule=payload.get("score_aggregation_rule"), threshold_selection_procedure=payload.get("threshold_selection_procedure"),
+            non_inferiority_margin=payload.get("non_inferiority_margin"), non_inferiority_direction=payload.get("non_inferiority_direction"),
+            alpha=payload.get("alpha"), confirmatory_hypotheses=payload.get("confirmatory_hypotheses", []),
+            holm_family=payload.get("holm_family", []), decision_rule=payload.get("decision_rule"),
+            future_test_access_policy_ref=payload.get("future_test_access_policy_ref"),
         )
+        contract = contract.model_copy(update={"contract_sha256": contract.content_hash(exclude={"contract_sha256"})})
         atomic_json(self._protocol_path(protocol_id, next_version), contract.model_dump(mode="json"))
         self.logger.info("protocol frozen protocol_id=%s version=%s", protocol_id, next_version)
         return contract
@@ -216,6 +230,189 @@ class ScientificResultsRepository:
 
     def list_protocol_versions(self, protocol_id: str) -> list[AnalysisContract]:
         return [self.get_protocol(protocol_id, version) for version in sorted(self._existing_protocol_versions(protocol_id))]
+
+    # ------------------------------------------------------------------
+    # Protocol freeze (explicit, ceremonial operation -- 2026-08-09)
+    # ------------------------------------------------------------------
+    #
+    # Deliberately separate from freeze_protocol() above: that method is the
+    # flexible, repeatedly-called mechanism every intermediate protocol
+    # snapshot already uses (association calibration, guided validation,
+    # ...), and real, passing tests rely on calling it twice for the same
+    # protocol_id with no extra ceremony (test_protocol_freeze.py). This is
+    # the "confirmatory readiness" ceremony the user's protocol-freeze
+    # close-out explicitly asked for: it does not build a new AnalysisContract,
+    # it VALIDATES an already-frozen one is complete enough to gate FUTURE
+    # TEST behind, and records that validation, append-only, in
+    # protocol_freeze_ledger.jsonl -- a real, immutable, hash-linked artifact.
+
+    _CONFIRMATORY_READINESS_FIELDS = (
+        "rq2_primary_branch", "rq2_branch_selection_rule", "rq3_primary_analysis", "rq4_primary_analysis",
+        "rq3_reset_control_definition", "decision_window_duration_s", "minimum_eligible_bursts",
+        "score_aggregation_rule", "threshold_selection_procedure", "non_inferiority_margin",
+        "non_inferiority_direction", "alpha", "decision_rule", "future_test_access_policy_ref",
+    )
+
+    def _protocol_freeze_ledger_path(self) -> Path:
+        return self.root / "protocol_freeze_ledger.jsonl"
+
+    def list_protocol_freezes(self) -> list[dict[str, Any]]:
+        path = self._protocol_freeze_ledger_path()
+        if not path.is_file():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    def missing_confirmatory_readiness_fields(self, contract: AnalysisContract) -> list[str]:
+        """Field names still None/empty on `contract` that
+        execute_protocol_freeze() requires before it will accept this as the
+        definitive, FUTURE-TEST-gating protocol. Never invents a value --
+        only reports what is missing."""
+        missing = []
+        for field_name in self._CONFIRMATORY_READINESS_FIELDS:
+            value = getattr(contract, field_name)
+            if value is None or value == "":
+                missing.append(field_name)
+        if not contract.rq4_representation_definitions:
+            missing.append("rq4_representation_definitions")
+        if not contract.confirmatory_hypotheses:
+            missing.append("confirmatory_hypotheses")
+        if not contract.holm_family:
+            missing.append("holm_family")
+        return missing
+
+    def execute_protocol_freeze(
+        self, protocol_id: str, *, version: int | None = None, new_version_reason: str | None = None,
+    ) -> dict[str, Any]:
+        """The explicit protocol-freeze operation: validates confirmatory
+        readiness (raises PROTOCOL_FREEZE_MISSING_REQUIRED_FIELDS if
+        anything in _CONFIRMATORY_READINESS_FIELDS is still unset -- never
+        fabricates a value to pass this check) and appends one immutable
+        ledger entry hash-linked to the contract's own contract_sha256.
+        Refusing to freeze this protocol_id again without an explicit
+        new_version_reason is the whole point: any substantive change after
+        the first successful freeze must be a NEW protocol_version with a
+        stated reason, never a silent overwrite of what this ledger already
+        recorded."""
+        contract = self.get_protocol(protocol_id, version)
+        missing = self.missing_confirmatory_readiness_fields(contract)
+        if missing:
+            raise ValueError(f"PROTOCOL_FREEZE_MISSING_REQUIRED_FIELDS:{','.join(missing)}")
+
+        previous = [entry for entry in self.list_protocol_freezes() if entry["protocol_id"] == protocol_id]
+        if previous and not new_version_reason:
+            raise ValueError(
+                f"PROTOCOL_VERSION_CONFLICT:protocol_id={protocol_id} was already frozen "
+                f"(version {previous[-1]['protocol_version']}) -- pass new_version_reason to freeze a new version explicitly."
+            )
+
+        entry = {
+            "protocol_id": protocol_id, "protocol_version": contract.protocol_version,
+            "contract_sha256": contract.contract_sha256, "frozen_at": utc_now(),
+            "new_version_reason": new_version_reason, "is_new_version_of": previous[-1]["protocol_version"] if previous else None,
+        }
+        path = self._protocol_freeze_ledger_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry) + "\n")
+        self.logger.info("protocol freeze executed protocol_id=%s version=%s", protocol_id, contract.protocol_version)
+        return entry
+
+    # ------------------------------------------------------------------
+    # Campaign qualification preflight (2026-08-09) -- distinct from
+    # run_preflight() above, which checks an already-frozen dataset/split
+    # against disk. This checks whether the PLATFORM MECHANISM is ready for
+    # a live definitive campaign: association state, RQ3/RQ4 readiness,
+    # holdout integrity, and (where the caller supplies real evidence)
+    # hardware/quality signals -- never fabricates a check it has no real
+    # signal for, and never opens FUTURE TEST.
+    # ------------------------------------------------------------------
+
+    def run_campaign_qualification_preflight(
+        self, *,
+        b200_detected: bool | None = None, qualified_receiver_profile: dict[str, Any] | None = None,
+        channel_frequency_integrity_ok: bool | None = None, capture_continuity_ok: bool | None = None,
+        iq_digest_verified: bool | None = None, crc_valid_packet_yield: float | None = None,
+        eligible_bursts_per_decision_window: float | None = None, abstention_rate: float | None = None,
+        pre_post_pair_count: int | None = None, declared_metadata_capture_count: int | None = None,
+        rq4_eligible_device_count: int | None = None, rq4_total_device_count: int | None = None,
+        paper_eq6_7_smoke_test_passed: bool | None = None,
+    ) -> dict[str, Any]:
+        items: dict[str, dict[str, Any]] = {}
+
+        def _bool_item(name: str, value: bool | None, *, true_reason: str, false_reason: str) -> None:
+            if value is None:
+                items[name] = {"status": "NOT_CHECKED", "detail": "not supplied"}
+            else:
+                items[name] = {"status": "READY" if value else "NOT_READY", "detail": true_reason if value else false_reason}
+
+        _bool_item("b200_detected", b200_detected, true_reason="real device detected", false_reason="no B200 detected")
+        items["qualified_receiver_profile"] = (
+            {"status": "READY", "detail": qualified_receiver_profile} if qualified_receiver_profile
+            else {"status": "NOT_CHECKED", "detail": "not supplied"}
+        )
+        _bool_item("channel_frequency_integrity", channel_frequency_integrity_ok, true_reason="channel<->frequency mapping verified", false_reason="channel<->frequency mismatch found")
+        _bool_item("capture_continuity", capture_continuity_ok, true_reason="no unexpected discontinuities", false_reason="discontinuities found")
+        _bool_item("iq_digest_verified", iq_digest_verified, true_reason="iq_sha256 verified against real bytes", false_reason="iq_sha256 mismatch")
+
+        if crc_valid_packet_yield is None:
+            items["crc_valid_packet_yield"] = {"status": "NOT_CHECKED", "detail": "not supplied"}
+        else:
+            items["crc_valid_packet_yield"] = {"status": "READY" if crc_valid_packet_yield > 0 else "NOT_READY", "detail": crc_valid_packet_yield}
+
+        if eligible_bursts_per_decision_window is None:
+            items["eligible_bursts_per_decision_window"] = {"status": "NOT_CHECKED", "detail": "not supplied"}
+        else:
+            items["eligible_bursts_per_decision_window"] = {
+                "status": "READY" if eligible_bursts_per_decision_window > 0 else "NOT_READY", "detail": eligible_bursts_per_decision_window,
+            }
+
+        items["abstention_insufficient_evidence_rate"] = (
+            {"status": "READY", "detail": abstention_rate} if abstention_rate is not None
+            else {"status": "NOT_CHECKED", "detail": "not supplied"}
+        )
+
+        frozen_policy = self.find_frozen_association_policy()
+        items["association_policy_state"] = (
+            {"status": "FROZEN", "detail": frozen_policy.policy_hash} if frozen_policy is not None
+            else {"status": "NO_ACCEPTED_POLICY_YET", "detail": "find_frozen_association_policy() returned None -- real, current, not a bug"}
+        )
+
+        items["rq3_pairing_readiness"] = {
+            "status": "MECHANISM_READY",
+            "detail": f"{pre_post_pair_count or 0} real PRE/POST pair(s), {declared_metadata_capture_count or 0} capture(s) declaring pre_or_post/intervention_arm",
+        }
+
+        if rq4_total_device_count:
+            items["rq4_device_eligibility"] = {
+                "status": "READY" if (rq4_eligible_device_count or 0) > 0 else "NOT_READY",
+                "detail": f"{rq4_eligible_device_count or 0}/{rq4_total_device_count} device(s) marked RQ4 ELIGIBLE",
+            }
+        else:
+            items["rq4_device_eligibility"] = {"status": "NOT_CHECKED", "detail": "not supplied"}
+
+        future_test_accesses = [e for e in self.list_holdout_access_log() if "FUTURE_TEST" in (e.access_path or "")]
+        items["protected_holdout_untouched"] = (
+            {"status": "READY", "detail": "0 FUTURE_TEST accesses logged"} if not future_test_accesses
+            else {"status": "NOT_READY", "detail": f"{len(future_test_accesses)} FUTURE_TEST access(es) already logged"}
+        )
+
+        _bool_item(
+            "paper_eq6_7_v1_execution_on_real_iq", paper_eq6_7_smoke_test_passed,
+            true_reason="apply_base_preprocessing_with_provenance smoke test APPLIED on a real burst",
+            false_reason="smoke test did not reach APPLIED",
+        )
+
+        blocking_statuses = {"NOT_READY", "NO_ACCEPTED_POLICY_YET"}
+        overall = "NOT_READY" if any(item["status"] in blocking_statuses for item in items.values()) else "READY"
+        reasons = [f"{name}: {item['status']}" for name, item in items.items() if item["status"] in blocking_statuses | {"NOT_CHECKED"}]
+
+        report = {
+            "schema_version": "ble-scientific-results-campaign-qualification-preflight-v1",
+            "generated_at": utc_now(), "overall_status": overall, "reasons": reasons, "items": items,
+        }
+        atomic_json(self.root / "campaign_qualification_preflight_report.json", report)
+        self.logger.info("campaign qualification preflight overall_status=%s", overall)
+        return report
 
     # ------------------------------------------------------------------
     # Holdout access log -- append-only, hash-chained, project-wide
@@ -536,6 +733,30 @@ class ScientificResultsRepository:
             return None
         return ScientificPreflightReport.model_validate(json.loads(path.read_text(encoding="utf-8")))
 
+    def run_confirmatory_statistical_plan(self, paper_run_id: str, **kwargs: Any) -> dict[str, Any]:
+        """Real production caller for statistics/confirmatory_analysis_runner.py
+        (2026-08-09 -- connects hierarchical_cluster_bootstrap, coverage,
+        the RQ3 permutation test, the RQ4 paired comparison, non-inferiority,
+        Holm, and leave-one-device-out to a real, reachable path, instead of
+        only a unit test). `**kwargs` are the same VALIDATION-only,
+        already-scored inputs run_confirmatory_statistical_plan() itself
+        accepts -- this method never assembles TEST/FUTURE_TEST data and
+        never opens a holdout group. Persisted to
+        06_statistics/confirmatory_statistical_plan_report.json; every
+        method not given real data is honestly SKIPPED_NO_DATA, never a
+        fabricated number."""
+        report = _run_confirmatory_statistical_plan(**kwargs)
+        as_dict = confirmatory_statistical_plan_to_dict(report)
+        atomic_json(self._run_dir(paper_run_id) / "06_statistics" / "confirmatory_statistical_plan_report.json", as_dict)
+        self.logger.info("confirmatory_statistical_plan paper_run_id=%s", paper_run_id)
+        return as_dict
+
+    def get_confirmatory_statistical_plan_report(self, paper_run_id: str) -> dict[str, Any] | None:
+        path = self._run_dir(paper_run_id) / "06_statistics" / "confirmatory_statistical_plan_report.json"
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
     # ------------------------------------------------------------------
     # Fase 2: canonical records (Section B)
     # ------------------------------------------------------------------
@@ -696,7 +917,12 @@ class ScientificResultsRepository:
             )
 
         if split.split_status == "READY":
-            recomputed_split_hash = split.content_hash(exclude={"split_manifest_sha256"})
+            # split_purpose/non_confirmatory (2026-08-09) are excluded here
+            # too -- must match split_builder.py's own _HASH_EXCLUDED_FIELDS
+            # exactly, or every real historical split would report a false
+            # hash mismatch purely from an additive metadata tag that
+            # predates their existence.
+            recomputed_split_hash = split.content_hash(exclude={"split_manifest_sha256", "split_purpose", "non_confirmatory"})
             if split.split_manifest_sha256 != recomputed_split_hash:
                 findings.append(
                     f"Split manifest hash mismatch: stored={split.split_manifest_sha256} recomputed={recomputed_split_hash}."
@@ -878,8 +1104,9 @@ class ScientificResultsRepository:
         else:
             findings.append("channels: protocol declares no channels for this paper campaign.")
 
-        # Content variants: NOT_DOCUMENTED -- no packet_variant field.
-        findings.append("content_variants: NOT_DOCUMENTED -- no packet_variant field exists anywhere in ble_rffi_studio's real capture/example schema; content-variant coverage cannot be verified from current artifacts.")
+        # Content variants: NOT_DOCUMENTED -- packet_condition field exists
+        # (contracts/capture.py) but is never populated on any real capture.
+        findings.append("content_variants: NOT_DOCUMENTED -- packet_condition field exists in ble_rffi_studio's real capture schema but is never populated on any real capture; content-variant coverage cannot be verified from current artifacts.")
 
         # Independent blocks: real, checkable (reuses the same session check
         # as above plus an explicit non-empty requirement).

@@ -16,7 +16,7 @@ import numpy as np
 from app.infrastructure.ble.capture.ble_offline_replay import read_jsonl
 
 from ..contracts import ExampleRecord
-from .field_mapping import PacketVariant, derive_packet_content_variants
+from .field_mapping import AnalyticalRegion, derive_packet_content_variants
 
 
 def resolve_latest_replay_dir(legacy_capture_root: Path, capture_id: str) -> Path | None:
@@ -34,7 +34,7 @@ def load_pdu_type_by_packet_id(replay_dir: Path) -> dict[str, str | None]:
 
 def build_packet_content_variants_for_examples(
     examples: list[ExampleRecord], *, legacy_capture_root: Path, capture_iq_paths: dict[str, Path],
-) -> dict[str, dict[PacketVariant, np.ndarray | None]]:
+) -> dict[str, dict[AnalyticalRegion, np.ndarray | None]]:
     """Real, end-to-end RQ4 derivation over a list of already-evidenced
     examples: for each, loads its own IQ window from the ORIGINAL capture IQ
     file (capture_iq_paths -- the same caller-resolved capture_id -> path
@@ -48,7 +48,7 @@ def build_packet_content_variants_for_examples(
     from ..preprocessing import load_iq_window
 
     pdu_type_cache: dict[str, dict[str, str | None]] = {}
-    results: dict[str, dict[PacketVariant, np.ndarray | None]] = {}
+    results: dict[str, dict[AnalyticalRegion, np.ndarray | None]] = {}
 
     for example in examples:
         if example.capture_id not in pdu_type_cache:

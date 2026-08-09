@@ -61,6 +61,16 @@ exclusion is auditable, not silent.
 from __future__ import annotations
 
 from ..contracts import DatasetManifest, ExampleRecord, LeakageCheckResult, SplitAssignment, SplitManifest
+from ..contracts.split import SplitPurpose
+
+# split_purpose/non_confirmatory (2026-08-09 addition) are deliberately
+# excluded from the frozen hash: every real historical SplitManifest was
+# hashed before these fields existed, and re-including them would make
+# scientific_results_repository.py's integrity check report a hash
+# mismatch for every one of them, purely because of an additive metadata
+# tag -- never a real content change. The hash-protected content (leakage
+# check, assignments, channel exclusions) is unaffected.
+_HASH_EXCLUDED_FIELDS = {"split_manifest_sha256", "split_purpose", "non_confirmatory"}
 
 _SPLIT_NAMES = ("TRAIN", "VALIDATION", "TEST")
 _LEAKAGE_FIELDS = ["capture_id", "execution_id", "session_id", "candidate_id", "packet_id", "sample_range"]
@@ -116,6 +126,65 @@ class SplitBuilder:
         if scientific_task == "UNKNOWN_DEVICE_REJECTION":
             return self._unknown_device_rejection(dataset, selected, created_at, channel_excluded_ids)
         raise ValueError(f"UNKNOWN_SCIENTIFIC_TASK:{scientific_task}")
+
+    def build_rq1_dependence_diagnostic(
+        self, *, dataset: DatasetManifest, examples: list[ExampleRecord], scientific_task: str,
+        confirmatory_split: SplitManifest, created_at: str,
+    ) -> SplitManifest:
+        """RQ1-only, NON-CONFIRMATORY (split_purpose=
+        RQ1_ACQUISITION_DEPENDENCE_DIAGNOSTIC): deliberately violates
+        capture-disjointness to measure acquisition-dependence optimism
+        (this is what produces RQ1's BA_window number -- see
+        evaluation/rq1_acquisition_dependence.py). NEVER reachable from
+        build(); build() itself is untouched by this method and stays
+        strictly capture-disjoint.
+
+        Takes an already-built CONFIRMATORY split (`confirmatory_split`,
+        from build()) and, for each of its TRAIN sessions with >=2 examples,
+        deterministically holds out the second half of that SAME session's
+        examples as a "VALIDATION" role -- i.e. the held-out examples come
+        from the identical capture/session as TRAIN, on purpose. The normal
+        leakage check still runs and is still recorded on the resulting
+        manifest (never hidden), it is simply not allowed to block this one
+        path (enforce_leakage_gate=False) -- a FAILED leakage status here is
+        the expected, intended signal, not a bug."""
+        by_id = {e.example_id: e for e in examples}
+        train_example_ids = {a.example_id for a in confirmatory_split.assignments if a.split == "TRAIN"}
+        by_session: dict[str, list[ExampleRecord]] = {}
+        for example_id in train_example_ids:
+            example = by_id.get(example_id)
+            if example is not None:
+                by_session.setdefault(example.session_id, []).append(example)
+
+        policy = "rq1_window_diagnostic:same_capture_held_out_examples"
+        eligible_sessions = {sid: exs for sid, exs in by_session.items() if len(exs) >= 2}
+        if not eligible_sessions:
+            reason = (
+                "RQ1_ACQUISITION_DEPENDENCE_DIAGNOSTIC requires >=1 CONFIRMATORY-TRAIN session with >=2 examples "
+                f"to hold out a within-session window; found 0 (of {len(by_session)} TRAIN session(s) total)."
+            )
+            return self._not_feasible(dataset, scientific_task, policy, reason, created_at, [], split_purpose="RQ1_ACQUISITION_DEPENDENCE_DIAGNOSTIC")
+
+        assignments: list[SplitAssignment] = []
+        for session_id, session_examples in eligible_sessions.items():
+            ordered = sorted(session_examples, key=lambda e: e.example_id)
+            midpoint = len(ordered) // 2
+            for example in ordered[:midpoint]:
+                assignments.append(SplitAssignment(
+                    example_id=example.example_id, physical_unit_id=example.physical_unit_id, capture_id=example.capture_id,
+                    session_id=session_id, split="TRAIN", split_reason=f"{policy}:first_half",
+                ))
+            for example in ordered[midpoint:]:
+                assignments.append(SplitAssignment(
+                    example_id=example.example_id, physical_unit_id=example.physical_unit_id, capture_id=example.capture_id,
+                    session_id=session_id, split="VALIDATION", split_reason=f"{policy}:second_half",
+                ))
+
+        leakage = self._compute_leakage(assignments, by_id)
+        return self._finalize(
+            dataset, scientific_task, policy, assignments, leakage, created_at, by_id, [],
+            enforce_leakage_gate=False, split_purpose="RQ1_ACQUISITION_DEPENDENCE_DIAGNOSTIC",
+        )
 
     # ------------------------------------------------------------------
 
@@ -290,21 +359,24 @@ class SplitBuilder:
 
     def _not_feasible(
         self, dataset: DatasetManifest, scientific_task: str, policy: str, reason: str, created_at: str, channel_excluded_ids: list[str],
+        *, split_purpose: SplitPurpose = "CONFIRMATORY",
     ) -> SplitManifest:
         manifest = SplitManifest(
             dataset_id=dataset.dataset_id, dataset_version=dataset.dataset_version, scientific_task=scientific_task, policy=policy,
             split_status="NOT_FEASIBLE", infeasibility_reason=reason, assignments=[],
             leakage_check=LeakageCheckResult(status="NOT_EXECUTED"), created_at=created_at,
             channel_scope_excluded_example_ids=channel_excluded_ids,
+            split_purpose=split_purpose, non_confirmatory=(split_purpose != "CONFIRMATORY"),
         )
-        sha256 = manifest.content_hash(exclude={"split_manifest_sha256"})
+        sha256 = manifest.content_hash(exclude=_HASH_EXCLUDED_FIELDS)
         return manifest.model_copy(update={"split_manifest_sha256": sha256})
 
     def _finalize(
         self, dataset: DatasetManifest, scientific_task: str, policy: str, assignments: list[SplitAssignment],
         leakage: LeakageCheckResult, created_at: str, examples_by_id: dict[str, ExampleRecord], channel_excluded_ids: list[str],
+        *, enforce_leakage_gate: bool = True, split_purpose: SplitPurpose = "CONFIRMATORY",
     ) -> SplitManifest:
-        if leakage.status == "FAILED":
+        if leakage.status == "FAILED" and enforce_leakage_gate:
             split_status, infeasibility_reason = "NOT_FEASIBLE", f"Leakage check failed on field(s): {sorted(leakage.overlapping_keys.keys())}"
         else:
             # One common, task-agnostic gate: no classifier training is ever
@@ -335,9 +407,17 @@ class SplitBuilder:
                 # the TRAIN-to-VALIDATION/TEST direction alone, never the
                 # reverse.
                 val_labels = {train_label_for(scientific_task, examples_by_id[a.example_id]) for a in assignments if a.split == "VALIDATION"}
-                test_labels = {train_label_for(scientific_task, examples_by_id[a.example_id]) for a in assignments if a.split == "TEST"}
                 missing_in_val = train_labels - val_labels
-                missing_in_test = train_labels - test_labels
+                # A non-CONFIRMATORY split (e.g. RQ1's dependence diagnostic)
+                # never populates a TEST role by design -- it is TRAIN/
+                # VALIDATION only and is never eligible for TEST/FUTURE_TEST
+                # regardless, so checking TEST completeness on it would
+                # reject it for a role it was never supposed to have.
+                if split_purpose == "CONFIRMATORY":
+                    test_labels = {train_label_for(scientific_task, examples_by_id[a.example_id]) for a in assignments if a.split == "TEST"}
+                    missing_in_test = train_labels - test_labels
+                else:
+                    missing_in_test = set()
                 if missing_in_val or missing_in_test:
                     split_status, infeasibility_reason = "NOT_FEASIBLE", (
                         f"SPLIT_INCOMPLETE_MISSING_CLASS_SUPPORT: VALIDATION missing {sorted(missing_in_val)}, "
@@ -351,6 +431,7 @@ class SplitBuilder:
             dataset_id=dataset.dataset_id, dataset_version=dataset.dataset_version, scientific_task=scientific_task, policy=policy,
             split_status=split_status, infeasibility_reason=infeasibility_reason, assignments=assignments, leakage_check=leakage, created_at=created_at,
             channel_scope_excluded_example_ids=channel_excluded_ids,
+            split_purpose=split_purpose, non_confirmatory=(split_purpose != "CONFIRMATORY"),
         )
-        sha256 = manifest.content_hash(exclude={"split_manifest_sha256"})
+        sha256 = manifest.content_hash(exclude=_HASH_EXCLUDED_FIELDS)
         return manifest.model_copy(update={"split_manifest_sha256": sha256})

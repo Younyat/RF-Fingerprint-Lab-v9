@@ -69,6 +69,9 @@ class ScientificCaptureRecord(StudioContract):
     antenna: str | None = None
     receiver_id: str | None = None
     receiver_epoch: str | None = None
+    # Operator-attested (see ble_rffi_studio's CaptureRecord.
+    # receiver_session_id docstring) -- never auto-detected.
+    receiver_session_id: str | None = None
     host_id: str | None = None
 
     day_id: str | None = None
@@ -79,7 +82,7 @@ class ScientificCaptureRecord(StudioContract):
     intervention_arm: str | None = None
     time_since_power_on_s: float | None = None
     time_since_intervention_s: float | None = None
-    packet_variant: str | None = None
+    packet_condition: str | None = None
 
     ambient_temperature_c: float | None = None
     battery_id: str | None = None

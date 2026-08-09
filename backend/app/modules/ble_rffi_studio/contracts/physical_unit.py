@@ -19,6 +19,8 @@ ADDRESS_BINDING_SCHEMA_VERSION = "ble-rffi-studio-address-binding-v1"
 
 PhysicalUnitStatus = Literal["ACTIVE", "RETIRED", "SUSPECTED_ADDRESS_CHANGE"]
 BindingStatus = Literal["BOUND", "UNBOUND", "CONFLICTING"]
+SameModelConfirmation = Literal["CONFIRMED", "NOT_CONFIRMED"]
+Rq4Eligibility = Literal["ELIGIBLE", "NOT_ELIGIBLE"]
 
 
 class PhysicalUnitRecord(StudioContract):
@@ -32,6 +34,21 @@ class PhysicalUnitRecord(StudioContract):
     status: PhysicalUnitStatus = "ACTIVE"
     operator_declaration_id: str
     first_registered_at: str
+
+    # Protocol-freeze close-out (2026-08-09): same-model confirmation is
+    # NEVER inferred from device_family/model/commercial name alone (real,
+    # confirmed finding: `keyfobdemo 01`'s own device_family says "TI
+    # sensortag" despite its name -- see docs/ble/physical_device_inventory.json)
+    # -- only PhysicalDeviceRegistry.confirm_same_model(), called with an
+    # explicit, non-empty basis, can set this to CONFIRMED. Every real unit
+    # today stays NOT_CONFIRMED (the honest, current state).
+    same_model_confirmation: SameModelConfirmation = "NOT_CONFIRMED"
+    same_model_confirmation_basis: str | None = None
+    # RQ4 (packet-content-dependence) eligibility -- also never inferred,
+    # only set via PhysicalDeviceRegistry.set_rq4_eligibility() with an
+    # explicit reason.
+    rq4_eligibility: Rq4Eligibility = "NOT_ELIGIBLE"
+    rq4_eligibility_reason: str | None = None
 
 
 class AddressBindingHistoryItem(StudioContract):

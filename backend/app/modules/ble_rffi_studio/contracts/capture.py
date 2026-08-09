@@ -60,6 +60,18 @@ BackgroundKind = Literal["TARGET_DECLARED_OFF_OR_REMOVED", "GENERAL_AMBIENT"]
 # generic "no examples" case.
 TargetPresenceStatus = Literal["DETECTED", "NOT_DETECTED", "INCONCLUSIVE", "NOT_APPLICABLE"]
 
+# What was actually transmitted for this capture -- ORIGINAL (unmodified,
+# real device traffic) or CONTROLLED_VARIANT (a deliberately modified packet
+# content used for RQ4's packet-content-dependence check). Deliberately a
+# DIFFERENT concept from packet_content/field_mapping.py's per-burst
+# AnalyticalRegion (FULL_BURST/ADVA_EXCLUDED/PRE_PDU): packet_condition
+# describes what was physically sent; AnalyticalRegion describes which
+# derived sample region of an already-captured burst is analyzed. Renamed
+# from the old, unconstrained, never-populated `packet_variant` free-text
+# field (2026-08-09) precisely because its name collided with the
+# AnalyticalRegion type alias despite meaning something different.
+PacketCondition = Literal["ORIGINAL", "CONTROLLED_VARIANT"]
+
 
 class CaptureRecord(StudioContract):
     """Describes one B200 IQ acquisition completely enough to reproduce and
@@ -178,7 +190,7 @@ class CaptureRecord(StudioContract):
     campaign_period: str | None = None
     pre_or_post: str | None = None
     intervention_arm: str | None = None
-    packet_variant: str | None = None
+    packet_condition: PacketCondition | None = None
     # Point-1 correction (2026-08-08): receiver_epoch used to be a bare
     # identity hash (WHICH physical B200), conflating identity with
     # "qualified acquisition epoch" (identity + acquisition profile +
@@ -213,6 +225,21 @@ class CaptureRecord(StudioContract):
     qualified_acquisition_profile_hash: str | None = None
     receiver_epoch: str | None = None
     receiver_epoch_boundary_reason: str | None = None
+    # Point-2 correction (2026-08-09): receiver_epoch's >1h session-gap
+    # boundary is a documented PROXY for reinitialization -- no subsystem in
+    # this codebase observes a real USRP B200 boot/reconnect event (every
+    # real capture opens and closes its own SoapySDR device handle in a
+    # fresh subprocess; there is no persistent-connection signal to key off,
+    # confirmed by direct inspection of ble_sdr_capture_worker.py/
+    # campaign_orchestrator.py/sdr_device_arbiter.py). receiver_session_id
+    # is therefore OPERATOR-ATTESTED, not auto-detected: PaperCampaignRunner
+    # generates one per frozen schedule (the operator's real-world attestation
+    # that the B200 stayed connected/powered for that whole schedule); a
+    # physical disconnect/power-cycle means starting a new schedule, hence a
+    # new id. For historical captures (None here), RQ3 pairing continues to
+    # rely solely on the receiver_epoch gap proxy -- this field never
+    # retroactively fills in a historical attestation that was never made.
+    receiver_session_id: str | None = None
     host_id: str | None = None
     firmware_hash: str | None = None
     configuration_hash: str | None = None

@@ -16,6 +16,13 @@ SplitName = Literal["TRAIN", "VALIDATION", "TEST"]
 SplitStatus = Literal["READY", "NOT_FEASIBLE"]
 LeakageCheckStatus = Literal["NOT_EXECUTED", "RUNNING", "PASSED", "FAILED", "INCOMPLETE"]
 
+# RQ1 needs to deliberately measure acquisition-dependence optimism, which
+# means deliberately violating capture-disjointness for one, clearly-marked,
+# non-confirmatory split -- never the default and never reachable from
+# SplitBuilder.build(). Any split_purpose other than CONFIRMATORY must never
+# be used to select a model, calibrate a threshold, or report a paper result.
+SplitPurpose = Literal["CONFIRMATORY", "RQ1_ACQUISITION_DEPENDENCE_DIAGNOSTIC"]
+
 
 class SplitAssignment(StudioContract):
     example_id: str
@@ -57,3 +64,8 @@ class SplitManifest(StudioContract):
     # docstring). Recorded even on a NOT_FEASIBLE outcome so a channel-scope
     # exclusion is always auditable from the manifest, never silent.
     channel_scope_excluded_example_ids: list[str] = []
+
+    # Set only by SplitBuilder.build_rq1_dependence_diagnostic(); every split
+    # produced by the normal build() stays CONFIRMATORY/non_confirmatory=False.
+    split_purpose: SplitPurpose = "CONFIRMATORY"
+    non_confirmatory: bool = False

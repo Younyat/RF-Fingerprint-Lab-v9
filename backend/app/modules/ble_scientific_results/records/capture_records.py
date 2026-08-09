@@ -44,8 +44,8 @@ _STRUCTURALLY_ABSENT_CAPTURE_FIELDS = (
 # per-row -- a capture recorded before these existed, or outside the paper
 # campaign runner, genuinely has None here and is reported not_documented).
 _OPTIONAL_CAPTURE_FIELDS = (
-    "day_id", "campaign_period", "pre_or_post", "intervention_arm", "packet_variant", "receiver_epoch",
-    "host_id", "firmware_hash", "configuration_hash", "time_since_power_on_s", "time_since_intervention_s",
+    "day_id", "campaign_period", "pre_or_post", "intervention_arm", "packet_condition", "receiver_epoch",
+    "receiver_session_id", "host_id", "firmware_hash", "configuration_hash", "time_since_power_on_s", "time_since_intervention_s",
     "capture_order", "review_status", "ambient_temperature_c", "battery_id", "battery_voltage_pre_v",
     "battery_voltage_post_v", "operator_id", "planned_capture_id",
 )
@@ -150,13 +150,14 @@ def build_capture_record(
         channel=examples[0].channel if examples else None, center_frequency_hz=capture.center_frequency_hz,
         sample_rate_hz=capture.sample_rate_sps, bandwidth_hz=capture.effective_bandwidth_hz, sample_format=capture.sample_dtype,
         gain_db=capture.gain_db, antenna=capture.antenna_port, receiver_id=capture.receiver_device_id,
-        receiver_epoch=optional_values["receiver_epoch"], host_id=optional_values["host_id"],
+        receiver_epoch=optional_values["receiver_epoch"], receiver_session_id=optional_values["receiver_session_id"],
+        host_id=optional_values["host_id"],
         firmware_hash=optional_values["firmware_hash"], configuration_hash=optional_values["configuration_hash"],
         day_id=optional_values["day_id"], campaign_period=optional_values["campaign_period"],
         session_id=capture.session_id, capture_order=optional_values["capture_order"],
         pre_or_post=optional_values["pre_or_post"], intervention_arm=optional_values["intervention_arm"],
         time_since_power_on_s=optional_values["time_since_power_on_s"], time_since_intervention_s=optional_values["time_since_intervention_s"],
-        packet_variant=optional_values["packet_variant"],
+        packet_condition=optional_values["packet_condition"],
         ambient_temperature_c=optional_values["ambient_temperature_c"], battery_id=optional_values["battery_id"],
         battery_voltage_pre_v=optional_values["battery_voltage_pre_v"], battery_voltage_post_v=optional_values["battery_voltage_post_v"],
         operator_id=optional_values["operator_id"], planned_capture_id=optional_values["planned_capture_id"],

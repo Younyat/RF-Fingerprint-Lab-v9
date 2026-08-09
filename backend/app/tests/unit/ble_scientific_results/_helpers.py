@@ -108,7 +108,7 @@ def write_ready_split(ble_root: Path, *, dataset: DatasetManifest, scientific_ta
         leakage_check=LeakageCheckResult(status="PASSED", checked_group_fields=["capture_id", "execution_id", "session_id", "candidate_id", "packet_id"]),
         created_at="2026-08-01T00:00:00Z",
     )
-    sha256 = draft.content_hash(exclude={"split_manifest_sha256"})
+    sha256 = draft.content_hash(exclude={"split_manifest_sha256", "split_purpose", "non_confirmatory"})
     frozen = draft.model_copy(update={"split_manifest_sha256": sha256})
     _write_json(ble_root / "splits" / f"{dataset.dataset_id}__{dataset.dataset_version}__{scientific_task}.json", frozen.model_dump(mode="json"))
     return frozen
@@ -122,7 +122,7 @@ def write_not_feasible_split(ble_root: Path, *, dataset: DatasetManifest, scient
         assignments=[], leakage_check=LeakageCheckResult(status="FAILED", checked_group_fields=["capture_id", "execution_id", "session_id"], overlapping_keys={"capture_id": ["cap-1"]}),
         created_at="2026-08-01T00:00:00Z",
     )
-    sha256 = draft.content_hash(exclude={"split_manifest_sha256"})
+    sha256 = draft.content_hash(exclude={"split_manifest_sha256", "split_purpose", "non_confirmatory"})
     frozen = draft.model_copy(update={"split_manifest_sha256": sha256})
     _write_json(ble_root / "splits" / f"{dataset.dataset_id}__{dataset.dataset_version}__{scientific_task}.json", frozen.model_dump(mode="json"))
     return frozen

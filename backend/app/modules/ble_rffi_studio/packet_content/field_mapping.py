@@ -55,7 +55,12 @@ _ADV_ADDRESS_END_BITS = _ADV_ADDRESS_START_BITS + _ADV_ADDRESS_BITS  # 104
 # PDU types where AdvA is the leading 48 payload bits right after the header.
 PDU_TYPES_WITH_LEADING_ADVA = {"ADV_IND", "ADV_NONCONN_IND", "ADV_SCAN_IND", "ADV_DIRECT_IND", "SCAN_RSP"}
 
-PacketVariant = str  # "FULL_BURST" | "ADVA_EXCLUDED" | "PRE_PDU"
+# Which derived sample region of an already-captured burst is analyzed --
+# deliberately a DIFFERENT concept from CaptureRecord.packet_condition
+# (ORIGINAL/CONTROLLED_VARIANT, what was physically transmitted). Renamed
+# from PacketVariant (2026-08-09) because that name collided with
+# packet_condition's old name (packet_variant) despite meaning something else.
+AnalyticalRegion = str  # "FULL_BURST" | "ADVA_EXCLUDED" | "PRE_PDU"
 LENGTH_RECOVERY_RULE = "REPRESENTATION_OWN_ZERO_PAD_AT_END"
 
 
@@ -109,7 +114,7 @@ class AdvaExcludedArtifact:
 
 def derive_packet_content_variants(
     *, iq_window: np.ndarray, iq_start_sample: int, sample_rate_sps: float, pdu_type_name: str | None,
-) -> dict[PacketVariant, np.ndarray | AdvaExcludedArtifact | None]:
+) -> dict[AnalyticalRegion, np.ndarray | AdvaExcludedArtifact | None]:
     """FULL_BURST is always the original window, byte-for-byte, never
     mutated. ADVA_EXCLUDED is None when this PDU type's AdvA offset is not
     known (see PDU_TYPES_WITH_LEADING_ADVA) -- never a guessed exclusion

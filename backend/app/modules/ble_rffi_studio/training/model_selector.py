@@ -66,3 +66,40 @@ def score_model(
         "composite_score": composite_score,
         "formula": "0.5*macro_f1 + 0.3*balanced_accuracy_proxy - unknown_capability_penalty (VALIDATION only; TEST never used to select)",
     }
+
+
+# RQ2's 4 signal-analysis branches (root README's "Implemented BLE-RFFI
+# benchmark" table) -- which ModelType(s) each one covers.
+_MODEL_TYPE_TO_RQ2_BRANCH = {
+    "logistic_regression": "engineered_rf", "svm_rbf": "engineered_rf", "random_forest": "engineered_rf",
+    "cnn1d": "raw_iq", "cnn2d": "stft", "frozen_morphological_baseline": "coarse_morphology",
+}
+
+
+def select_primary_rq2_branch_from_validation(validation_composite_scores: dict[str, float]) -> tuple[str, str]:
+    """Protocol-freeze close-out (2026-08-09): picks RQ2's primary analysis
+    branch to freeze into AnalysisContract.rq2_primary_branch BEFORE FUTURE
+    TEST. `validation_composite_scores` is {model_type: composite_score} --
+    score_model()'s own composite_score, already documented VALIDATION-only;
+    this function's input type has no slot for a TEST-derived number, so it
+    cannot be fed one by construction. Never called automatically from
+    freeze_protocol() -- the caller decides when a real VALIDATION run
+    justifies freezing a primary branch, this only computes which one wins
+    given real scores. Returns (primary_branch, selection_rule_text)."""
+    if not validation_composite_scores:
+        raise ValueError("NEED_AT_LEAST_ONE_VALIDATION_COMPOSITE_SCORE")
+    best_by_branch: dict[str, float] = {}
+    for model_type, score in validation_composite_scores.items():
+        branch = _MODEL_TYPE_TO_RQ2_BRANCH.get(model_type)
+        if branch is None:
+            continue
+        if branch not in best_by_branch or score > best_by_branch[branch]:
+            best_by_branch[branch] = score
+    if not best_by_branch:
+        raise ValueError("NO_KNOWN_RQ2_BRANCH_IN_INPUT")
+    primary_branch = max(sorted(best_by_branch.keys()), key=lambda branch: best_by_branch[branch])
+    rule = (
+        "Highest VALIDATION composite_score (score_model()'s 0.5*macro_f1 + 0.3*balanced_accuracy_proxy - "
+        "unknown_capability_penalty) among each branch's best-scoring model_type; ties broken alphabetically by branch name."
+    )
+    return primary_branch, rule
