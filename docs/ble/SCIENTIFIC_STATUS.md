@@ -945,6 +945,160 @@ criteria. See the root README's Current scientific status table for what
 
 ---
 
+## 17. Association semantics, eligibility, decision windows, campaign runner, holdout groups, and Guided Validation
+
+This section documents a round of `ble_scientific_results`/`ble_rffi_studio`
+work that predates §16 chronologically but was not yet written up here.
+IMPLEMENTED/EXPERIMENTALLY VALIDATED distinction as everywhere else in this
+document.
+
+### 17.1 Association semantics (`ble_scientific_results/records/burst_records.py`)
+
+`BurstClass` is now `SOURCE_CONTEXT_ONLY | CRC_VALID_PACKET |
+TARGET_ASSOCIATED_PACKET` (`contracts/record_contracts.py`).
+`_passes_target_association_criterion` requires ALL of: a real frozen
+`AssociationPolicy` (else always `False`), `association_strength=="STRONG"`,
+`address_match_status=="MATCHED"`, no `association_rejection_reason`,
+`target_address_match is True`, `time_delta_ms <= policy.threshold_ms`. A
+resolved `physical_unit_id` alone (e.g. via `PHYSICAL_ISOLATION_DECLARED`)
+now produces `SOURCE_CONTEXT_ONLY` with `source_identity_origin=
+OPERATOR_CONTEXT_DECLARED`, never `TARGET_ASSOCIATED_PACKET` -- the
+`label_authority` field records the exact rule text that decided each row.
+IMPLEMENTED AND TESTED; unchanged bottom line, still 0 STRONG (§16.2, §17.10).
+
+### 17.2 Eligibility vs. diagnostics split
+
+`ScientificCaptureRecord`: `capture_eligible`, `blocking_reason_codes`,
+`diagnostic_flags` (old `eligible`/`exclusion_reason_codes` removed).
+`ScientificBurstRecord`: `packet_eligible`, `label_eligible`,
+`training_eligible`, `blocking_reason_codes`, `diagnostic_flags`. A
+technical blocker (no CRC, capture excluded) is a `blocking_reason_code`;
+a quality/ambiguity note on an already-usable row (e.g.
+`STRONG_ASSOCIATION_DISABLED_UNTIL_POLICY_FROZEN`) is a `diagnostic_flag`
+and never blocks eligibility by itself. IMPLEMENTED AND TESTED.
+
+### 17.3 Protocol-deviation classification
+
+`ScientificCampaignDeviationRecord.classification` is
+`CANDIDATE_EXCLUSION | CAPTURE_EXCLUSION | PROTOCOL_DEVIATION`.
+`CAPTURE_EXCLUSION`: `OVERFLOW`, `DISCONTINUITY`, `METADATA_INCOMPLETE`.
+`PROTOCOL_DEVIATION`: `DUPLICATE_CAPTURE`, `CAPTURE_NOT_FOUND`,
+`SPLIT_CONFLICT`, `NOT_DOCUMENTED_DESIGN_DIMENSION`, plus real runner-
+rejection codes from `paper_campaign_runner.py`: `CAPTURE_OUT_OF_SCHEDULE`,
+`WRONG_CAPTURE_ORDER`, `WRONG_UNIT`, `WRONG_CHANNEL`,
+`WRONG_PRE_POST_STATE`, `WRONG_INTERVENTION_ARM`, `WRONG_PACKET_VARIANT`,
+`RECEIVER_EPOCH_MISMATCH`, `FIRMWARE_MISMATCH`, `CONFIGURATION_MISMATCH`.
+`CANDIDATE_EXCLUSION` is declared in the type but not currently emitted as
+a deviation row -- that case lives only as a `diagnostic_flag` on the burst
+record (§17.2). **Correction**: `campaign_deviations.py`'s own module
+docstring lists a slightly different, aspirational set of runner-rejection
+code names (`WRONG_ACQUISITION_ORDER`, `UNIT_WRONG_ARM`,
+`RECEIVER_EPOCH_NOT_ALLOWED`, `INTERVENTION_NOT_EXECUTED`,
+`EARLY_HOLDOUT_ACCESS`, `CHANNEL_OR_VARIANT_MISMATCH`) that do not exist in
+code -- the real names are the ones listed above; the docstring itself is
+stale and is not fixed by this documentation pass (no code was changed to
+produce this correction). IMPLEMENTED AND TESTED.
+
+### 17.4 Real decision windows
+
+`decision_window_records.py` groups bursts by real elapsed time
+(`window_index = burst.sample_start // window_samples`), not one window per
+candidate. `window_duration_s` defaults to `10.0`
+(`DEFAULT_WINDOW_DURATION_S`, `capture_records.py`). `WindowStatus` is
+`INACTIVE | ACTIVE_INSUFFICIENT_BURSTS | ACTIVE_ELIGIBLE`. IMPLEMENTED AND
+TESTED; no definitive campaign report produced through this path yet.
+
+### 17.5 Origin metadata on captures
+
+`ble_rffi_studio/contracts/capture.py`'s `CaptureRecord` carries
+`campaign_period`, `pre_or_post`, `intervention_arm`, `packet_variant`,
+`host_id`, `firmware_hash`, `configuration_hash`, `operator_id`,
+`planned_capture_id` (in addition to `day_id`/`receiver_epoch`, §16.4-16.5).
+`capture_stage.py`'s `build_capture_record` reads all of them directly from
+the manifest -- no fallback, `None` when absent, never guessed.
+IMPLEMENTED AND TESTED; 0/150 real historical captures declare most of
+these (unchanged finding, consistent with earlier sections) -- they exist
+for the campaign runner (§17.8) to populate going forward.
+
+### 17.6 Decoder burst variables exposed
+
+`backend/tools/ble_decode_burst_directory.py` now reads
+`synchronization_score` (`detector_score`), `symbol_phase`
+(`estimated_timing_phase`), `frequency_offset_hz` (`estimated_cfo_hz`), and
+`frequency_fit_quality` from the real decoder output;
+`ble_offline_replay.py` copies them into `packet_association_ledger.jsonl`;
+`burst_records.py` reads them directly (removed from
+`_STRUCTURALLY_ABSENT_BURST_FIELDS`). `competing_energy`,
+`clipping_overlap`, `discontinuity_overlap`, `edge_margin_samples`,
+`burst_snr_db` remain genuinely absent -- not invented. IMPLEMENTED AND
+TESTED.
+
+### 17.7 Association timing residuals
+
+`ble_scientific_results/quality/quality_summary.py` breaks
+`association_timing_residual` down per `(capture_id, physical_unit_id,
+day_id, association_status)` with median/p75/p90/p95/max/iqr, written to
+`association_timing_residual_distribution.csv`. `ASSOCIATION_TIME_
+THRESHOLD_MS = 250.0` is documented honestly as a hardcoded value with **no
+recorded calibration study behind it** -- not upgraded to look justified by
+this pass. IMPLEMENTED AND TESTED against the real `CC2650-UNIT-01-AUTO-TVB`
+dataset (`test_preflight_real_data.py`).
+
+### 17.8 Campaign runner
+
+`ble_rffi_studio/campaign/paper_campaign_runner.py`: `PaperCampaignSchedule`
+(`qualification_only` flag), `PaperCampaignRunner.freeze_schedule`,
+`next_planned_capture`, `execute`, `reject_out_of_schedule`. `execute()`
+calls the existing `CampaignOrchestrator.run_session()` -- it does not talk
+to the SDR/arbiter directly, and only writes previously-frozen schedule
+metadata onto the manifest after the real capture completes. Rejections are
+persisted append-only and converted into real
+`ScientificCampaignDeviationRecord`s (§17.3). IMPLEMENTED AND TESTED; see
+[`docs/ble/PILOT_CHECKLIST.md`](PILOT_CHECKLIST.md) for the qualification
+pilot a human operator must run with real hardware before the definitive
+20-day campaign -- **not executed or simulated as part of writing that
+checklist**.
+
+### 17.9 Holdout group mechanism
+
+`ble_scientific_results/contracts/holdout_groups.py`: `HoldoutGroupAssignment`,
+`HoldoutGroup = TRAIN | VALIDATION | FUTURE_TEST`.
+`ScientificResultsRepository.freeze_holdout_groups` / `list_holdout_groups`
+/ `read_group` (the latter gates and logs any `FUTURE_TEST` read through the
+existing holdout-access hash chain, §16.1). **Mechanism only: zero real
+`HoldoutGroupAssignment`s exist on disk** -- confirmed, no
+`_holdout_groups` directory exists under real storage; only tests exercise
+it, since no 20-day campaign has run yet to assign real groups to.
+IMPLEMENTED, NOT YET EXPERIMENTALLY VALIDATED (nothing real to validate
+against yet).
+
+### 17.10 Guided Validation
+
+`ble_scientific_results/guided_validation/service.py`:
+`GuidedBleScientificValidationService` -- a real, wired capture-first wizard
+tab (`/ble-scientific-results`, and the **default active tab** in the
+frontend): device listing, new capture session, Live Timing Diagnostic
+(`run_timing_diagnostic`, a real hardware action via
+`CampaignOrchestrator.run_session`, cancellable), Reinforced Target-Absence
+Control (`run_target_absence_control`, also cancellable, requires explicit
+per-device `confirmed_devices_off`), and a disk cleanup center that deletes
+only derived artifacts, never raw I/Q. IMPLEMENTED AND TESTED.
+
+**Real evidence** (not a fixture): four real runs exist on disk under
+`storage/scientific_reports/ble/guided_validation/`, timestamped 2026-08-07.
+The most complete one (`GVAL-20260807T170247Z-7333a5`):
+`overall_status="BLOCKED"`, `capture_totals={total_captures: 138,
+association_calibration_eligible: 91, diagnostic_only: 47}`,
+`association_summary={total_calibration_events: 34352,
+matched_target_count: 0, by_status_percent: {NO_CANDIDATE_IN_WINDOW: 65.8,
+MISMATCH: 26.5, AMBIGUOUS: 5.5, MATCHED_NON_TARGET: 2.1}}`,
+`target_absence_summary={candidates_checked: 25, has_valid_control:
+false}`. This is a real, current negative result consistent with the 0
+STRONG associations already stated in §16.2 and the root README -- not a
+different or contradicting number, and not weakened to produce a pass.
+
+---
+
 ## Appendix: banned-terms self-check
 
 A search of this document confirms every use of "validated" is either the

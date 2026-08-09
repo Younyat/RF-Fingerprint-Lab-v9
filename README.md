@@ -334,6 +334,19 @@ findings, and real evidence are documented in
 [`backend/app/modules/ble_rffi_studio/README.md`](backend/app/modules/ble_rffi_studio/README.md)
 and [`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md).
 
+### BLE Scientific Results Studio -- `/ble-scientific-results`
+
+Turns BLE-RFFI Studio's captures into the formal scientific record behind
+the four questions above: strict association semantics (a resolved
+`physical_unit_id` context alone is never treated as a
+`TARGET_ASSOCIATED_PACKET` -- that requires a real, frozen-policy match), an
+eligibility/diagnostics split, protocol-deviation classification, and real
+time-based decision windows. Its **Guided Validation** tab is a real, wired
+capture-first wizard for non-experts (Live Timing Diagnostic, Reinforced
+Target-Absence Control) -- real runs so far are consistent with the 0 STRONG
+associations already stated above. No dedicated UI screenshot yet; detail:
+[`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md).
+
 ### RF Intelligence -- `/rf-intelligence`
 
 Real-time RF object detection and cautious rule/profile-based protocol

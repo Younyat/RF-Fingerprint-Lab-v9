@@ -9,6 +9,44 @@ This README is part of the project audit trail. Any meaningful change to this
 module must update this file in the same work item: what changed, why it
 changed, what scientific/UX assumption it protects, and how it was verified.
 
+## 2026-08-09 update (2): campaign runner, origin metadata, and decoder burst variables
+
+Documents a round of work that predates the block below chronologically but
+was not yet written up here. Same IMPLEMENTED / EXPERIMENTALLY VALIDATED
+distinction. `ble_scientific_results`-side counterparts (association
+semantics, eligibility split, protocol-deviation classification, real
+decision windows, holdout groups, Guided Validation) are documented in
+`docs/ble/SCIENTIFIC_STATUS.md` §17, not here -- that is a separate module.
+
+- **Campaign runner**: `campaign/paper_campaign_runner.py` --
+  `PaperCampaignSchedule`/`PaperCampaignRunner` with `freeze_schedule`,
+  `next_planned_capture`, `execute`, `reject_out_of_schedule`. `execute()`
+  calls the existing `CampaignOrchestrator.run_session()` -- it does not
+  reimplement capture or talk to the SDR/arbiter directly; it only writes
+  the frozen schedule's declared metadata onto the capture manifest right
+  after the real capture completes. An out-of-schedule capture is rejected
+  and recorded, never improvised. IMPLEMENTED AND TESTED. The qualification
+  pilot a human operator must run with this runner against real hardware,
+  before the definitive 20-day campaign, is `docs/ble/PILOT_CHECKLIST.md`
+  -- **not executed or simulated as part of writing that checklist.**
+- **Origin metadata on `CaptureRecord`**: beyond `day_id`/`receiver_epoch`
+  (see the block below), `contracts/capture.py` also carries
+  `campaign_period`, `pre_or_post`, `intervention_arm`, `packet_variant`,
+  `host_id`, `firmware_hash`, `configuration_hash`, `operator_id`,
+  `planned_capture_id`. `capture_stage.py` reads all of them straight from
+  the manifest -- `None` when absent, never a guessed default. IMPLEMENTED
+  AND TESTED; still 0/150 real historical captures declare most of these,
+  same honest gap as before -- the campaign runner above is what is meant
+  to populate them going forward, not a retroactive fix.
+- **Decoder burst variables**: `backend/tools/ble_decode_burst_directory.py`
+  now reads `synchronization_score`, `symbol_phase`, `frequency_offset_hz`,
+  and `frequency_fit_quality` from the real decoder output (previously
+  computed and silently discarded); `ble_offline_replay.py` copies them
+  into `packet_association_ledger.jsonl`. IMPLEMENTED AND TESTED.
+  `competing_energy`, `clipping_overlap`, `discontinuity_overlap`,
+  `edge_margin_samples`, `burst_snr_db` remain genuinely absent from any
+  real source -- not invented to fill the gap.
+
 ## 2026-08-09 update: protocol-adaptation and scientific-rigor correction pass
 
 Everything below is real, implemented, and covered by real tests unless
