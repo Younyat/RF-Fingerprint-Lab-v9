@@ -1,0 +1,108 @@
+"""Bootstrap correction (2026-08-08): hierarchical_cluster_bootstrap existed
+in ble_scientific_results.statistics with real tests but no production
+caller anywhere. Wired here as a session-clustered percentile CI over a
+training run's own real predictions -- resampling WHOLE SESSIONS (never
+individual bursts), matching split_builder.py's own leakage-check clustering
+unit.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from app.infrastructure.ble.capture.ble_offline_replay import sha256_file, utc_now, write_json, write_jsonl
+from app.modules.ble_rffi_studio.api import StudioRepository
+from app.modules.ble_rffi_studio.contracts import CaptureRecord
+from app.modules.ble_rffi_studio.evaluation import Evaluator
+
+from ._helpers import write_synthetic_capture_iq
+
+PROJECT_ID = "SYN-PROJECT"
+
+
+def test_bootstrap_accuracy_ci_clusters_by_session_not_by_burst():
+    evaluator = Evaluator()
+    predictions = [
+        {"example_id": f"s1-{i}", "true_label": "A", "predicted_label": "A"} for i in range(5)
+    ] + [
+        {"example_id": f"s2-{i}", "true_label": "B", "predicted_label": "B"} for i in range(5)
+    ]
+    session_id_by_example_id = {f"s1-{i}": "SESSION-1" for i in range(5)} | {f"s2-{i}": "SESSION-2" for i in range(5)}
+    result = evaluator.bootstrap_accuracy_ci(predictions, ["A", "B"], session_id_by_example_id, n_resamples=200)
+    assert result is not None
+    assert result.point_estimate == pytest.approx(1.0)  # every prediction correct
+    assert result.ci_low <= result.point_estimate <= result.ci_high
+
+
+def test_bootstrap_accuracy_ci_is_none_with_a_single_known_class():
+    evaluator = Evaluator()
+    result = evaluator.bootstrap_accuracy_ci([{"example_id": "e1", "true_label": "A", "predicted_label": "A"}], ["A"], {"e1": "S1"})
+    assert result is None
+
+
+def test_bootstrap_accuracy_ci_is_none_when_no_prediction_has_a_resolvable_session():
+    evaluator = Evaluator()
+    predictions = [{"example_id": "e1", "true_label": "A", "predicted_label": "A"}]
+    result = evaluator.bootstrap_accuracy_ci(predictions, ["A", "B"], {})  # empty mapping -- nothing resolvable
+    assert result is None
+
+
+def _seed_captures(repository: StudioRepository, tmp_path: Path, **kwargs) -> list[str]:
+    raw_iq_dir = tmp_path / "raw_iq"
+    raw_iq_dir.mkdir(parents=True, exist_ok=True)
+    examples, iq_paths = write_synthetic_capture_iq(raw_iq_dir, **kwargs)
+    by_capture: dict[str, list] = {}
+    for example in examples:
+        by_capture.setdefault(example.capture_id, []).append(example)
+    for capture_id, capture_examples in by_capture.items():
+        capture_dir = repository.legacy_capture_root / capture_id
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        dest = capture_dir / "iq.cf32"
+        dest.write_bytes(iq_paths[capture_id].read_bytes())
+        capture = CaptureRecord(
+            project_id=PROJECT_ID, campaign_id="SYN-CAMPAIGN-01", capture_id=capture_id, session_id=capture_examples[0].session_id,
+            execution_id=f"EXEC-{capture_id}", data_origin="REAL_B200", receiver_device_id="E3R04Z1B2", sdr_model="B200", rx_channel="RX2", antenna_port="RX2",
+            sample_rate_sps=4_000_000, sample_dtype="cf32_le", byte_order="little_endian", sample_count=1_000_000, channel_count=1,
+            center_frequency_hz=2_402_000_000, frontend_bandwidth_hz=2_000_000, effective_bandwidth_hz=2_000_000, gain_db=20.0, gain_mode="manual",
+            capture_duration_s=1.0, capture_tool="real", iq_path="iq.cf32", iq_size_bytes=dest.stat().st_size, iq_sha256=sha256_file(dest),
+            acquisition_quality="PASSED", discontinuities=0, replay_status="FULLY_PROCESSED", created_at=utc_now(),
+        )
+        write_json(repository.captures_dir / f"{capture_id}.json", capture.model_dump(mode="json"))
+        capture_evidence_dir = repository.evidence_dir / capture_id
+        capture_evidence_dir.mkdir(parents=True, exist_ok=True)
+        write_jsonl(capture_evidence_dir / "examples.jsonl", [e.model_dump(mode="json") for e in capture_examples])
+        write_jsonl(capture_evidence_dir / "annotations.jsonl", [])
+    return list(by_capture.keys())
+
+
+@pytest.fixture
+def studio_repository_with_trained_run(tmp_path):
+    repository = StudioRepository(tmp_path / "studio", legacy_capture_root=tmp_path / "legacy_captures", legacy_session_root=tmp_path / "legacy_sessions")
+    capture_ids = _seed_captures(repository, tmp_path, units=2, sessions_per_unit=3, examples_per_session=10)
+    result = repository.prepare_and_train(
+        capture_ids=capture_ids, project_id=PROJECT_ID, campaign_id="SYN-CAMPAIGN-01",
+        scientific_task="SAME_MODEL_UNIT_IDENTIFICATION", dataset_id="SYN-AUTO-DS", speed_profile="quick_pilot",
+    )
+    return repository, result["recommended_training_run_id"]
+
+
+def test_bootstrap_accuracy_ci_wired_end_to_end_against_a_real_training_run(studio_repository_with_trained_run):
+    repository, training_run_id = studio_repository_with_trained_run
+    result = repository.bootstrap_accuracy_ci(training_run_id, split="VALIDATION", n_resamples=200)
+    assert result is not None
+    assert result["split"] == "VALIDATION"
+    assert 0.0 <= result["point_estimate"] <= 1.0
+    assert result["ci_low"] <= result["point_estimate"] <= result["ci_high"]
+    assert result["n_resamples"] == 200
+
+
+def test_bootstrap_accuracy_ci_returns_none_for_a_split_with_no_predictions(studio_repository_with_trained_run):
+    repository, training_run_id = studio_repository_with_trained_run
+    assert repository.bootstrap_accuracy_ci(training_run_id, split="NOT_A_REAL_SPLIT") is None
+
+
+def test_bootstrap_accuracy_ci_raises_for_an_unknown_training_run(studio_repository_with_trained_run):
+    repository, _ = studio_repository_with_trained_run
+    with pytest.raises(FileNotFoundError, match="TRAINING_RUN_HAS_NO_PREDICTIONS_YET"):
+        repository.bootstrap_accuracy_ci("not-a-real-run")

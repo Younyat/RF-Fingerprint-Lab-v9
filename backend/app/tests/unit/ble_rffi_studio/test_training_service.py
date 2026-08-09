@@ -8,6 +8,7 @@ import pytest
 
 from app.modules.ble_rffi_studio.contracts import LeakageCheckResult, SplitManifest, TrainingRun
 from app.modules.ble_rffi_studio.dataset import DatasetBuilder
+from app.modules.ble_rffi_studio.preprocessing import resolve_preprocessing_profile
 from app.modules.ble_rffi_studio.quality import SplitBuilder
 from app.modules.ble_rffi_studio.training import TrainingService
 
@@ -49,6 +50,49 @@ def test_baseline_trains_and_beats_chance_on_separable_synthetic_data(synthetic_
     assert artifacts.metrics["VALIDATION"]["accuracy"] > 0.6
     assert artifacts.metrics["TEST"]["accuracy"] > 0.6
     assert set(artifacts.label_classes) == {"SYN-UNIT-00", "SYN-UNIT-01"}
+
+
+def test_paper_eq6_7_profile_produces_real_per_burst_provenance_for_every_example(synthetic_split):
+    """Point-3 correction (2026-08-08): training under paper-eq6-7-v1 must
+    populate TrainingArtifacts.preprocessing_provenance for every example
+    actually preprocessed (TRAIN+VALIDATION+TEST), with real, non-trivial
+    (phi_b0, f_b) values -- never empty for a profile that genuinely ran
+    this step."""
+    dataset, split, examples_by_id, capture_iq_paths = synthetic_split
+    profile = resolve_preprocessing_profile("paper-eq6-7-v1")
+    training_run = TrainingRun(
+        training_run_id="run-eq67", project_id="P1", campaign_id="C1",
+        dataset_id=dataset.dataset_id, dataset_version=dataset.dataset_version,
+        dataset_manifest_sha256=dataset.dataset_manifest_sha256, split_manifest_sha256=split.split_manifest_sha256,
+        scientific_task="SAME_MODEL_UNIT_IDENTIFICATION", model_type="logistic_regression",
+        data_origin="REAL_B200", operational_use="ALLOWED", base_preprocessing_profile_id="paper-eq6-7-v1", representation_profile_id="feature_vector-v1",
+        random_seed=42,
+    )
+    service = TrainingService(capture_iq_paths, profile)
+    artifacts = service.run_baseline(training_run=training_run, split=split, examples_by_id=examples_by_id)
+
+    all_example_ids = {a.example_id for a in split.assignments}
+    assert set(artifacts.preprocessing_provenance.keys()) == all_example_ids
+    for provenance in artifacts.preprocessing_provenance.values():
+        assert provenance["compensation_status"] == "APPLIED"
+        assert provenance["reference_waveform_version"] == "ble-le1m-preamble-aa-reference-v1"
+        assert len(provenance["reference_waveform_hash"]) == 64
+        assert provenance["sample_rate_sps"] == 4_000_000.0
+
+
+def test_base_v1_profile_produces_no_provenance_at_all(synthetic_split):
+    dataset, split, examples_by_id, capture_iq_paths = synthetic_split
+    training_run = TrainingRun(
+        training_run_id="run-base", project_id="P1", campaign_id="C1",
+        dataset_id=dataset.dataset_id, dataset_version=dataset.dataset_version,
+        dataset_manifest_sha256=dataset.dataset_manifest_sha256, split_manifest_sha256=split.split_manifest_sha256,
+        scientific_task="SAME_MODEL_UNIT_IDENTIFICATION", model_type="logistic_regression",
+        data_origin="REAL_B200", operational_use="ALLOWED", base_preprocessing_profile_id="base-v1", representation_profile_id="feature_vector-v1",
+        random_seed=42,
+    )
+    service = TrainingService(capture_iq_paths)
+    artifacts = service.run_baseline(training_run=training_run, split=split, examples_by_id=examples_by_id)
+    assert artifacts.preprocessing_provenance == {}
 
 
 def test_baseline_refuses_to_train_on_a_not_feasible_split(synthetic_split):

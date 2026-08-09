@@ -51,12 +51,40 @@ def test_cfo_correction_reduces_estimated_residual_offset():
     assert abs(estimate_cfo_hz(corrected, SAMPLE_RATE)) < abs(estimate_cfo_hz(shifted, SAMPLE_RATE))
 
 
-def test_temporal_alignment_and_transient_removal_are_not_implemented():
+def test_transient_removal_is_not_implemented():
     window = _synthetic_window(100)
-    for kwargs in ({"temporal_alignment": True}, {"transient_removal": True}):
-        profile = BasePreprocessingProfile(profile_id="unsupported", **kwargs)
-        with pytest.raises(NotImplementedError):
-            apply_base_preprocessing(window, profile, SAMPLE_RATE)
+    profile = BasePreprocessingProfile(profile_id="unsupported", transient_removal=True)
+    with pytest.raises(NotImplementedError):
+        apply_base_preprocessing(window, profile, SAMPLE_RATE)
+
+
+def test_temporal_alignment_shifts_the_onset_to_the_target_index():
+    from app.modules.ble_rffi_studio.preprocessing import leading_edge_alignment
+
+    window = np.zeros(100, dtype=np.complex64)
+    window[37:47] = 1.0 + 0j  # a burst starting at sample 37
+    aligned = leading_edge_alignment(window, target_index=0)
+    onset = int(np.nonzero(np.abs(aligned) >= 0.5)[0][0])
+    assert onset == 0
+
+
+def test_temporal_alignment_is_a_pure_circular_shift_no_samples_invented_or_dropped():
+    window = _synthetic_window(200)
+    window[50] += 10.0  # an artificial energy peak the threshold will latch onto
+    from app.modules.ble_rffi_studio.preprocessing import leading_edge_alignment
+
+    aligned = leading_edge_alignment(window, target_index=0)
+    assert len(aligned) == len(window)
+    assert sorted(np.abs(aligned)) == pytest.approx(sorted(np.abs(window)))
+
+
+def test_profile_with_temporal_alignment_enabled_applies_it():
+    window = np.zeros(100, dtype=np.complex64)
+    window[10:20] = 1.0 + 0j
+    profile = BasePreprocessingProfile(profile_id="test-alignment", temporal_alignment=True)
+    result = apply_base_preprocessing(window, profile, SAMPLE_RATE)
+    onset = int(np.nonzero(np.abs(result) >= 0.5)[0][0])
+    assert onset == 0
 
 
 def test_validate_justifications_rejects_an_enabled_step_without_justification(tmp_path):

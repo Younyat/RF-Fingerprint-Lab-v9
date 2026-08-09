@@ -8,7 +8,7 @@ from .common import StudioContract
 TRAINING_RUN_SCHEMA_VERSION = "ble-rffi-studio-training-run-v1"
 OperationalUse = Literal["ALLOWED", "FORBIDDEN"]
 
-ModelType = Literal["logistic_regression", "svm_rbf", "random_forest", "cnn1d", "cnn2d"]
+ModelType = Literal["logistic_regression", "svm_rbf", "random_forest", "cnn1d", "cnn2d", "frozen_morphological_baseline"]
 TrainingRunStatus = Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"]
 
 
@@ -38,3 +38,14 @@ class TrainingRun(StudioContract):
     status: TrainingRunStatus = "QUEUED"
     started_at: str | None = None
     completed_at: str | None = None
+
+    # P0 correction (2026-08-08): populated the moment TEST is ever opened
+    # for this run (see StudioRepository._freeze_and_log_test_access) --
+    # binds this training run to a real, frozen ble_scientific_results
+    # AnalysisContract and a real entry in its hash-chained holdout access
+    # log, instead of the two systems staying disconnected. None until TEST
+    # is opened (the normal state for every non-recommended candidate,
+    # which per P0.1 never opens TEST at all).
+    analysis_contract_protocol_id: str | None = None
+    analysis_contract_protocol_version: int | None = None
+    analysis_contract_hash: str | None = None

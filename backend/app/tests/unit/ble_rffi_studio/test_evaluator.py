@@ -48,6 +48,32 @@ def test_evaluate_split_with_no_comparable_examples_has_none_accuracy(evaluator)
     assert report.accuracy is None
 
 
+def test_evaluate_split_computes_a_real_risk_coverage_curve(evaluator):
+    """Coverage/risk-coverage correction (2026-08-08): risk_coverage_curve
+    existed with real tests but no production caller before this."""
+    predictions = [
+        {"example_id": "e1", "true_label": "A", "predicted_label": "A", "probabilities": {"A": 0.95, "B": 0.05}},
+        {"example_id": "e2", "true_label": "A", "predicted_label": "A", "probabilities": {"A": 0.9, "B": 0.1}},
+        {"example_id": "e3", "true_label": "B", "predicted_label": "A", "probabilities": {"A": 0.6, "B": 0.4}},  # a low-confidence error
+        {"example_id": "e4", "true_label": "B", "predicted_label": "B", "probabilities": {"A": 0.1, "B": 0.9}},
+    ]
+    report = evaluator.evaluate_split("TEST", predictions, known_classes=["A", "B"])
+    assert report.risk_coverage is not None
+    coverages = [p["coverage"] for p in report.risk_coverage]
+    assert coverages == sorted(coverages)  # monotonically increasing as confidence threshold relaxes
+    assert coverages[-1] == 1.0  # full coverage at the lowest threshold
+    # At full coverage the risk must include the one real error (e3).
+    assert report.risk_coverage[-1]["risk"] == pytest.approx(0.25)
+    # At the highest-confidence prefix (just e1), there is no error yet.
+    assert report.risk_coverage[0]["risk"] == 0.0
+
+
+def test_evaluate_split_risk_coverage_is_none_without_any_probabilities(evaluator):
+    predictions = [{"example_id": "e1", "true_label": "A", "predicted_label": "A", "probabilities": {}}]
+    report = evaluator.evaluate_split("TEST", predictions, known_classes=["A", "B"])
+    assert report.risk_coverage is None
+
+
 def test_calibrate_unknown_threshold_rejects_low_confidence_predictions(evaluator):
     validation_predictions = [
         {"example_id": f"known-correct-{i}", "true_label": "A", "predicted_label": "A", "probabilities": {"A": 0.95, "B": 0.05}} for i in range(10)

@@ -19,6 +19,7 @@ from app.infrastructure.ble.capture.ble_offline_replay import BleOfflineReplaySe
 from app.infrastructure.ble.packet_analysis.ble_capture_locator import BleCaptureLocator
 
 from ..acquisition.capture_stage import CaptureStage
+from ..acquisition.receiver_epoch_assignment import ReceiverEpochInput, assign_receiver_epochs
 from ..contracts import (
     BackgroundKind,
     CapturePurpose,
@@ -42,7 +43,7 @@ from ..export import BundleBuilder
 from ..dataset import DatasetBuilder
 from ..demo import SyntheticDemoSeeder
 from ..inference import OfflineInferenceService
-from ..preprocessing import BasePreprocessingProfile
+from ..preprocessing import resolve_preprocessing_profile
 from ..quality import DatasetAnalyzer, SplitBuilder, TASK_DISPLAY_NAMES, explain_feasibility, repair_guidance, train_label_for
 from ..registry import PhysicalDeviceRegistry
 from ..scrubbing import derive_scrubbed_capture, load_iq, scrub_device_windows
@@ -51,9 +52,26 @@ from ..training import TrainingArtifacts, TrainingService, cnn_feasibility, mode
 # Candidate model types tried by the "prepare dataset and train" auto
 # orchestration, in the order the guided UI reports progress for them.
 _QUICK_PILOT_MODEL_TYPES = ("logistic_regression", "svm_rbf", "random_forest")
-_NORMAL_MODEL_TYPES = ("logistic_regression", "svm_rbf", "random_forest", "cnn1d", "cnn2d")
+# frozen_morphological_baseline (RQ2's 4th branch) is in the "normal" profile
+# only -- quick_pilot exists for fast iteration over the 3 classical models,
+# not for exercising the full model-comparison scope.
+_NORMAL_MODEL_TYPES = ("logistic_regression", "svm_rbf", "random_forest", "cnn1d", "cnn2d", "frozen_morphological_baseline")
 
 _TORCH_MODEL_TYPES = {"cnn1d", "cnn2d"}
+
+# Fixed seed set correction (2026-08-08): a real, explicit, frozen SET (not
+# one arbitrary hardcoded 42) for the paper's optimization-variability
+# analysis -- how much a candidate's VALIDATION performance moves across
+# independent training runs of the SAME configuration. FROZEN_TRAINING_SEEDS[0]
+# is still what every normal training run (prepare_and_train,
+# scrub_device_from_background) uses -- unchanged behavior, now a named
+# constant instead of a bare literal. The remaining seeds exist only for
+# train_seed_variability_analysis (VALIDATION-only, see that method) --
+# never used to pick or evaluate the recommended candidate itself. This set
+# must never be edited after any real campaign has used it (same
+# immutability invariant as base_preprocessing_registry.py's profile_ids) --
+# a different set is a new, separately-named constant.
+FROZEN_TRAINING_SEEDS: tuple[int, ...] = (42, 137, 2024)
 
 # Caps how much of a device list ends up inside a training_run_id/bundle_id
 # (both become real directory names on disk). Joining every device name
@@ -121,8 +139,18 @@ class StudioRepository:
         self.quality_dir = root / "quality_reports"
         self.splits_dir = root / "splits"
         self.training_dir = root / "training_runs"
-        for directory in (self.captures_dir, self.evidence_dir, self.quality_dir, self.splits_dir, self.training_dir):
+        # Inference-provenance correction (2026-08-08): one persisted
+        # manifest per real offline inference run -- see run_inference.
+        self.inference_dir = root / "inference_runs"
+        for directory in (self.captures_dir, self.evidence_dir, self.quality_dir, self.splits_dir, self.training_dir, self.inference_dir):
             directory.mkdir(parents=True, exist_ok=True)
+
+        # P0.3 correction (2026-08-08): lazily constructed on first real
+        # TEST access -- see _freeze_and_log_test_access. `root` here is
+        # storage_root/ble_rffi_studio; ble_scientific_results' own root is
+        # the sibling storage_root/scientific_reports/ble (same layout
+        # app/modules/ble_scientific_results/module.py itself uses).
+        self._scientific_results_repository_cache: Any | None = None
 
     # ------------------------------------------------------------------
     # Legacy capture listing (read-only, reuses the Phase 2 locator)
@@ -547,8 +575,51 @@ class StudioRepository:
             capture_purpose=capture_purpose, target_state=target_state, background_kind=background_kind,
             target_reference_id=target_reference_id, dataset_role=dataset_role,
         )
+        capture = self._assign_receiver_epoch_if_needed(capture)
         write_json(self.captures_dir / f"{capture_id}.json", capture.model_dump(mode="json"))
         return capture
+
+    def _assign_receiver_epoch_if_needed(self, capture: CaptureRecord) -> CaptureRecord:
+        """Point-1 correction (2026-08-08): receiver_epoch requires
+        sequential knowledge across every OTHER real capture of the same
+        receiver_identity_id -- capture_stage.py's single-manifest builder
+        cannot see that, so this repository-level step runs the same
+        assign_receiver_epochs() the historical migration uses, over every
+        already-persisted capture of this identity plus the new one. A
+        capture whose manifest already declared receiver_epoch explicitly
+        is left untouched (capture_stage.py already set
+        receiver_epoch_boundary_reason=MANIFEST_DECLARED for it)."""
+        if capture.receiver_epoch is not None or capture.receiver_identity_id is None:
+            return capture
+        siblings = [c for c in self.list_captures() if c.receiver_identity_id == capture.receiver_identity_id]
+        inputs = [
+            ReceiverEpochInput(
+                capture_id=c.capture_id, receiver_identity_id=c.receiver_identity_id,
+                qualified_acquisition_profile_hash=c.qualified_acquisition_profile_hash,
+                acquisition_started_at=c.created_at,
+                # Only a GENUINELY manifest-declared sibling epoch is passed
+                # through as an override -- an already-persisted but
+                # auto-assigned epoch (boundary_reason != MANIFEST_DECLARED)
+                # must be re-derived here like any other capture, or
+                # assign_receiver_epochs' sequential epoch_index desyncs
+                # (a real bug found and fixed while testing this: passing
+                # every sibling's already-assigned epoch as "declared" made
+                # the function skip incrementing its own running index for
+                # them, so the NEXT real boundary collided with the
+                # previous epoch's id instead of getting a new one).
+                declared_receiver_epoch=(c.receiver_epoch if c.receiver_epoch_boundary_reason == "MANIFEST_DECLARED" else None),
+            )
+            for c in siblings
+        ]
+        inputs.append(ReceiverEpochInput(
+            capture_id=capture.capture_id, receiver_identity_id=capture.receiver_identity_id,
+            qualified_acquisition_profile_hash=capture.qualified_acquisition_profile_hash,
+            acquisition_started_at=capture.created_at, declared_receiver_epoch=None,
+        ))
+        assignment = next(a for a in assign_receiver_epochs(inputs) if a.capture_id == capture.capture_id)
+        return capture.model_copy(update={
+            "receiver_epoch": assignment.receiver_epoch, "receiver_epoch_boundary_reason": assignment.receiver_epoch_boundary_reason,
+        })
 
     def list_captures(self) -> list[CaptureRecord]:
         return [CaptureRecord.model_validate(read_json(p)) for p in sorted(self.captures_dir.glob("*.json"))]
@@ -1317,10 +1388,16 @@ class StudioRepository:
 
         if progress:
             progress("TRAIN", 0.1, f"Entrenando {training_run.model_type}")
-        service = TrainingService(iq_paths, BasePreprocessingProfile(profile_id=training_run.base_preprocessing_profile_id))
+        # Preprocessing-registry correction (2026-08-08): resolve the REAL
+        # flags a declared profile_id means, never a bare, flag-less
+        # placeholder -- previously this always trained with identity
+        # preprocessing regardless of what base_preprocessing_profile_id said.
+        service = TrainingService(iq_paths, resolve_preprocessing_profile(training_run.base_preprocessing_profile_id))
         try:
             if training_run.model_type in _TORCH_MODEL_TYPES:
                 artifacts = service.run_cnn(training_run=training_run, split=split, examples_by_id=examples_by_id)
+            elif training_run.model_type == "frozen_morphological_baseline":
+                artifacts = service.run_frozen_reference_baseline(training_run=training_run, split=split, examples_by_id=examples_by_id)
             else:
                 artifacts = service.run_baseline(training_run=training_run, split=split, examples_by_id=examples_by_id)
         except Exception as error:
@@ -1349,6 +1426,13 @@ class StudioRepository:
         write_json(run_dir / "metrics.json", artifacts.metrics)
         write_json(run_dir / "predictions.json", artifacts.predictions)
         write_json(run_dir / "latency.json", {"validation_latency_ms": artifacts.validation_latency_ms})
+        # Eq.(6)-(7) per-burst provenance (2026-08-08, point 3): only written
+        # when the base_profile actually ran paper_eq6_7_compensation --
+        # empty for every other profile, never a fabricated file.
+        if artifacts.preprocessing_provenance:
+            write_jsonl(run_dir / "preprocessing_provenance.jsonl", [
+                {"example_id": example_id, **provenance} for example_id, provenance in artifacts.preprocessing_provenance.items()
+            ])
 
     def list_training_runs(self) -> list[dict[str, Any]]:
         runs = []
@@ -1372,6 +1456,141 @@ class StudioRepository:
             "metrics": read_json(metrics_path) if metrics_path.is_file() else None,
             "label_classes": read_json(label_classes_path)["classes"] if label_classes_path.is_file() else None,
             "error": read_json(error_path) if error_path.is_file() else None,
+        }
+
+    def bootstrap_accuracy_ci(self, training_run_id: str, *, split: str = "VALIDATION", n_resamples: int = 2000, confidence_level: float = 0.95) -> dict[str, Any] | None:
+        """Bootstrap correction (2026-08-08): a real session-clustered
+        percentile CI on a training run's own already-computed predictions
+        -- wires hierarchical_cluster_bootstrap (real, tested, previously
+        production-unused) to real results, never a second scoring path.
+        split="TEST" is allowed (this only reads predictions.json, it never
+        opens TEST itself) but the caller is responsible for having already
+        gone through evaluate_training_run(include_test=True) if TEST access
+        needs to be logged -- this method does not gate that on its own."""
+        run_dir = self.training_dir / training_run_id
+        predictions_path = run_dir / "predictions.json"
+        label_classes_path = run_dir / "label_classes.json"
+        run_path = run_dir / "training_run.json"
+        if not (predictions_path.is_file() and run_path.is_file()):
+            raise FileNotFoundError(f"TRAINING_RUN_HAS_NO_PREDICTIONS_YET:{training_run_id}")
+        predictions_by_split = read_json(predictions_path)
+        if split not in predictions_by_split:
+            return None
+        label_classes = read_json(label_classes_path)["classes"]
+        training_run = TrainingRun.model_validate(read_json(run_path))
+        dataset = self._require_dataset(training_run.dataset_id, training_run.dataset_version)
+        session_id_by_example_id = {e.example_id: e.session_id for e in self._dataset_examples(dataset)}
+
+        result = self.evaluator.bootstrap_accuracy_ci(
+            predictions_by_split[split], label_classes, session_id_by_example_id, n_resamples=n_resamples, confidence_level=confidence_level,
+        )
+        if result is None:
+            return None
+        return {"split": split, **dataclasses.asdict(result)}
+
+    def train_seed_variability_analysis(self, *, training_run_id: str, seeds: tuple[int, ...] | None = None, progress=None) -> list[dict[str, Any]]:
+        """Fixed seed-set correction (2026-08-08): how much a candidate's
+        VALIDATION performance moves across independent training runs of the
+        EXACT SAME configuration (dataset/split/model_type/preprocessing/
+        representation), varying only random_seed. VALIDATION-only, on
+        purpose, matching P0.1's discipline -- this is a model-selection-
+        adjacent diagnostic, never a confirmatory analysis, so it must never
+        open TEST for any of the re-trained runs. seeds defaults to
+        FROZEN_TRAINING_SEEDS[1:] (every seed in the frozen set other than
+        the one the original run already used) -- a caller-supplied seeds
+        tuple must itself be a subset of FROZEN_TRAINING_SEEDS: this is a
+        frozen set, not an open-ended parameter."""
+        base_run_dict = self.get_training_run(training_run_id)
+        if base_run_dict is None:
+            raise FileNotFoundError(f"TRAINING_RUN_NOT_FOUND:{training_run_id}")
+        if base_run_dict["status"] != "COMPLETED":
+            raise ValueError(f"CANNOT_RUN_SEED_VARIABILITY_ON_AN_INCOMPLETE_TRAINING_RUN:{training_run_id}:{base_run_dict['status']}")
+        base_run = TrainingRun.model_validate({k: v for k, v in base_run_dict.items() if k not in ("metrics", "label_classes", "error")})
+
+        candidate_seeds = seeds if seeds is not None else tuple(s for s in FROZEN_TRAINING_SEEDS if s != base_run.random_seed)
+        unknown_seeds = set(candidate_seeds) - set(FROZEN_TRAINING_SEEDS)
+        if unknown_seeds:
+            raise ValueError(f"SEEDS_MUST_BE_FROM_THE_FROZEN_SET:{sorted(unknown_seeds)} not in FROZEN_TRAINING_SEEDS={FROZEN_TRAINING_SEEDS}")
+
+        results: list[dict[str, Any]] = []
+        for index, seed in enumerate(candidate_seeds):
+            if progress:
+                progress("SEED_VARIABILITY", index / max(1, len(candidate_seeds)), f"seed {seed} ({index + 1}/{len(candidate_seeds)})")
+            variant_run = base_run.model_copy(update={
+                "training_run_id": f"{training_run_id}-seed-{seed}",
+                "random_seed": seed, "status": "QUEUED", "started_at": None, "completed_at": None,
+                "analysis_contract_protocol_id": None, "analysis_contract_protocol_version": None, "analysis_contract_hash": None,
+            })
+            completed = self.run_training(training_run=variant_run)
+            # include_test=False here is load-bearing, not a default left
+            # alone: a seed-variability run must never open TEST.
+            evaluation = self.evaluate_training_run(completed.training_run_id, include_test=False)
+            validation_report = evaluation["evaluation_report"].get("VALIDATION")
+            results.append({
+                "seed": seed, "training_run_id": completed.training_run_id,
+                "validation_accuracy": (validation_report or {}).get("accuracy"),
+                "validation_balanced_accuracy": (validation_report or {}).get("balanced_accuracy"),
+            })
+        return results
+
+    # ------------------------------------------------------------------
+    # P0.3 correction (2026-08-08): connecting ble_scientific_results'
+    # AnalysisContract freeze + hash-chained holdout access log to the
+    # ONE moment that actually matters -- TEST being opened for a training
+    # run. Deferred import: ble_scientific_results/module.py itself imports
+    # StudioRepository from this package, so a module-level import here
+    # would be circular (same reasoning documented in
+    # scientific_results_job_manager.py). This never duplicates a second
+    # training/split system -- ble_rffi_studio's own pipeline stays the one
+    # real training engine; ble_scientific_results is used here purely for
+    # its protocol-freeze and audit-log machinery.
+    # ------------------------------------------------------------------
+
+    def _scientific_results_repository(self):
+        if self._scientific_results_repository_cache is None:
+            from app.modules.ble_scientific_results.api.scientific_results_repository import ScientificResultsRepository
+            self._scientific_results_repository_cache = ScientificResultsRepository(
+                self.root.parent / "scientific_reports" / "ble", ble_rffi_studio_root=self.root,
+            )
+        return self._scientific_results_repository_cache
+
+    def _freeze_and_log_test_access(self, training_run: TrainingRun, *, reason: str) -> dict[str, Any]:
+        """Called exactly once per training_run_id, the first time TEST is
+        ever evaluated for it (see evaluate_training_run below). Freezes a
+        real AnalysisContract capturing this run's actual frozen
+        configuration (never a placeholder), then logs the TEST access
+        against ble_scientific_results' real, hash-chained holdout access
+        log -- the same mechanism the 2026-08 audit found fully real but
+        completely unused. If a contract was already frozen for this exact
+        training_run_id (re-evaluation after a restart, say), reuses it
+        instead of minting a new version every time."""
+        sci = self._scientific_results_repository()
+        existing_protocol_id = training_run.analysis_contract_protocol_id
+        if existing_protocol_id:
+            contract = sci.get_protocol(existing_protocol_id, training_run.analysis_contract_protocol_version)
+        else:
+            contract = sci.freeze_protocol({
+                "protocol_id": f"ble-rffi-studio-{training_run.training_run_id}",
+                "project_id": training_run.project_id,
+                "hardware_profile_id": "usrp-b200-ble-rffi-studio",
+                "receiver_profile_hash": training_run.base_preprocessing_profile_id,
+                "interpretation_matrix_hash": training_run.representation_profile_id,
+                "device_population": {"scientific_task": training_run.scientific_task},
+                "split_manifest_hash": training_run.split_manifest_sha256,
+                "random_seeds": [training_run.random_seed],
+                "model_branch_definitions": [{"model_type": training_run.model_type}],
+            })
+        contract_hash = contract.content_hash()
+        sci.log_holdout_access(
+            actor="ble_rffi_studio", process="StudioRepository.evaluate_training_run",
+            access_type="OPEN_TEST", access_path=f"training_runs/{training_run.training_run_id}/predictions.json",
+            resource_id=training_run.training_run_id, resource_hash=training_run.dataset_manifest_sha256,
+            reason=reason, paper_run_id=None, analysis_contract_hash=contract_hash,
+        )
+        return {
+            "analysis_contract_protocol_id": contract.protocol_id,
+            "analysis_contract_protocol_version": contract.protocol_version,
+            "analysis_contract_hash": contract_hash,
         }
 
     # ------------------------------------------------------------------
@@ -1401,6 +1620,22 @@ class StudioRepository:
             raise FileNotFoundError(f"TRAINING_RUN_HAS_NO_PREDICTIONS_YET:{training_run_id}")
         predictions = read_json(predictions_path)
         label_classes = read_json(label_classes_path)["classes"]
+
+        if include_test:
+            # P0.3: TEST is being opened for this run -- freeze/reuse a real
+            # AnalysisContract and log this access on ble_scientific_results'
+            # real holdout audit chain before evaluating anything, never
+            # after (a log entry written after the fact would not be an
+            # access log). Runs once per training_run_id: re-evaluating an
+            # already-TEST-opened run (e.g. after a service restart) reuses
+            # the contract already on file rather than minting a new one.
+            run_path = run_dir / "training_run.json"
+            training_run = TrainingRun.model_validate(read_json(run_path))
+            contract_ids = self._freeze_and_log_test_access(
+                training_run, reason=test_evaluation_provenance or "SINGLE_SELECTION_GUARANTEE",
+            )
+            if training_run.analysis_contract_protocol_id != contract_ids["analysis_contract_protocol_id"]:
+                write_json(run_path, training_run.model_copy(update=contract_ids).model_dump(mode="json"))
 
         splits_to_evaluate = predictions if include_test else {name: preds for name, preds in predictions.items() if name != "TEST"}
         reports = {name: self.evaluator.evaluate_split(name, preds, label_classes) for name, preds in splits_to_evaluate.items()}
@@ -1571,7 +1806,7 @@ class StudioRepository:
 
         representation_by_model = {
             "logistic_regression": "feature_vector-v1", "svm_rbf": "feature_vector-v1", "random_forest": "feature_vector-v1",
-            "cnn1d": "raw_iq-v1", "cnn2d": "spectrogram-v1",
+            "cnn1d": "raw_iq-v1", "cnn2d": "spectrogram-v1", "frozen_morphological_baseline": "morphological_coarse_tf-v1",
         }
 
         report(5, f"{len(candidate_types)} candidato(s): {', '.join(candidate_types)}")
@@ -1583,7 +1818,7 @@ class StudioRepository:
                 dataset_id=dataset_id, dataset_version=dataset_version, dataset_manifest_sha256=dataset.dataset_manifest_sha256 or "",
                 split_manifest_sha256=split.split_manifest_sha256 or "", scientific_task=scientific_task, model_type=model_type,
                 data_origin=dataset.data_origin, operational_use="FORBIDDEN" if dataset.data_origin == "SYNTHETIC_TEST_ONLY" else "ALLOWED",
-                base_preprocessing_profile_id="base-v1", representation_profile_id=representation_by_model[model_type], random_seed=42,
+                base_preprocessing_profile_id="base-v1", representation_profile_id=representation_by_model[model_type], random_seed=FROZEN_TRAINING_SEEDS[0],
             )
             try:
                 completed = self.run_training(training_run=training_run)
@@ -1729,7 +1964,7 @@ class StudioRepository:
 
         representation_by_model = {
             "logistic_regression": "feature_vector-v1", "svm_rbf": "feature_vector-v1", "random_forest": "feature_vector-v1",
-            "cnn1d": "raw_iq-v1", "cnn2d": "spectrogram-v1",
+            "cnn1d": "raw_iq-v1", "cnn2d": "spectrogram-v1", "frozen_morphological_baseline": "morphological_coarse_tf-v1",
         }
 
         report(3, f"{len(candidate_types)} candidato(s): {', '.join(candidate_types)}")
@@ -1741,7 +1976,7 @@ class StudioRepository:
                 dataset_id=dataset_id, dataset_version=dataset_version, dataset_manifest_sha256=dataset.dataset_manifest_sha256 or "",
                 split_manifest_sha256=split.split_manifest_sha256 or "", scientific_task=scientific_task, model_type=model_type,
                 data_origin=dataset.data_origin, operational_use="FORBIDDEN" if dataset.data_origin == "SYNTHETIC_TEST_ONLY" else "ALLOWED",
-                base_preprocessing_profile_id="base-v1", representation_profile_id=representation_by_model[model_type], random_seed=42,
+                base_preprocessing_profile_id="base-v1", representation_profile_id=representation_by_model[model_type], random_seed=FROZEN_TRAINING_SEEDS[0],
             )
             try:
                 completed = self.run_training(training_run=training_run)
@@ -1846,21 +2081,30 @@ class StudioRepository:
         return manifest, reasons
 
     def export_and_approve_all_candidates(self, *, physical_unit_id: str, prepare_and_train_result: dict[str, Any]) -> list[dict[str, Any]]:
-        """auto_train()'s full-automation step: every candidate
-        prepare_and_train() just fit becomes its own exported, approved
-        bundle -- not only the one VALIDATION recommended. Uses the
-        EXISTING, already-audited mechanism for this
-        (evaluate_training_run_on_test_opt_in), never a new one: the
-        recommended candidate already has a real TEST evaluation with
-        SINGLE_SELECTION_GUARANTEE provenance from prepare_and_train() itself;
-        every OTHER candidate gets a real (not faked/copied) TEST evaluation
-        via the opt-in path, permanently tagged
-        OPT_IN_MULTI_CANDIDATE_COMPARISON on its bundle so the multiple-
-        comparison statistical caveat stays visible forever, exactly as that
-        mechanism was designed for. A candidate that fails its own
-        acceptance_criteria (REJECTED) or was never evaluated
-        (TRAINING_RUN_FAILED, no predictions.json) is reported as such, not
-        silently skipped or force-approved.
+        """auto_train()'s full-automation step. P0 correction (2026-08-08):
+        this used to call evaluate_training_run_on_test_opt_in for every
+        NON-recommended candidate and then auto-approve it -- meaning
+        "normal", fully-automated approval silently exposed every candidate
+        to TEST, not just the one VALIDATION recommended. TEST must open
+        exactly once, for the confirmatory model only.
+
+        Now: every candidate is still exported (real, inspectable record of
+        what was tried, VALIDATION-only evaluation), but ONLY the
+        recommended candidate -- which already carries a real TEST
+        evaluation with SINGLE_SELECTION_GUARANTEE provenance from
+        prepare_and_train()/train_selected_models() itself -- is ever
+        auto-approved. Every other candidate lands at TEST_NOT_EXECUTED
+        (bundle_builder._evaluate_acceptance) and stays there; nothing here
+        calls evaluate_training_run_on_test_opt_in anymore. An operator who
+        deliberately wants to compare a non-recommended candidate against
+        TEST can still do so, but only via that endpoint directly, as an
+        explicit, separate, acknowledged action -- and the resulting bundle
+        can never reach APPROVED_FOR_LIVE_PILOT
+        (bundle_builder.approve_for_live_pilot refuses non-confirmatory_eligible
+        bundles). A candidate that fails its own acceptance_criteria
+        (REJECTED) or was never evaluated (TRAINING_RUN_FAILED, no
+        predictions.json) is reported as such, not silently skipped or
+        force-approved.
         """
         recommended_id = prepare_and_train_result.get("recommended_training_run_id")
         trained_models = prepare_and_train_result.get("trained_models") or []
@@ -1872,14 +2116,12 @@ class StudioRepository:
             bundle_id = f"{slug}-{model_type}-bundle"
             entry: dict[str, Any] = {"training_run_id": training_run_id, "model_type": model_type, "bundle_id": bundle_id}
             try:
-                if training_run_id != recommended_id:
-                    self.evaluate_training_run_on_test_opt_in(training_run_id, acknowledge_multiple_comparison_risk=True)
                 manifest, gate_reasons = self.export_bundle(
                     training_run_id=training_run_id, bundle_id=bundle_id, acceptance_criteria={},
                     model_card_text=f"# {bundle_id}\nExportado automaticamente por auto-train para {physical_unit_id}.",
                 )
                 entry["gate_reasons"] = gate_reasons
-                if manifest.approval_status == "EVALUATED":
+                if training_run_id == recommended_id and manifest.approval_status == "EVALUATED":
                     manifest = self.approve_bundle(bundle_id)
                 entry["approval_status"] = manifest.approval_status
             except Exception as error:
@@ -2005,7 +2247,28 @@ class StudioRepository:
             raise FileNotFoundError(f"NO_EVIDENCE_BUILT_YET_FOR_CAPTURE:{capture_id}")
         iq_paths = self.capture_iq_paths_for([capture_id])
         service = OfflineInferenceService(self.bundle_builder.root, iq_paths)
-        return service.run(bundle_id=bundle_id, examples=examples)
+        # Inference-provenance correction (2026-08-08): every real offline
+        # inference run is now bound, on disk, to the exact bundle content
+        # hash and source IQ hash that produced it -- see
+        # OfflineInferenceService.run_with_provenance and the audit's own
+        # "provenance chain terminates at the model" finding. The public
+        # return shape (a bare list of decisions) is unchanged -- every
+        # existing caller keeps working exactly as before.
+        capture = self.get_capture(capture_id)
+        capture_iq_sha256_by_id = {capture_id: capture.iq_sha256} if capture is not None else {}
+        inference_run_id = f"INFER-{bundle_id}-{capture_id}-{uuid.uuid4().hex[:10]}"
+        manifest = service.run_with_provenance(
+            bundle_id=bundle_id, examples=examples, inference_run_id=inference_run_id, capture_iq_sha256_by_id=capture_iq_sha256_by_id,
+        )
+        write_json(self.inference_dir / f"{inference_run_id}.json", manifest)
+        return manifest["decisions"]
+
+    def get_inference_run(self, inference_run_id: str) -> dict[str, Any] | None:
+        path = self.inference_dir / f"{inference_run_id}.json"
+        return read_json(path) if path.is_file() else None
+
+    def list_inference_runs(self) -> list[dict[str, Any]]:
+        return [read_json(p) for p in sorted(self.inference_dir.glob("*.json"))]
 
     # ------------------------------------------------------------------
     # Live Monitor: on-demand model check over a freshly-captured IQ burst

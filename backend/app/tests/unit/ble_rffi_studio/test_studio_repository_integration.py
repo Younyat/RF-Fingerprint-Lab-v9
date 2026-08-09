@@ -286,6 +286,20 @@ def test_synthetic_multi_unit_full_pipeline_through_the_repository(synthetic_rep
     assert decisions
     assert all(d["final_decision"] in ("IDENTIFIED", "UNKNOWN", "INSUFFICIENT_EVIDENCE") for d in decisions)
 
+    # Inference-provenance correction (2026-08-08): run_inference's public
+    # return shape (a bare list of decisions) is unchanged, but a real,
+    # persisted manifest binding this run to the bundle's content hash and
+    # the source capture's real iq_sha256 must now exist on disk.
+    runs = repository.list_inference_runs()
+    assert len(runs) == 1
+    run = runs[0]
+    assert run["bundle_id"] == "bundle-syn-1"
+    assert run["bundle_sha256"] == manifest.bundle_sha256
+    assert run["source_capture_ids"] == [capture_ids[0]]
+    real_capture = repository.get_capture(capture_ids[0])
+    assert run["source_iq_sha256_by_capture_id"][capture_ids[0]] == real_capture.iq_sha256
+    assert repository.get_inference_run(run["inference_run_id"]) == run
+
 
 def test_training_job_manager_persists_a_completed_run(synthetic_repository, tmp_path):
     repository = synthetic_repository

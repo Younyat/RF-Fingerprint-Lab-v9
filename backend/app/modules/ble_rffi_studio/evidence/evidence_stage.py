@@ -30,6 +30,42 @@ from ..registry import PhysicalDeviceRegistry
 _SYMBOL_RATE_HZ = 1_000_000.0
 _CONFLICT_REJECTION_REASON = "MULTIPLE_NATIVE_CALLBACKS"
 
+# Real BLE advertising-channel center frequencies (Bluetooth Core Spec,
+# Vol 6 Part B, 1.4.1) -- deliberately NOT the linear "2402 + 2*channel_index"
+# formula, which is only valid for DATA channels 0-36 and gives a physically
+# wrong frequency for the three advertising channels (e.g. channel 37 is at
+# 2402 MHz, not 2402+2*37=2476 MHz). Duplicated rather than imported from
+# studio_repository.py/campaign_orchestrator.py, matching this codebase's
+# existing convention of small intentional constant duplication over
+# cross-module coupling (see _CAPTURE_TERMINAL in campaign_orchestrator.py).
+BLE_ADVERTISING_CHANNEL_FREQUENCIES_HZ = {37: 2_402_000_000, 38: 2_426_000_000, 39: 2_480_000_000}
+# P0.5 correction (2026-08-08): tight on purpose -- this is a blocking
+# correctness gate at data-ingestion time, not the looser 10 MHz drift
+# tolerance StudioRepository._resolve_ble_channel uses for live SDR-tuning
+# compatibility checks. Real captures on disk tune to an exact integer Hz;
+# a bug here previously produced a 74 MHz-off value (channel 37 stamped
+# alongside a 2476 MHz center_frequency_hz), nowhere close to this margin.
+_BLE_CHANNEL_FREQUENCY_BLOCKING_TOLERANCE_HZ = 1_000_000.0
+
+
+def validate_ble_channel_matches_frequency(ble_channel: int, center_frequency_hz: float, *, capture_id: str) -> None:
+    """Blocking guard: a declared BLE advertising channel must correspond to
+    the capture's real center_frequency_hz, or every ExampleRecord built
+    from it silently carries a self-contradictory channel/frequency pair
+    (e.g. channel=37 with center_frequency_hz=2476000000 -- not a real BLE
+    advertising frequency at all)."""
+    expected_hz = BLE_ADVERTISING_CHANNEL_FREQUENCIES_HZ.get(ble_channel)
+    if expected_hz is None:
+        raise ValueError(
+            f"BLE_CHANNEL_FREQUENCY_MISMATCH:{capture_id}: ble_channel={ble_channel} is not a real BLE "
+            f"advertising channel (must be one of {sorted(BLE_ADVERTISING_CHANNEL_FREQUENCIES_HZ)})."
+        )
+    if abs(expected_hz - center_frequency_hz) > _BLE_CHANNEL_FREQUENCY_BLOCKING_TOLERANCE_HZ:
+        raise ValueError(
+            f"BLE_CHANNEL_FREQUENCY_MISMATCH:{capture_id}: ble_channel={ble_channel} expects "
+            f"center_frequency_hz~={expected_hz}, but this capture's center_frequency_hz={center_frequency_hz}."
+        )
+
 
 class EvidenceStage:
     def __init__(self, legacy_capture_root: Path, legacy_session_root: Path, analysis_root: Path, registry: PhysicalDeviceRegistry) -> None:
@@ -46,6 +82,7 @@ class EvidenceStage:
         replay_run_id: str | None = None,
         generated_at: str | None = None,
     ) -> list[tuple[ExampleRecord, ExampleAnnotation]]:
+        validate_ble_channel_matches_frequency(ble_channel, capture.center_frequency_hz, capture_id=capture.capture_id)
         analysis = self.service.analyze(capture.capture_id, replay_run_id)
         resolved_replay_run_id = analysis["replay_run_id"]
         replay_dir = self.legacy_capture_root / capture.capture_id / "offline_replays" / resolved_replay_run_id

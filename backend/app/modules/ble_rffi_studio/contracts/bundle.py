@@ -36,6 +36,16 @@ ApprovalStatus = Literal["DRAFT", "EVALUATED", "SYNTHETIC_PIPELINE_VERIFIED", "A
 # never silently indistinguishable from the single-selection guarantee.
 TestEvaluationProvenance = Literal["NOT_EVALUATED", "SINGLE_SELECTION_GUARANTEE", "OPT_IN_MULTI_CANDIDATE_COMPARISON"]
 
+# P0 correction (2026-08-08): a bundle is only fit to stand as the paper's
+# confirmatory result for its device/task if its TEST number came from the
+# single-selection guarantee. OPT_IN_MULTI_CANDIDATE_COMPARISON bundles are
+# real, real captures, real TEST accuracy -- but the multiple-comparison
+# risk means that number cannot be reported as a confirmatory result, only
+# as exploratory. Stored explicitly (not left implicit in
+# test_evaluation_provenance) so any future paper-reporting code can filter
+# on one obvious boolean without re-deriving the provenance mapping.
+CONFIRMATORY_PROVENANCE = "SINGLE_SELECTION_GUARANTEE"
+
 # Every one of these files must exist inside a bundle directory and have an
 # entry in artifact_hashes before approval_status can move past DRAFT.
 REQUIRED_BUNDLE_FILES = (
@@ -69,4 +79,8 @@ class ModelBundleManifest(StudioContract):
     bundle_sha256: str | None = None
     approval_status: ApprovalStatus = "DRAFT"
     test_evaluation_provenance: TestEvaluationProvenance = "NOT_EVALUATED"
+    # Derived from test_evaluation_provenance at build time (see
+    # CONFIRMATORY_PROVENANCE) -- never approve_for_live_pilot a bundle
+    # where this is False (see bundle_builder.py::approve_for_live_pilot).
+    confirmatory_eligible: bool = False
     created_at: str

@@ -158,6 +158,19 @@ class ScientificResultsRepository:
         if missing:
             raise ValueError(f"ANALYSIS_CONTRACT_MISSING_REQUIRED_FIELDS:{','.join(missing)}")
 
+        # P0.4 correction (2026-08-08): this used to always be a hash of
+        # evidence_stage.py's own SOURCE CODE -- identical whether the
+        # association *threshold* changed or not, and identical whether any
+        # calibration had ever succeeded. Now it identifies a real,
+        # calibrated, frozen AssociationPolicy when one exists (see
+        # find_frozen_association_policy); the NO_CALIBRATED_POLICY_YET:
+        # prefix makes the absence of one self-evident from the hash string
+        # itself, rather than silently indistinguishable from a real policy.
+        frozen_policy = self.find_frozen_association_policy()
+        association_policy_hash = (
+            frozen_policy.policy_hash if frozen_policy is not None
+            else f"NO_CALIBRATED_POLICY_YET:{self._policy_hash(Path(evidence_stage_module.__file__))}"
+        )
         contract = AnalysisContract(
             protocol_id=protocol_id, protocol_version=next_version, creation_timestamp_utc=utc_now(),
             git_commit=git_commit, git_dirty_state=git_dirty, software_environment_digest=self._software_environment_digest(),
@@ -166,7 +179,7 @@ class ScientificResultsRepository:
             firmware_hashes=payload.get("firmware_hashes", {}), channels=payload.get("channels", []),
             campaign_schedule=payload.get("campaign_schedule", {}), intervention_schedule=payload.get("intervention_schedule", {}),
             content_variants=payload.get("content_variants", []),
-            association_policy_hash=self._policy_hash(Path(evidence_stage_module.__file__)),
+            association_policy_hash=association_policy_hash,
             quality_policy_hash=self._policy_hash(Path(dataset_analyzer_module.__file__)),
             dataset_policy_hash=self._policy_hash(Path(dataset_builder_module.__file__)),
             # Empty unless the caller already commits this protocol to one
@@ -530,6 +543,38 @@ class ScientificResultsRepository:
     def _canonical_records_dir(self, paper_run_id: str) -> Path:
         return self._run_dir(paper_run_id) / "01_inputs" / "canonical_records"
 
+    def find_frozen_association_policy(self) -> AssociationPolicy | None:
+        """P0.4 correction (2026-08-08): scans every real calibration
+        attempt's persisted result (written by Guided Validation's
+        association-policy calibration -- see
+        guided_validation/service.py::_attempt_policy) for the most
+        recently frozen, real AssociationPolicy, so build_records() picks
+        one up automatically the moment a real calibration campaign ever
+        succeeds, with zero further code changes. Returns None when no
+        calibration has ever succeeded -- the honest, current state of
+        every real calibration attempt on disk as of 2026-08, all of which
+        report NO_THRESHOLD_SATISFIES_CRITERIA. Deliberately does not
+        consider FROZEN_STRATIFIED (per-device-family) policies here --
+        build_records() applies one policy project-wide; stratified policy
+        selection per device family is a documented future extension, not
+        silently approximated by picking one family's policy for everyone."""
+        candidates: list[AssociationPolicy] = []
+        guided_validation_root = self.root / "guided_validation"
+        if guided_validation_root.is_dir():
+            for policy_path in guided_validation_root.glob("*/association_policy.json"):
+                try:
+                    data = json.loads(policy_path.read_text(encoding="utf-8-sig"))
+                except (json.JSONDecodeError, OSError):
+                    continue
+                if data.get("status") == "FROZEN" and isinstance(data.get("policy"), dict):
+                    try:
+                        candidates.append(AssociationPolicy.model_validate(data["policy"]))
+                    except Exception:
+                        continue
+        if not candidates:
+            return None
+        return max(candidates, key=lambda policy: policy.frozen_at)
+
     def build_records(self, paper_run_id: str, *, schedule_id: str | None = None, association_policy: AssociationPolicy | None = None, progress=None) -> RecordBuildResult:
         """`schedule_id`, when the campaign this run covers was executed
         through PaperCampaignRunner, pulls in that schedule's persisted
@@ -541,7 +586,12 @@ class ScientificResultsRepository:
         real calibration campaign -- see calibration/association_calibration.py),
         every burst's TARGET_ASSOCIATED_PACKET classification is disabled
         (STRONG_ASSOCIATION_DISABLED_UNTIL_POLICY_FROZEN) regardless of what
-        the underlying ledger contains -- there is no default threshold."""
+        the underlying ledger contains -- there is no default threshold.
+        Callers normally leave this None and let it auto-resolve via
+        find_frozen_association_policy() -- pass one explicitly only to
+        pin a specific historical policy version."""
+        if association_policy is None:
+            association_policy = self.find_frozen_association_policy()
         run = self.get_run(paper_run_id)
         contract = self.get_protocol(run.protocol_id, run.protocol_version)
         dataset = self._load_dataset(run.dataset_id, run.dataset_version)

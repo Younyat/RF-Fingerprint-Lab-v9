@@ -165,6 +165,26 @@ def test_prepare_and_train_skips_cnn_when_infeasible_but_still_trains_baselines(
     assert result["trained_models"]  # baselines still ran
 
 
+def test_prepare_and_train_with_normal_profile_includes_the_frozen_reference_baseline(repository, tmp_path):
+    """RQ2's 4th branch (2026-08-08): frozen_morphological_baseline is part
+    of the real, guided pipeline's "normal" candidate set -- not a
+    standalone capability nobody's flow actually exercises."""
+    capture_ids = _seed_synthetic_capture(repository, tmp_path, units=2, sessions_per_unit=3, examples_per_session=10)
+
+    result = repository.prepare_and_train(
+        capture_ids=capture_ids, project_id=PROJECT_ID, campaign_id="SYN-CAMPAIGN-01",
+        scientific_task="SAME_MODEL_UNIT_IDENTIFICATION", dataset_id="SYN-FROZEN-DS", speed_profile="normal",
+    )
+
+    assert result["stopped_at"] is None
+    trained_types = {m["model_type"] for m in result["trained_models"]}
+    assert "frozen_morphological_baseline" in trained_types
+    frozen_run_id = next(m["training_run_id"] for m in result["trained_models"] if m["model_type"] == "frozen_morphological_baseline")
+    stored = repository.get_training_run(frozen_run_id)
+    assert stored["status"] == "COMPLETED"
+    assert stored["representation_profile_id"] == "morphological_coarse_tf-v1"
+
+
 def test_prepare_and_train_succeeds_end_to_end_on_synthetic_target_vs_background_data(repository, tmp_path):
     # The exact scenario the reviewer demanded be proven end-to-end: both
     # TARGET_DEVICE and BACKGROUND_ENVIRONMENT genuinely present and

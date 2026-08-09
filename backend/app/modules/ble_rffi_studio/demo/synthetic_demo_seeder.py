@@ -20,6 +20,7 @@ import numpy as np
 from app.infrastructure.ble.capture.ble_offline_replay import sha256_file, utc_now, write_json, write_jsonl
 
 from ..contracts import CaptureRecord, ExampleRecord
+from ..evidence.evidence_stage import BLE_ADVERTISING_CHANNEL_FREQUENCIES_HZ
 
 DEMO_PROJECT_ID = "SYNTHETIC_DEMO"
 DEMO_CAMPAIGN_ID = "SYNTHETIC_DEMO-CAMPAIGN"
@@ -81,7 +82,7 @@ class SyntheticDemoSeeder:
             execution_id=f"SYNTHETIC-EXEC-{session_id}", data_origin="SYNTHETIC_TEST_ONLY", physical_unit_id=unit_id,
             receiver_device_id="synthetic-demo-generator", sdr_model="SYNTHETIC_DEMO_GENERATOR", rx_channel="RX2", antenna_port="RX2",
             sample_rate_sps=int(sample_rate), sample_dtype="cf32_le", byte_order="little_endian",
-            sample_count=total_samples, channel_count=1, center_frequency_hz=2_402_000_000 + ble_channel * 2_000_000,
+            sample_count=total_samples, channel_count=1, center_frequency_hz=BLE_ADVERTISING_CHANNEL_FREQUENCIES_HZ[ble_channel],
             frontend_bandwidth_hz=2_000_000, effective_bandwidth_hz=2_000_000, gain_db=0.0, gain_mode="synthetic",
             capture_duration_s=total_samples / sample_rate, capture_tool="synthetic_demo_seeder",
             iq_path="iq.cf32", iq_size_bytes=iq_path.stat().st_size, iq_sha256=sha256_file(iq_path),
@@ -106,7 +107,7 @@ class SyntheticDemoSeeder:
                 execution_id=f"SYNTHETIC-EXEC-{session_id}", session_id=session_id, candidate_id=candidate_id, packet_id=packet_id,
                 source_iq_sha256=f"sha-{capture_id}", iq_start_sample=start, iq_end_sample=end, physical_unit_id=unit_id,
                 logical_transmitter_id=f"TX-{unit_id}", association_status="STRONG", quality_status="PASSED", dataset_eligibility="PENDING_ANALYSIS",
-                channel=ble_channel, sample_rate_sps=int(sample_rate), center_frequency_hz=2_402_000_000 + ble_channel * 2_000_000, created_at=created_at,
+                channel=ble_channel, sample_rate_sps=int(sample_rate), center_frequency_hz=BLE_ADVERTISING_CHANNEL_FREQUENCIES_HZ[ble_channel], created_at=created_at,
             ))
         evidence_dir = self.repository.evidence_dir / capture_id
         evidence_dir.mkdir(parents=True, exist_ok=True)

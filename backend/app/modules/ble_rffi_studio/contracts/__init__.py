@@ -1,4 +1,4 @@
-from .bundle import BUNDLE_SCHEMA_VERSION, REQUIRED_BUNDLE_FILES, ModelBundleManifest
+from .bundle import BUNDLE_SCHEMA_VERSION, CONFIRMATORY_PROVENANCE, REQUIRED_BUNDLE_FILES, ModelBundleManifest
 from .capture import (
     CAPTURE_SCHEMA_VERSION,
     BackgroundKind,

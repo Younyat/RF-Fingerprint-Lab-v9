@@ -41,6 +41,53 @@ def test_build_capture_record_from_real_capture(stage):
     assert capture.discontinuities == 0
     assert capture.replay_status == "FULLY_PROCESSED"
     assert capture.software_commit == "6058f3cd73b9310e2cdd8e30e5074834943a5208"
+    # day_id: point-2 correction (2026-08-08) -- primary source is the real
+    # RF-acquisition start (b200_rf_started_at), not the acquisition job's
+    # own start time; this real manifest never declared day_id explicitly.
+    assert capture.day_id == "2026-07-24"
+    assert capture.day_id_source == "B200_RF_STARTED_AT"
+    # receiver_identity_id/qualified_acquisition_profile_hash: point-1
+    # correction (2026-08-08) -- pure, per-manifest facts CaptureStage CAN
+    # compute alone. receiver_epoch itself requires sequential knowledge of
+    # this identity's OTHER captures (see StudioRepository.
+    # _assign_receiver_epoch_if_needed) and stays None at this layer for a
+    # manifest that never declared it explicitly -- never fabricated here.
+    assert capture.receiver_identity_id is not None and capture.receiver_identity_id.startswith("identity-")
+    assert capture.qualified_acquisition_profile_hash is not None and capture.qualified_acquisition_profile_hash.startswith("profile-")
+    assert capture.receiver_epoch is None
+    assert capture.receiver_epoch_boundary_reason is None
+    # campaign_period/intervention_arm/packet_variant have no equivalent
+    # fallback -- nothing else recorded implies a real intervention/arm, so
+    # they correctly stay undeclared for a capture no paper campaign runner
+    # ever ran.
+    assert capture.campaign_period is None
+    assert capture.intervention_arm is None
+    assert capture.packet_variant is None
+
+
+def test_receiver_identity_and_profile_hash_are_stable_across_two_builds_of_the_same_capture(stage):
+    first = stage.build_capture_record(capture_id=REAL_CAPTURE_ID, project_id="P1", campaign_id="C1")
+    second = stage.build_capture_record(capture_id=REAL_CAPTURE_ID, project_id="P1", campaign_id="C1")
+    assert first.receiver_identity_id == second.receiver_identity_id
+    assert first.qualified_acquisition_profile_hash == second.qualified_acquisition_profile_hash
+
+
+def test_manifest_declared_day_id_and_receiver_epoch_take_precedence_over_the_fallback(tmp_path):
+    capture_dir = tmp_path / "captures" / "BLE-IQ-DECLARED"
+    capture_dir.mkdir(parents=True)
+    (capture_dir / "capture_manifest.json").write_text(
+        '{"capture_id":"BLE-IQ-DECLARED","experimental_metadata":{"session_id":"S999"},'
+        '"sample_rate_sps":4000000,"sample_format":"cf32_le","sample_count":1,"center_frequency_hz":1,'
+        '"bandwidth_hz":1,"bytes_per_cpu_sample":8,"actual_duration_seconds":1.0,"data_path":"x.sigmf-data",'
+        '"actual_file_size_bytes":1,"file_size":1,"data_sha256":"abc","created_at_utc":"2026-01-01T00:00:00Z",'
+        '"diagnostic_status":"PASSED","continuity_status":"PASSED","hash_status":"VERIFIED","capture_complete":true,'
+        '"day_id":"OPERATOR-DECLARED-DAY-3","receiver_epoch":"OPERATOR-DECLARED-EPOCH-2"}',
+        encoding="utf-8",
+    )
+    stage = CaptureStage(tmp_path / "captures")
+    capture = stage.build_capture_record(capture_id="BLE-IQ-DECLARED", project_id="P1", campaign_id="C1", execution_id="EXEC-1")
+    assert capture.day_id == "OPERATOR-DECLARED-DAY-3"
+    assert capture.receiver_epoch == "OPERATOR-DECLARED-EPOCH-2"
 
 
 def test_capture_record_round_trips_through_canonical_json(stage):
@@ -54,6 +101,46 @@ def test_capture_record_round_trips_through_canonical_json(stage):
 def test_explicit_execution_id_overrides_inference(stage):
     capture = stage.build_capture_record(capture_id=REAL_CAPTURE_ID, project_id="P1", campaign_id="C1", execution_id="EXPLICIT-OVERRIDE")
     assert capture.execution_id == "EXPLICIT-OVERRIDE"
+
+
+def test_day_id_prefers_b200_rf_started_at_over_created_at_utc(tmp_path):
+    """Point-2 correction (2026-08-08): day_id's primary source is the real
+    RF-acquisition start, not the acquisition job's own start time. This
+    fixture deliberately puts them on DIFFERENT calendar days (a job that
+    started just before midnight UTC but didn't actually start sampling RF
+    until after it) to prove the two are not silently interchangeable."""
+    capture_dir = tmp_path / "captures" / "BLE-IQ-DAYSPLIT"
+    capture_dir.mkdir(parents=True)
+    (capture_dir / "capture_manifest.json").write_text(
+        '{"capture_id":"BLE-IQ-DAYSPLIT","experimental_metadata":{"session_id":"S999"},'
+        '"sample_rate_sps":4000000,"sample_format":"cf32_le","sample_count":1,"center_frequency_hz":1,'
+        '"bandwidth_hz":1,"bytes_per_cpu_sample":8,"actual_duration_seconds":1.0,"data_path":"x.sigmf-data",'
+        '"actual_file_size_bytes":1,"file_size":1,"data_sha256":"abc",'
+        '"created_at_utc":"2026-08-01T23:59:55Z","b200_rf_started_at":"2026-08-02T00:00:03Z",'
+        '"diagnostic_status":"PASSED","continuity_status":"PASSED","hash_status":"VERIFIED","capture_complete":true}',
+        encoding="utf-8",
+    )
+    stage = CaptureStage(tmp_path / "captures")
+    capture = stage.build_capture_record(capture_id="BLE-IQ-DAYSPLIT", project_id="P1", campaign_id="C1", execution_id="EXEC-1")
+    assert capture.day_id == "2026-08-02"  # the real RF day, not the job-start day (2026-08-01)
+    assert capture.day_id_source == "B200_RF_STARTED_AT"
+
+
+def test_day_id_falls_back_to_created_at_utc_when_b200_rf_started_at_is_missing(tmp_path):
+    capture_dir = tmp_path / "captures" / "BLE-IQ-NORFSTART"
+    capture_dir.mkdir(parents=True)
+    (capture_dir / "capture_manifest.json").write_text(
+        '{"capture_id":"BLE-IQ-NORFSTART","experimental_metadata":{"session_id":"S999"},'
+        '"sample_rate_sps":4000000,"sample_format":"cf32_le","sample_count":1,"center_frequency_hz":1,'
+        '"bandwidth_hz":1,"bytes_per_cpu_sample":8,"actual_duration_seconds":1.0,"data_path":"x.sigmf-data",'
+        '"actual_file_size_bytes":1,"file_size":1,"data_sha256":"abc","created_at_utc":"2026-08-01T12:00:00Z",'
+        '"diagnostic_status":"PASSED","continuity_status":"PASSED","hash_status":"VERIFIED","capture_complete":true}',
+        encoding="utf-8",
+    )
+    stage = CaptureStage(tmp_path / "captures")
+    capture = stage.build_capture_record(capture_id="BLE-IQ-NORFSTART", project_id="P1", campaign_id="C1", execution_id="EXEC-1")
+    assert capture.day_id == "2026-08-01"
+    assert capture.day_id_source == "CREATED_AT_FALLBACK"
 
 
 def test_missing_execution_id_and_no_replay_raises(tmp_path):

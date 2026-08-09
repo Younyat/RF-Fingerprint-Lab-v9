@@ -7,6 +7,7 @@ scaled with TRAIN-only statistics, then handed to a baseline model.
 """
 from __future__ import annotations
 
+import dataclasses
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,15 +18,18 @@ import numpy as np
 from app.infrastructure.ble.capture.ble_offline_replay import utc_now
 
 from ..contracts import ExampleRecord, SplitManifest, TrainingRun
-from ..preprocessing import BasePreprocessingProfile, TrainOnlyScaler, apply_base_preprocessing, feature_vector_representation, load_iq_window
-from ..preprocessing.representation_profiles import FEATURE_NAMES, raw_iq_representation, spectrogram_representation
+from ..preprocessing import BasePreprocessingProfile, TrainOnlyScaler, apply_base_preprocessing_with_provenance, feature_vector_representation, load_iq_window
+from ..preprocessing.representation_profiles import FEATURE_NAMES, morphological_coarse_tf_representation, raw_iq_representation, spectrogram_representation
 from ..quality.split_builder import train_label_for
 from .baseline_models import BaselineModelTrainer
 from .cnn_models import CnnTrainer
+from .frozen_reference_baseline import FrozenReferenceBaselineTrainer
 
 DEFAULT_RAW_IQ_LENGTH = 800
 DEFAULT_SPECTROGRAM_N_FFT = 64
 DEFAULT_SPECTROGRAM_FRAMES = 32
+DEFAULT_MORPHOLOGICAL_TF_N_FFT = 16
+DEFAULT_MORPHOLOGICAL_TF_FRAMES = 8
 
 
 @dataclass
@@ -40,12 +44,23 @@ class TrainingArtifacts:
     # Real wall-clock: predict_proba() on one VALIDATION example, averaged.
     # None when VALIDATION is empty -- never fabricated as 0.
     validation_latency_ms: float | None = None
+    # Eq.(6)-(7) per-burst provenance (2026-08-08, point 3): example_id ->
+    # the real PaperCompliantCompensation this burst was preprocessed with,
+    # ONLY populated when base_profile.paper_eq6_7_compensation is enabled
+    # (empty dict otherwise -- never fabricated for a profile that never
+    # ran this step).
+    preprocessing_provenance: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class TrainingService:
     def __init__(self, capture_iq_paths: dict[str, Path], base_profile: BasePreprocessingProfile | None = None) -> None:
         self.capture_iq_paths = capture_iq_paths
         self.base_profile = base_profile or BasePreprocessingProfile(profile_id="base-v1")
+        # Reset per TrainingService instance -- each run_* call below starts
+        # a fresh accumulation (a new TrainingService is the normal usage
+        # pattern; run_* also clears this explicitly at its own start so
+        # reusing one instance across two runs never leaks stale provenance).
+        self._provenance_by_example_id: dict[str, dict[str, Any]] = {}
 
     def _label_for(self, example: ExampleRecord, scientific_task: str) -> str:
         # Single source of truth shared with SplitBuilder's own train-class
@@ -58,7 +73,10 @@ class TrainingService:
     def _window_for(self, example: ExampleRecord) -> np.ndarray:
         path = self.capture_iq_paths[example.capture_id]
         window = load_iq_window(path, example.iq_start_sample, example.iq_end_sample)
-        return apply_base_preprocessing(window, self.base_profile, float(example.sample_rate_sps))
+        result, provenance = apply_base_preprocessing_with_provenance(window, self.base_profile, float(example.sample_rate_sps))
+        if provenance is not None:
+            self._provenance_by_example_id[example.example_id] = dataclasses.asdict(provenance)
+        return result
 
     def _features_for(self, examples: list[ExampleRecord]) -> np.ndarray:
         if not examples:
@@ -72,6 +90,7 @@ class TrainingService:
             raise ValueError(f"CANNOT_TRAIN_WHEN_LEAKAGE_CHECK_DID_NOT_PASS:{split.leakage_check.status}")
         if training_run.model_type not in ("logistic_regression", "svm_rbf", "random_forest"):
             raise ValueError(f"run_baseline only supports classical baseline model_types, got {training_run.model_type}")
+        self._provenance_by_example_id = {}
 
         by_split: dict[str, list[ExampleRecord]] = {"TRAIN": [], "VALIDATION": [], "TEST": []}
         for assignment in split.assignments:
@@ -126,7 +145,10 @@ class TrainingService:
         validation_latency_ms = self._measure_latency_ms(lambda sample: trainer.predict_proba(model, sample), X_scaled["VALIDATION"])
 
         completed_run = training_run.model_copy(update={"status": "COMPLETED", "started_at": started_at, "completed_at": utc_now()})
-        return TrainingArtifacts(training_run=completed_run, model=model, scaler=scaler, label_classes=classes, metrics=metrics, predictions=predictions, validation_latency_ms=validation_latency_ms)
+        return TrainingArtifacts(
+            training_run=completed_run, model=model, scaler=scaler, label_classes=classes, metrics=metrics, predictions=predictions,
+            validation_latency_ms=validation_latency_ms, preprocessing_provenance=dict(self._provenance_by_example_id),
+        )
 
     def _measure_latency_ms(self, predict_one, validation_X: np.ndarray, repeats: int = 10) -> float | None:
         if len(validation_X) == 0:
@@ -138,6 +160,81 @@ class TrainingService:
             predict_one(sample)
             timings.append((time.perf_counter() - start) * 1000.0)
         return float(np.mean(timings))
+
+    def _morphological_features_for(self, examples: list[ExampleRecord]) -> np.ndarray:
+        n_features = DEFAULT_MORPHOLOGICAL_TF_N_FFT * DEFAULT_MORPHOLOGICAL_TF_FRAMES
+        if not examples:
+            return np.zeros((0, n_features))
+        return np.stack([
+            morphological_coarse_tf_representation(self._window_for(e), float(e.sample_rate_sps), n_fft=DEFAULT_MORPHOLOGICAL_TF_N_FFT, target_frames=DEFAULT_MORPHOLOGICAL_TF_FRAMES)
+            for e in examples
+        ])
+
+    def run_frozen_reference_baseline(self, *, training_run: TrainingRun, split: SplitManifest, examples_by_id: dict[str, ExampleRecord]) -> TrainingArtifacts:
+        """RQ2's 4th branch: a simple, frozen (no iterative optimization)
+        morphological/coarse time-frequency nearest-centroid reference --
+        see frozen_reference_baseline.py. Structurally parallel to
+        run_baseline (same split/leakage/two-class guards, same
+        metrics/predictions shape) but deliberately its own method, not a
+        branch inside run_baseline: it uses a different representation
+        (morphological_coarse_tf, not the classical feature vector) and
+        skips TRAIN-only scaling (z-scoring would distort the L2-normalized
+        shape vectors nearest-centroid distance relies on)."""
+        if split.split_status != "READY":
+            raise ValueError(f"CANNOT_TRAIN_ON_A_SPLIT_THAT_IS_NOT_READY:{split.split_status}")
+        if split.leakage_check.status != "PASSED":
+            raise ValueError(f"CANNOT_TRAIN_WHEN_LEAKAGE_CHECK_DID_NOT_PASS:{split.leakage_check.status}")
+        if training_run.model_type != "frozen_morphological_baseline":
+            raise ValueError(f"run_frozen_reference_baseline only supports frozen_morphological_baseline, got {training_run.model_type}")
+        self._provenance_by_example_id = {}
+
+        by_split: dict[str, list[ExampleRecord]] = {"TRAIN": [], "VALIDATION": [], "TEST": []}
+        for assignment in split.assignments:
+            by_split[assignment.split].append(examples_by_id[assignment.example_id])
+        if not by_split["TRAIN"]:
+            raise ValueError("NO_TRAIN_EXAMPLES_IN_SPLIT")
+
+        started_at = utc_now()
+        X = {name: self._morphological_features_for(exs) for name, exs in by_split.items()}
+        y = {name: [self._label_for(e, split.scientific_task) for e in exs] for name, exs in by_split.items()}
+        if len(set(y["TRAIN"])) < 2:
+            raise ValueError(f"TRAINING_REQUIRES_AT_LEAST_TWO_CLASSES: TRAIN contains only {sorted(set(y['TRAIN']))}")
+
+        trainer = FrozenReferenceBaselineTrainer()
+        model = trainer.build(training_run.model_type, training_run.random_seed, training_run.hyperparameters)
+        trainer.fit(model, X["TRAIN"], y["TRAIN"])
+        classes = trainer.classes(model)
+
+        metrics: dict[str, dict[str, Any]] = {}
+        predictions: dict[str, list[dict[str, Any]]] = {}
+        for name in ("TRAIN", "VALIDATION", "TEST"):
+            exs = by_split[name]
+            if not exs:
+                continue
+            proba = trainer.predict_proba(model, X[name])
+            predicted_idx = np.argmax(proba, axis=1)
+            predicted_labels = [classes[i] for i in predicted_idx]
+            true_labels = y[name]
+            accuracy = float(np.mean([p == t for p, t in zip(predicted_labels, true_labels)]))
+            metrics[name] = {"accuracy": accuracy, "n_examples": len(true_labels)}
+            predictions[name] = [
+                {
+                    "example_id": exs[i].example_id,
+                    "true_label": true_labels[i],
+                    "predicted_label": predicted_labels[i],
+                    "probabilities": {cls: float(p) for cls, p in zip(classes, proba[i])},
+                }
+                for i in range(len(exs))
+            ]
+
+        validation_latency_ms = self._measure_latency_ms(lambda sample: trainer.predict_proba(model, sample), X["VALIDATION"])
+
+        completed_run = training_run.model_copy(update={"status": "COMPLETED", "started_at": started_at, "completed_at": utc_now()})
+        return TrainingArtifacts(
+            training_run=completed_run, model=model, scaler=None, label_classes=classes, metrics=metrics,
+            predictions=predictions, feature_names=[f"tf_bin_{i}" for i in range(X["TRAIN"].shape[1])] if len(X["TRAIN"]) else [],
+            validation_latency_ms=validation_latency_ms, preprocessing_provenance=dict(self._provenance_by_example_id),
+        )
 
     def _cnn_representation(self, example: ExampleRecord, model_type: str) -> np.ndarray:
         window = self._window_for(example)
@@ -152,6 +249,7 @@ class TrainingService:
             raise ValueError(f"CANNOT_TRAIN_WHEN_LEAKAGE_CHECK_DID_NOT_PASS:{split.leakage_check.status}")
         if training_run.model_type not in ("cnn1d", "cnn2d"):
             raise ValueError(f"run_cnn only supports cnn1d/cnn2d, got {training_run.model_type}")
+        self._provenance_by_example_id = {}
 
         by_split: dict[str, list[ExampleRecord]] = {"TRAIN": [], "VALIDATION": [], "TEST": []}
         for assignment in split.assignments:
@@ -210,4 +308,7 @@ class TrainingService:
         validation_latency_ms = self._measure_latency_ms(lambda sample: trainer.predict_proba(model, sample), X["VALIDATION"])
 
         completed_run = training_run.model_copy(update={"status": "COMPLETED", "started_at": started_at, "completed_at": utc_now()})
-        return TrainingArtifacts(training_run=completed_run, model=model, scaler=None, label_classes=classes, metrics=metrics, predictions=predictions, validation_latency_ms=validation_latency_ms)
+        return TrainingArtifacts(
+            training_run=completed_run, model=model, scaler=None, label_classes=classes, metrics=metrics, predictions=predictions,
+            validation_latency_ms=validation_latency_ms, preprocessing_provenance=dict(self._provenance_by_example_id),
+        )

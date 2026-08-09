@@ -33,6 +33,30 @@ rather than relying on each model's own library to notice (sklearn's
 LogisticRegression/SVC raise on a single class; RandomForestClassifier and
 the CNN trainers do not, and will silently "succeed" with a meaningless
 model otherwise).
+
+Split-policy correction (2026-08-08): _LEAKAGE_FIELDS deliberately stays
+identity-only (capture/execution/session/candidate/packet/sample-range).
+day_id and receiver_epoch are NOT added here, on purpose -- this study runs
+on a single B200 receiver (a receiver-disjoint requirement would be
+impossible to satisfy by construction), and a day-disjoint requirement was
+never part of any of the four scientific_task designs below; adding either
+indiscriminately would either make every split NOT_FEASIBLE for a reason
+nothing in the paper actually asks for, or silently encode a requirement
+nobody reviewed. Each RQ that DOES need a real cross-day or cross-epoch
+disjointness (device-day PRE/POST pairing, receiver-epoch invalidation) gets
+its own explicit, separately-implemented policy instead of a blanket rule
+here (see decision_window_records.py / paper_campaign_runner.py).
+
+BLE channel is handled the same way, but the current four scientific_tasks
+DO have a real, paper-driven constraint on it: the main benchmark trains and
+evaluates on channel 37 only. Channels 38/39 are real, already-decoded data
+(9350 real examples on channel 38 exist on disk) reserved for a distinct,
+not-yet-implemented post-freeze transport-domain analysis -- never silently
+mixed into TRAIN/VALIDATION/TEST for identity/TVB/unknown-rejection here.
+_MAIN_BENCHMARK_CHANNEL enforces this by excluding non-37 examples before
+any split is built, and every excluded example_id is recorded on the
+resulting SplitManifest (channel_scope_excluded_example_ids) so the
+exclusion is auditable, not silent.
 """
 from __future__ import annotations
 
@@ -40,6 +64,7 @@ from ..contracts import DatasetManifest, ExampleRecord, LeakageCheckResult, Spli
 
 _SPLIT_NAMES = ("TRAIN", "VALIDATION", "TEST")
 _LEAKAGE_FIELDS = ["capture_id", "execution_id", "session_id", "candidate_id", "packet_id", "sample_range"]
+_MAIN_BENCHMARK_CHANNEL = 37
 _MIN_SESSIONS_PER_UNIT = 3
 _MIN_TARGET_SESSIONS = 3
 # One background session per split (TRAIN/VALIDATION/TEST) -- was 1 total
@@ -74,12 +99,22 @@ class SplitBuilder:
         by_id = {e.example_id: e for e in examples}
         selected = [by_id[eid] for eid in dataset.example_ids if eid in by_id]
 
+        # Main benchmark is channel-37-only for every currently-implemented
+        # scientific_task -- see module docstring. channel_excluded_ids is
+        # threaded through and recorded on the manifest even on a
+        # NOT_FEASIBLE outcome, so "why did this dataset lose N examples" is
+        # always answerable from the manifest alone -- never instance state
+        # on this (shared, StudioRepository-owned) builder.
+        in_scope = [e for e in selected if e.channel == _MAIN_BENCHMARK_CHANNEL]
+        channel_excluded_ids = sorted(e.example_id for e in selected if e.channel != _MAIN_BENCHMARK_CHANNEL)
+        selected = in_scope
+
         if scientific_task in ("SAME_MODEL_UNIT_IDENTIFICATION", "MULTI_DEVICE_CLASSIFICATION"):
-            return self._closed_set_classification(dataset, selected, scientific_task, created_at)
+            return self._closed_set_classification(dataset, selected, scientific_task, created_at, channel_excluded_ids)
         if scientific_task == "TARGET_VS_BACKGROUND":
-            return self._target_vs_background(dataset, selected, created_at)
+            return self._target_vs_background(dataset, selected, created_at, channel_excluded_ids)
         if scientific_task == "UNKNOWN_DEVICE_REJECTION":
-            return self._unknown_device_rejection(dataset, selected, created_at)
+            return self._unknown_device_rejection(dataset, selected, created_at, channel_excluded_ids)
         raise ValueError(f"UNKNOWN_SCIENTIFIC_TASK:{scientific_task}")
 
     # ------------------------------------------------------------------
@@ -92,8 +127,10 @@ class SplitBuilder:
             result.setdefault(example.physical_unit_id, {}).setdefault(example.session_id, []).append(example)
         return result
 
-    def _closed_set_classification(self, dataset: DatasetManifest, examples: list[ExampleRecord], scientific_task: str, created_at: str) -> SplitManifest:
-        policy = "session_disjoint_per_unit"
+    def _closed_set_classification(
+        self, dataset: DatasetManifest, examples: list[ExampleRecord], scientific_task: str, created_at: str, channel_excluded_ids: list[str],
+    ) -> SplitManifest:
+        policy = "session_disjoint_per_unit:channel_37_only"
         sessions_by_unit = self._sessions_by_unit(examples)
         ready_units = {unit: sessions for unit, sessions in sessions_by_unit.items() if len(sessions) >= _MIN_SESSIONS_PER_UNIT}
         if len(sessions_by_unit) < 2 or len(ready_units) < 2:
@@ -101,7 +138,7 @@ class SplitBuilder:
                 f"{scientific_task} requires >=2 physical units, each with >={_MIN_SESSIONS_PER_UNIT} independent "
                 f"sessions (one per split); found {len(sessions_by_unit)} unit(s) total, {len(ready_units)} with enough sessions."
             )
-            return self._not_feasible(dataset, scientific_task, policy, reason, created_at)
+            return self._not_feasible(dataset, scientific_task, policy, reason, created_at, channel_excluded_ids)
 
         # Real gap found and fixed here: this used to always send exactly the
         # FIRST sorted session to TRAIN, the SECOND to VALIDATION, the THIRD
@@ -138,12 +175,12 @@ class SplitBuilder:
                         assignments.append(SplitAssignment(example_id=example.example_id, physical_unit_id=unit, capture_id=example.capture_id, session_id=session_id, split=split_name, split_reason=policy))
 
         leakage = self._compute_leakage(assignments, {e.example_id: e for e in examples})
-        return self._finalize(dataset, scientific_task, policy, assignments, leakage, created_at, {e.example_id: e for e in examples})
+        return self._finalize(dataset, scientific_task, policy, assignments, leakage, created_at, {e.example_id: e for e in examples}, channel_excluded_ids)
 
     def _target_vs_background(
-        self, dataset: DatasetManifest, examples: list[ExampleRecord], created_at: str,
+        self, dataset: DatasetManifest, examples: list[ExampleRecord], created_at: str, channel_excluded_ids: list[str],
     ) -> SplitManifest:
-        scientific_task, policy = "TARGET_VS_BACKGROUND", "target_background_session_disjoint"
+        scientific_task, policy = "TARGET_VS_BACKGROUND", "target_background_session_disjoint:channel_37_only"
         target_examples = [e for e in examples if e.physical_unit_id]
         # A background example is only trustworthy negative evidence when its
         # OWN capture was declared BACKGROUND_TARGET_OFF or BACKGROUND_GENERAL
@@ -158,7 +195,7 @@ class SplitBuilder:
 
         if len(target_sessions) < _MIN_TARGET_SESSIONS:
             reason = f"{scientific_task} requires >={_MIN_TARGET_SESSIONS} independent target sessions (one per split); found {len(target_sessions)}."
-            return self._not_feasible(dataset, scientific_task, policy, reason, created_at)
+            return self._not_feasible(dataset, scientific_task, policy, reason, created_at, channel_excluded_ids)
         if len(background_sessions) < _MIN_BACKGROUND_SESSIONS:
             reason = (
                 f"{scientific_task} requires >={_MIN_BACKGROUND_SESSIONS} independent BACKGROUND_ENVIRONMENT-declared "
@@ -167,7 +204,7 @@ class SplitBuilder:
                 "registered address do not count -- only a capture where the operator explicitly confirmed the "
                 "target was off/removed does."
             )
-            return self._not_feasible(dataset, scientific_task, policy, reason, created_at)
+            return self._not_feasible(dataset, scientific_task, policy, reason, created_at, channel_excluded_ids)
 
         assignments: list[SplitAssignment] = []
         for idx, session_id in enumerate(target_sessions):
@@ -187,10 +224,12 @@ class SplitBuilder:
                     assignments.append(SplitAssignment(example_id=example.example_id, physical_unit_id=None, capture_id=example.capture_id, session_id=session_id, split=split, split_reason=f"{policy}:background_environment_declared"))
 
         leakage = self._compute_leakage(assignments, {e.example_id: e for e in examples})
-        return self._finalize(dataset, scientific_task, policy, assignments, leakage, created_at, {e.example_id: e for e in examples})
+        return self._finalize(dataset, scientific_task, policy, assignments, leakage, created_at, {e.example_id: e for e in examples}, channel_excluded_ids)
 
-    def _unknown_device_rejection(self, dataset: DatasetManifest, examples: list[ExampleRecord], created_at: str) -> SplitManifest:
-        scientific_task, policy = "UNKNOWN_DEVICE_REJECTION", "known_vs_unknown_session_disjoint"
+    def _unknown_device_rejection(
+        self, dataset: DatasetManifest, examples: list[ExampleRecord], created_at: str, channel_excluded_ids: list[str],
+    ) -> SplitManifest:
+        scientific_task, policy = "UNKNOWN_DEVICE_REJECTION", "known_vs_unknown_session_disjoint:channel_37_only"
         known_examples = [e for e in examples if e.physical_unit_id]
         unknown_examples = [e for e in examples if not e.physical_unit_id]
         sessions_by_unit = self._sessions_by_unit(known_examples)
@@ -199,10 +238,10 @@ class SplitBuilder:
 
         if not ready_units:
             reason = f"{scientific_task} requires >=1 known physical unit with >={_MIN_SESSIONS_PER_UNIT} independent sessions; none found."
-            return self._not_feasible(dataset, scientific_task, policy, reason, created_at)
+            return self._not_feasible(dataset, scientific_task, policy, reason, created_at, channel_excluded_ids)
         if len(unknown_sessions) < _MIN_UNKNOWN_SESSIONS:
             reason = f"{scientific_task} requires >={_MIN_UNKNOWN_SESSIONS} independent 'unknown device' sessions (split across VALIDATION/TEST only, never TRAIN); found {len(unknown_sessions)}."
-            return self._not_feasible(dataset, scientific_task, policy, reason, created_at)
+            return self._not_feasible(dataset, scientific_task, policy, reason, created_at, channel_excluded_ids)
 
         assignments: list[SplitAssignment] = []
         for unit, sessions in ready_units.items():
@@ -219,7 +258,7 @@ class SplitBuilder:
                     assignments.append(SplitAssignment(example_id=example.example_id, physical_unit_id=None, capture_id=example.capture_id, session_id=session_id, split=split, split_reason=f"{policy}:unknowns_never_in_train"))
 
         leakage = self._compute_leakage(assignments, {e.example_id: e for e in examples})
-        return self._finalize(dataset, scientific_task, policy, assignments, leakage, created_at, {e.example_id: e for e in examples})
+        return self._finalize(dataset, scientific_task, policy, assignments, leakage, created_at, {e.example_id: e for e in examples}, channel_excluded_ids)
 
     # ------------------------------------------------------------------
 
@@ -249,18 +288,21 @@ class SplitBuilder:
             evidence=f"Checked {len(assignments)} assignment(s) across {len(examples_by_id)} example(s).",
         )
 
-    def _not_feasible(self, dataset: DatasetManifest, scientific_task: str, policy: str, reason: str, created_at: str) -> SplitManifest:
+    def _not_feasible(
+        self, dataset: DatasetManifest, scientific_task: str, policy: str, reason: str, created_at: str, channel_excluded_ids: list[str],
+    ) -> SplitManifest:
         manifest = SplitManifest(
             dataset_id=dataset.dataset_id, dataset_version=dataset.dataset_version, scientific_task=scientific_task, policy=policy,
             split_status="NOT_FEASIBLE", infeasibility_reason=reason, assignments=[],
             leakage_check=LeakageCheckResult(status="NOT_EXECUTED"), created_at=created_at,
+            channel_scope_excluded_example_ids=channel_excluded_ids,
         )
         sha256 = manifest.content_hash(exclude={"split_manifest_sha256"})
         return manifest.model_copy(update={"split_manifest_sha256": sha256})
 
     def _finalize(
         self, dataset: DatasetManifest, scientific_task: str, policy: str, assignments: list[SplitAssignment],
-        leakage: LeakageCheckResult, created_at: str, examples_by_id: dict[str, ExampleRecord],
+        leakage: LeakageCheckResult, created_at: str, examples_by_id: dict[str, ExampleRecord], channel_excluded_ids: list[str],
     ) -> SplitManifest:
         if leakage.status == "FAILED":
             split_status, infeasibility_reason = "NOT_FEASIBLE", f"Leakage check failed on field(s): {sorted(leakage.overlapping_keys.keys())}"
@@ -279,10 +321,36 @@ class SplitBuilder:
                     "candidate model type uniformly, not just the ones whose library happens to raise on its own."
                 )
             else:
-                split_status, infeasibility_reason = "READY", None
+                # Split-completeness correction (2026-08-08): a VALIDATION/TEST
+                # missing real support for a class TRAIN has makes
+                # balanced_accuracy/macro_f1 silently biased for that split
+                # (a class with zero true instances there still enters the
+                # macro-average as recall=0, per evaluator.py's own
+                # documented, deliberately-unchanged definition) -- the fix
+                # belongs here, at split-completeness gating, never by
+                # excluding no-support classes from the metric formula
+                # itself (that would hide the real gap instead of blocking
+                # on it). UNKNOWN_DEVICE_REJECTION's "UNKNOWN" pseudo-label
+                # is fine appearing in VALIDATION/TEST only -- this checks
+                # the TRAIN-to-VALIDATION/TEST direction alone, never the
+                # reverse.
+                val_labels = {train_label_for(scientific_task, examples_by_id[a.example_id]) for a in assignments if a.split == "VALIDATION"}
+                test_labels = {train_label_for(scientific_task, examples_by_id[a.example_id]) for a in assignments if a.split == "TEST"}
+                missing_in_val = train_labels - val_labels
+                missing_in_test = train_labels - test_labels
+                if missing_in_val or missing_in_test:
+                    split_status, infeasibility_reason = "NOT_FEASIBLE", (
+                        f"SPLIT_INCOMPLETE_MISSING_CLASS_SUPPORT: VALIDATION missing {sorted(missing_in_val)}, "
+                        f"TEST missing {sorted(missing_in_test)}. A class with zero true instances in a split "
+                        "cannot be scientifically evaluated there -- balanced_accuracy/macro_f1 are only "
+                        "meaningful when every TRAIN class also has real support in VALIDATION and TEST."
+                    )
+                else:
+                    split_status, infeasibility_reason = "READY", None
         manifest = SplitManifest(
             dataset_id=dataset.dataset_id, dataset_version=dataset.dataset_version, scientific_task=scientific_task, policy=policy,
             split_status=split_status, infeasibility_reason=infeasibility_reason, assignments=assignments, leakage_check=leakage, created_at=created_at,
+            channel_scope_excluded_example_ids=channel_excluded_ids,
         )
         sha256 = manifest.content_hash(exclude={"split_manifest_sha256"})
         return manifest.model_copy(update={"split_manifest_sha256": sha256})

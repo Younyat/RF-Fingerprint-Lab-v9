@@ -50,3 +50,10 @@ class SplitManifest(StudioContract):
     leakage_check: LeakageCheckResult
     split_manifest_sha256: str | None = None
     created_at: str
+
+    # Split-policy correction (2026-08-08): example_ids excluded before
+    # splitting because they fall outside this task's declared channel scope
+    # (main benchmark is channel 37 only -- see split_builder.py module
+    # docstring). Recorded even on a NOT_FEASIBLE outcome so a channel-scope
+    # exclusion is always auditable from the manifest, never silent.
+    channel_scope_excluded_example_ids: list[str] = []

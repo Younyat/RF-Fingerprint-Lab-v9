@@ -40,6 +40,33 @@ def spectrogram_representation(window: np.ndarray, sample_rate_sps: float, n_fft
     return magnitude_db[np.newaxis, :, :]
 
 
+def morphological_coarse_tf_representation(window: np.ndarray, sample_rate_sps: float, n_fft: int = 16, hop_length: int = 8, target_frames: int = 8) -> np.ndarray:
+    """RQ2's 4th, frozen reference branch (2026-08-08): a coarse (far fewer
+    time/frequency bins than spectrogram_representation's dB CNN2D input)
+    LINEAR-magnitude STFT, L2-normalized so the vector encodes relative
+    time-frequency SHAPE (morphology) rather than absolute energy -- two
+    windows with identical shape but different gain map to the same vector.
+    Linear magnitude on purpose (not dB): L2-normalizing a dB-scale vector
+    would let a few very-negative near-silence bins dominate the norm,
+    distorting the shape comparison this representation exists for.
+    Deliberately NOT a copy of E0 (a region/activity detector, not a
+    device-fingerprinting representation): this exists purely to build a
+    per-class template for FrozenReferenceBaselineTrainer's nearest-centroid
+    classifier."""
+    if len(window) < n_fft:
+        window = np.concatenate([window, np.zeros(n_fft - len(window), dtype=window.dtype)])
+    _, _, stft_matrix = scipy_signal.stft(window, fs=sample_rate_sps, nperseg=n_fft, noverlap=n_fft - hop_length, return_onesided=False)
+    magnitude = np.abs(stft_matrix).astype(np.float64)
+    frames = magnitude.shape[1]
+    if frames < target_frames:
+        magnitude = np.concatenate([magnitude, np.zeros((magnitude.shape[0], target_frames - frames), dtype=np.float64)], axis=1)
+    else:
+        magnitude = magnitude[:, :target_frames]
+    flattened = magnitude.reshape(-1)
+    norm = float(np.linalg.norm(flattened))
+    return flattened / norm if norm > 0 else flattened
+
+
 FEATURE_NAMES = [
     "mean_power_dbfs", "std_power_db", "mean_abs_amplitude", "std_abs_amplitude",
     "spectral_centroid_hz", "spectral_bandwidth_hz", "cfo_estimate_hz", "papr_db",

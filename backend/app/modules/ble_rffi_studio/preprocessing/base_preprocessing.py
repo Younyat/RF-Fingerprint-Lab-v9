@@ -13,7 +13,12 @@ from pathlib import Path
 
 import numpy as np
 
-_STEP_NAMES = ("cfo_correction", "phase_normalization", "amplitude_normalization", "temporal_alignment", "transient_removal")
+from .paper_compliant_cfo import PaperCompliantCompensation, apply_paper_compliant_compensation
+
+_STEP_NAMES = (
+    "cfo_correction", "phase_normalization", "amplitude_normalization", "temporal_alignment", "transient_removal",
+    "paper_eq6_7_compensation",
+)
 
 
 def load_iq_window(iq_path: Path, iq_start_sample: int, iq_end_sample: int) -> np.ndarray:
@@ -24,11 +29,25 @@ def load_iq_window(iq_path: Path, iq_start_sample: int, iq_end_sample: int) -> n
 @dataclass(frozen=True)
 class BasePreprocessingProfile:
     profile_id: str
+    # Heuristic CFO/phase steps (2026-08-08: renamed in spirit, not in field
+    # name, to avoid an on-disk contract break -- these are NOT Eq.(6)-(7).
+    # mean phase-step CFO + first-sample phase zeroing, over the whole
+    # window, no reference waveform, no frozen index set, nothing persisted
+    # per burst. Kept for historical/ablation utility; never presented as
+    # the paper's primary preprocessing -- see paper_eq6_7_compensation
+    # below for the real thing.
     cfo_correction: bool = False
     phase_normalization: bool = False
     amplitude_normalization: bool = False
     temporal_alignment: bool = False
     transient_removal: bool = False
+    # Eq.(6)-(7) paper-compliant CFO/phase compensation (2026-08-08, point
+    # 3): q[n]/z_b[n]/psi_b[n]/frozen I_b/joint least-squares (phi_b0, f_b)
+    # -- see preprocessing/paper_compliant_cfo.py. Mutually meaningful on
+    # its own; combining it with cfo_correction/phase_normalization in the
+    # same profile would apply two independent, uncoordinated corrections
+    # -- no registered profile does that (see base_preprocessing_registry.py).
+    paper_eq6_7_compensation: bool = False
     # step_name -> technique_id from scientific_basis/technique_registry.json
     justification_technique_ids: dict[str, str] = field(default_factory=dict)
 
@@ -64,7 +83,23 @@ def estimate_cfo_hz(window: np.ndarray, sample_rate_sps: float) -> float:
 
 
 def apply_base_preprocessing(window: np.ndarray, profile: BasePreprocessingProfile, sample_rate_sps: float) -> np.ndarray:
+    """Thin wrapper over apply_base_preprocessing_with_provenance -- exactly
+    ONE real implementation of every step; this discards the Eq.(6)-(7)
+    provenance for callers that only need the transformed window."""
+    result, _ = apply_base_preprocessing_with_provenance(window, profile, sample_rate_sps)
+    return result
+
+
+def apply_base_preprocessing_with_provenance(
+    window: np.ndarray, profile: BasePreprocessingProfile, sample_rate_sps: float,
+) -> tuple[np.ndarray, PaperCompliantCompensation | None]:
+    """Same steps as apply_base_preprocessing, plus real per-burst
+    provenance for the Eq.(6)-(7) step when profile.paper_eq6_7_compensation
+    is enabled (None otherwise) -- TRAIN and inference both call this SAME
+    function (never two separate implementations), so whatever provenance a
+    burst was trained under is exactly what inference can reproduce."""
     result = window
+    provenance: PaperCompliantCompensation | None = None
     if profile.cfo_correction:
         cfo_hz = estimate_cfo_hz(result, sample_rate_sps)
         n = np.arange(len(result))
@@ -72,12 +107,44 @@ def apply_base_preprocessing(window: np.ndarray, profile: BasePreprocessingProfi
     if profile.phase_normalization:
         if len(result) and result[0] != 0:
             result = result * np.exp(-1j * np.angle(result[0]))
+    if profile.paper_eq6_7_compensation:
+        result, provenance = apply_paper_compliant_compensation(result, sample_rate_sps)
     if profile.amplitude_normalization:
         rms = float(np.sqrt(np.mean(np.abs(result) ** 2))) if len(result) else 0.0
         if rms > 0:
             result = result / rms
     if profile.temporal_alignment:
-        raise NotImplementedError("temporal_alignment has no validated implementation yet -- do not enable this step in any profile until one exists.")
+        result = leading_edge_alignment(result)
     if profile.transient_removal:
         raise NotImplementedError("transient_removal has no validated implementation yet -- do not enable this step in any profile until one exists.")
-    return result
+    return result, provenance
+
+
+_ALIGNMENT_THRESHOLD_FRACTION = 0.5
+_ALIGNMENT_TARGET_INDEX = 0
+
+
+def leading_edge_alignment(window: np.ndarray, *, threshold_fraction: float = _ALIGNMENT_THRESHOLD_FRACTION, target_index: int = _ALIGNMENT_TARGET_INDEX) -> np.ndarray:
+    """Deterministic, parameter-free (no fitting/calibration) onset
+    alignment: finds the first sample whose envelope crosses
+    threshold_fraction of the window's own peak amplitude, then circularly
+    shifts the window so that onset lands at target_index. Standard
+    burst-mode RF preprocessing technique (envelope-threshold leading-edge
+    detection); corrects residual sample-level jitter left over from the
+    decoder's own bit-level sync (whose resolution is one symbol period, not
+    one sample). Real implementation exists so this step can be exercised
+    and tested -- see base_preprocessing_registry.py for why it is not yet
+    enabled in any registered profile (no literature justification on file
+    for it specifically, unlike cfo_correction/phase_normalization)."""
+    envelope = np.abs(window)
+    if len(envelope) == 0:
+        return window
+    peak = float(envelope.max())
+    if peak <= 0:
+        return window
+    crossings = np.nonzero(envelope >= threshold_fraction * peak)[0]
+    if len(crossings) == 0:
+        return window
+    onset = int(crossings[0])
+    shift = target_index - onset
+    return np.roll(window, shift)

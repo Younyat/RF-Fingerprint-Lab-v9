@@ -19,6 +19,15 @@ from typing import Any, Literal
 import numpy as np
 from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
 
+# Coverage/risk-coverage correction (2026-08-08): real, tested primitives
+# that existed in ble_scientific_results.statistics but had no production
+# caller anywhere -- these are leaf, dependency-light functions (no import
+# of anything ble_rffi_studio-adjacent), so a plain module-level import is
+# safe here, unlike the ScientificResultsRepository coupling in
+# studio_repository.py (which needs a deferred import to avoid a real
+# circular-import risk that does not exist for these).
+from app.modules.ble_scientific_results.statistics.inference import BootstrapCiResult, hierarchical_cluster_bootstrap, risk_coverage_curve
+
 FinalDecision = Literal["IDENTIFIED", "UNKNOWN", "INSUFFICIENT_EVIDENCE"]
 
 
@@ -52,6 +61,13 @@ class SplitEvaluationReport:
     # was nothing comparable to evaluate (mirrors accuracy's own None case).
     macro_f1: float | None = None
     balanced_accuracy: float | None = None
+    # Coverage/risk-coverage correction (2026-08-08): the real selective-
+    # prediction curve (El-Yaniv & Wiener, 2010) over this split's own
+    # comparable predictions -- sweeping every achievable confidence
+    # threshold, not just the one bundle_builder.py ends up calibrating.
+    # None under the same conditions accuracy is None (nothing comparable,
+    # or no probabilities recorded) -- never a fabricated empty curve.
+    risk_coverage: list[dict[str, float]] | None = None
 
 
 class Evaluator:
@@ -83,6 +99,55 @@ class Evaluator:
             f1_per_class=dict(zip(known_classes, f1.tolist())),
             confusion_matrix=confusion,
             macro_f1=float(np.mean(f1)), balanced_accuracy=float(np.mean(recall)),
+            risk_coverage=self._risk_coverage(comparable),
+        )
+
+    def _risk_coverage(self, comparable: list[dict[str, Any]]) -> list[dict[str, float]] | None:
+        """Real risk-coverage curve over this split's own comparable
+        predictions, using each one's own top-1 probability as its
+        confidence score and predicted_label==true_label as correctness --
+        None only when no prediction here carries a probabilities dict at
+        all (e.g. a caller building a minimal test fixture), never a
+        fabricated all-zero curve."""
+        confidences: list[float] = []
+        correct: list[bool] = []
+        for prediction in comparable:
+            probabilities = prediction.get("probabilities") or {}
+            if not probabilities:
+                continue
+            confidences.append(max(probabilities.values()))
+            correct.append(prediction["predicted_label"] == prediction["true_label"])
+        if not confidences:
+            return None
+        points = risk_coverage_curve(confidences, correct)
+        return [{"coverage": p.coverage, "risk": p.risk, "threshold": p.threshold} for p in points]
+
+    def bootstrap_accuracy_ci(
+        self, predictions: list[dict[str, Any]], known_classes: list[str], session_id_by_example_id: dict[str, str],
+        n_resamples: int = 2000, confidence_level: float = 0.95,
+    ) -> BootstrapCiResult | None:
+        """Bootstrap correction (2026-08-08): hierarchical_cluster_bootstrap
+        existed with real tests but no production caller. Resamples WHOLE
+        SESSIONS with replacement (never individual bursts) -- the same
+        clustering unit split_builder.py's own leakage check treats as one
+        indivisible block, since bursts within one session are correlated,
+        not independent draws. None when there is nothing comparable to
+        bootstrap over, matching evaluate_split's own None convention."""
+        comparable = [p for p in predictions if p["true_label"] in known_classes]
+        if len(known_classes) < 2 or not comparable:
+            return None
+        by_session: dict[str, list[float]] = {}
+        for prediction in comparable:
+            session_id = session_id_by_example_id.get(prediction["example_id"])
+            if session_id is None:
+                continue
+            by_session.setdefault(session_id, []).append(1.0 if prediction["predicted_label"] == prediction["true_label"] else 0.0)
+        if not by_session:
+            return None
+        cluster_values = list(by_session.values())
+        return hierarchical_cluster_bootstrap(
+            cluster_values, statistic=lambda values: sum(values) / len(values),
+            n_resamples=n_resamples, confidence_level=confidence_level,
         )
 
     def calibrate_unknown_threshold(self, validation_predictions: list[dict[str, Any]], known_classes: list[str], min_identified_precision: float = 0.9) -> float:

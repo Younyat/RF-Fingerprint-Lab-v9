@@ -21,8 +21,9 @@ import torch
 
 from app.infrastructure.ble.capture.ble_offline_replay import read_json, sha256_file, write_json
 
-from ..contracts import REQUIRED_BUNDLE_FILES, DatasetManifest, ModelBundleManifest, SplitManifest, TrainingRun
+from ..contracts import CONFIRMATORY_PROVENANCE, REQUIRED_BUNDLE_FILES, DatasetManifest, ModelBundleManifest, SplitManifest, TrainingRun
 from ..evaluation import SplitEvaluationReport
+from ..preprocessing import resolve_preprocessing_profile
 
 _TORCH_MODEL_TYPES = {"cnn1d", "cnn2d"}
 
@@ -74,7 +75,17 @@ class BundleBuilder:
             "training_run_id": training_run.training_run_id, "random_seed": training_run.random_seed,
             "model_file": model_filename,
         })
-        write_json(bundle_dir / "preprocessing_config.json", {"base_preprocessing_profile_id": training_run.base_preprocessing_profile_id})
+        # Preprocessing-registry correction (2026-08-08): persist the actual
+        # resolved flags, not just the bare profile_id string -- resolves
+        # eagerly here (raises loudly at export time if training_run somehow
+        # cites an unknown profile_id) so this artifact is self-sufficient
+        # for reproducing what preprocessing genuinely ran, without a
+        # consumer needing to re-read source code.
+        resolved_profile = resolve_preprocessing_profile(training_run.base_preprocessing_profile_id)
+        write_json(bundle_dir / "preprocessing_config.json", {
+            "base_preprocessing_profile_id": training_run.base_preprocessing_profile_id,
+            "resolved_flags": dataclasses.asdict(resolved_profile),
+        })
         write_json(bundle_dir / "feature_config.json", {
             "representation_profile_id": training_run.representation_profile_id, "feature_names": feature_names or [],
             "scaler_file": scaler_filename,
@@ -111,6 +122,7 @@ class BundleBuilder:
 
         bundle_sha256 = hashlib.sha256(json.dumps(artifact_hashes, sort_keys=True).encode("utf-8")).hexdigest()
         approval_status, reasons = self._evaluate_acceptance(acceptance_criteria, evaluation_reports, dataset, split, label_classes, training_run.scientific_task)
+        confirmatory_eligible = test_evaluation_provenance == CONFIRMATORY_PROVENANCE
         # Neither REJECTED nor TEST_NOT_EXECUTED may read as ALLOWED just
         # because the data_origin happens to be real -- operational_use is a
         # claim about whether this SPECIFIC bundle is fit to act on, not
@@ -126,7 +138,7 @@ class BundleBuilder:
             bundle_id=bundle_id, training_run_id=training_run.training_run_id,
             data_origin=dataset.data_origin, operational_use=operational_use,
             artifact_hashes=artifact_hashes, bundle_sha256=bundle_sha256, approval_status=approval_status, created_at=created_at,
-            test_evaluation_provenance=test_evaluation_provenance,
+            test_evaluation_provenance=test_evaluation_provenance, confirmatory_eligible=confirmatory_eligible,
         )
         write_json(bundle_dir / "bundle_manifest.json", manifest.model_dump(mode="json"))
         return manifest, reasons
@@ -173,17 +185,25 @@ class BundleBuilder:
                 "-- the split was not built from this exact dataset."
             )
 
+        # P0 correction (2026-08-08): this used to only fire when
+        # min_test_accuracy was explicitly set in acceptance_criteria, which
+        # meant a caller passing acceptance_criteria={} (export_and_approve_
+        # all_candidates' automatic path, and the manual export route's own
+        # default) could reach EVALUATED -- and then get auto-approved --
+        # without TEST ever having been evaluated at all. A bundle with no
+        # TEST report is ALWAYS TEST_NOT_EXECUTED now, regardless of whether
+        # a minimum was declared; the minimum is only ever checked once a
+        # real TEST report exists.
         min_test_accuracy = acceptance_criteria.get("min_test_accuracy")
-        if min_test_accuracy is not None:
-            test_report = evaluation_reports.get("TEST")
-            if test_report is None:
-                test_not_executed_reasons.append(
-                    f"TEST_NOT_EXECUTED: this training_run_id has no TEST evaluation yet, so the required minimum "
-                    f"({min_test_accuracy}) cannot be checked. Not a failure -- opt in to a TEST evaluation to make "
-                    "this bundle approvable."
-                )
-            elif test_report.accuracy is None or test_report.accuracy < min_test_accuracy:
-                reasons.append(f"TEST accuracy {test_report.accuracy} below required minimum {min_test_accuracy}.")
+        test_report = evaluation_reports.get("TEST")
+        if test_report is None:
+            test_not_executed_reasons.append(
+                "TEST_NOT_EXECUTED: this training_run_id has no TEST evaluation yet. Not a failure -- opt in to a "
+                "TEST evaluation (evaluate_training_run_on_test_opt_in) to make this bundle approvable, understanding "
+                "that doing so permanently marks it OPT_IN_MULTI_CANDIDATE_COMPARISON / not confirmatory_eligible."
+            )
+        elif min_test_accuracy is not None and (test_report.accuracy is None or test_report.accuracy < min_test_accuracy):
+            reasons.append(f"TEST accuracy {test_report.accuracy} below required minimum {min_test_accuracy}.")
         min_validation_accuracy = acceptance_criteria.get("min_validation_accuracy")
         if min_validation_accuracy is not None:
             validation_report = evaluation_reports.get("VALIDATION")
@@ -233,6 +253,13 @@ class BundleBuilder:
             )
         if manifest.approval_status != "EVALUATED":
             raise ValueError(f"CANNOT_APPROVE_A_BUNDLE_THAT_IS_NOT_EVALUATED:{manifest.approval_status}")
+        if not manifest.confirmatory_eligible:
+            raise ValueError(
+                f"CANNOT_APPROVE_A_NON_CONFIRMATORY_BUNDLE_FOR_LIVE_PILOT:{manifest.bundle_id} "
+                f"(test_evaluation_provenance={manifest.test_evaluation_provenance}). Its TEST result came from the "
+                "opt-in multiple-candidate-comparison path, not the single-selection guarantee -- it is a real, "
+                "exploratory result, never a confirmatory one, and can never be promoted to live-pilot approval."
+            )
         approved = manifest.model_copy(update={"approval_status": "APPROVED_FOR_LIVE_PILOT"})
         write_json(self.root / manifest.bundle_id / "bundle_manifest.json", approved.model_dump(mode="json"))
         return approved

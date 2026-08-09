@@ -223,6 +223,75 @@ def test_unknown_scientific_task_raises(split_builder, tmp_path):
         split_builder.build(dataset=dataset, examples=examples, scientific_task="NOT_A_REAL_TASK", created_at="2026-07-26T00:00:00Z")
 
 
+def test_channel_38_examples_are_excluded_from_the_main_benchmark_and_recorded(split_builder, tmp_path):
+    """Split-policy correction (2026-08-08): the main benchmark trains and
+    evaluates on channel 37 only. Real channel-38 examples exist on disk
+    (transport-domain data reserved for a separate, not-yet-implemented
+    analysis) -- they must never be silently mixed into TRAIN/VALIDATION/
+    TEST here, and their exclusion must be auditable from the manifest."""
+    channel_37 = make_multi_unit_multi_session_examples(units=2, sessions_per_unit=3, examples_per_session=4)
+    channel_38 = [
+        make_example(example_index=900 + i, physical_unit_id="SYN-UNIT-00", session_id=f"CH38-SESSION-{i}", source_iq_sha256=f"sha-ch38-{i}").model_copy(
+            update={"channel": 38, "center_frequency_hz": 2_426_000_000}
+        )
+        for i in range(3)
+    ]
+    examples = channel_37 + channel_38
+    dataset = _frozen_dataset(tmp_path, examples, dataset_id="DS-MIXED-CHANNEL")
+    manifest = split_builder.build(dataset=dataset, examples=examples, scientific_task="SAME_MODEL_UNIT_IDENTIFICATION", created_at="2026-07-26T00:00:00Z")
+
+    assert manifest.split_status == "READY"
+    assert set(manifest.channel_scope_excluded_example_ids) == {e.example_id for e in channel_38}
+    assigned_ids = {a.example_id for a in manifest.assignments}
+    assert assigned_ids.isdisjoint(manifest.channel_scope_excluded_example_ids)
+    assert "channel_37_only" in manifest.policy
+
+
+def test_channel_scope_exclusion_is_recorded_even_on_a_not_feasible_outcome(split_builder, tmp_path):
+    channel_38_only = [
+        make_example(example_index=i, physical_unit_id="U1", session_id=f"S-{i}", source_iq_sha256=f"sha-{i}").model_copy(
+            update={"channel": 38, "center_frequency_hz": 2_426_000_000}
+        )
+        for i in range(3)
+    ]
+    dataset = _frozen_dataset(tmp_path, channel_38_only, dataset_id="DS-CH38-ONLY")
+    manifest = split_builder.build(dataset=dataset, examples=channel_38_only, scientific_task="SAME_MODEL_UNIT_IDENTIFICATION", created_at="2026-07-26T00:00:00Z")
+
+    assert manifest.split_status == "NOT_FEASIBLE"
+    assert set(manifest.channel_scope_excluded_example_ids) == {e.example_id for e in channel_38_only}
+
+
+def test_split_completeness_gate_rejects_a_split_where_validation_is_missing_a_train_class(split_builder, tmp_path):
+    """Split-completeness correction (2026-08-08): a class with zero true
+    instances in VALIDATION/TEST silently biases balanced_accuracy/macro_f1
+    toward that split (evaluator.py's own definition deliberately keeps
+    those formulas unchanged) -- the real fix belongs at split-completeness
+    gating instead. Manually constructs an otherwise-valid split whose
+    SplitBuilder-computed leakage/2-class checks would pass, but which is
+    missing SYN-UNIT-01 from VALIDATION entirely."""
+    examples = make_multi_unit_multi_session_examples(units=2, sessions_per_unit=3, examples_per_session=4)
+    dataset = _frozen_dataset(tmp_path, examples, dataset_id="DS-INCOMPLETE")
+    manifest = split_builder.build(dataset=dataset, examples=examples, scientific_task="SAME_MODEL_UNIT_IDENTIFICATION", created_at="2026-07-26T00:00:00Z")
+    assert manifest.split_status == "READY"  # sanity: the real builder produces a complete split on its own
+
+    # Now simulate a hypothetical construction bug: reassign every
+    # SYN-UNIT-01 VALIDATION assignment to TRAIN instead, so VALIDATION
+    # loses that class entirely while TRAIN still has both.
+    tampered_assignments = [
+        (a.model_copy(update={"split": "TRAIN"}) if (a.split == "VALIDATION" and a.physical_unit_id == "SYN-UNIT-01") else a)
+        for a in manifest.assignments
+    ]
+    examples_by_id = {e.example_id: e for e in examples}
+    from app.modules.ble_rffi_studio.quality.split_builder import train_label_for
+    tampered_report = split_builder._finalize(
+        dataset, "SAME_MODEL_UNIT_IDENTIFICATION", manifest.policy, tampered_assignments,
+        manifest.leakage_check, "2026-07-26T00:00:00Z", examples_by_id, manifest.channel_scope_excluded_example_ids,
+    )
+    assert tampered_report.split_status == "NOT_FEASIBLE"
+    assert "SPLIT_INCOMPLETE_MISSING_CLASS_SUPPORT" in tampered_report.infeasibility_reason
+    assert "SYN-UNIT-01" in tampered_report.infeasibility_reason
+
+
 def test_split_manifest_round_trips_through_canonical_json(split_builder, tmp_path):
     import json
 

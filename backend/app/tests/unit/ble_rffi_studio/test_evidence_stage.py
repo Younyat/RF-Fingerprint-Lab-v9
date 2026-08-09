@@ -61,6 +61,15 @@ def test_build_examples_produces_one_pair_per_crc_valid_packet(stage, capture):
     assert len(pairs) == 539
 
 
+def test_build_examples_rejects_a_ble_channel_that_does_not_match_the_capture_frequency(stage, capture):
+    """P0.5 correction (2026-08-08): this real capture was actually acquired
+    at 2402000000 Hz (channel 37) -- claiming ble_channel=38 (2426000000 Hz)
+    for it must be rejected outright, not silently stamped onto every
+    resulting ExampleRecord."""
+    with pytest.raises(ValueError, match="BLE_CHANNEL_FREQUENCY_MISMATCH"):
+        stage.build_examples(capture=capture, project_id=PROJECT_ID, ble_channel=38)
+
+
 def test_strong_target_matches_resolve_to_the_registered_physical_unit(stage, capture):
     pairs = stage.build_examples(capture=capture, project_id=PROJECT_ID, ble_channel=37)
     strong = [(ex, ann) for ex, ann in pairs if ex.association_status == "STRONG"]

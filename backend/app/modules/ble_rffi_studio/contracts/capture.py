@@ -168,11 +168,51 @@ class CaptureRecord(StudioContract):
     # caller (e.g. the paper campaign runner) declares them before capture;
     # never inferred or reconstructed after the fact.
     day_id: str | None = None
+    # Point-2 correction (2026-08-08): which real timestamp field day_id was
+    # actually derived from, so provenance is auditable rather than implicit.
+    # "B200_RF_STARTED_AT" is the real RF-acquisition start
+    # (capture_manifest.json's b200_rf_started_at); "CREATED_AT_FALLBACK" is
+    # only used when that field is missing (falls back to created_at_utc,
+    # the acquisition JOB's own start time, not RF sampling itself).
+    day_id_source: str | None = None
     campaign_period: str | None = None
     pre_or_post: str | None = None
     intervention_arm: str | None = None
     packet_variant: str | None = None
+    # Point-1 correction (2026-08-08): receiver_epoch used to be a bare
+    # identity hash (WHICH physical B200), conflating identity with
+    # "qualified acquisition epoch" (identity + acquisition profile +
+    # session boundary). Now split into three separate, auditable fields:
+    #   receiver_identity_id  -- WHICH physical B200 (sdr_model + real
+    #                            hardware serial ONLY -- never the legacy
+    #                            device_id field, which real data showed
+    #                            inconsistently holds either a normalized/
+    #                            hashed id or the raw serial for the SAME
+    #                            physical unit).
+    #   qualified_acquisition_profile_hash -- hash of every acquisition-
+    #                            chain parameter that can plausibly change
+    #                            what the receiver measures (sample rate,
+    #                            bandwidth, gain/mode, antenna/rx channel,
+    #                            clock/time source, capture tool version).
+    #   receiver_epoch         -- identity + a sequential session index,
+    #                            assigned by acquisition/receiver_epoch_
+    #                            assignment.py over ALL captures of one
+    #                            identity ordered by real acquisition time:
+    #                            a new epoch starts at the first capture of
+    #                            an identity, whenever the qualified profile
+    #                            hash changes, or whenever the gap since the
+    #                            previous capture of the same identity
+    #                            exceeds RECEIVER_SESSION_GAP_S (a
+    #                            documented proxy for reinitialization/
+    #                            reconnection -- no real boot/session id is
+    #                            recorded anywhere upstream). A manifest-
+    #                            declared receiver_epoch (operator-confirmed,
+    #                            e.g. after a documented recalibration)
+    #                            always overrides the auto-assignment.
+    receiver_identity_id: str | None = None
+    qualified_acquisition_profile_hash: str | None = None
     receiver_epoch: str | None = None
+    receiver_epoch_boundary_reason: str | None = None
     host_id: str | None = None
     firmware_hash: str | None = None
     configuration_hash: str | None = None
