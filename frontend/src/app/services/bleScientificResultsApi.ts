@@ -474,6 +474,73 @@ export interface PaperExportManifest {
   entries: PaperExportManifestEntry[];
 }
 
+// Provenance reconstruction + S1/S2 engineering reports (2026-08-11) --
+// read-only, mirroring provenance.py / engineering_reports.py exactly.
+
+export interface InferenceRunSummary {
+  inference_run_id: string;
+  bundle_id: string;
+  prediction_count: number;
+  created_at: string;
+  example_ids: string[];
+}
+
+export type ProvenanceStatus = 'COMPLETE' | 'INCOMPLETE' | 'FAIL';
+
+export interface DecisionProvenance {
+  inference_run_id: string;
+  example_id: string;
+  provenance_status: ProvenanceStatus;
+  missing_link: string[];
+  hash_mismatch: string[];
+  bundle_id?: string;
+  bundle_sha256?: string;
+  representation_profile_id?: string;
+  base_preprocessing_profile_id?: string;
+  decision?: { predicted_class: string | null; final_decision: string | null; class_probability: number | null };
+  capture_id?: string;
+  sample_start?: number;
+  sample_end?: number;
+  candidate_id?: string;
+  packet_id?: string;
+  example_source_iq_sha256?: string;
+  capture_iq_sha256?: string;
+  recovered_pdu_evidence?: { pdu_type: string | null; packet_sha256: string | null; advertiser_address_canonical: string | null; association_strength: string | null };
+  dataset_id?: string;
+  dataset_version?: string;
+  dataset_manifest_sha256?: string;
+  scientific_task?: string;
+  split_manifest_sha256?: string;
+  [key: string]: unknown;
+}
+
+export interface ChannelTransportChannelResult {
+  channel: number;
+  center_frequency_hz: number | null;
+  frozen_bundle_id: string;
+  windows: number;
+  balanced_accuracy: number | null;
+  macro_f1: number | null;
+  coverage: number | null;
+  confusion_matrix: Record<string, Record<string, number>> | null;
+}
+
+export interface ChannelTransportReport {
+  schema_version: string;
+  per_channel: ChannelTransportChannelResult[];
+  interpretation_note: string;
+}
+
+export type OfflineNearlivePairingStatus = 'NO_DATA' | 'METHODOLOGICAL_DECISION_REQUIRED' | 'COMPUTED_FROM_CALLER_SUPPLIED_PAIRS';
+
+export interface OfflineNearliveReport {
+  schema_version: string;
+  pairing_status: OfflineNearlivePairingStatus;
+  pairing_note: string;
+  analytical_agreement: Record<string, number | null> | null;
+  computational_behavior: Record<string, number | string> | null;
+}
+
 export class BleScientificResultsApiService {
   constructor(private readonly baseURL = 'http://localhost:8000') {}
   private get root() { return `${this.baseURL}/api/ble-scientific-results`; }
@@ -565,4 +632,18 @@ export class BleScientificResultsApiService {
   }
   async runPaperExport() { return (await axios.post<PaperExportManifest>(`${this.root}/paper-exports`)).data; }
   async getPaperExportManifest() { return (await axios.get<PaperExportManifest | NoDataResponse>(`${this.root}/paper-exports`)).data; }
+
+  // Provenance reconstruction (2026-08-11) -- strictly read-only.
+  async listInferenceRuns() { return (await axios.get<InferenceRunSummary[]>(`${this.root}/inference-runs`)).data; }
+  async getDecisionProvenance(inferenceRunId: string, exampleId: string) {
+    return (await axios.get<DecisionProvenance>(`${this.root}/provenance/${encodeURIComponent(inferenceRunId)}/${encodeURIComponent(exampleId)}`)).data;
+  }
+
+  // S1 channel transport, S2 offline/near-live (2026-08-11) -- read-only.
+  async getChannelTransport(paperRunId: string) {
+    return (await axios.get<ChannelTransportReport | NoDataResponse>(`${this.root}/runs/${encodeURIComponent(paperRunId)}/channel-transport`)).data;
+  }
+  async getOfflineNearlive(paperRunId: string) {
+    return (await axios.get<OfflineNearliveReport | NoDataResponse>(`${this.root}/runs/${encodeURIComponent(paperRunId)}/offline-nearlive`)).data;
+  }
 }

@@ -325,4 +325,36 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
             return manifest if manifest is not None else {"status": "NO_DATA"}
         return call(_read)
 
+    # ------------------------------------------------------------------
+    # Provenance reconstruction (2026-08-11) -- strictly read-only.
+    # ------------------------------------------------------------------
+
+    @router.get("/inference-runs")
+    def list_inference_runs():
+        return call(lambda: repository.list_inference_runs())
+
+    @router.get("/provenance/{inference_run_id}/{example_id}")
+    def get_decision_provenance(inference_run_id: str, example_id: str):
+        return call(lambda: repository.get_decision_provenance(inference_run_id=inference_run_id, example_id=example_id))
+
+    # ------------------------------------------------------------------
+    # Engineering reports: S1 channel transport, S2 offline/near-live
+    # (2026-08-11) -- read-only; nothing here computes a real result in
+    # this pass (no trained bundle/near-live instrumentation exists yet).
+    # ------------------------------------------------------------------
+
+    @router.get("/runs/{paper_run_id}/channel-transport")
+    def get_channel_transport(paper_run_id: str):
+        def _read():
+            report = repository.get_channel_transport_report(paper_run_id)
+            return report if report is not None else {"status": "NO_DATA"}
+        return call(_read)
+
+    @router.get("/runs/{paper_run_id}/offline-nearlive")
+    def get_offline_nearlive(paper_run_id: str):
+        def _read():
+            report = repository.get_offline_nearlive_report(paper_run_id)
+            return report if report is not None else {"status": "NO_DATA"}
+        return call(_read)
+
     return router

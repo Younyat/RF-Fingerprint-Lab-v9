@@ -11,6 +11,7 @@
     "test:ble-targets": "tsc -p tsconfig.ble-validation.json && node --test validation-tests/ble-target-model.test.mjs validation-tests/ble-campaign-policy.test.mjs",
     "test:ble-dataset": "tsc -p tsconfig.ble-validation.json && node --test validation-tests/ble-dataset-studio.test.mjs",
     "test:e2e": "playwright test",
+    "test:components": "vitest run --config vitest.config.ts",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -29,6 +30,8 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.62.0",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.2",
     "@types/react": "^18.2.43",
     "@types/react-dom": "^18.2.17",
     "@typescript-eslint/eslint-plugin": "^6.14.0",
@@ -38,10 +41,12 @@
     "eslint": "^8.55.0",
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.5",
+    "jsdom": "^29.1.1",
     "playwright": "^1.62.0",
     "postcss": "^8.4.32",
     "tailwindcss": "^3.3.6",
     "typescript": "^5.2.2",
-    "vite": "^5.0.8"
+    "vite": "^5.0.8",
+    "vitest": "^4.1.10"
   }
 }

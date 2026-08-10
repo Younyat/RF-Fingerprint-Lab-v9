@@ -47,7 +47,11 @@ from ..module_logging import build_module_logger
 from ..quality import build_quality_summary as _build_quality_summary
 from ..records import build_records as _build_records
 from ..records import resolve_iq_path
+from ..engineering_reports import compute_channel_transport_report as _compute_channel_transport_report
+from ..engineering_reports import compute_offline_nearlive_report as _compute_offline_nearlive_report
 from ..paper_export import generate_paper_exports
+from ..provenance import list_inference_runs as _list_inference_runs
+from ..provenance import reconstruct_decision_provenance
 from ..statistics.confirmatory_analysis_runner import confirmatory_statistical_plan_to_dict
 from ..statistics.confirmatory_analysis_runner import run_confirmatory_statistical_plan as _run_confirmatory_statistical_plan
 
@@ -1003,6 +1007,9 @@ class ScientificResultsRepository:
         diagnostic_split_manifest_id: str, diagnostic_split_manifest_sha256: str,
         source_evaluation_domains: dict[str, Any], uncertainty_ci: dict[str, Any] | None = None,
         coverage: float | None = None,
+        confusion_matrix_capture: dict[str, dict[str, int]] | None = None,
+        confusion_matrix_future: dict[str, dict[str, int]] | None = None,
+        per_unit_recall: dict[str, dict[str, float]] | None = None,
     ) -> dict[str, Any]:
         """Protocol-freeze close-out, point 4 (2026-08-10): the canonical,
         persisted RQ1 artifact -- evaluate_rq1_acquisition_dependence()
@@ -1011,8 +1018,11 @@ class ScientificResultsRepository:
         memory only; this is the ONLY place that writes them to disk, and
         only ever with real, caller-supplied linking metadata -- there is no
         default that lets this method run with placeholder ids/hashes, and
-        it computes no number of its own (uncertainty_ci/coverage are
-        pass-through, never invented here)."""
+        it computes no number of its own (uncertainty_ci/coverage/confusion
+        matrices/per_unit_recall are all pass-through, never invented here
+        -- confusion_matrix_* mirrors SplitEvaluationReport.confusion_matrix's
+        own dict-of-dicts shape exactly, added 2026-08-11 so the paper
+        export's confusion-matrix figures have a real source)."""
         git_sha, _ = self._git_provenance()
         artifact = {
             "schema_version": "ble-scientific-results-rq1-acquisition-dependence-v1",
@@ -1026,6 +1036,8 @@ class ScientificResultsRepository:
             "ba_future": rq1_report.ba_future, "ba_future_status": rq1_report.ba_future_status, "ba_future_n_comparable": rq1_report.ba_future_n_comparable,
             "delta_dependence": rq1_report.delta_dependence, "delta_future": rq1_report.delta_future,
             "uncertainty_ci": uncertainty_ci, "coverage": coverage,
+            "confusion_matrix_capture": confusion_matrix_capture, "confusion_matrix_future": confusion_matrix_future,
+            "per_unit_recall": per_unit_recall,
             "generated_at": utc_now(),
         }
         atomic_json(self._run_dir(paper_run_id) / "06_statistics" / "rq1_acquisition_dependence_report.json", artifact)
@@ -1053,6 +1065,47 @@ class ScientificResultsRepository:
         if not path.is_file():
             return None
         return json.loads(path.read_text(encoding="utf-8"))
+
+    # ------------------------------------------------------------------
+    # Provenance reconstruction (2026-08-11) -- strictly read-only.
+    # ------------------------------------------------------------------
+
+    def list_inference_runs(self) -> list[dict[str, Any]]:
+        return _list_inference_runs(self)
+
+    def get_decision_provenance(self, *, inference_run_id: str, example_id: str) -> dict[str, Any]:
+        return reconstruct_decision_provenance(self, inference_run_id=inference_run_id, example_id=example_id)
+
+    # ------------------------------------------------------------------
+    # Engineering reports: S1 channel transport, S2 offline/near-live
+    # (2026-08-11) -- pure aggregation over caller-supplied, already-scored
+    # predictions; never retrains, never a new statistical test. NO_DATA
+    # persisted-report reads mirror the RQ1/confirmatory-future pattern.
+    # ------------------------------------------------------------------
+
+    def compute_channel_transport_report(self, **kwargs: Any) -> dict[str, Any]:
+        from dataclasses import asdict
+        return asdict(_compute_channel_transport_report(**kwargs))
+
+    def persist_channel_transport_report(self, paper_run_id: str, report: dict[str, Any]) -> dict[str, Any]:
+        atomic_json(self._run_dir(paper_run_id) / "06_statistics" / "channel_transport_report.json", report)
+        return report
+
+    def get_channel_transport_report(self, paper_run_id: str) -> dict[str, Any] | None:
+        path = self._run_dir(paper_run_id) / "06_statistics" / "channel_transport_report.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+    def compute_offline_nearlive_report(self, **kwargs: Any) -> dict[str, Any]:
+        from dataclasses import asdict
+        return asdict(_compute_offline_nearlive_report(**kwargs))
+
+    def persist_offline_nearlive_report(self, paper_run_id: str, report: dict[str, Any]) -> dict[str, Any]:
+        atomic_json(self._run_dir(paper_run_id) / "06_statistics" / "offline_nearlive_report.json", report)
+        return report
+
+    def get_offline_nearlive_report(self, paper_run_id: str) -> dict[str, Any] | None:
+        path = self._run_dir(paper_run_id) / "06_statistics" / "offline_nearlive_report.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
 
     # ------------------------------------------------------------------
     # Fase 2: canonical records (Section B)
