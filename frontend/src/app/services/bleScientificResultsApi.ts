@@ -531,14 +531,52 @@ export interface ChannelTransportReport {
   interpretation_note: string;
 }
 
-export type OfflineNearlivePairingStatus = 'NO_DATA' | 'METHODOLOGICAL_DECISION_REQUIRED' | 'COMPUTED_FROM_CALLER_SUPPLIED_PAIRS';
+export type OfflineNearlivePairingStatus = 'NO_DATA' | 'COMPUTED_FROM_EXACT_EVIDENCE_INTERVAL_MATCH';
 
 export interface OfflineNearliveReport {
   schema_version: string;
   pairing_status: OfflineNearlivePairingStatus;
   pairing_note: string;
+  matched_pair_count: number;
+  unpaired_offline_count: number;
+  unpaired_nearlive_count: number;
   analytical_agreement: Record<string, number | null> | null;
   computational_behavior: Record<string, number | string> | null;
+}
+
+// RQ2 canonical representation comparison (2026-08-11) -- real per-branch
+// persistence, mirroring persist_rq1_acquisition_dependence_report exactly.
+
+export type Rq2AnalysisRole = 'PRIMARY' | 'SENSITIVITY' | 'UNSELECTED';
+
+export interface Rq2BranchResult {
+  branch: string;
+  analysis_role: Rq2AnalysisRole;
+  evaluation_domain: string;
+  balanced_accuracy?: number | null;
+  balanced_accuracy_ci?: { ci_low: number; ci_high: number } | null;
+  macro_f1?: number | null;
+  coverage?: number | null;
+  classwise_recall?: Record<string, number> | null;
+  serialized_model_size_bytes?: number | null;
+  inference_latency_ms?: number | null;
+  seed_variability?: unknown;
+  model_bundle_id?: string | null;
+  model_bundle_sha256?: string | null;
+}
+
+export interface Rq2RepresentationComparisonReport extends Record<string, unknown> {
+  schema_version: string;
+  protocol_id: string;
+  protocol_version: number;
+  contract_sha256: string;
+  git_sha: string;
+  dataset_id: string;
+  dataset_version: string;
+  split_manifest_id: string;
+  split_manifest_sha256: string;
+  branches: Rq2BranchResult[];
+  generated_at: string;
 }
 
 export class BleScientificResultsApiService {
@@ -629,6 +667,9 @@ export class BleScientificResultsApiService {
   }
   async rq1AcquisitionDependence(paperRunId: string) {
     return (await axios.get<Record<string, unknown> | NoDataResponse>(`${this.root}/runs/${encodeURIComponent(paperRunId)}/rq1-acquisition-dependence`)).data;
+  }
+  async rq2RepresentationComparison(paperRunId: string) {
+    return (await axios.get<Rq2RepresentationComparisonReport | NoDataResponse>(`${this.root}/runs/${encodeURIComponent(paperRunId)}/rq2-representation-comparison`)).data;
   }
   async runPaperExport() { return (await axios.post<PaperExportManifest>(`${this.root}/paper-exports`)).data; }
   async getPaperExportManifest() { return (await axios.get<PaperExportManifest | NoDataResponse>(`${this.root}/paper-exports`)).data; }

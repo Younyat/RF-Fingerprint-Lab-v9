@@ -18,17 +18,19 @@ shape of `compute_channel_transport_report`'s input -- the caller is
 structurally required to supply already-scored predictions from ONE frozen
 model, never a per-channel retrained one.
 
-S2 has one real, unresolved methodological gap, deliberately NOT invented
-here: there is no established mechanism today to match a near-live decision
-to "the same retained sample interval" as an offline one (near-live
-inference does not go through the dataset/example pipeline that would give
-both sides a shared join key). `compute_offline_nearlive_report` therefore
-requires the CALLER to supply already-paired (offline, near-live) records;
-if no such pairing exists, this is reported as
-`pairing_status="METHODOLOGICAL_DECISION_REQUIRED"` rather than guessed.
+S2's join-key was frozen 2026-08-11 (before any real campaign runs, so it
+is never adjusted after seeing results): two decisions -- one offline, one
+near-live -- form a pair iff they share the same `evidence_interval_id`
+(see `compute_evidence_interval_id`), a real, deterministic identity over
+(source_iq_sha256, sample_start, sample_end). `compute_offline_nearlive_report`
+performs this exact match itself (a real, dependency-light set
+intersection -- not a new statistical test); an id present on only one
+side is UNPAIRED and counted, never silently dropped, backfilled, or
+matched by nearest timestamp.
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
@@ -107,16 +109,27 @@ def compute_channel_transport_report(
     return ChannelTransportReport(per_channel=per_channel)
 
 
+def compute_evidence_interval_id(*, source_iq_sha256: str, sample_start: int, sample_end: int) -> str:
+    """Reporting closure, point B (2026-08-11): the frozen S2 join-key. Two
+    decisions -- one offline, one near-live -- refer to "the same retained
+    sample interval" iff they were computed over the identical
+    (source_iq_sha256, sample_start, sample_end) triple. This is a real,
+    deterministic identity derived from already-real fields (the same ones
+    `ExampleRecord` already carries) -- never a nearest-timestamp or other
+    proximity heuristic. Frozen before any real campaign starts, so the
+    matching rule is never adjusted after seeing results."""
+    digest = hashlib.sha256(f"{source_iq_sha256}:{sample_start}:{sample_end}".encode("utf-8")).hexdigest()
+    return f"evidence-interval-{digest[:32]}"
+
+
 @dataclass
 class OfflineNearliveReport:
     schema_version: str = OFFLINE_NEARLIVE_SCHEMA_VERSION
-    pairing_status: str = "METHODOLOGICAL_DECISION_REQUIRED"
-    pairing_note: str = (
-        "No established mechanism exists today to match a near-live decision to the same retained sample interval "
-        "as an offline decision -- near-live inference does not go through the dataset/example pipeline. This "
-        "function computes real agreement/computational statistics ONLY over pairs the caller already matched by "
-        "some external means; it never invents a matching key."
-    )
+    pairing_status: str = "NO_DATA"  # NO_DATA | COMPUTED_FROM_EXACT_EVIDENCE_INTERVAL_MATCH
+    pairing_note: str = "No offline or near-live predictions supplied -- nothing to pair."
+    matched_pair_count: int = 0
+    unpaired_offline_count: int = 0
+    unpaired_nearlive_count: int = 0
     analytical_agreement: dict[str, Any] | None = None
     computational_behavior: dict[str, Any] | None = None
 
@@ -125,33 +138,51 @@ _COMPUTATIONAL_FIELDS = ("median_latency_ms", "p95_latency_ms", "throughput_per_
 
 
 def compute_offline_nearlive_report(
-    *, matched_pairs: list[tuple[dict[str, Any], dict[str, Any]]] | None = None, computational_metrics: dict[str, Any] | None = None,
+    *, offline_predictions: list[dict[str, Any]] | None = None, nearlive_predictions: list[dict[str, Any]] | None = None,
+    computational_metrics: dict[str, Any] | None = None,
 ) -> OfflineNearliveReport:
-    """`matched_pairs`: [(offline_decision, nearlive_decision), ...], each a
-    dict with at least `predicted_class`/`final_decision` and optionally
-    `class_probability`. `computational_metrics`: a dict with whichever of
-    _COMPUTATIONAL_FIELDS were actually measured -- any field absent stays
-    `NOT_MEASURED`, never 0. Returns pairing_status=NO_DATA when no pairs
-    are supplied (nothing to compute), METHODOLOGICAL_DECISION_REQUIRED
-    only applies to the join-key question itself, documented above -- once
-    pairs ARE supplied by the caller, agreement is computed for real."""
+    """`offline_predictions`/`nearlive_predictions`: each entry a dict with
+    a real `evidence_interval_id` (see `compute_evidence_interval_id`) plus
+    `predicted_class`/`final_decision` and optionally `class_probability`.
+    Pairing is a real, deterministic exact match on `evidence_interval_id`
+    -- NEVER nearest-timestamp or other proximity heuristic, and never
+    invented after the fact. An id present on only one side is
+    `UNPAIRED` (counted, never silently dropped or backfilled).
+    `computational_metrics`: a dict with whichever of _COMPUTATIONAL_FIELDS
+    were actually measured -- any field absent stays `NOT_MEASURED`, never
+    0."""
     report = OfflineNearliveReport()
-    if matched_pairs:
-        n = len(matched_pairs)
-        decision_count = n
-        class_agree = sum(1 for offline, nearlive in matched_pairs if offline.get("predicted_class") == nearlive.get("predicted_class"))
-        abstention_agree = sum(1 for offline, nearlive in matched_pairs if offline.get("final_decision") == nearlive.get("final_decision"))
-        score_pairs = [(o.get("class_probability"), nl.get("class_probability")) for o, nl in matched_pairs if o.get("class_probability") is not None and nl.get("class_probability") is not None]
-        report.analytical_agreement = {
-            "decision_count": decision_count,
-            "class_prediction_agreement": class_agree / n,
-            "abstention_agreement": abstention_agree / n,
-            "score_agreement_mean_abs_diff": (sum(abs(o - nl) for o, nl in score_pairs) / len(score_pairs)) if score_pairs else None,
-            "score_agreement_n_comparable": len(score_pairs),
-        }
-        report.pairing_status = "COMPUTED_FROM_CALLER_SUPPLIED_PAIRS"
-    else:
-        report.pairing_status = "NO_DATA"
+    offline_predictions = offline_predictions or []
+    nearlive_predictions = nearlive_predictions or []
+
+    if offline_predictions or nearlive_predictions:
+        offline_by_id = {p["evidence_interval_id"]: p for p in offline_predictions}
+        nearlive_by_id = {p["evidence_interval_id"]: p for p in nearlive_predictions}
+        matched_ids = sorted(set(offline_by_id) & set(nearlive_by_id))
+        report.matched_pair_count = len(matched_ids)
+        report.unpaired_offline_count = len(offline_by_id) - len(matched_ids)
+        report.unpaired_nearlive_count = len(nearlive_by_id) - len(matched_ids)
+        report.pairing_status = "COMPUTED_FROM_EXACT_EVIDENCE_INTERVAL_MATCH"
+        report.pairing_note = (
+            f"Paired by exact evidence_interval_id match (source_iq_sha256 + sample_start + sample_end) -- "
+            f"{report.matched_pair_count} matched, {report.unpaired_offline_count} offline unpaired, "
+            f"{report.unpaired_nearlive_count} near-live unpaired. No nearest-timestamp or proximity heuristic used."
+        )
+        if matched_ids:
+            n = len(matched_ids)
+            class_agree = sum(1 for eid in matched_ids if offline_by_id[eid].get("predicted_class") == nearlive_by_id[eid].get("predicted_class"))
+            abstention_agree = sum(1 for eid in matched_ids if offline_by_id[eid].get("final_decision") == nearlive_by_id[eid].get("final_decision"))
+            score_pairs = [
+                (offline_by_id[eid].get("class_probability"), nearlive_by_id[eid].get("class_probability")) for eid in matched_ids
+                if offline_by_id[eid].get("class_probability") is not None and nearlive_by_id[eid].get("class_probability") is not None
+            ]
+            report.analytical_agreement = {
+                "decision_count": n,
+                "class_prediction_agreement": class_agree / n,
+                "abstention_agreement": abstention_agree / n,
+                "score_agreement_mean_abs_diff": (sum(abs(o - nl) for o, nl in score_pairs) / len(score_pairs)) if score_pairs else None,
+                "score_agreement_n_comparable": len(score_pairs),
+            }
 
     computational_metrics = computational_metrics or {}
     report.computational_behavior = {field_name: computational_metrics.get(field_name, "NOT_MEASURED") for field_name in _COMPUTATIONAL_FIELDS}

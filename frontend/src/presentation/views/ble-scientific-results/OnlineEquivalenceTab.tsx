@@ -10,11 +10,11 @@ function isNoData(report: OfflineNearliveReport | NoDataResponse | null): report
   return !!report && (report as NoDataResponse).status === 'NO_DATA';
 }
 
-/** S2 (2026-08-11): offline vs near-live. The join key that would match a
- * near-live decision to "the same retained sample interval" as an offline
- * one does not exist yet (near-live inference does not go through the
- * dataset/example pipeline) -- this is a real, disclosed methodological
- * gap, not something this pass invents. Renderer + backend
+/** S2 (2026-08-11, join-key frozen 2026-08-11): offline vs near-live. Two
+ * decisions pair iff they share the same `evidence_interval_id` (a real,
+ * deterministic identity over source_iq_sha256 + sample_start + sample_end)
+ * -- never a nearest-timestamp or other proximity heuristic, and frozen
+ * before any real campaign runs. Renderer + backend
  * (compute_offline_nearlive_report / get_offline_nearlive_report) are
  * real and tested (MECHANISM=READY); computational fields default to
  * NOT_MEASURED, never 0. */
@@ -35,14 +35,15 @@ export default function OnlineEquivalenceTab() {
       <div>
         <div className="text-sm font-semibold text-slate-200">Engineering -- Offline vs near-live</div>
         <div className="mt-1 text-xs text-slate-500">
-          Dos clases separadas: (A) acuerdo analitico (conteo de decisiones, acuerdo de clase, acuerdo de score,
-          acuerdo de abstencion) y (B) comportamiento computacional (latencia, throughput, drops). Nunca 0 cuando no
-          este medido -- NOT_MEASURED explicito.
+          Emparejamiento por evidence_interval_id exacto (source_iq_sha256 + sample_start + sample_end) -- nunca por
+          proximidad temporal. Dos clases separadas: (A) acuerdo analitico (conteo de decisiones, acuerdo de clase,
+          acuerdo de score, acuerdo de abstencion) y (B) comportamiento computacional (latencia, throughput, drops).
+          Nunca 0 cuando no este medido -- NOT_MEASURED explicito.
         </div>
       </div>
       <MechanismDataNotice
         data={analytical ? 'AVAILABLE' : 'NO_DATA'}
-        dataReason="No existe mecanismo establecido para emparejar una decision near-live con el mismo intervalo de muestras que una decision offline -- ver pairing_note del reporte. El agregador solo calcula sobre pares ya emparejados por el llamador; ninguno existe todavia."
+        dataReason="El join-key (evidence_interval_id) esta congelado y el emparejamiento exacto esta implementado y probado -- todavia no existen predicciones offline/near-live reales que aportar."
       />
       <div>
         <label className="mb-1 block text-xs text-slate-500">paper_run_id</label>
@@ -55,6 +56,20 @@ export default function OnlineEquivalenceTab() {
       {paperRunId && isNoData(report) && <NoDataNotice reason="offline_nearlive_report.json no existe todavia para este run." />}
       {paperRunId && report && !isNoData(report) && (
         <>
+          <div className="grid grid-cols-3 gap-2 text-xs">
+            <div className="rounded border border-slate-800 bg-slate-950 p-2">
+              <div className="text-slate-500">matched_pair_count</div>
+              <div className="font-mono text-slate-200">{report.matched_pair_count}</div>
+            </div>
+            <div className="rounded border border-slate-800 bg-slate-950 p-2">
+              <div className="text-slate-500">unpaired_offline_count</div>
+              <div className="font-mono text-slate-200">{report.unpaired_offline_count}</div>
+            </div>
+            <div className="rounded border border-slate-800 bg-slate-950 p-2">
+              <div className="text-slate-500">unpaired_nearlive_count</div>
+              <div className="font-mono text-slate-200">{report.unpaired_nearlive_count}</div>
+            </div>
+          </div>
           <div>
             <div className="mb-1 text-xs font-semibold text-slate-400">Acuerdo analitico</div>
             {analytical ? (

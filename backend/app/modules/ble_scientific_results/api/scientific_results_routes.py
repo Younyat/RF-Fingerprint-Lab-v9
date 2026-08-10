@@ -314,6 +314,13 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
             return report if report is not None else {"status": "NO_DATA"}
         return call(_read)
 
+    @router.get("/runs/{paper_run_id}/rq2-representation-comparison")
+    def get_rq2_representation_comparison(paper_run_id: str):
+        def _read():
+            report = repository.get_rq2_representation_comparison_report(paper_run_id)
+            return report if report is not None else {"status": "NO_DATA"}
+        return call(_read)
+
     @router.post("/paper-exports", status_code=201)
     def run_paper_export():
         return call(lambda: repository.run_paper_export())

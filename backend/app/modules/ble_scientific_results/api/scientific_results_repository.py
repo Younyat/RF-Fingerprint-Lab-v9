@@ -61,6 +61,13 @@ RUN_SUBDIRS = [
     "10_forensic_reporting", "11_reproducibility", "12_logs",
 ]
 
+# RQ2 canonical persistence (2026-08-11) -- must stay in sync with the real
+# branch identities training/model_selector.py's `_MODEL_TYPE_TO_RQ2_BRANCH`
+# maps every ModelType onto.
+_RQ2_KNOWN_BRANCHES = {"engineered_rf", "raw_iq", "stft", "coarse_morphology"}
+_RQ2_ANALYSIS_ROLES = ("PRIMARY", "SENSITIVITY", "UNSELECTED")
+_RQ2_REQUIRED_BRANCH_FIELDS = ("branch", "analysis_role", "evaluation_domain")
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -1046,6 +1053,59 @@ class ScientificResultsRepository:
 
     def get_rq1_acquisition_dependence_report(self, paper_run_id: str) -> dict[str, Any] | None:
         path = self._run_dir(paper_run_id) / "06_statistics" / "rq1_acquisition_dependence_report.json"
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def persist_rq2_representation_comparison_report(
+        self, *, paper_run_id: str, protocol_id: str, protocol_version: int, contract_sha256: str,
+        dataset_id: str, dataset_version: str, split_manifest_id: str, split_manifest_sha256: str,
+        branch_results: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Reporting closure, point A (2026-08-11): the canonical, persisted
+        RQ2 artifact. `select_primary_rq2_branch_from_validation()`
+        (training/model_selector.py) already maps a `ModelType` to one of
+        the 4 real RQ2 branches (`engineered_rf`/`raw_iq`/`stft`/
+        `coarse_morphology`) and picks the primary by VALIDATION composite
+        score; `Evaluator.evaluate_split()` already computes
+        balanced_accuracy/macro_f1/coverage/classwise recall per model.
+        This method computes NOTHING new -- it only persists, verbatim,
+        whatever per-branch metrics the caller already computed elsewhere,
+        so the dashboard/CSV/LaTeX/figures all read one canonical source.
+        Every branch entry MUST declare its own real `branch` (one of the 4
+        known RQ2 branches) and `analysis_role`
+        (PRIMARY/SENSITIVITY/UNSELECTED) -- never inferred, never
+        defaulted. All other per-branch fields (`balanced_accuracy`,
+        `balanced_accuracy_ci`, `macro_f1`, `coverage`, `classwise_recall`,
+        `serialized_model_size_bytes`, `inference_latency_ms`,
+        `seed_variability`, `model_bundle_id`, `model_bundle_sha256`) are
+        optional pass-through -- absent means not yet measured for that
+        branch, never a fabricated 0."""
+        validated: list[dict[str, Any]] = []
+        for entry in branch_results:
+            missing = [f for f in _RQ2_REQUIRED_BRANCH_FIELDS if not entry.get(f)]
+            if missing:
+                raise ValueError(f"RQ2_BRANCH_RESULT_MISSING_REQUIRED_FIELDS:{missing}")
+            if entry["branch"] not in _RQ2_KNOWN_BRANCHES:
+                raise ValueError(f"RQ2_UNKNOWN_BRANCH:{entry['branch']}")
+            if entry["analysis_role"] not in _RQ2_ANALYSIS_ROLES:
+                raise ValueError(f"RQ2_INVALID_ANALYSIS_ROLE:{entry['analysis_role']}")
+            validated.append(entry)
+        git_sha, _ = self._git_provenance()
+        artifact = {
+            "schema_version": "ble-scientific-results-rq2-representation-comparison-v1",
+            "protocol_id": protocol_id, "protocol_version": protocol_version, "contract_sha256": contract_sha256, "git_sha": git_sha,
+            "dataset_id": dataset_id, "dataset_version": dataset_version,
+            "split_manifest_id": split_manifest_id, "split_manifest_sha256": split_manifest_sha256,
+            "branches": validated,
+            "generated_at": utc_now(),
+        }
+        atomic_json(self._run_dir(paper_run_id) / "06_statistics" / "rq2_representation_comparison_report.json", artifact)
+        self.logger.info("rq2 representation-comparison report persisted paper_run_id=%s protocol_id=%s branches=%s", paper_run_id, protocol_id, len(validated))
+        return artifact
+
+    def get_rq2_representation_comparison_report(self, paper_run_id: str) -> dict[str, Any] | None:
+        path = self._run_dir(paper_run_id) / "06_statistics" / "rq2_representation_comparison_report.json"
         if not path.is_file():
             return None
         return json.loads(path.read_text(encoding="utf-8"))

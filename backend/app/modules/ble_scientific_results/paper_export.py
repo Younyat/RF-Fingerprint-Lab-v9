@@ -101,6 +101,18 @@ def statistical_method_rows(confirmatory_report: dict[str, Any], method_names: l
     return rows
 
 
+def rq2_result_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for branch in report.get("branches", []):
+        rows.append({
+            "branch": branch.get("branch"), "analysis_role": branch.get("analysis_role"), "evaluation_domain": branch.get("evaluation_domain"),
+            "balanced_accuracy": branch.get("balanced_accuracy"), "macro_f1": branch.get("macro_f1"), "coverage": branch.get("coverage"),
+            "serialized_model_size_bytes": branch.get("serialized_model_size_bytes"), "inference_latency_ms": branch.get("inference_latency_ms"),
+            "model_bundle_id": branch.get("model_bundle_id"),
+        })
+    return rows
+
+
 def channel_transport_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {"channel": row.get("channel"), "center_frequency_hz": row.get("center_frequency_hz"), "bundle_id": row.get("frozen_bundle_id"),
@@ -110,7 +122,11 @@ def channel_transport_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def offline_nearlive_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
-    rows = []
+    rows = [
+        {"category": "pairing", "metric": "matched_pair_count", "value": report.get("matched_pair_count")},
+        {"category": "pairing", "metric": "unpaired_offline_count", "value": report.get("unpaired_offline_count")},
+        {"category": "pairing", "metric": "unpaired_nearlive_count", "value": report.get("unpaired_nearlive_count")},
+    ]
     agreement = report.get("analytical_agreement") or {}
     for key, value in agreement.items():
         rows.append({"category": "analytical_agreement", "metric": key, "value": value})
@@ -266,6 +282,35 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
         for name in ("rq1_results.csv", "figures/rq1_acquisition_dependence.pdf", "confusion_matrix_capture.csv", "confusion_matrix_future.csv", "figures/rq1_per_unit_recall.pdf"):
             emit(name, ExportOutcome("SKIPPED_NO_DATA", "no rq1_acquisition_dependence_report.json for any real paper run", "06_statistics/rq1_acquisition_dependence_report.json"))
 
+    rq2_report = repository.get_rq2_representation_comparison_report(run_dir.name) if run_dir else None
+    rq2_source = "06_statistics/rq2_representation_comparison_report.json"
+    if rq2_report and rq2_report.get("branches"):
+        _write_csv(exports_dir / "rq2_results.csv", rq2_result_rows(rq2_report))
+        emit("rq2_results.csv", ExportOutcome("GENERATED", f"real, from {run_dir.name}/{rq2_source}"))
+        scored_branches = [b for b in rq2_report["branches"] if b.get("balanced_accuracy") is not None]
+        if scored_branches:
+            paper_figures.bar_with_ci_figure(
+                categories=[f"{b['branch']} ({b['analysis_role']})" for b in scored_branches], values=[b["balanced_accuracy"] for b in scored_branches],
+                ci_low=None, ci_high=None, ylabel="Balanced accuracy", title="RQ2 -- representation comparison",
+                out_path=figures_dir / "rq2_representation_comparison.pdf",
+            )
+            emit("figures/rq2_representation_comparison.pdf", ExportOutcome("GENERATED", "real"))
+        else:
+            emit("figures/rq2_representation_comparison.pdf", ExportOutcome("SKIPPED_NO_DATA", "no branch in rq2_representation_comparison_report.json has a real balanced_accuracy", rq2_source))
+        covered_branches = [b for b in rq2_report["branches"] if b.get("coverage") is not None]
+        if covered_branches:
+            paper_figures.bar_with_ci_figure(
+                categories=[f"{b['branch']} ({b['analysis_role']})" for b in covered_branches], values=[b["coverage"] for b in covered_branches],
+                ci_low=None, ci_high=None, ylabel="Coverage", title="RQ2 -- coverage by branch",
+                out_path=figures_dir / "rq2_coverage.pdf",
+            )
+            emit("figures/rq2_coverage.pdf", ExportOutcome("GENERATED", "real"))
+        else:
+            emit("figures/rq2_coverage.pdf", ExportOutcome("SKIPPED_NO_DATA", "no branch in rq2_representation_comparison_report.json has a real coverage value", rq2_source))
+    else:
+        for name in ("rq2_results.csv", "figures/rq2_representation_comparison.pdf", "figures/rq2_coverage.pdf"):
+            emit(name, ExportOutcome("SKIPPED_NO_DATA", "no rq2_representation_comparison_report.json for any real paper run", rq2_source))
+
     confirmatory_future = repository.get_confirmatory_future_analysis_report(run_dir.name) if run_dir else None
     _emit_confirmatory_derived_exports(emit, confirmatory_future, run_dir, exports_dir, figures_dir)
 
@@ -375,9 +420,3 @@ def _emit_confirmatory_derived_exports(emit: Callable[[str, ExportOutcome], None
         for name in ("rq4_results.csv", "figures/rq4_region_dependence.pdf", "figures/rq4_noninferiority.pdf"):
             emit(name, ExportOutcome("SKIPPED_NO_DATA", "no EXECUTED rq4_paired_comparison in confirmatory_future_analysis_report.json", source))
 
-    for name in ("rq2_results.csv", "figures/rq2_representation_comparison.pdf", "figures/rq2_coverage.pdf"):
-        emit(name, ExportOutcome(
-            "SKIPPED_NO_DATA",
-            "no canonical RQ2 per-branch comparison artifact exists yet -- confirmatory_future_analysis_report.json stores the 11 statistical methods, not a per-branch (engineered_rf/raw_iq/stft/coarse_morphology) table; that aggregation has no producer yet",
-            source,
-        ))

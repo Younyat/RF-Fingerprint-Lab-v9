@@ -9,6 +9,7 @@ import pytest
 
 from app.modules.ble_scientific_results.engineering_reports import (
     compute_channel_transport_report,
+    compute_evidence_interval_id,
     compute_offline_nearlive_report,
 )
 
@@ -22,9 +23,21 @@ CHANNEL_TRANSPORT_SYNTHETIC_FIXTURE = {
         {"example_id": "e4", "true_label": "B", "predicted_label": "A", "final_decision": "IDENTIFIED"},
     ],
 }
-OFFLINE_NEARLIVE_SYNTHETIC_FIXTURE = [
-    ({"predicted_class": "A", "final_decision": "IDENTIFIED", "class_probability": 0.9}, {"predicted_class": "A", "final_decision": "IDENTIFIED", "class_probability": 0.85}),
-    ({"predicted_class": "B", "final_decision": "IDENTIFIED", "class_probability": 0.7}, {"predicted_class": "A", "final_decision": "IDENTIFIED", "class_probability": 0.6}),
+
+_MATCHED_ID = compute_evidence_interval_id(source_iq_sha256="iq-sha-1", sample_start=0, sample_end=1000)
+_MATCHED_ID_2 = compute_evidence_interval_id(source_iq_sha256="iq-sha-2", sample_start=500, sample_end=1500)
+_OFFLINE_ONLY_ID = compute_evidence_interval_id(source_iq_sha256="iq-sha-3", sample_start=0, sample_end=1000)
+_NEARLIVE_ONLY_ID = compute_evidence_interval_id(source_iq_sha256="iq-sha-4", sample_start=0, sample_end=1000)
+
+OFFLINE_PREDICTIONS_SYNTHETIC_FIXTURE = [
+    {"evidence_interval_id": _MATCHED_ID, "predicted_class": "A", "final_decision": "IDENTIFIED", "class_probability": 0.9},
+    {"evidence_interval_id": _MATCHED_ID_2, "predicted_class": "B", "final_decision": "IDENTIFIED", "class_probability": 0.7},
+    {"evidence_interval_id": _OFFLINE_ONLY_ID, "predicted_class": "A", "final_decision": "IDENTIFIED", "class_probability": 0.6},
+]
+NEARLIVE_PREDICTIONS_SYNTHETIC_FIXTURE = [
+    {"evidence_interval_id": _MATCHED_ID, "predicted_class": "A", "final_decision": "IDENTIFIED", "class_probability": 0.85},
+    {"evidence_interval_id": _MATCHED_ID_2, "predicted_class": "A", "final_decision": "IDENTIFIED", "class_probability": 0.6},
+    {"evidence_interval_id": _NEARLIVE_ONLY_ID, "predicted_class": "B", "final_decision": "IDENTIFIED", "class_probability": 0.55},
 ]
 
 
@@ -53,29 +66,53 @@ def test_channel_transport_uses_only_the_one_named_frozen_bundle():
     assert all(row["frozen_bundle_id"] == "BUNDLE-X" for row in report.per_channel)
 
 
-def test_offline_nearlive_report_with_no_pairs_is_no_data():
-    report = compute_offline_nearlive_report(matched_pairs=None)
+def test_evidence_interval_id_is_stable_and_deterministic():
+    a = compute_evidence_interval_id(source_iq_sha256="iq-sha-1", sample_start=0, sample_end=1000)
+    b = compute_evidence_interval_id(source_iq_sha256="iq-sha-1", sample_start=0, sample_end=1000)
+    c = compute_evidence_interval_id(source_iq_sha256="iq-sha-1", sample_start=0, sample_end=1001)
+    assert a == b
+    assert a != c
+
+
+def test_offline_nearlive_report_with_no_predictions_is_no_data():
+    report = compute_offline_nearlive_report()
     assert report.pairing_status == "NO_DATA"
     assert report.analytical_agreement is None
+    assert report.matched_pair_count == 0
     assert all(v == "NOT_MEASURED" for v in report.computational_behavior.values())
 
 
-def test_offline_nearlive_report_computes_real_agreement_from_supplied_pairs():
-    report = compute_offline_nearlive_report(matched_pairs=OFFLINE_NEARLIVE_SYNTHETIC_FIXTURE)
-    assert report.pairing_status == "COMPUTED_FROM_CALLER_SUPPLIED_PAIRS"
+def test_offline_nearlive_report_pairs_by_exact_evidence_interval_match():
+    report = compute_offline_nearlive_report(
+        offline_predictions=OFFLINE_PREDICTIONS_SYNTHETIC_FIXTURE, nearlive_predictions=NEARLIVE_PREDICTIONS_SYNTHETIC_FIXTURE,
+    )
+    assert report.pairing_status == "COMPUTED_FROM_EXACT_EVIDENCE_INTERVAL_MATCH"
+    assert report.matched_pair_count == 2
+    assert report.unpaired_offline_count == 1
+    assert report.unpaired_nearlive_count == 1
     assert report.analytical_agreement["decision_count"] == 2
     assert report.analytical_agreement["class_prediction_agreement"] == 0.5
     assert report.analytical_agreement["abstention_agreement"] == 1.0
 
 
+def test_offline_nearlive_report_never_uses_nearest_timestamp_or_proximity_matching():
+    # Two predictions with DIFFERENT evidence_interval_id never pair, no
+    # matter how "close" they might otherwise seem -- only exact identity.
+    report = compute_offline_nearlive_report(
+        offline_predictions=[{"evidence_interval_id": "A", "predicted_class": "X", "final_decision": "IDENTIFIED"}],
+        nearlive_predictions=[{"evidence_interval_id": "B", "predicted_class": "X", "final_decision": "IDENTIFIED"}],
+    )
+    assert report.matched_pair_count == 0
+    assert report.unpaired_offline_count == 1
+    assert report.unpaired_nearlive_count == 1
+    assert report.analytical_agreement is None
+
+
 def test_offline_nearlive_report_never_fabricates_unmeasured_computational_fields():
-    report = compute_offline_nearlive_report(matched_pairs=OFFLINE_NEARLIVE_SYNTHETIC_FIXTURE, computational_metrics={"median_latency_ms": 42.0})
+    report = compute_offline_nearlive_report(
+        offline_predictions=OFFLINE_PREDICTIONS_SYNTHETIC_FIXTURE, nearlive_predictions=NEARLIVE_PREDICTIONS_SYNTHETIC_FIXTURE,
+        computational_metrics={"median_latency_ms": 42.0},
+    )
     assert report.computational_behavior["median_latency_ms"] == 42.0
     assert report.computational_behavior["p95_latency_ms"] == "NOT_MEASURED"
     assert report.computational_behavior["drop_rate"] == "NOT_MEASURED"
-
-
-def test_offline_nearlive_report_documents_the_methodological_gap():
-    report = compute_offline_nearlive_report()
-    assert "matching key" in report.pairing_note
-    assert report.pairing_status != "COMPUTED_FROM_CALLER_SUPPLIED_PAIRS"

@@ -18,6 +18,7 @@ from app.modules.ble_scientific_results.paper_export import (
     qualification_summary_rows,
     render_latex_tables,
     rq1_result_rows,
+    rq2_result_rows,
 )
 
 
@@ -107,12 +108,12 @@ def test_channel_transport_figure_skips_none_scores_never_plots_a_fabricated_zer
     assert _entry(manifest, "figures/channel_transport.pdf")["status"] == "SKIPPED_NO_DATA"
 
 
-def test_offline_nearlive_skipped_when_pairing_status_is_not_computed(tmp_path):
+def test_offline_nearlive_skipped_when_no_real_pairs_matched(tmp_path):
     repo = _repo(tmp_path)
     _write_run(repo)
     run_dir = repo.root / "RUN-1"
     _write_json(run_dir / "06_statistics" / "offline_nearlive_report.json", {
-        "pairing_status": "METHODOLOGICAL_DECISION_REQUIRED", "analytical_agreement": None,
+        "pairing_status": "NO_DATA", "analytical_agreement": None,
         "computational_behavior": {"median_latency_ms": "NOT_MEASURED"},
     })
     manifest = generate_paper_exports(repo)
@@ -136,8 +137,30 @@ def test_rq3_and_rq4_generated_from_confirmatory_future_analysis_report(tmp_path
     assert _entry(manifest, "coverage_results.csv")["status"] == "GENERATED"
     assert _entry(manifest, "figures/risk_coverage.pdf")["status"] == "GENERATED"
     assert (repo.root / "paper_exports" / "figures" / "risk_coverage.pdf").read_bytes()[:4] == b"%PDF"
-    # rq2 has no canonical per-branch producer today -- always an honest gap.
+    # No rq2_representation_comparison_report.json was persisted in this
+    # fixture -- honest gap (absence of data, not absence of mechanism).
     assert _entry(manifest, "rq2_results.csv")["status"] == "SKIPPED_NO_DATA"
+
+
+def test_rq2_results_and_figures_generated_when_rq2_report_exists(tmp_path):
+    repo = _repo(tmp_path)
+    _write_run(repo)
+    repo.persist_rq2_representation_comparison_report(
+        paper_run_id="RUN-1", protocol_id="PROTO-1", protocol_version=1, contract_sha256="hash",
+        dataset_id="DS1", dataset_version="1.0.0", split_manifest_id="SPLIT-1", split_manifest_sha256="split-hash",
+        branch_results=[
+            {"branch": "raw_iq", "analysis_role": "PRIMARY", "evaluation_domain": "VALIDATION", "balanced_accuracy": 0.91, "coverage": 0.97},
+            {"branch": "stft", "analysis_role": "UNSELECTED", "evaluation_domain": "VALIDATION"},
+        ],
+    )
+    manifest = generate_paper_exports(repo)
+    assert _entry(manifest, "rq2_results.csv")["status"] == "GENERATED"
+    assert _entry(manifest, "figures/rq2_representation_comparison.pdf")["status"] == "GENERATED"
+    assert (repo.root / "paper_exports" / "figures" / "rq2_representation_comparison.pdf").read_bytes()[:4] == b"%PDF"
+    # Only raw_iq has a real coverage value -- stft's is absent, not 0.
+    assert _entry(manifest, "figures/rq2_coverage.pdf")["status"] == "GENERATED"
+    rows = list(csv.DictReader((repo.root / "paper_exports" / "rq2_results.csv").open(encoding="utf-8")))
+    assert len(rows) == 2
 
 
 def test_manifest_counts_reflect_generated_and_skipped_entries(tmp_path):
@@ -163,6 +186,16 @@ def test_confusion_matrix_rows_is_square_and_ordered():
 def test_rq1_result_rows_reports_delta_rows():
     rows = rq1_result_rows({"ba_window": 0.9, "ba_capture": 0.6, "ba_future": None, "ba_future_status": "NOT_APPLICABLE", "delta_dependence": 0.3, "delta_future": None})
     assert any(r["domain"] == "delta_dependence" and r["ba"] == 0.3 for r in rows)
+
+
+def test_rq2_result_rows_shape():
+    rows = rq2_result_rows({"branches": [
+        {"branch": "raw_iq", "analysis_role": "PRIMARY", "evaluation_domain": "VALIDATION", "balanced_accuracy": 0.91, "macro_f1": 0.89, "coverage": 0.97, "model_bundle_id": "B1"},
+        {"branch": "stft", "analysis_role": "UNSELECTED", "evaluation_domain": "VALIDATION"},
+    ]})
+    assert rows[0]["branch"] == "raw_iq"
+    assert rows[0]["analysis_role"] == "PRIMARY"
+    assert rows[1]["balanced_accuracy"] is None
 
 
 def test_channel_transport_rows_shape():
