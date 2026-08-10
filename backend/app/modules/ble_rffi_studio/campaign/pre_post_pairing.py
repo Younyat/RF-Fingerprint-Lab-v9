@@ -6,15 +6,22 @@ about to analyze them together) a qualified preprocessing profile --
 comparing PRE against POST is only meaningful when nothing about the
 receiver/analysis pipeline itself changed between them.
 
-receiver_session_id is operator-attested (see contracts/capture.py), never
-auto-detected -- no subsystem in this codebase observes a real USRP B200
-boot/reconnect event, since every real capture opens/closes its own SDR
-device handle in a fresh subprocess. It is checked in ADDITION to
-receiver_epoch, never instead of it: historical captures with no session
-attestation still rely on receiver_epoch's >1h gap proxy alone and are
-correctly invalidated here (RECEIVER_SESSION_ID_NOT_DOCUMENTED_OR_CHANGED)
-for lacking the newer, stronger evidence -- a real, honest limitation
-of pre-2026-08-09 data, not a bug.
+CaptureRecord.receiver_session_id (what this module checks) is NOT the bare
+schedule/operator attestation -- it is the EFFECTIVE id StudioRepository
+derives by folding that attestation together with the real, sequential
+receiver_epoch (acquisition/receiver_epoch_assignment.py::
+derive_effective_receiver_session_id). A genuine reconnect/reinitialization/
+profile change between two captures changes their real receiver_epoch, so
+their effective receiver_session_id differs too even if the schedule
+declared the identical label for both -- the schedule cannot mask a real
+detected boundary (2026-08-10 correction; previously this field was the
+bare schedule label, which could not by itself distinguish that case). It
+is checked in ADDITION to receiver_epoch, never instead of it: historical
+captures with no session attestation still rely on receiver_epoch's >1h gap
+proxy alone and are correctly invalidated here
+(RECEIVER_SESSION_ID_NOT_DOCUMENTED_OR_CHANGED) for lacking the newer,
+stronger evidence -- a real, honest limitation of pre-2026-08-09 data, not
+a bug.
 
 day_id/intervention_arm/pre_or_post/receiver_epoch are the same CaptureRecord
 fields P0's "adapt the protocol" work already made available (day_id/

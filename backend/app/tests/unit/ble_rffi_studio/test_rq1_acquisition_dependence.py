@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.modules.ble_rffi_studio.evaluation import Evaluator, evaluate_rq1_acquisition_dependence, rq1_report_to_dict
 
 
@@ -26,6 +28,8 @@ def test_rq1_report_shows_ba_window_lower_than_ba_capture_is_not_assumed_only_co
     assert report.ba_window > report.ba_capture
     assert report.ba_future is None
     assert report.ba_future_status == "NOT_YET_AVAILABLE"
+    assert report.delta_dependence == pytest.approx(report.ba_window - report.ba_capture)
+    assert report.delta_future is None
 
 
 def test_rq1_report_never_fabricates_ba_future_when_absent():
@@ -55,3 +59,4 @@ def test_rq1_report_uses_a_real_future_report_when_supplied():
     assert report.ba_future == future_report.accuracy
     assert report.ba_future_status == "EXECUTED"
     assert report.ba_future_n_comparable == future_report.n_comparable_to_known_classes
+    assert report.delta_future == pytest.approx(report.ba_future - report.ba_capture)

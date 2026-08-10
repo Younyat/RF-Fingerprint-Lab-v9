@@ -327,13 +327,30 @@ class ScientificResultsRepository:
     # signal for, and never opens FUTURE TEST.
     # ------------------------------------------------------------------
 
+    # The 11 gates the user's protocol-freeze close-out (point 2, 2026-08-10)
+    # explicitly requires. A REQUIRED gate that is NOT_CHECKED must NEVER
+    # let overall_status become READY -- only PRELIMINARY (nothing has
+    # actively failed, but not everything has been verified) or NOT_READY
+    # (something actively failed). Informational-only items (the granular
+    # crc/eligible-bursts/abstention numbers) are reported but never gate
+    # overall_status on their own -- they roll up into the required
+    # "capture_continuity_and_quality_summary" gate instead.
+    _REQUIRED_QUALIFICATION_GATES = (
+        "b200_detected", "receiver_identity", "qualified_acquisition_profile", "channel_frequency_consistency",
+        "capture_continuity_and_quality_summary", "source_iq_digest", "holdout_untouched", "association_state",
+        "eq6_7_smoke_test_on_real_iq", "rq3_readiness", "rq4_eligibility",
+    )
+
     def run_campaign_qualification_preflight(
         self, *,
-        b200_detected: bool | None = None, qualified_receiver_profile: dict[str, Any] | None = None,
-        channel_frequency_integrity_ok: bool | None = None, capture_continuity_ok: bool | None = None,
-        iq_digest_verified: bool | None = None, crc_valid_packet_yield: float | None = None,
-        eligible_bursts_per_decision_window: float | None = None, abstention_rate: float | None = None,
-        pre_post_pair_count: int | None = None, declared_metadata_capture_count: int | None = None,
+        b200_detected: bool | None = None, receiver_identity_confirmed: bool | None = None,
+        qualified_receiver_profile: dict[str, Any] | None = None,
+        channel_frequency_integrity_ok: bool | None = None,
+        capture_continuity_ok: bool | None = None, quality_summary_reviewed: bool | None = None,
+        crc_valid_packet_yield: float | None = None, eligible_bursts_per_decision_window: float | None = None,
+        abstention_rate: float | None = None,
+        iq_digest_verified: bool | None = None,
+        real_pre_post_pairs: list[Any] | None = None,
         rq4_eligible_device_count: int | None = None, rq4_total_device_count: int | None = None,
         paper_eq6_7_smoke_test_passed: bool | None = None,
     ) -> dict[str, Any]:
@@ -346,69 +363,92 @@ class ScientificResultsRepository:
                 items[name] = {"status": "READY" if value else "NOT_READY", "detail": true_reason if value else false_reason}
 
         _bool_item("b200_detected", b200_detected, true_reason="real device detected", false_reason="no B200 detected")
-        items["qualified_receiver_profile"] = (
+        _bool_item(
+            "receiver_identity", receiver_identity_confirmed,
+            true_reason="receiver_identity_id resolved from a real device-queried serial", false_reason="receiver identity could not be confirmed",
+        )
+        items["qualified_acquisition_profile"] = (
             {"status": "READY", "detail": qualified_receiver_profile} if qualified_receiver_profile
             else {"status": "NOT_CHECKED", "detail": "not supplied"}
         )
-        _bool_item("channel_frequency_integrity", channel_frequency_integrity_ok, true_reason="channel<->frequency mapping verified", false_reason="channel<->frequency mismatch found")
-        _bool_item("capture_continuity", capture_continuity_ok, true_reason="no unexpected discontinuities", false_reason="discontinuities found")
-        _bool_item("iq_digest_verified", iq_digest_verified, true_reason="iq_sha256 verified against real bytes", false_reason="iq_sha256 mismatch")
-
-        if crc_valid_packet_yield is None:
-            items["crc_valid_packet_yield"] = {"status": "NOT_CHECKED", "detail": "not supplied"}
-        else:
-            items["crc_valid_packet_yield"] = {"status": "READY" if crc_valid_packet_yield > 0 else "NOT_READY", "detail": crc_valid_packet_yield}
-
-        if eligible_bursts_per_decision_window is None:
-            items["eligible_bursts_per_decision_window"] = {"status": "NOT_CHECKED", "detail": "not supplied"}
-        else:
-            items["eligible_bursts_per_decision_window"] = {
-                "status": "READY" if eligible_bursts_per_decision_window > 0 else "NOT_READY", "detail": eligible_bursts_per_decision_window,
-            }
-
-        items["abstention_insufficient_evidence_rate"] = (
-            {"status": "READY", "detail": abstention_rate} if abstention_rate is not None
-            else {"status": "NOT_CHECKED", "detail": "not supplied"}
+        _bool_item(
+            "channel_frequency_consistency", channel_frequency_integrity_ok,
+            true_reason="channel<->frequency mapping verified", false_reason="channel<->frequency mismatch found",
         )
+
+        # Informational sub-metrics, never gate overall_status by themselves
+        # -- they roll up into the one required
+        # capture_continuity_and_quality_summary gate below.
+        if crc_valid_packet_yield is not None:
+            items["crc_valid_packet_yield"] = {"status": "INFO", "detail": crc_valid_packet_yield}
+        if eligible_bursts_per_decision_window is not None:
+            items["eligible_bursts_per_decision_window"] = {"status": "INFO", "detail": eligible_bursts_per_decision_window}
+        if abstention_rate is not None:
+            items["abstention_insufficient_evidence_rate"] = {"status": "INFO", "detail": abstention_rate}
+
+        if quality_summary_reviewed is None or capture_continuity_ok is None:
+            items["capture_continuity_and_quality_summary"] = {"status": "NOT_CHECKED", "detail": "not supplied"}
+        elif not capture_continuity_ok:
+            items["capture_continuity_and_quality_summary"] = {"status": "NOT_READY", "detail": "discontinuities found"}
+        elif not quality_summary_reviewed:
+            items["capture_continuity_and_quality_summary"] = {"status": "NOT_READY", "detail": "quality summary not reviewed/accepted"}
+        else:
+            items["capture_continuity_and_quality_summary"] = {"status": "READY", "detail": "no unexpected discontinuities; quality summary reviewed"}
+
+        _bool_item("source_iq_digest", iq_digest_verified, true_reason="iq_sha256 verified against real bytes", false_reason="iq_sha256 mismatch")
 
         frozen_policy = self.find_frozen_association_policy()
-        items["association_policy_state"] = (
-            {"status": "FROZEN", "detail": frozen_policy.policy_hash} if frozen_policy is not None
-            else {"status": "NO_ACCEPTED_POLICY_YET", "detail": "find_frozen_association_policy() returned None -- real, current, not a bug"}
+        items["association_state"] = (
+            {"status": "READY", "detail": frozen_policy.policy_hash} if frozen_policy is not None
+            else {"status": "NOT_READY", "detail": "find_frozen_association_policy() returned None -- real, current, not a bug"}
         )
 
-        items["rq3_pairing_readiness"] = {
-            "status": "MECHANISM_READY",
-            "detail": f"{pre_post_pair_count or 0} real PRE/POST pair(s), {declared_metadata_capture_count or 0} capture(s) declaring pre_or_post/intervention_arm",
-        }
+        # RQ3 readiness requires the caller to actually have run
+        # build_pre_post_pairs() and supplied the real result -- previously
+        # this defaulted to "MECHANISM_READY" unconditionally, which could
+        # never be blocking; that was itself the bug this correction closes.
+        if real_pre_post_pairs is None:
+            items["rq3_readiness"] = {"status": "NOT_CHECKED", "detail": "not supplied -- caller must run build_pre_post_pairs() first"}
+        else:
+            valid_pairs = [p for p in real_pre_post_pairs if getattr(p, "valid", False)]
+            items["rq3_readiness"] = {
+                "status": "READY",
+                "detail": f"build_pre_post_pairs() executed: {len(valid_pairs)}/{len(real_pre_post_pairs)} real pair(s) valid (0 valid pairs is still a real, checked result, not a blocker by itself)",
+            }
 
-        if rq4_total_device_count:
-            items["rq4_device_eligibility"] = {
+        if rq4_total_device_count is None:
+            items["rq4_eligibility"] = {"status": "NOT_CHECKED", "detail": "not supplied"}
+        else:
+            items["rq4_eligibility"] = {
                 "status": "READY" if (rq4_eligible_device_count or 0) > 0 else "NOT_READY",
                 "detail": f"{rq4_eligible_device_count or 0}/{rq4_total_device_count} device(s) marked RQ4 ELIGIBLE",
             }
-        else:
-            items["rq4_device_eligibility"] = {"status": "NOT_CHECKED", "detail": "not supplied"}
 
         future_test_accesses = [e for e in self.list_holdout_access_log() if "FUTURE_TEST" in (e.access_path or "")]
-        items["protected_holdout_untouched"] = (
+        items["holdout_untouched"] = (
             {"status": "READY", "detail": "0 FUTURE_TEST accesses logged"} if not future_test_accesses
             else {"status": "NOT_READY", "detail": f"{len(future_test_accesses)} FUTURE_TEST access(es) already logged"}
         )
 
         _bool_item(
-            "paper_eq6_7_v1_execution_on_real_iq", paper_eq6_7_smoke_test_passed,
+            "eq6_7_smoke_test_on_real_iq", paper_eq6_7_smoke_test_passed,
             true_reason="apply_base_preprocessing_with_provenance smoke test APPLIED on a real burst",
             false_reason="smoke test did not reach APPLIED",
         )
 
-        blocking_statuses = {"NOT_READY", "NO_ACCEPTED_POLICY_YET"}
-        overall = "NOT_READY" if any(item["status"] in blocking_statuses for item in items.values()) else "READY"
-        reasons = [f"{name}: {item['status']}" for name, item in items.items() if item["status"] in blocking_statuses | {"NOT_CHECKED"}]
+        required_statuses = {name: items[name]["status"] for name in self._REQUIRED_QUALIFICATION_GATES}
+        if any(status == "NOT_READY" for status in required_statuses.values()):
+            overall = "NOT_READY"
+        elif any(status == "NOT_CHECKED" for status in required_statuses.values()):
+            overall = "PRELIMINARY"
+        else:
+            overall = "READY"
+        reasons = [f"{name}: {status}" for name, status in required_statuses.items() if status != "READY"]
 
         report = {
-            "schema_version": "ble-scientific-results-campaign-qualification-preflight-v1",
-            "generated_at": utc_now(), "overall_status": overall, "reasons": reasons, "items": items,
+            "schema_version": "ble-scientific-results-campaign-qualification-preflight-v2",
+            "generated_at": utc_now(), "overall_status": overall, "required_gates": list(self._REQUIRED_QUALIFICATION_GATES),
+            "reasons": reasons, "items": items,
         }
         atomic_json(self.root / "campaign_qualification_preflight_report.json", report)
         self.logger.info("campaign qualification preflight overall_status=%s", overall)
@@ -753,6 +793,115 @@ class ScientificResultsRepository:
 
     def get_confirmatory_statistical_plan_report(self, paper_run_id: str) -> dict[str, Any] | None:
         path = self._run_dir(paper_run_id) / "06_statistics" / "confirmatory_statistical_plan_report.json"
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    class ProtocolFreezeGateError(Exception):
+        pass
+
+    def run_confirmatory_future_analysis(
+        self, *, paper_run_id: str, protocol_id: str, dataset_id: str, dataset_version: str,
+        bundle_confirmatory_eligible: bool, declared_contract_sha256: str | None = None, **stats_kwargs: Any,
+    ) -> dict[str, Any]:
+        """Protocol-freeze close-out, point 3 (2026-08-10): the
+        CONFIRMATORY_FUTURE role. run_confirmatory_statistical_plan() /
+        ScientificResultsRepository.run_confirmatory_statistical_plan() above
+        is the OTHER role -- VALIDATION_DRY_RUN -- and never touches
+        FUTURE_TEST. This method is the only path allowed to run the SAME
+        11-method statistical engine over FUTURE-scoped data, and it does so
+        ONLY after every one of these real, non-bypassable gates passes (in
+        order, first failure wins):
+          1. a real protocol freeze exists for `protocol_id`
+             (execute_protocol_freeze() must have been called for real --
+             checked via list_protocol_freezes(), never freeze_protocol()
+             alone, which has no confirmatory-readiness gate);
+          2. the frozen AnalysisContract carries a real contract_sha256;
+          3. the dataset has a real FUTURE_TEST holdout role assigned
+             (list_holdout_groups());
+          4. the bundle this analysis would score is confirmatory_eligible;
+          5. the caller-declared contract_sha256 (if supplied) and the
+             protocol_id/protocol_version match the real frozen ledger entry
+             exactly -- never a stale or substituted contract.
+        Only once all five pass does this call
+        self.read_group(..., "FUTURE_TEST", ...) -- the ONLY real read path
+        for FUTURE_TEST data anywhere in this repository -- which itself
+        logs the access through the existing hash-chained holdout log."""
+        freezes = [e for e in self.list_protocol_freezes() if e["protocol_id"] == protocol_id]
+        if not freezes:
+            raise self.ProtocolFreezeGateError(f"NO_REAL_PROTOCOL_FREEZE_EXECUTED:protocol_id={protocol_id}")
+        latest_freeze = freezes[-1]
+
+        contract = self.get_protocol(protocol_id, latest_freeze["protocol_version"])
+        if not contract.contract_sha256:
+            raise self.ProtocolFreezeGateError(f"MISSING_CONTRACT_SHA256:protocol_id={protocol_id}")
+
+        holdout_groups = self.list_holdout_groups(dataset_id, dataset_version)
+        if not any(g.group == "FUTURE_TEST" for g in holdout_groups):
+            raise self.ProtocolFreezeGateError(f"DATASET_HAS_NO_FUTURE_TEST_HOLDOUT_ROLE:{dataset_id}__{dataset_version}")
+
+        if not bundle_confirmatory_eligible:
+            raise self.ProtocolFreezeGateError("BUNDLE_NOT_CONFIRMATORY_ELIGIBLE")
+
+        if declared_contract_sha256 is not None and declared_contract_sha256 != contract.contract_sha256:
+            raise self.ProtocolFreezeGateError(
+                f"CONTRACT_HASH_MISMATCH:declared={declared_contract_sha256} frozen={contract.contract_sha256}"
+            )
+        if latest_freeze["protocol_version"] != contract.protocol_version:
+            raise self.ProtocolFreezeGateError(
+                f"PROTOCOL_VERSION_MISMATCH:freeze_ledger={latest_freeze['protocol_version']} loaded_contract={contract.protocol_version}"
+            )
+
+        # All five gates passed -- the ONLY real FUTURE_TEST read path,
+        # already hash-chain-logged by read_group() itself.
+        self.read_group(
+            dataset_id, dataset_version, "FUTURE_TEST", actor="run_confirmatory_future_analysis",
+            process="ScientificResultsRepository", reason="confirmatory future analysis", paper_run_id=paper_run_id,
+        )
+        report = _run_confirmatory_statistical_plan(**stats_kwargs)
+        as_dict = confirmatory_statistical_plan_to_dict(report)
+        atomic_json(self._run_dir(paper_run_id) / "06_statistics" / "confirmatory_future_analysis_report.json", as_dict)
+        self.logger.info("confirmatory FUTURE analysis executed paper_run_id=%s protocol_id=%s", paper_run_id, protocol_id)
+        return as_dict
+
+    def persist_rq1_acquisition_dependence_report(
+        self, *, paper_run_id: str, protocol_id: str, protocol_version: int, contract_sha256: str,
+        rq1_report: Any, model_bundle_id: str, model_bundle_sha256: str,
+        confirmatory_split_manifest_id: str, confirmatory_split_manifest_sha256: str,
+        diagnostic_split_manifest_id: str, diagnostic_split_manifest_sha256: str,
+        source_evaluation_domains: dict[str, Any], uncertainty_ci: dict[str, Any] | None = None,
+        coverage: float | None = None,
+    ) -> dict[str, Any]:
+        """Protocol-freeze close-out, point 4 (2026-08-10): the canonical,
+        persisted RQ1 artifact -- evaluate_rq1_acquisition_dependence()
+        (ble_rffi_studio/evaluation/rq1_acquisition_dependence.py) computes
+        BA_window/BA_capture/BA_future/delta_dependence/delta_future in
+        memory only; this is the ONLY place that writes them to disk, and
+        only ever with real, caller-supplied linking metadata -- there is no
+        default that lets this method run with placeholder ids/hashes, and
+        it computes no number of its own (uncertainty_ci/coverage are
+        pass-through, never invented here)."""
+        git_sha, _ = self._git_provenance()
+        artifact = {
+            "schema_version": "ble-scientific-results-rq1-acquisition-dependence-v1",
+            "protocol_id": protocol_id, "protocol_version": protocol_version, "contract_sha256": contract_sha256, "git_sha": git_sha,
+            "model_bundle_id": model_bundle_id, "model_bundle_sha256": model_bundle_sha256,
+            "confirmatory_split_manifest_id": confirmatory_split_manifest_id, "confirmatory_split_manifest_sha256": confirmatory_split_manifest_sha256,
+            "diagnostic_split_manifest_id": diagnostic_split_manifest_id, "diagnostic_split_manifest_sha256": diagnostic_split_manifest_sha256,
+            "source_evaluation_domains": source_evaluation_domains,
+            "ba_window": rq1_report.ba_window, "ba_window_n_comparable": rq1_report.ba_window_n_comparable,
+            "ba_capture": rq1_report.ba_capture, "ba_capture_n_comparable": rq1_report.ba_capture_n_comparable,
+            "ba_future": rq1_report.ba_future, "ba_future_status": rq1_report.ba_future_status, "ba_future_n_comparable": rq1_report.ba_future_n_comparable,
+            "delta_dependence": rq1_report.delta_dependence, "delta_future": rq1_report.delta_future,
+            "uncertainty_ci": uncertainty_ci, "coverage": coverage,
+            "generated_at": utc_now(),
+        }
+        atomic_json(self._run_dir(paper_run_id) / "06_statistics" / "rq1_acquisition_dependence_report.json", artifact)
+        self.logger.info("rq1 acquisition-dependence report persisted paper_run_id=%s protocol_id=%s", paper_run_id, protocol_id)
+        return artifact
+
+    def get_rq1_acquisition_dependence_report(self, paper_run_id: str) -> dict[str, Any] | None:
+        path = self._run_dir(paper_run_id) / "06_statistics" / "rq1_acquisition_dependence_report.json"
         if not path.is_file():
             return None
         return json.loads(path.read_text(encoding="utf-8"))

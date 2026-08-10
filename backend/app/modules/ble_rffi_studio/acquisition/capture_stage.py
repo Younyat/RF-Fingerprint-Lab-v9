@@ -188,10 +188,13 @@ class CaptureStage:
             packet_condition=manifest.get("packet_condition"),
             receiver_identity_id=receiver_identity_id, qualified_acquisition_profile_hash=qualified_acquisition_profile_hash,
             receiver_epoch=receiver_epoch, receiver_epoch_boundary_reason=receiver_epoch_boundary_reason,
-            # Operator-attested, not auto-detected (see contracts/capture.py
-            # docstring on this field) -- read straight from the manifest,
-            # never inferred here.
-            receiver_session_id=manifest.get("receiver_session_id"),
+            # Raw schedule/operator attestation only -- read straight from
+            # the manifest, never inferred here. The EFFECTIVE
+            # receiver_session_id (what RQ3 pairing actually checks) is
+            # computed later, once the real receiver_epoch is known -- see
+            # StudioRepository._assign_receiver_epoch_if_needed and
+            # contracts/capture.py's docstring on this field.
+            receiver_session_id_declared=manifest.get("receiver_session_id"),
             host_id=manifest.get("host_id"), firmware_hash=manifest.get("firmware_hash"),
             configuration_hash=manifest.get("configuration_hash"),
             time_since_power_on_s=manifest.get("time_since_power_on_s"),

@@ -69,9 +69,12 @@ class ScientificCaptureRecord(StudioContract):
     antenna: str | None = None
     receiver_id: str | None = None
     receiver_epoch: str | None = None
-    # Operator-attested (see ble_rffi_studio's CaptureRecord.
-    # receiver_session_id docstring) -- never auto-detected.
+    # receiver_session_id is the EFFECTIVE, runtime-derived id (declared
+    # label folded with the real receiver_epoch); receiver_session_id_declared
+    # is the raw schedule/operator attestation alone -- see ble_rffi_studio's
+    # CaptureRecord docstring on these two fields.
     receiver_session_id: str | None = None
+    receiver_session_id_declared: str | None = None
     host_id: str | None = None
 
     day_id: str | None = None

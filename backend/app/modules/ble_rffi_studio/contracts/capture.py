@@ -225,20 +225,32 @@ class CaptureRecord(StudioContract):
     qualified_acquisition_profile_hash: str | None = None
     receiver_epoch: str | None = None
     receiver_epoch_boundary_reason: str | None = None
-    # Point-2 correction (2026-08-09): receiver_epoch's >1h session-gap
+    # Point-1 correction (2026-08-10): receiver_epoch's >1h session-gap
     # boundary is a documented PROXY for reinitialization -- no subsystem in
     # this codebase observes a real USRP B200 boot/reconnect event (every
     # real capture opens and closes its own SoapySDR device handle in a
     # fresh subprocess; there is no persistent-connection signal to key off,
     # confirmed by direct inspection of ble_sdr_capture_worker.py/
-    # campaign_orchestrator.py/sdr_device_arbiter.py). receiver_session_id
-    # is therefore OPERATOR-ATTESTED, not auto-detected: PaperCampaignRunner
-    # generates one per frozen schedule (the operator's real-world attestation
-    # that the B200 stayed connected/powered for that whole schedule); a
-    # physical disconnect/power-cycle means starting a new schedule, hence a
-    # new id. For historical captures (None here), RQ3 pairing continues to
-    # rely solely on the receiver_epoch gap proxy -- this field never
-    # retroactively fills in a historical attestation that was never made.
+    # campaign_orchestrator.py/sdr_device_arbiter.py). Because of that, a
+    # bare operator/schedule attestation is NOT trustworthy on its own -- the
+    # schedule could declare "same session" across a real reconnect it never
+    # observed. Split into two fields so the runtime path is what actually
+    # governs pairing, never the schedule alone:
+    #   receiver_session_id_declared -- the raw operator/schedule attestation
+    #     (PaperCampaignRunner.freeze_schedule's generated or operator-
+    #     supplied id), copied verbatim from the manifest. Intent, not proof.
+    #   receiver_session_id -- the EFFECTIVE id RQ3 pairing actually checks,
+    #     computed by StudioRepository AFTER the real, sequential
+    #     receiver_epoch assignment runs (acquisition/receiver_epoch_
+    #     assignment.py::derive_effective_receiver_session_id), by folding
+    #     the declared label together with the real receiver_epoch. If a
+    #     genuine reconnect/profile change/session-gap boundary is detected
+    #     between two captures that both declare the SAME label, their real
+    #     receiver_epoch differs, so their effective receiver_session_id
+    #     differs too -- the schedule cannot mask a real detected boundary.
+    #     None whenever receiver_session_id_declared is None (no schedule
+    #     attestation at all) -- never fabricated for historical captures.
+    receiver_session_id_declared: str | None = None
     receiver_session_id: str | None = None
     host_id: str | None = None
     firmware_hash: str | None = None

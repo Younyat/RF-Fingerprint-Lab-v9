@@ -98,3 +98,28 @@ def assign_receiver_epochs(captures: list[ReceiverEpochInput]) -> list[ReceiverE
     for capture in unresolved:
         results.append(ReceiverEpochAssignment(capture.capture_id, None, None))
     return results
+
+
+def derive_effective_receiver_session_id(declared_receiver_session_id: str | None, receiver_epoch: str | None) -> str | None:
+    """Protocol-freeze close-out, point 1 (2026-08-10): receiver_session_id
+    must not be a label the schedule can declare unchallenged -- the
+    capture/runtime path (this codebase's real, sequential receiver_epoch
+    assignment above, itself computed from real device-queried profile
+    hashes and real acquisition timestamps, never from the schedule) has to
+    be the authority over whether two captures really share one physical
+    session.
+
+    The EFFECTIVE session id folds the schedule's declared attestation
+    together with the real, runtime-assigned receiver_epoch: PRE and POST
+    only produce the SAME effective id when both their declared label AND
+    their real epoch agree. If a genuine reconnect/reinitialization/profile
+    change happens between them, assign_receiver_epochs() above already
+    detects it (QUALIFIED_PROFILE_CHANGED / SESSION_GAP_EXCEEDED) and
+    assigns a new receiver_epoch -- which this function propagates into a
+    DIFFERENT effective receiver_session_id even though the schedule still
+    declares the same raw label, so the schedule can never mask a real
+    detected boundary. None only when the declared label itself is None
+    (no schedule attestation at all) -- never fabricated."""
+    if declared_receiver_session_id is None:
+        return None
+    return f"{declared_receiver_session_id}::{receiver_epoch}"

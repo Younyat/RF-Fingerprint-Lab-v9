@@ -19,7 +19,7 @@ from app.infrastructure.ble.capture.ble_offline_replay import BleOfflineReplaySe
 from app.infrastructure.ble.packet_analysis.ble_capture_locator import BleCaptureLocator
 
 from ..acquisition.capture_stage import CaptureStage
-from ..acquisition.receiver_epoch_assignment import ReceiverEpochInput, assign_receiver_epochs
+from ..acquisition.receiver_epoch_assignment import ReceiverEpochInput, assign_receiver_epochs, derive_effective_receiver_session_id
 from ..contracts import (
     BackgroundKind,
     CapturePurpose,
@@ -588,9 +588,18 @@ class StudioRepository:
         already-persisted capture of this identity plus the new one. A
         capture whose manifest already declared receiver_epoch explicitly
         is left untouched (capture_stage.py already set
-        receiver_epoch_boundary_reason=MANIFEST_DECLARED for it)."""
+        receiver_epoch_boundary_reason=MANIFEST_DECLARED for it).
+
+        Point-1 correction (2026-08-10): regardless of which branch resolves
+        receiver_epoch, this method ALWAYS derives the EFFECTIVE
+        receiver_session_id from it afterward (derive_effective_receiver_
+        session_id) -- the runtime/capture path, never the bare schedule
+        label, is what RQ3 pairing actually trusts. See contracts/capture.py
+        for the full rationale."""
         if capture.receiver_epoch is not None or capture.receiver_identity_id is None:
-            return capture
+            return capture.model_copy(update={
+                "receiver_session_id": derive_effective_receiver_session_id(capture.receiver_session_id_declared, capture.receiver_epoch),
+            })
         siblings = [c for c in self.list_captures() if c.receiver_identity_id == capture.receiver_identity_id]
         inputs = [
             ReceiverEpochInput(
@@ -619,6 +628,7 @@ class StudioRepository:
         assignment = next(a for a in assign_receiver_epochs(inputs) if a.capture_id == capture.capture_id)
         return capture.model_copy(update={
             "receiver_epoch": assignment.receiver_epoch, "receiver_epoch_boundary_reason": assignment.receiver_epoch_boundary_reason,
+            "receiver_session_id": derive_effective_receiver_session_id(capture.receiver_session_id_declared, assignment.receiver_epoch),
         })
 
     def list_captures(self) -> list[CaptureRecord]:

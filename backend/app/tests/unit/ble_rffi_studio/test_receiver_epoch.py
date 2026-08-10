@@ -16,6 +16,7 @@ from app.modules.ble_rffi_studio.acquisition.receiver_epoch_assignment import (
     SESSION_GAP_EXCEEDED,
     ReceiverEpochInput,
     assign_receiver_epochs,
+    derive_effective_receiver_session_id,
 )
 from app.modules.ble_rffi_studio.acquisition.receiver_identity import (
     compute_qualified_acquisition_profile_hash,
@@ -192,3 +193,23 @@ def test_real_bug_scenario_same_physical_b200_split_by_legacy_device_id_now_unif
     inputs = [ReceiverEpochInput(f"CAP-{i}", identity, profile, f"2026-08-01T00:{i:02d}:00Z") for i in range(20)]
     results = assign_receiver_epochs(inputs)
     assert len({r.receiver_epoch for r in results}) == 1
+
+
+def test_derive_effective_receiver_session_id_is_none_without_a_declared_label():
+    assert derive_effective_receiver_session_id(None, "some-epoch") is None
+    assert derive_effective_receiver_session_id(None, None) is None
+
+
+def test_derive_effective_receiver_session_id_folds_declared_label_with_real_epoch():
+    same_epoch_a = derive_effective_receiver_session_id("sched-A", "EPOCH-1")
+    same_epoch_b = derive_effective_receiver_session_id("sched-A", "EPOCH-1")
+    assert same_epoch_a == same_epoch_b
+
+    different_epoch = derive_effective_receiver_session_id("sched-A", "EPOCH-2")
+    assert different_epoch != same_epoch_a
+
+
+def test_derive_effective_receiver_session_id_still_differs_on_epoch_none_vs_a_real_epoch():
+    # A declared label with no resolvable epoch (e.g. unknown identity) must
+    # never accidentally collide with one that does have a real epoch.
+    assert derive_effective_receiver_session_id("sched-A", None) != derive_effective_receiver_session_id("sched-A", "EPOCH-1")

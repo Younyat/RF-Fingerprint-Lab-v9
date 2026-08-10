@@ -45,7 +45,7 @@ _STRUCTURALLY_ABSENT_CAPTURE_FIELDS = (
 # campaign runner, genuinely has None here and is reported not_documented).
 _OPTIONAL_CAPTURE_FIELDS = (
     "day_id", "campaign_period", "pre_or_post", "intervention_arm", "packet_condition", "receiver_epoch",
-    "receiver_session_id", "host_id", "firmware_hash", "configuration_hash", "time_since_power_on_s", "time_since_intervention_s",
+    "receiver_session_id", "receiver_session_id_declared", "host_id", "firmware_hash", "configuration_hash", "time_since_power_on_s", "time_since_intervention_s",
     "capture_order", "review_status", "ambient_temperature_c", "battery_id", "battery_voltage_pre_v",
     "battery_voltage_post_v", "operator_id", "planned_capture_id",
 )
@@ -151,6 +151,7 @@ def build_capture_record(
         sample_rate_hz=capture.sample_rate_sps, bandwidth_hz=capture.effective_bandwidth_hz, sample_format=capture.sample_dtype,
         gain_db=capture.gain_db, antenna=capture.antenna_port, receiver_id=capture.receiver_device_id,
         receiver_epoch=optional_values["receiver_epoch"], receiver_session_id=optional_values["receiver_session_id"],
+        receiver_session_id_declared=optional_values["receiver_session_id_declared"],
         host_id=optional_values["host_id"],
         firmware_hash=optional_values["firmware_hash"], configuration_hash=optional_values["configuration_hash"],
         day_id=optional_values["day_id"], campaign_period=optional_values["campaign_period"],
