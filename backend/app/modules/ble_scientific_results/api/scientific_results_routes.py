@@ -12,6 +12,8 @@ route surface never implies a capability that does not exist yet.
 """
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, HTTPException
 
 
@@ -247,5 +249,80 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
     @router.get("/guided-validation/{run_id}/actions/{action_job_id}")
     def get_guided_validation_action(run_id: str, action_job_id: str):
         return call(lambda: job_manager.get_job(action_job_id))
+
+    # ------------------------------------------------------------------
+    # Paper progress dashboard (2026-08-10) -- read-only reporting. Every
+    # route here either passes through an already-real repository read or
+    # a presence/absence check; none computes a scientific value, none
+    # mutates the protocol, and `/paper-exports` (the one POST) only writes
+    # export files, never opens FUTURE_TEST or changes any contract.
+    # ------------------------------------------------------------------
+
+    @router.get("/study-status")
+    def study_status(protocol_id: str | None = None):
+        return call(lambda: repository.get_study_status(protocol_id))
+
+    @router.get("/paper-readiness")
+    def paper_readiness():
+        return call(lambda: repository.get_paper_readiness())
+
+    @router.get("/campaign-qualification-preflight/latest")
+    def campaign_qualification_preflight_latest():
+        path = repository.root / "campaign_qualification_preflight_report.json"
+        if not path.is_file():
+            return {"status": "NO_DATA"}
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    @router.get("/association-policy-status")
+    def association_policy_status():
+        def _read():
+            policy = repository.find_frozen_association_policy()
+            if policy is None:
+                return {"status": "NONE"}
+            return {"status": "FROZEN", "policy": dump(policy)}
+        return call(_read)
+
+    @router.get("/protocol-freeze-status")
+    def protocol_freeze_status(protocol_id: str | None = None):
+        def _read():
+            freezes = repository.list_protocol_freezes()
+            if protocol_id is not None:
+                freezes = [entry for entry in freezes if entry["protocol_id"] == protocol_id]
+            if not freezes:
+                return {"status": "NOT_STARTED", "entries": []}
+            return {"status": "COMPLETE", "entries": freezes}
+        return call(_read)
+
+    @router.get("/runs/{paper_run_id}/confirmatory-statistical-plan")
+    def get_confirmatory_statistical_plan(paper_run_id: str):
+        def _read():
+            report = repository.get_confirmatory_statistical_plan_report(paper_run_id)
+            return report if report is not None else {"status": "NO_DATA"}
+        return call(_read)
+
+    @router.get("/runs/{paper_run_id}/confirmatory-future-analysis")
+    def get_confirmatory_future_analysis(paper_run_id: str):
+        def _read():
+            report = repository.get_confirmatory_future_analysis_report(paper_run_id)
+            return report if report is not None else {"status": "NO_DATA"}
+        return call(_read)
+
+    @router.get("/runs/{paper_run_id}/rq1-acquisition-dependence")
+    def get_rq1_acquisition_dependence(paper_run_id: str):
+        def _read():
+            report = repository.get_rq1_acquisition_dependence_report(paper_run_id)
+            return report if report is not None else {"status": "NO_DATA"}
+        return call(_read)
+
+    @router.post("/paper-exports", status_code=201)
+    def run_paper_export():
+        return call(lambda: repository.run_paper_export())
+
+    @router.get("/paper-exports")
+    def get_paper_export_manifest():
+        def _read():
+            manifest = repository.get_paper_export_manifest()
+            return manifest if manifest is not None else {"status": "NO_DATA"}
+        return call(_read)
 
     return router

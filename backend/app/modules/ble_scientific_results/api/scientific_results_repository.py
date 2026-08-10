@@ -47,6 +47,7 @@ from ..module_logging import build_module_logger
 from ..quality import build_quality_summary as _build_quality_summary
 from ..records import build_records as _build_records
 from ..records import resolve_iq_path
+from ..paper_export import generate_paper_exports
 from ..statistics.confirmatory_analysis_runner import confirmatory_statistical_plan_to_dict
 from ..statistics.confirmatory_analysis_runner import run_confirmatory_statistical_plan as _run_confirmatory_statistical_plan
 
@@ -316,6 +317,131 @@ class ScientificResultsRepository:
             handle.write(json.dumps(entry) + "\n")
         self.logger.info("protocol freeze executed protocol_id=%s version=%s", protocol_id, contract.protocol_version)
         return entry
+
+    # ------------------------------------------------------------------
+    # Study status / paper readiness (2026-08-10) -- pure reporting, reads
+    # only. Every field here is either a direct pass-through of an
+    # already-real repository method, or a presence/absence check against a
+    # real file on disk -- never a new scientific computation. This is what
+    # the read-only paper-progress dashboard is built on.
+    # ------------------------------------------------------------------
+
+    def _list_all_protocol_ids(self) -> list[str]:
+        protocols_dir = self.root / "_protocols"
+        if not protocols_dir.is_dir():
+            return []
+        return sorted(p.name for p in protocols_dir.iterdir() if p.is_dir())
+
+    def get_study_status(self, protocol_id: str | None = None) -> dict[str, Any]:
+        """Aggregates real, already-implemented reads into one summary --
+        never computes a new scientific value. `protocol_id` resolution:
+        the caller's choice if given; otherwise the most-recently-modified
+        protocol directory on disk if exactly one or more exist (documented
+        heuristic, not a scientific selection), else None (no protocol
+        frozen at all yet)."""
+        git_sha, git_dirty = self._git_provenance()
+
+        all_protocol_ids = self._list_all_protocol_ids()
+        resolved_protocol_id = protocol_id
+        if resolved_protocol_id is None and all_protocol_ids:
+            protocols_dir = self.root / "_protocols"
+            resolved_protocol_id = max(all_protocol_ids, key=lambda pid: (protocols_dir / pid).stat().st_mtime)
+
+        contract: Any = None
+        contract_status = "NO_DATA"
+        missing_fields: list[str] = []
+        if resolved_protocol_id is not None:
+            try:
+                contract = self.get_protocol(resolved_protocol_id)
+            except FileNotFoundError:
+                contract = None
+        if contract is not None:
+            missing_fields = self.missing_confirmatory_readiness_fields(contract)
+            contract_status = "INCOMPLETE" if missing_fields else "COMPLETE"
+
+        freezes = [e for e in self.list_protocol_freezes() if resolved_protocol_id is None or e["protocol_id"] == resolved_protocol_id]
+        protocol_freeze_status = "COMPLETE" if freezes else "NOT_STARTED"
+        if freezes:
+            contract_status = "FROZEN"
+
+        frozen_policy = self.find_frozen_association_policy()
+        association_status = "FROZEN" if frozen_policy is not None else "NONE"
+
+        future_test_accesses = [e for e in self.list_holdout_access_log() if "FUTURE_TEST" in (e.access_path or "")]
+        holdout_status = "OPENED" if future_test_accesses else "UNTOUCHED"
+
+        real_capture_count = len(list((self.ble_root / "captures").glob("*.json"))) if (self.ble_root / "captures").is_dir() else 0
+
+        # Simple, documented phase label -- derived purely from which real
+        # artifacts exist above, never a computed scientific milestone.
+        if not freezes and contract_status in ("NO_DATA", "INCOMPLETE"):
+            current_phase = "B. Real hardware qualification / early study (pre-AnalysisContract)"
+        elif not freezes and contract_status == "COMPLETE":
+            current_phase = "O. AnalysisContract complete, protocol freeze pending"
+        elif freezes and holdout_status == "UNTOUCHED":
+            current_phase = "Q-S. Protocol frozen, definitive/FUTURE acquisition pending"
+        else:
+            current_phase = "T+. FUTURE opened, confirmatory analysis phase"
+
+        return {
+            "git_sha": git_sha, "git_dirty_state": git_dirty,
+            "protocol_id": resolved_protocol_id, "all_protocol_ids": all_protocol_ids,
+            "protocol_version": contract.protocol_version if contract is not None else None,
+            "contract_status": contract_status, "contract_sha256": contract.contract_sha256 if contract is not None and contract.contract_sha256 else None,
+            "missing_confirmatory_readiness_fields": missing_fields,
+            "association_policy_status": association_status,
+            "protected_future_test_status": holdout_status,
+            "protocol_freeze_status": protocol_freeze_status,
+            "real_capture_count": real_capture_count,
+            "current_phase": current_phase,
+            "generated_at": utc_now(),
+        }
+
+    # One row per paper element -> which canonical artifact backs it, and
+    # whether that artifact exists on disk today. Presence-only; this never
+    # inspects the CONTENT of an artifact for a scientific verdict beyond
+    # "does the file exist" (real numbers stay inside the artifact itself,
+    # read separately by the dashboard's per-RQ tabs).
+    _PAPER_READINESS_ELEMENTS: tuple[tuple[str, str], ...] = (
+        ("Abstract", "paper_exports/study_status.json"),
+        ("Methods", "_protocols"),
+        ("Qualification", "campaign_qualification_preflight_report.json"),
+        ("RQ1", "06_statistics/rq1_acquisition_dependence_report.json"),
+        ("RQ2", "06_statistics/confirmatory_future_analysis_report.json"),
+        ("RQ3", "06_statistics/confirmatory_future_analysis_report.json"),
+        ("RQ4", "06_statistics/confirmatory_future_analysis_report.json"),
+        ("Coverage", "06_statistics/confirmatory_future_analysis_report.json"),
+        ("Engineering analyses", "paper_exports/channel_transport_results.csv"),
+        ("Discussion", "paper_exports/study_status.json"),
+        ("Validity boundaries", "paper_exports/study_status.json"),
+        ("Conclusion", "paper_exports/study_status.json"),
+        ("Artifact availability", "paper_exports/export_manifest.json"),
+    )
+
+    def get_paper_readiness(self) -> list[dict[str, Any]]:
+        rows = []
+        for element, relative_artifact_path in self._PAPER_READINESS_ELEMENTS:
+            # "06_statistics/..." paths are per-paper-run -- checked against
+            # every real run directory; "_protocols"/"paper_exports/..." are
+            # repository-root-relative.
+            if relative_artifact_path.startswith("06_statistics/"):
+                available = any((run_dir / relative_artifact_path).is_file() for run_dir in self.root.iterdir() if run_dir.is_dir() and not run_dir.name.startswith("_"))
+            else:
+                available = (self.root / relative_artifact_path).exists()
+            confirmatory = False
+            if element in ("RQ1", "RQ2", "RQ3", "RQ4", "Coverage") and available:
+                # Confirmatory only if a real protocol freeze also exists --
+                # a VALIDATION_DRY_RUN artifact alone is never confirmatory.
+                confirmatory = bool(self.list_protocol_freezes())
+            status = "COMPLETE" if (available and (element not in ("RQ1", "RQ2", "RQ3", "RQ4", "Coverage") or confirmatory)) else ("DATA_PENDING" if not available else "PRELIMINARY")
+            rows.append({
+                "paper_element": element, "status": status, "required_artifact": relative_artifact_path,
+                "available": available, "confirmatory": confirmatory,
+                "table_ready": available and confirmatory if element in ("RQ1", "RQ2", "RQ3", "RQ4", "Coverage") else available,
+                "figure_ready": available and confirmatory if element in ("RQ1", "RQ2", "RQ3", "RQ4", "Coverage") else False,
+                "text_ready": status == "COMPLETE",
+            })
+        return rows
 
     # ------------------------------------------------------------------
     # Campaign qualification preflight (2026-08-09) -- distinct from
@@ -864,6 +990,12 @@ class ScientificResultsRepository:
         self.logger.info("confirmatory FUTURE analysis executed paper_run_id=%s protocol_id=%s", paper_run_id, protocol_id)
         return as_dict
 
+    def get_confirmatory_future_analysis_report(self, paper_run_id: str) -> dict[str, Any] | None:
+        path = self._run_dir(paper_run_id) / "06_statistics" / "confirmatory_future_analysis_report.json"
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
     def persist_rq1_acquisition_dependence_report(
         self, *, paper_run_id: str, protocol_id: str, protocol_version: int, contract_sha256: str,
         rq1_report: Any, model_bundle_id: str, model_bundle_sha256: str,
@@ -902,6 +1034,22 @@ class ScientificResultsRepository:
 
     def get_rq1_acquisition_dependence_report(self, paper_run_id: str) -> dict[str, Any] | None:
         path = self._run_dir(paper_run_id) / "06_statistics" / "rq1_acquisition_dependence_report.json"
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def run_paper_export(self) -> dict[str, Any]:
+        """Real production caller for paper_export.py -- writes
+        `paper_exports/` for real (study_status.json/paper_readiness.json)
+        and records every other planned export as SKIPPED_NO_DATA until a
+        real campaign produces source data for it. Never mutates the
+        protocol, never opens FUTURE_TEST."""
+        manifest = generate_paper_exports(self)
+        self.logger.info("paper export generated: %s produced, %s skipped_no_data", manifest["generated_count"], manifest["skipped_count"])
+        return manifest
+
+    def get_paper_export_manifest(self) -> dict[str, Any] | None:
+        path = self.root / "paper_exports" / "export_manifest.json"
         if not path.is_file():
             return None
         return json.loads(path.read_text(encoding="utf-8"))

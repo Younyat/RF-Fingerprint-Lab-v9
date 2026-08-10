@@ -1,39 +1,58 @@
 import { useState } from 'react';
 import AcquisitionQualityTab from './AcquisitionQualityTab';
+import AssociationTab from './AssociationTab';
 import CampaignTab from './CampaignTab';
+import ChannelTransportTab from './ChannelTransportTab';
+import CoverageTab from './CoverageTab';
 import GuidedValidationTab from './GuidedValidationTab';
 import IntegrityLeakageTab from './IntegrityLeakageTab';
+import OnlineEquivalenceTab from './OnlineEquivalenceTab';
+import PaperExportTab from './PaperExportTab';
+import PaperReadinessTab from './PaperReadinessTab';
 import ProtocolTab from './ProtocolTab';
+import ProvenanceTab from './ProvenanceTab';
+import QualificationTab from './QualificationTab';
 import ReadinessTab from './ReadinessTab';
+import Rq1Tab from './Rq1Tab';
+import Rq2Tab from './Rq2Tab';
+import Rq3Tab from './Rq3Tab';
+import Rq4Tab from './Rq4Tab';
+import SensitivityTab from './SensitivityTab';
+import StudyOverviewTab from './StudyOverviewTab';
 
-// The full specification calls for 14 tabs. Fase 1+2 implement the five
-// this phase's backend supports (Protocol, Readiness, Campaign, Integrity
-// and Leakage, Acquisition Quality); the remaining 9 (RQ1-4, S1-S2,
-// forensics, reproducibility, export) are declared here so the navigation
-// shape matches the final module from day one, but stay disabled rather
-// than rendering UI for endpoints that do not exist yet -- see
-// docs/ble/SCIENTIFIC_STATUS.md and the Fase 1/2 plan for what each one
-// will cover.
+// Paper progress dashboard (2026-08-10): every tab below is real and reads
+// only canonical backend artifacts -- none computes science, none mutates
+// the protocol contract, and none can open FUTURE_TEST (the only mutating
+// call anywhere in this set is PaperExportTab's "Generar exports" button,
+// which only writes report files). `forensics`/`reproducibility` stay
+// disabled -- no canonical artifact/endpoint is designed for them yet.
 const TABS: { id: string; label: string; enabled: boolean }[] = [
+  { id: 'overview', label: 'Study Overview', enabled: true },
   { id: 'guided-validation', label: 'Guided Validation', enabled: true },
   { id: 'protocol', label: 'Protocol', enabled: true },
   { id: 'readiness', label: 'Readiness', enabled: true },
+  { id: 'hw-qualification', label: 'Hardware & Qualification', enabled: true },
+  { id: 'association', label: 'Association', enabled: true },
   { id: 'campaign', label: 'Campaign', enabled: true },
   { id: 'integrity', label: 'Integrity and Leakage', enabled: true },
   { id: 'quality', label: 'Acquisition Quality', enabled: true },
-  { id: 'rq1', label: 'RQ1', enabled: false },
-  { id: 'rq2', label: 'RQ2', enabled: false },
-  { id: 'rq3', label: 'RQ3', enabled: false },
-  { id: 'rq4', label: 'RQ4', enabled: false },
-  { id: 's1', label: 'Channel Transport', enabled: false },
-  { id: 's2', label: 'Online Equivalence', enabled: false },
+  { id: 'rq1', label: 'RQ1', enabled: true },
+  { id: 'rq2', label: 'RQ2', enabled: true },
+  { id: 'rq3', label: 'RQ3', enabled: true },
+  { id: 'rq4', label: 'RQ4', enabled: true },
+  { id: 'coverage', label: 'Coverage / Abstention', enabled: true },
+  { id: 's1', label: 'Channel Transport', enabled: true },
+  { id: 's2', label: 'Online Equivalence', enabled: true },
+  { id: 'sensitivity', label: 'Sensitivity', enabled: true },
+  { id: 'provenance', label: 'Provenance', enabled: true },
+  { id: 'paper-readiness', label: 'Paper Readiness', enabled: true },
+  { id: 'export', label: 'Paper Export', enabled: true },
   { id: 'forensics', label: 'Calibration and Forensics', enabled: false },
   { id: 'reproducibility', label: 'Reproducibility', enabled: false },
-  { id: 'export', label: 'Paper Export', enabled: false },
 ];
 
 export default function BleScientificResultsPage() {
-  const [activeTab, setActiveTab] = useState('guided-validation');
+  const [activeTab, setActiveTab] = useState('overview');
   const [showFutureAnalysisInfo, setShowFutureAnalysisInfo] = useState(false);
 
   // Rutas y componentes de las 9 pestañas "Fase 3+" NO se eliminan -- solo
@@ -80,12 +99,26 @@ export default function BleScientificResultsPage() {
         )}
       </div>
 
+      {activeTab === 'overview' && <StudyOverviewTab />}
       {activeTab === 'guided-validation' && <GuidedValidationTab />}
       {activeTab === 'protocol' && <ProtocolTab />}
       {activeTab === 'readiness' && <ReadinessTab />}
+      {activeTab === 'hw-qualification' && <QualificationTab />}
+      {activeTab === 'association' && <AssociationTab />}
       {activeTab === 'campaign' && <CampaignTab />}
       {activeTab === 'integrity' && <IntegrityLeakageTab />}
       {activeTab === 'quality' && <AcquisitionQualityTab />}
+      {activeTab === 'rq1' && <Rq1Tab />}
+      {activeTab === 'rq2' && <Rq2Tab />}
+      {activeTab === 'rq3' && <Rq3Tab />}
+      {activeTab === 'rq4' && <Rq4Tab />}
+      {activeTab === 'coverage' && <CoverageTab />}
+      {activeTab === 's1' && <ChannelTransportTab />}
+      {activeTab === 's2' && <OnlineEquivalenceTab />}
+      {activeTab === 'sensitivity' && <SensitivityTab />}
+      {activeTab === 'provenance' && <ProvenanceTab />}
+      {activeTab === 'paper-readiness' && <PaperReadinessTab />}
+      {activeTab === 'export' && <PaperExportTab />}
     </div>
   );
 }

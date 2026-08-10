@@ -411,6 +411,69 @@ export interface StartTargetAbsenceControlRequest {
   operator_id?: string;
 }
 
+// Paper progress dashboard (2026-08-10) -- pure reporting types. Every
+// shape below mirrors a real backend dict exactly (get_study_status,
+// get_paper_readiness, paper_export.py's manifest); `NoDataResponse` is
+// what every "no real artifact yet" endpoint returns instead of an empty
+// object or a zeroed one.
+
+export interface NoDataResponse {
+  status: 'NO_DATA';
+}
+
+export interface StudyStatusResponse {
+  git_sha: string;
+  git_dirty_state: GitDirtyState;
+  protocol_id: string | null;
+  all_protocol_ids: string[];
+  protocol_version: number | null;
+  contract_status: 'NO_DATA' | 'INCOMPLETE' | 'COMPLETE' | 'FROZEN';
+  contract_sha256: string | null;
+  missing_confirmatory_readiness_fields: string[];
+  association_policy_status: 'NONE' | 'FROZEN';
+  protected_future_test_status: 'UNTOUCHED' | 'OPENED';
+  protocol_freeze_status: 'NOT_STARTED' | 'COMPLETE';
+  real_capture_count: number;
+  current_phase: string;
+  generated_at: string;
+}
+
+export interface PaperReadinessRow {
+  paper_element: string;
+  status: 'DATA_PENDING' | 'PRELIMINARY' | 'COMPLETE';
+  required_artifact: string;
+  available: boolean;
+  confirmatory: boolean;
+  table_ready: boolean;
+  figure_ready: boolean;
+  text_ready: boolean;
+}
+
+export interface ProtocolFreezeStatusResponse {
+  status: 'NOT_STARTED' | 'COMPLETE';
+  entries: { protocol_id: string; protocol_version: number; contract_sha256: string; frozen_at: string; new_version_reason: string | null; is_new_version_of: number | null }[];
+}
+
+export interface AssociationPolicyStatusResponse {
+  status: 'NONE' | 'FROZEN';
+  policy?: Record<string, unknown>;
+}
+
+export interface PaperExportManifestEntry {
+  file: string;
+  status: 'GENERATED' | 'SKIPPED_NO_DATA';
+  detail?: string;
+  would_be_derived_from?: string;
+}
+
+export interface PaperExportManifest {
+  schema_version: string;
+  generated_at: string;
+  generated_count: number;
+  skipped_count: number;
+  entries: PaperExportManifestEntry[];
+}
+
 export class BleScientificResultsApiService {
   constructor(private readonly baseURL = 'http://localhost:8000') {}
   private get root() { return `${this.baseURL}/api/ble-scientific-results`; }
@@ -476,4 +539,30 @@ export class BleScientificResultsApiService {
   async getGuidedValidationAction(runId: string, actionJobId: string) {
     return (await axios.get<GuidedValidationActionJob>(`${this.root}/guided-validation/${encodeURIComponent(runId)}/actions/${encodeURIComponent(actionJobId)}`)).data;
   }
+
+  // Paper progress dashboard (2026-08-10) -- read-only. `runPaperExport()`
+  // is the one method here that writes files server-side; it never mutates
+  // the protocol/science, only generates the export manifest.
+  async studyStatus(protocolId?: string) {
+    return (await axios.get<StudyStatusResponse>(`${this.root}/study-status`, { params: protocolId ? { protocol_id: protocolId } : {} })).data;
+  }
+  async paperReadiness() { return (await axios.get<PaperReadinessRow[]>(`${this.root}/paper-readiness`)).data; }
+  async campaignQualificationPreflightLatest() {
+    return (await axios.get<Record<string, unknown> | NoDataResponse>(`${this.root}/campaign-qualification-preflight/latest`)).data;
+  }
+  async associationPolicyStatus() { return (await axios.get<AssociationPolicyStatusResponse>(`${this.root}/association-policy-status`)).data; }
+  async protocolFreezeStatus(protocolId?: string) {
+    return (await axios.get<ProtocolFreezeStatusResponse>(`${this.root}/protocol-freeze-status`, { params: protocolId ? { protocol_id: protocolId } : {} })).data;
+  }
+  async confirmatoryStatisticalPlan(paperRunId: string) {
+    return (await axios.get<Record<string, unknown> | NoDataResponse>(`${this.root}/runs/${encodeURIComponent(paperRunId)}/confirmatory-statistical-plan`)).data;
+  }
+  async confirmatoryFutureAnalysis(paperRunId: string) {
+    return (await axios.get<Record<string, unknown> | NoDataResponse>(`${this.root}/runs/${encodeURIComponent(paperRunId)}/confirmatory-future-analysis`)).data;
+  }
+  async rq1AcquisitionDependence(paperRunId: string) {
+    return (await axios.get<Record<string, unknown> | NoDataResponse>(`${this.root}/runs/${encodeURIComponent(paperRunId)}/rq1-acquisition-dependence`)).data;
+  }
+  async runPaperExport() { return (await axios.post<PaperExportManifest>(`${this.root}/paper-exports`)).data; }
+  async getPaperExportManifest() { return (await axios.get<PaperExportManifest | NoDataResponse>(`${this.root}/paper-exports`)).data; }
 }
