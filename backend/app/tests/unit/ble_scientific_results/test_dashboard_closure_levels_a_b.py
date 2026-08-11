@@ -118,3 +118,4 @@ def test_get_evidence_quality_summary_groups_real_canonical_rows(tmp_path):
     assert summary["insufficient_evidence_abstention_windows"] == 1
     assert summary["captures_with_discontinuities"] == 1
     assert summary["deviation_count"] == 1
+    assert summary["physical_unit_by_capture_id"] == {"CAP-1": "UNIT-A", "CAP-2": "UNIT-B"}

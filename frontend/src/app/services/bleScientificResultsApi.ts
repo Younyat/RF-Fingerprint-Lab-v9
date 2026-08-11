@@ -822,6 +822,7 @@ export interface EvidenceQualitySummary {
   insufficient_evidence_abstention_windows: number;
   captures_with_discontinuities: number;
   deviation_count: number;
+  physical_unit_by_capture_id: Record<string, string>;
 }
 
 export interface Rq3Pair {

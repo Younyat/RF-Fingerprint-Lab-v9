@@ -91,6 +91,25 @@ def test_paper_readiness_rq1_available_but_not_confirmatory_without_a_real_freez
     assert by_element["RQ1"]["table_ready"] is False
 
 
+def test_paper_readiness_rq2_points_at_its_own_real_canonical_artifact(tmp_path):
+    """Dashboard closure (2026-08-11): a real bug -- this row used to point
+    at confirmatory_future_analysis_report.json, RQ3/RQ4/Coverage's
+    artifact, never RQ2's own real canonical file
+    (rq2_representation_comparison_report.json, persist_rq2_representation_
+    comparison_report's output)."""
+    repo = _repo(tmp_path)
+    rows = repo.get_paper_readiness()
+    by_element = {r["paper_element"]: r for r in rows}
+    assert by_element["RQ2"]["required_artifact"] == "06_statistics/rq2_representation_comparison_report.json"
+
+    run_dir = tmp_path / "sci_results" / "RUN-1" / "06_statistics"
+    run_dir.mkdir(parents=True)
+    (run_dir / "rq2_representation_comparison_report.json").write_text(json.dumps({"branches": []}), encoding="utf-8")
+    rows = repo.get_paper_readiness()
+    by_element = {r["paper_element"]: r for r in rows}
+    assert by_element["RQ2"]["available"] is True
+
+
 def test_run_paper_export_writes_real_study_status_and_readiness_and_skips_the_rest(tmp_path):
     repo = _repo(tmp_path)
     manifest = repo.run_paper_export()

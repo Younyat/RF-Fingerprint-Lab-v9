@@ -820,7 +820,7 @@ class ScientificResultsRepository:
         ("Methods", "_protocols"),
         ("Qualification", "campaign_qualification_preflight_report.json"),
         ("RQ1", "06_statistics/rq1_acquisition_dependence_report.json"),
-        ("RQ2", "06_statistics/confirmatory_future_analysis_report.json"),
+        ("RQ2", "06_statistics/rq2_representation_comparison_report.json"),
         ("RQ3", "06_statistics/confirmatory_future_analysis_report.json"),
         ("RQ4", "06_statistics/confirmatory_future_analysis_report.json"),
         ("Coverage", "06_statistics/confirmatory_future_analysis_report.json"),
@@ -1931,9 +1931,13 @@ class ScientificResultsRepository:
         captures_per_role: dict[str, int] = {}
         exclusion_reason_counts: dict[str, int] = {}
         discontinuity_count = 0
+        physical_unit_by_capture_id: dict[str, str] = {}
         for capture in capture_rows:
             unit_id = capture.get("physical_unit_id") or "UNKNOWN"
             captures_per_physical_unit[unit_id] = captures_per_physical_unit.get(unit_id, 0) + 1
+            capture_id = capture.get("capture_id")
+            if capture_id:
+                physical_unit_by_capture_id[capture_id] = unit_id
             day_id = capture.get("day_id") or "UNKNOWN"
             captures_per_day[day_id] = captures_per_day.get(day_id, 0) + 1
             role = capture.get("experimental_role") or "UNKNOWN"
@@ -1959,6 +1963,12 @@ class ScientificResultsRepository:
             "insufficient_evidence_abstention_windows": insufficient_evidence_windows,
             "captures_with_discontinuities": discontinuity_count,
             "deviation_count": len(deviation_rows),
+            # Scientific filtering (2026-08-11): a real capture_id -> unit_id
+            # map so the dashboard can filter the per-capture breakdowns
+            # above to one physical unit -- filtering already-real rows to a
+            # real subset, never a new computation. The unfiltered
+            # dictionaries above remain the canonical, official view.
+            "physical_unit_by_capture_id": physical_unit_by_capture_id,
         }
 
     # ------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { BleScientificResultsApiService, EvidenceQualitySummary, NoDataResponse } from '../../../app/services/bleScientificResultsApi';
 import EcdfChart from './charts/EcdfChart';
 import HistogramChart from './charts/HistogramChart';
@@ -9,6 +9,10 @@ const sciApi = new BleScientificResultsApiService();
 
 function isNoData(summary: EvidenceQualitySummary | NoDataResponse | null): summary is NoDataResponse {
   return !!summary && (summary as NoDataResponse).status === 'NO_DATA';
+}
+
+function filterByUnit(perCapture: Record<string, number>, unitByCapture: Record<string, string>, unit: string): Record<string, number> {
+  return Object.fromEntries(Object.entries(perCapture).filter(([captureId]) => unitByCapture[captureId] === unit));
 }
 
 function CountTable({ title, counts }: { title: string; counts: Record<string, number> }) {
@@ -42,11 +46,22 @@ function CountTable({ title, counts }: { title: string; counts: Record<string, n
 export default function EvidenceQualityTab() {
   const { runs, paperRunId, setPaperRunId } = useReadOnlyRuns();
   const [summary, setSummary] = useState<EvidenceQualitySummary | NoDataResponse | null>(null);
+  const [unitFilter, setUnitFilter] = useState('');
 
   useEffect(() => {
     if (!paperRunId) { setSummary(null); return; }
+    setUnitFilter('');
     sciApi.getEvidenceQualitySummary(paperRunId).then(setSummary).catch(() => setSummary({ status: 'NO_DATA' }));
   }, [paperRunId]);
+
+  const filtered = useMemo(() => {
+    if (!summary || isNoData(summary) || !unitFilter) return null;
+    return {
+      candidate: filterByUnit(summary.candidate_bursts_per_capture, summary.physical_unit_by_capture_id, unitFilter),
+      crcValid: filterByUnit(summary.crc_valid_per_capture, summary.physical_unit_by_capture_id, unitFilter),
+      admitted: filterByUnit(summary.admitted_per_capture, summary.physical_unit_by_capture_id, unitFilter),
+    };
+  }, [summary, unitFilter]);
 
   return (
     <div className="space-y-6 p-4">
@@ -85,21 +100,32 @@ export default function EvidenceQualityTab() {
           <CountTable title="Captures / rol experimental" counts={summary.captures_per_experimental_role} />
           <CountTable title="Distribucion de razones de exclusion (blocking_reason_codes reales)" counts={summary.exclusion_reason_counts} />
 
+          <div className="flex flex-wrap items-center gap-3 rounded border border-slate-800 bg-slate-950 px-3 py-2">
+            <label className="text-xs text-slate-500">Filtro cientifico -- unidad fisica:</label>
+            <select className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100 focus:border-cyan-600 focus:outline-none" value={unitFilter} onChange={(e) => setUnitFilter(e.target.value)}>
+              <option value="">(sin filtro -- vista canonica)</option>
+              {Object.keys(summary.captures_per_physical_unit).sort().map((unit) => <option key={unit} value={unit}>{unit}</option>)}
+            </select>
+            <span className={`inline-block rounded border px-2 py-0.5 text-[10px] font-mono uppercase tracking-wide ${unitFilter ? 'border-amber-800 bg-amber-950/40 text-amber-300' : 'border-emerald-800 bg-emerald-950/40 text-emerald-300'}`}>
+              {unitFilter ? 'FILTERED EXPLORATORY VIEW' : 'CANONICAL'}
+            </span>
+          </div>
+
           <div className="grid gap-4 md:grid-cols-2">
             <div>
               <div className="mb-1 text-xs font-semibold text-slate-400">Histograma: bursts candidatos / capture</div>
-              <HistogramChart values={Object.values(summary.candidate_bursts_per_capture)} xLabel="bursts candidatos" noDataReason="Sin burst_records reales todavia." />
+              <HistogramChart values={Object.values(filtered ? filtered.candidate : summary.candidate_bursts_per_capture)} xLabel="bursts candidatos" noDataReason="Sin burst_records reales todavia (o la unidad filtrada no tiene capturas)." />
             </div>
             <div>
               <div className="mb-1 text-xs font-semibold text-slate-400">Histograma: bursts CRC-validos / capture</div>
-              <HistogramChart values={Object.values(summary.crc_valid_per_capture)} xLabel="bursts CRC-validos" noDataReason="Sin bursts CRC-validos reales todavia." />
+              <HistogramChart values={Object.values(filtered ? filtered.crcValid : summary.crc_valid_per_capture)} xLabel="bursts CRC-validos" noDataReason="Sin bursts CRC-validos reales todavia (o la unidad filtrada no tiene capturas)." />
             </div>
             <div>
               <div className="mb-1 text-xs font-semibold text-slate-400">Histograma: bursts admitidos (packet_eligible) / capture</div>
-              <HistogramChart values={Object.values(summary.admitted_per_capture)} xLabel="bursts admitidos" noDataReason="Sin bursts admitidos reales todavia." />
+              <HistogramChart values={Object.values(filtered ? filtered.admitted : summary.admitted_per_capture)} xLabel="bursts admitidos" noDataReason="Sin bursts admitidos reales todavia (o la unidad filtrada no tiene capturas)." />
             </div>
             <div>
-              <div className="mb-1 text-xs font-semibold text-slate-400">ECDF: bursts elegibles / ventana</div>
+              <div className="mb-1 text-xs font-semibold text-slate-400">ECDF: bursts elegibles / ventana (siempre canonico -- sin mapeo ventana-&gt;unidad real todavia)</div>
               <EcdfChart values={Object.values(summary.eligible_bursts_per_window)} xLabel="bursts elegibles" noDataReason="Sin decision_window_records reales todavia." />
             </div>
           </div>

@@ -20,4 +20,12 @@ describe('BarWithCiChart', () => {
     render(<BarWithCiChart data={null} yLabel="Balanced accuracy" noDataReason="no rq1 report yet" />);
     expect(screen.getByText('NO DATA')).toBeInTheDocument();
   });
+
+  it('never fabricates a CI for a datum whose ciLow/ciHigh are null -- no error bar is drawn', () => {
+    const { container } = render(
+      <BarWithCiChart data={[{ category: 'future', value: 0.58, ciLow: null, ciHigh: null }]} yLabel="Balanced accuracy" noDataReason="n/a" />,
+    );
+    expect(container.querySelectorAll('.recharts-bar-rectangle').length).toBe(1);
+    expect(container.querySelectorAll('.recharts-errorBar').length).toBe(0);
+  });
 });
