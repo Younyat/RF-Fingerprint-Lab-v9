@@ -489,6 +489,17 @@ class StudioRepository:
     def list_physical_units(self) -> list[PhysicalUnitRecord]:
         return self.registry.list_physical_units()
 
+    # Study Control Center, phase 02 (2026-08-11): thin wrappers, same
+    # convention as register_physical_unit/list_physical_units above --
+    # confirm_same_model()/set_rq4_eligibility() already existed on
+    # PhysicalDeviceRegistry (with real, required basis/reason validation)
+    # but had no route until now.
+    def confirm_same_model(self, physical_unit_id: str, *, basis: str) -> PhysicalUnitRecord:
+        return self.registry.confirm_same_model(physical_unit_id, basis=basis)
+
+    def set_rq4_eligibility(self, physical_unit_id: str, *, eligible: bool, reason: str) -> PhysicalUnitRecord:
+        return self.registry.set_rq4_eligibility(physical_unit_id, eligible=eligible, reason=reason)
+
     # ------------------------------------------------------------------
     # Auto-train: turns "which captures for which device" (the manual
     # bookkeeping an operator otherwise has to do by hand before every

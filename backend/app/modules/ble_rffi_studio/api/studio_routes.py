@@ -63,6 +63,16 @@ def build_ble_rffi_studio_router(repository, job_manager) -> APIRouter:
             manufacturer=body.get("manufacturer"), model=body.get("model"), operator_declaration_id=body["operator_declaration_id"],
         )))
 
+    # Study Control Center, phase 02 (2026-08-11) -- explicit operator
+    # decisions, never inferred from device_family/model.
+    @router.post("/physical-units/{physical_unit_id}/confirm-same-model")
+    def confirm_same_model(physical_unit_id: str, body: dict):
+        return call(lambda: dump(repository.confirm_same_model(physical_unit_id, basis=body["basis"])))
+
+    @router.post("/physical-units/{physical_unit_id}/rq4-eligibility")
+    def set_rq4_eligibility(physical_unit_id: str, body: dict):
+        return call(lambda: dump(repository.set_rq4_eligibility(physical_unit_id, eligible=bool(body["eligible"]), reason=body["reason"])))
+
     @router.get("/address-bindings")
     def address_bindings():
         return call(lambda: dump_list(repository.list_bindings()))

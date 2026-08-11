@@ -119,6 +119,10 @@ export interface StudioPhysicalUnit extends Record<string, unknown> {
   model?: string | null;
   status: string;
   first_registered_at: string;
+  same_model_confirmation: 'CONFIRMED' | 'NOT_CONFIRMED';
+  same_model_confirmation_basis: string | null;
+  rq4_eligibility: 'ELIGIBLE' | 'NOT_ELIGIBLE';
+  rq4_eligibility_reason: string | null;
 }
 export interface StudioAddressBinding extends Record<string, unknown> {
   binding_id: string;
@@ -371,6 +375,14 @@ export class BleRffiStudioApiService {
   async physicalUnits() { return (await axios.get<StudioPhysicalUnit[]>(`${this.root}/physical-units`)).data; }
   async createPhysicalUnit(body: { physical_unit_id: string; project_id: string; device_family: string; manufacturer?: string; model?: string; operator_declaration_id: string }) {
     return (await axios.post<StudioPhysicalUnit>(`${this.root}/physical-units`, body)).data;
+  }
+  // Study Control Center, phase 02 (2026-08-11) -- explicit operator
+  // decisions, never inferred from device_family/model.
+  async confirmSameModel(physicalUnitId: string, basis: string) {
+    return (await axios.post<StudioPhysicalUnit>(`${this.root}/physical-units/${encodeURIComponent(physicalUnitId)}/confirm-same-model`, { basis })).data;
+  }
+  async setRq4Eligibility(physicalUnitId: string, eligible: boolean, reason: string) {
+    return (await axios.post<StudioPhysicalUnit>(`${this.root}/physical-units/${encodeURIComponent(physicalUnitId)}/rq4-eligibility`, { eligible, reason })).data;
   }
   async addressBindings() { return (await axios.get<StudioAddressBinding[]>(`${this.root}/address-bindings`)).data; }
   async createAddressBinding(body: { project_id: string; address: string; address_type?: string; physical_unit_id: string; reason?: string; decision_artifact_id?: string }) {

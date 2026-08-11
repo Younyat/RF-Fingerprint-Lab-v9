@@ -537,6 +537,13 @@ class ScientificResultsRepository:
             },
         }
 
+        # Phase-specific real next-action pointers -- overrides the generic
+        # "RUN {label}" fallback whenever the real mechanism lives somewhere
+        # else already (never implies a standalone action that doesn't
+        # exist). "01" and "02" have real dedicated launchers in THIS tab.
+        next_action_overrides = {
+            "03": "Usar la pestana Guided Validation (POST /guided-validation) -- freezing de politica de asociacion es una etapa de ese job real, no una accion aislada",
+        }
         labels_by_id = {phase_id: label for phase_id, label, _prereqs, _section in self._STUDY_CONTROL_CENTER_PHASES}
         phases: list[dict[str, Any]] = []
         for phase_id, label, prereq_ids, paper_section in self._STUDY_CONTROL_CENTER_PHASES:
@@ -558,7 +565,7 @@ class ScientificResultsRepository:
                 "run_id": latest_run.paper_run_id if latest_run else None,
                 "git_sha": git_sha, "protocol_version": study_status["protocol_version"],
                 "artifacts": signal["artifacts"], "paper_section": paper_section,
-                "next_allowed_operation": f"RUN {label.upper()}" if state == "READY" else None,
+                "next_allowed_operation": (next_action_overrides.get(phase_id) or f"RUN {label.upper()}") if state == "READY" else None,
             })
 
         return {"schema_version": "ble-scientific-results-study-control-center-v1", "generated_at": utc_now(), "phases": phases}

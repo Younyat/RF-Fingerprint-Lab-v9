@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
+import { BleRffiStudioApiService, StudioPhysicalUnit } from '../../../app/services/bleRffiStudioApi';
 import { BleScientificResultsApiService, HardwareQualificationJob, StudyControlCenterStatus } from '../../../app/services/bleScientificResultsApi';
 import NoDataNotice, { StatusBadge } from './NoDataNotice';
 
 const sciApi = new BleScientificResultsApiService();
+const studioApi = new BleRffiStudioApiService();
 
 const JOB_TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 
@@ -73,6 +75,119 @@ export default function StudyControlCenterTab() {
       )}
 
       <HardwareQualificationLauncher onCompleted={refresh} />
+      <PhysicalUnitQualificationLauncher onCompleted={refresh} />
+    </div>
+  );
+}
+
+function PhysicalUnitQualificationLauncher({ onCompleted }: { onCompleted: () => void }) {
+  const [units, setUnits] = useState<StudioPhysicalUnit[]>([]);
+  const [basisById, setBasisById] = useState<Record<string, string>>({});
+  const [reasonById, setReasonById] = useState<Record<string, string>>({});
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = () => {
+    studioApi.physicalUnits().then(setUnits).catch(() => setUnits([]));
+  };
+  useEffect(refresh, []);
+
+  const confirmSameModel = async (unitId: string) => {
+    const basis = (basisById[unitId] || '').trim();
+    if (!basis) { setError('Se requiere una base real (basis) para confirmar same-model.'); return; }
+    setBusyId(unitId);
+    setError(null);
+    try {
+      await studioApi.confirmSameModel(unitId, basis);
+      refresh();
+      onCompleted();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const setEligibility = async (unitId: string, eligible: boolean) => {
+    const reason = (reasonById[unitId] || '').trim();
+    if (!reason) { setError('Se requiere una razon real para declarar RQ4 eligibility.'); return; }
+    setBusyId(unitId);
+    setError(null);
+    try {
+      await studioApi.setRq4Eligibility(unitId, eligible, reason);
+      refresh();
+      onCompleted();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="rounded border border-slate-800 bg-slate-900/40 p-4">
+      <div className="text-sm font-semibold text-slate-200">Physical Unit Qualification (fase 02)</div>
+      <div className="mt-1 text-xs text-slate-500">
+        same_model_confirmation y rq4_eligibility son siempre una decision explicita del operador, con base/razon
+        reales -- nunca inferidas de device_family/model.
+      </div>
+      {error && <div className="mt-2 text-xs text-red-400">{error}</div>}
+
+      {units.length === 0 && <div className="mt-3"><NoDataNotice reason="Ningun physical_unit_id registrado todavia." /></div>}
+
+      <div className="mt-3 space-y-3">
+        {units.map((unit) => (
+          <div key={unit.physical_unit_id} className="rounded border border-slate-800 bg-slate-950 p-3">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="font-mono text-slate-200">{unit.physical_unit_id}</span>
+              <StatusBadge status={unit.same_model_confirmation} />
+              <StatusBadge status={unit.rq4_eligibility} />
+            </div>
+            {unit.same_model_confirmation_basis && <div className="mt-1 text-[11px] text-slate-500">basis: {unit.same_model_confirmation_basis}</div>}
+            {unit.rq4_eligibility_reason && <div className="text-[11px] text-slate-500">reason: {unit.rq4_eligibility_reason}</div>}
+
+            {unit.same_model_confirmation !== 'CONFIRMED' && (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <input
+                  className="min-w-64 flex-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100 focus:border-cyan-600 focus:outline-none"
+                  placeholder="basis: p.ej. internal_serial prefix match + inspeccion fisica"
+                  value={basisById[unit.physical_unit_id] || ''}
+                  onChange={(e) => setBasisById((prev) => ({ ...prev, [unit.physical_unit_id]: e.target.value }))}
+                  disabled={busyId === unit.physical_unit_id}
+                />
+                <button
+                  className="rounded bg-cyan-700 px-3 py-1 text-xs font-medium text-white hover:bg-cyan-600 disabled:cursor-not-allowed disabled:bg-slate-700"
+                  disabled={busyId === unit.physical_unit_id} onClick={() => confirmSameModel(unit.physical_unit_id)}
+                >
+                  Confirmar same-model
+                </button>
+              </div>
+            )}
+
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <input
+                className="min-w-64 flex-1 rounded border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100 focus:border-cyan-600 focus:outline-none"
+                placeholder="reason: razon real para RQ4 eligibility"
+                value={reasonById[unit.physical_unit_id] || ''}
+                onChange={(e) => setReasonById((prev) => ({ ...prev, [unit.physical_unit_id]: e.target.value }))}
+                disabled={busyId === unit.physical_unit_id}
+              />
+              <button
+                className="rounded border border-emerald-800 px-3 py-1 text-xs text-emerald-400 hover:bg-emerald-950 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={busyId === unit.physical_unit_id} onClick={() => setEligibility(unit.physical_unit_id, true)}
+              >
+                ELIGIBLE
+              </button>
+              <button
+                className="rounded border border-red-800 px-3 py-1 text-xs text-red-400 hover:bg-red-950 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={busyId === unit.physical_unit_id} onClick={() => setEligibility(unit.physical_unit_id, false)}
+              >
+                NOT_ELIGIBLE
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
