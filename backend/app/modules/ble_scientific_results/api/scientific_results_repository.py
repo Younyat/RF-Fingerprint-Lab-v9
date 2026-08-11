@@ -1431,6 +1431,66 @@ class ScientificResultsRepository:
             return None
         return json.loads(path.read_text(encoding="utf-8"))
 
+    def run_rq3_frr_analysis(
+        self, *, paper_run_id: str, offline_inference_service: Any, bundle_id: str | None = None,
+        window_duration_s: float | None = None, minimum_eligible_bursts: int | None = None,
+    ) -> dict[str, Any]:
+        """Scientific Dashboard Closure audit finding (2026-08-11): RQ3's
+        pair CONSTRUCTION (build_pre_post_pairs) was real, but the actual
+        scientific estimand -- FRR_pre, FRR_post, D = FRR_post - FRR_pre --
+        had no real producer, even though the frozen inference pipeline
+        that computes it (offline_inference_service.run_decision_windows())
+        was already real and callable end-to-end. This is the real
+        orchestration that was missing -- see rq3_frr_analysis.py's own
+        module docstring for the exact FRR/ground-truth definitions reused
+        (never invented here). `bundle_id` defaults to the frozen PRIMARY
+        RQ2 branch's model_bundle_id (the "frozen primary branch" per the
+        confirmatory analysis plan) -- raises if none is recorded yet,
+        never guesses a bundle. Reuses the untouched
+        stratified_crossover_permutation_test via
+        run_confirmatory_statistical_plan (never a second statistical
+        implementation), then overwrites rq3_pairs with the FRR-enriched
+        rows and adds rq3_per_unit_reset_mean_d/rq3_per_unit_control_mean_d
+        -- same real identities, extra real fields."""
+        from app.modules.ble_rffi_studio.campaign.pre_post_pairing import build_pre_post_pairs
+        from app.modules.ble_rffi_studio.inference.decision_windows import DEFAULT_MINIMUM_ELIGIBLE_BURSTS, DEFAULT_WINDOW_DURATION_S
+        from ..rq3_frr_analysis import compute_rq3_pair_frr, device_day_values_for_permutation_test, per_unit_mean_d
+
+        run = self.get_run(paper_run_id)
+        window_duration_s = window_duration_s if window_duration_s is not None else DEFAULT_WINDOW_DURATION_S
+        minimum_eligible_bursts = minimum_eligible_bursts if minimum_eligible_bursts is not None else DEFAULT_MINIMUM_ELIGIBLE_BURSTS
+
+        if bundle_id is None:
+            rq2_report = self.get_rq2_representation_comparison_report(paper_run_id)
+            primary = next((b for b in (rq2_report or {}).get("branches", []) if b.get("analysis_role") == "PRIMARY"), None)
+            if primary is None or not primary.get("model_bundle_id"):
+                raise ValueError("NO_FROZEN_PRIMARY_RQ2_BRANCH_WITH_A_MODEL_BUNDLE_ID:run RQ2 Benchmark first, or pass bundle_id explicitly")
+            bundle_id = primary["model_bundle_id"]
+
+        pairs = build_pre_post_pairs(self._load_all_captures())
+        examples_by_capture_id: dict[str, list[Any]] = {}
+        for pair in pairs:
+            if pair.valid:
+                examples_by_capture_id[pair.pre_capture_id] = self._load_examples(pair.pre_capture_id)
+                examples_by_capture_id[pair.post_capture_id] = self._load_examples(pair.post_capture_id)
+
+        enriched_pairs = compute_rq3_pair_frr(
+            pairs, offline_inference_service=offline_inference_service, bundle_id=bundle_id, scientific_task=run.scientific_task,
+            examples_by_capture_id=examples_by_capture_id, window_duration_s=window_duration_s, minimum_eligible_bursts=minimum_eligible_bursts,
+        )
+        device_day_values, device_day_is_reset = device_day_values_for_permutation_test(enriched_pairs)
+        stats_kwargs: dict[str, Any] = {}
+        if device_day_values:
+            stats_kwargs = {"rq3_device_day_values": device_day_values, "rq3_device_day_is_reset": device_day_is_reset}
+
+        as_dict = self.run_confirmatory_statistical_plan(paper_run_id, **stats_kwargs)
+        as_dict["rq3_pairs"] = enriched_pairs
+        as_dict["rq3_per_unit_mean_d"] = per_unit_mean_d(enriched_pairs)
+        as_dict["rq3_bundle_id"] = bundle_id
+        atomic_json(self._run_dir(paper_run_id) / "06_statistics" / "confirmatory_statistical_plan_report.json", as_dict)
+        self.logger.info("rq3 FRR analysis persisted paper_run_id=%s bundle_id=%s pairs=%s", paper_run_id, bundle_id, len(enriched_pairs))
+        return as_dict
+
     class ProtocolFreezeGateError(Exception):
         pass
 

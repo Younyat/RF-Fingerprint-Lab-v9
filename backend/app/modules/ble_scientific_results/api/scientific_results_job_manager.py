@@ -431,3 +431,48 @@ class ScientificResultsJobManager:
             self._write(job_dir, "failed", job_type="RQ2_BENCHMARK", paper_run_id=paper_run_id, error=str(error))
         finally:
             self._cancel_flags.pop(job_id, None)
+
+    # ------------------------------------------------------------------
+    # Scientific Dashboard Closure audit finding (2026-08-11): RQ3's pair
+    # CONSTRUCTION was real, but the real FRR_pre/FRR_post/D estimand had
+    # zero real callers -- OfflineInferenceService.run_decision_windows()
+    # (the frozen primary-branch bundle + preprocessing + decision-window
+    # rule + calibrated threshold) was real and callable end-to-end, this
+    # job is the missing real caller. Same real bundle_root/
+    # capture_iq_paths_for() StudioRepository.run_inference() already uses
+    # -- never a second bundle-loading path.
+    # ------------------------------------------------------------------
+
+    def start_rq3_frr_analysis_job(self, *, paper_run_id: str, bundle_id: str | None = None) -> dict[str, Any]:
+        job_id = self._new_job_id()
+        job_dir = self._job_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=False)
+        atomic_json(job_dir / "job.json", {
+            "schema_version": "ble-scientific-results-job-v1", "job_id": job_id, "job_type": "RQ3_FRR_ANALYSIS",
+            "paper_run_id": paper_run_id, "state": "queued", "stage": None, "overall_progress": 0.0, "message": None,
+            "warnings": [], "started_at": utc_now(), "updated_at": utc_now(),
+        })
+        threading.Thread(target=self._run_rq3_frr_analysis_job, args=(job_id, paper_run_id, bundle_id), daemon=True).start()
+        return self.get_job(job_id)
+
+    def _run_rq3_frr_analysis_job(self, job_id: str, paper_run_id: str, bundle_id: str | None) -> None:
+        job_dir = self._job_dir(job_id)
+        self._write(job_dir, "running", job_type="RQ3_FRR_ANALYSIS", paper_run_id=paper_run_id, stage="starting", overall_progress=0.0, message="Starting RQ3 FRR pre/post analysis")
+        try:
+            if self._studio_repository is None:
+                raise ValueError("NO_STUDIO_REPOSITORY_CONFIGURED:RQ3 FRR analysis needs a real StudioRepository to load bundles/IQ")
+            from ..inference.offline_inference import OfflineInferenceService  # deferred: ble_rffi_studio import from this package
+
+            self._write(job_dir, "running", job_type="RQ3_FRR_ANALYSIS", paper_run_id=paper_run_id, stage="resolving_bundle_and_iq", overall_progress=0.2, message="Resolving frozen bundle and real capture IQ paths")
+            all_captures = self.repository._load_all_captures()
+            capture_iq_paths = self._studio_repository.capture_iq_paths_for([c.capture_id for c in all_captures])
+            offline_inference_service = OfflineInferenceService(self._studio_repository.bundle_builder.root, capture_iq_paths)
+
+            self._write(job_dir, "running", job_type="RQ3_FRR_ANALYSIS", paper_run_id=paper_run_id, stage="scoring_pairs", overall_progress=0.5, message="Scoring PRE/POST decision windows with the frozen bundle")
+            result = self.repository.run_rq3_frr_analysis(paper_run_id=paper_run_id, offline_inference_service=offline_inference_service, bundle_id=bundle_id)
+            message = f"{len(result.get('rq3_pairs', []))} real PrePostPair(s) evaluated, bundle_id={result.get('rq3_bundle_id')}"
+            self._write(job_dir, "completed", job_type="RQ3_FRR_ANALYSIS", paper_run_id=paper_run_id, stage="done", overall_progress=1.0, message=message, result=result)
+        except Exception as error:  # noqa: BLE001 -- includes missing StudioRepository/no frozen PRIMARY branch
+            self._write(job_dir, "failed", job_type="RQ3_FRR_ANALYSIS", paper_run_id=paper_run_id, error=str(error))
+        finally:
+            self._cancel_flags.pop(job_id, None)

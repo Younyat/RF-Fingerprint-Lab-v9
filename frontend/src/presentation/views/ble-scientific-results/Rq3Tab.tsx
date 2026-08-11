@@ -1,6 +1,8 @@
-import { BleScientificResultsApiService, NoDataResponse, Rq3Pair } from '../../../app/services/bleScientificResultsApi';
+import { BleScientificResultsApiService, NoDataResponse, Rq3Pair, Rq3PerUnitMeanD } from '../../../app/services/bleScientificResultsApi';
 import EvidenceMaturityBadge, { EvidenceMaturity } from './EvidenceMaturityBadge';
+import BarWithCiChart, { BarWithCiDatum } from './charts/BarWithCiChart';
 import HistogramChart from './charts/HistogramChart';
+import PairedPrePostChart, { PairedPrePostDatum } from './charts/PairedPrePostChart';
 import RunScopedJsonReport from './RunScopedJsonReport';
 import StatisticalInspectionPanel, { rq3PermutationRow } from './StatisticalInspectionPanel';
 
@@ -26,6 +28,27 @@ function pairs(report: Record<string, unknown>): Rq3Pair[] {
   return Array.isArray(value) ? (value as Rq3Pair[]) : [];
 }
 
+function pairedPrePost(realPairs: Rq3Pair[], arm: 'RESET' | 'CONTROL'): PairedPrePostDatum[] {
+  return realPairs
+    .filter((p) => p.valid && p.intervention_arm === arm && typeof p.pre_frr === 'number' && typeof p.post_frr === 'number')
+    .map((p) => ({ unitId: `${p.physical_unit_id} (${p.day_id})`, pre: p.pre_frr as number, post: p.post_frr as number }));
+}
+
+function perUnitDBars(realPairs: Rq3Pair[]): BarWithCiDatum[] {
+  return realPairs
+    .filter((p) => p.valid && typeof p.d === 'number')
+    .map((p) => ({ category: `${p.physical_unit_id} (${p.day_id}, ${p.intervention_arm})`, value: p.d as number }));
+}
+
+function perUnitMeanD(report: Record<string, unknown>): { reset: BarWithCiDatum[]; control: BarWithCiDatum[] } {
+  const value = report.rq3_per_unit_mean_d as Rq3PerUnitMeanD | undefined;
+  if (!value) return { reset: [], control: [] };
+  return {
+    reset: Object.entries(value.reset || {}).map(([unit, d]) => ({ category: unit, value: d })),
+    control: Object.entries(value.control || {}).map(([unit, d]) => ({ category: unit, value: d })),
+  };
+}
+
 /** RQ3 reads whichever real confirmatory statistical report exists,
  * preferring the FUTURE-gated CONFIRMATORY one (confirmatory_future_
  * analysis_report.json) only when it has actually been produced (requires
@@ -47,17 +70,20 @@ export default function Rq3Tab() {
   return (
     <RunScopedJsonReport
       title="RQ3 -- Reset-associated displacement"
-      description="delta_cycle, permutation test, pares RESET/CONTROL PRE/POST -- lee confirmatory_future_analysis_report.json (CONFIRMATORY) cuando existe, o confirmatory_statistical_plan_report.json (VALIDATION, no toca FUTURE) en caso contrario -- el mismo motor estadistico, badge de madurez segun la fuente real."
-      noDataReason="Ni confirmatory_future_analysis_report.json ni confirmatory_statistical_plan_report.json existen todavia para este run."
+      description="FRR_pre/FRR_post/D por par PRE/POST -- real, via el pipeline de inferencia congelado (rama primaria + preprocesamiento + regla de ventana de decision + umbral operativo calibrado). run_rq3_frr_analysis (POST /rq3-frr-analysis) es el productor real; lee confirmatory_future_analysis_report.json (CONFIRMATORY) cuando existe, o confirmatory_statistical_plan_report.json (VALIDATION, no toca FUTURE) en caso contrario."
+      noDataReason="Ni confirmatory_future_analysis_report.json ni confirmatory_statistical_plan_report.json existen todavia para este run -- ejecuta RQ3 FRR Analysis (Study Control Center) primero."
       fetchReport={fetchRq3Report}
       renderCharts={(report) => {
         const source = (report._evidence_source as EvidenceMaturity) ?? 'VALIDATION';
         const realPairs = pairs(report);
         const invalidPairs = realPairs.filter((p) => !p.valid);
+        const scoredPairs = realPairs.filter((p) => p.valid && typeof p.d === 'number');
+        const meanD = perUnitMeanD(report);
         return (
           <>
             <div className="flex items-center gap-2 text-[11px] text-slate-500">
               <span>fuente de evidencia:</span><EvidenceMaturityBadge maturity={source} />
+              {report.rq3_bundle_id != null && <span className="ml-2">bundle: <span className="font-mono text-slate-400">{String(report.rq3_bundle_id)}</span></span>}
             </div>
             <div>
               <div className="mb-1 text-xs font-semibold text-slate-400">Inspeccion estadistica</div>
@@ -72,20 +98,46 @@ export default function Rq3Tab() {
                 noDataReason="rq3_within_device_permutation_test.value.null_distribution no esta presente en el reporte."
               />
             </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <div className="mb-1 text-xs font-semibold text-slate-400">RESET -- FRR pareado PRE-&gt;POST</div>
+                <PairedPrePostChart data={pairedPrePost(realPairs, 'RESET')} yLabel="FRR" noDataReason="Sin pares RESET reales con FRR calculado todavia." />
+              </div>
+              <div>
+                <div className="mb-1 text-xs font-semibold text-slate-400">CONTROL -- FRR pareado PRE-&gt;POST</div>
+                <PairedPrePostChart data={pairedPrePost(realPairs, 'CONTROL')} yLabel="FRR" noDataReason="Sin pares CONTROL reales con FRR calculado todavia." />
+              </div>
+            </div>
             <div>
-              <div className="mb-1 text-xs font-semibold text-slate-400">Registro real de pares PRE/POST (identidad -- build_pre_post_pairs, nunca un valor inventado)</div>
+              <div className="mb-1 text-xs font-semibold text-slate-400">D = FRR_post - FRR_pre, por unidad/dia/arm</div>
+              <BarWithCiChart data={perUnitDBars(realPairs)} yLabel="D" noDataReason="Sin D real calculado todavia." />
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <div className="mb-1 text-xs font-semibold text-slate-400">D medio por unidad -- RESET</div>
+                <BarWithCiChart data={meanD.reset} yLabel="D medio (RESET)" noDataReason="Sin D medio RESET real todavia." />
+              </div>
+              <div>
+                <div className="mb-1 text-xs font-semibold text-slate-400">D medio por unidad -- CONTROL</div>
+                <BarWithCiChart data={meanD.control} yLabel="D medio (CONTROL)" noDataReason="Sin D medio CONTROL real todavia." />
+              </div>
+            </div>
+            <div>
+              <div className="mb-1 text-xs font-semibold text-slate-400">Registro real de pares PRE/POST (identidad + FRR/D reales)</div>
               {realPairs.length === 0 ? (
                 <div className="rounded border border-dashed border-slate-700 bg-slate-900/40 px-4 py-6 text-center text-xs text-slate-500">
                   0 pares reales todavia (0/0 capturas declaran day_id/intervention_arm/pre_or_post a la vez -- esperado hasta la campana definitiva).
                 </div>
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[760px] border-collapse text-[11px]">
+                  <table className="w-full min-w-[900px] border-collapse text-[11px]">
                     <thead>
                       <tr className="border-b border-slate-800 text-left text-slate-500">
                         <th className="py-1 pr-2">unidad</th><th className="py-1 pr-2">dia</th><th className="py-1 pr-2">arm</th>
                         <th className="py-1 pr-2">pre_capture_id</th><th className="py-1 pr-2">post_capture_id</th>
                         <th className="py-1 pr-2">valido</th><th className="py-1 pr-2">razon de invalidacion</th>
+                        <th className="py-1 pr-2">n_pre_windows</th><th className="py-1 pr-2">n_post_windows</th>
+                        <th className="py-1 pr-2">FRR_pre</th><th className="py-1 pr-2">FRR_post</th><th className="py-1 pr-2">D</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -94,6 +146,10 @@ export default function Rq3Tab() {
                           <td className="py-1.5 pr-2">{p.physical_unit_id}</td><td className="py-1.5 pr-2">{p.day_id}</td><td className="py-1.5 pr-2">{p.intervention_arm}</td>
                           <td className="py-1.5 pr-2 font-mono">{p.pre_capture_id}</td><td className="py-1.5 pr-2 font-mono">{p.post_capture_id}</td>
                           <td className="py-1.5 pr-2">{p.valid ? 'yes' : 'no'}</td><td className="py-1.5 pr-2">{p.invalidation_reason ?? '-'}</td>
+                          <td className="py-1.5 pr-2 font-mono">{p.n_pre_windows ?? 'N/A'}</td><td className="py-1.5 pr-2 font-mono">{p.n_post_windows ?? 'N/A'}</td>
+                          <td className="py-1.5 pr-2 font-mono">{p.pre_frr != null ? p.pre_frr.toFixed(4) : 'N/A'}</td>
+                          <td className="py-1.5 pr-2 font-mono">{p.post_frr != null ? p.post_frr.toFixed(4) : 'N/A'}</td>
+                          <td className="py-1.5 pr-2 font-mono">{p.d != null ? p.d.toFixed(4) : 'N/A'}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -101,16 +157,13 @@ export default function Rq3Tab() {
                   {invalidPairs.length > 0 && (
                     <div className="mt-1 text-[11px] text-slate-500">{invalidPairs.length} de {realPairs.length} pares invalidos (ver razon en la tabla).</div>
                   )}
+                  {realPairs.length > invalidPairs.length && scoredPairs.length === 0 && (
+                    <div className="mt-1 text-[11px] text-amber-400/80">
+                      Pares validos existen pero ninguno tiene FRR real todavia -- ejecuta RQ3 FRR Analysis para puntuarlos con la rama primaria congelada.
+                    </div>
+                  )}
                 </div>
               )}
-            </div>
-            <div className="rounded border border-dashed border-slate-700 bg-slate-900/30 px-3 py-2 text-[11px] text-amber-400/80">
-              MISSING_CANONICAL_METRIC -- el par PRE/POST por unidad SOLO tiene identidad real arriba (unidad/dia/arm/
-              capture_ids/validez), nunca un valor numerico PRE/POST ni D: ninguna funcion en el codebase calcula
-              todavia una puntuacion por captura para alimentar ese valor (confirmado por revision directa de
-              PrePostPair y de confirmatory_analysis_runner.py). Inventar ese numero aqui seria exactamente la
-              "nueva metrica para completar una grafica" que esta prohibida -- PairedPrePostChart se conectara en
-              cuanto exista un producer real.
             </div>
           </>
         );

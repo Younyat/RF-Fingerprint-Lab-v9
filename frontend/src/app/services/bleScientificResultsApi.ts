@@ -837,6 +837,37 @@ export interface Rq3Pair {
   post_receiver_session_id: string | null;
   valid: boolean;
   invalidation_reason: string | null;
+  // Real FRR pre/post/D (2026-08-11) -- from OfflineInferenceService's
+  // frozen decision-window pipeline, never a fabricated per-capture score.
+  n_pre_windows: number | null;
+  n_post_windows: number | null;
+  pre_frr: number | null;
+  post_frr: number | null;
+  d: number | null;
+}
+
+export interface Rq3PerUnitMeanD {
+  reset: Record<string, number>;
+  control: Record<string, number>;
+}
+
+export interface StartRq3FrrAnalysisRequest {
+  paper_run_id: string;
+  bundle_id?: string;
+}
+
+export interface Rq3FrrAnalysisJob {
+  job_id: string;
+  job_type: 'RQ3_FRR_ANALYSIS';
+  paper_run_id: string;
+  state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  stage: string | null;
+  overall_progress: number;
+  message: string | null;
+  error?: string;
+  result?: Record<string, unknown>;
+  started_at: string;
+  updated_at: string;
 }
 
 export interface SeedVariabilityPoint {
@@ -1008,6 +1039,14 @@ export class BleScientificResultsApiService {
   }
   async listScientistDecisions(fieldId?: string) {
     return (await axios.get<ScientistDecisionRecord[]>(`${this.root}/scientist-decisions`, { params: fieldId ? { field_id: fieldId } : {} })).data;
+  }
+
+  // RQ3 real FRR pre/post analysis (2026-08-11).
+  async startRq3FrrAnalysis(body: StartRq3FrrAnalysisRequest) {
+    return (await axios.post<Rq3FrrAnalysisJob>(`${this.root}/rq3-frr-analysis`, body)).data;
+  }
+  async getRq3FrrAnalysisJob(jobId: string) {
+    return (await axios.get<Rq3FrrAnalysisJob>(`${this.root}/jobs/${encodeURIComponent(jobId)}`)).data;
   }
 
   // Scientific Dashboard closure, Level A/B (2026-08-11).

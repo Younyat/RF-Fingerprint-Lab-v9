@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { BleRffiStudioApiService, StudioJob, StudioPaperCampaignRejection, StudioPaperCampaignSchedule, StudioPhysicalUnit } from '../../../app/services/bleRffiStudioApi';
 import {
   BleScientificResultsApiService, HardwareQualificationJob, HierarchicalDesignInput, NoDataResponse, PaperRunRecord,
-  Rq2BenchmarkJob, StudyControlCenterStatus, StudySizingDecision, StudySizingEvaluationResult,
+  Rq2BenchmarkJob, Rq3FrrAnalysisJob, StudyControlCenterStatus, StudySizingDecision, StudySizingEvaluationResult,
 } from '../../../app/services/bleScientificResultsApi';
 import NoDataNotice, { StatusBadge } from './NoDataNotice';
 import AnalysisContractReadinessPanel from './AnalysisContractReadinessPanel';
@@ -92,6 +92,7 @@ export default function StudyControlCenterTab() {
       <PhysicalUnitQualificationLauncher onCompleted={refresh} />
       <StudySizingLauncher onCompleted={refresh} />
       <Rq2BenchmarkLauncher onCompleted={refresh} />
+      <Rq3FrrAnalysisLauncher onCompleted={refresh} />
       <AnalysisContractReadinessPanel onCompleted={refresh} />
       <CampaignScheduleLauncher onCompleted={refresh} />
     </div>
@@ -398,6 +399,104 @@ async function pollRq2Job(jobId: string, onUpdate: (job: Rq2BenchmarkJob) => voi
     onUpdate(current);
   }
   return current;
+}
+
+async function pollRq3FrrJob(jobId: string, onUpdate: (job: Rq3FrrAnalysisJob) => void): Promise<Rq3FrrAnalysisJob> {
+  let current = await sciApi.getRq3FrrAnalysisJob(jobId);
+  onUpdate(current);
+  while (!JOB_TERMINAL.has(current.state)) {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    current = await sciApi.getRq3FrrAnalysisJob(jobId);
+    onUpdate(current);
+  }
+  return current;
+}
+
+/** Scientific Dashboard Closure audit finding (2026-08-11): RQ3's pair
+ * CONSTRUCTION was real, but FRR_pre/FRR_post/D had no real caller even
+ * though the frozen inference pipeline that computes it was already real
+ * end-to-end -- this launcher is that missing real caller, driving
+ * ScientificResultsRepository.run_rq3_frr_analysis via a real background
+ * job (scoring can take a while against many pairs). bundle_id defaults
+ * to the frozen PRIMARY RQ2 branch -- never guessed. */
+function Rq3FrrAnalysisLauncher({ onCompleted }: { onCompleted: () => void }) {
+  const [runs, setRuns] = useState<PaperRunRecord[]>([]);
+  const [paperRunId, setPaperRunId] = useState('');
+  const [bundleId, setBundleId] = useState('');
+  const [job, setJob] = useState<Rq3FrrAnalysisJob | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    sciApi.listRuns().then((list) => {
+      setRuns(list);
+      if (list.length > 0) setPaperRunId(list[0].paper_run_id);
+    }).catch(() => setRuns([]));
+  }, []);
+
+  const start = async () => {
+    if (!paperRunId) return;
+    setBusy(true);
+    setJob(null);
+    try {
+      const started = await sciApi.startRq3FrrAnalysis({ paper_run_id: paperRunId, bundle_id: bundleId || undefined });
+      const finished = await pollRq3FrrJob(started.job_id, setJob);
+      if (finished.state === 'completed') onCompleted();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded border border-slate-800 bg-slate-900/40 p-4">
+      <div className="text-sm font-semibold text-slate-200">RUN RQ3 FRR ANALYSIS</div>
+      <div className="mt-1 text-xs text-slate-500">
+        Puntua cada par PRE/POST real (build_pre_post_pairs) con el pipeline de inferencia congelado
+        (OfflineInferenceService.run_decision_windows -- rama primaria + preprocesamiento + regla de ventana de
+        decision + umbral operativo calibrado, sin recalcular nada nuevo) y calcula FRR_pre/FRR_post/D real. Reutiliza
+        el motor de permutacion ya existente (stratified_crossover_permutation_test) -- nunca una segunda
+        implementacion estadistica.
+      </div>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-xs text-slate-500">paper_run_id</label>
+          <select className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={paperRunId} onChange={(e) => setPaperRunId(e.target.value)} disabled={busy}>
+            <option value="">(seleccionar run)</option>
+            {runs.map((run) => (<option key={run.paper_run_id} value={run.paper_run_id}>{run.paper_run_id}</option>))}
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-slate-500">bundle_id (opcional -- por defecto la rama PRIMARY congelada de RQ2)</label>
+          <input className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={bundleId} onChange={(e) => setBundleId(e.target.value)} disabled={busy} />
+        </div>
+      </div>
+
+      <button
+        className="mt-3 rounded bg-cyan-700 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-600 disabled:cursor-not-allowed disabled:bg-slate-700"
+        disabled={busy || !paperRunId} onClick={start}
+      >
+        {busy ? 'Ejecutando...' : 'RUN RQ3 FRR ANALYSIS'}
+      </button>
+
+      {job && (
+        <div className="mt-4 space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <StatusBadge status={job.state.toUpperCase()} />
+            <span className="text-slate-500">stage: {job.stage ?? 'N/A'}</span>
+            <span className="text-slate-500">progress: {Math.round(job.overall_progress * 100)}%</span>
+          </div>
+          {job.message && <div className="text-xs text-slate-400">{job.message}</div>}
+          {job.error && <div className="text-xs text-red-400">error: {job.error}</div>}
+          {job.result && (
+            <details className="rounded border border-slate-800 bg-slate-950">
+              <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-400">JSON crudo (fuente exacta persistida)</summary>
+              <pre className="max-h-[50vh] overflow-auto p-3 text-[11px] text-slate-300">{JSON.stringify(job.result, null, 2)}</pre>
+            </details>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function Rq2BenchmarkLauncher({ onCompleted }: { onCompleted: () => void }) {

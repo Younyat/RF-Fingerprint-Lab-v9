@@ -460,4 +460,12 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
             scientific_task=body.get("scientific_task", "TARGET_VS_BACKGROUND"), model_types=body.get("model_types"),
         ))
 
+    # Scientific Dashboard Closure audit finding (2026-08-11): RQ3's real
+    # FRR_pre/FRR_post/D estimand had zero real callers even though the
+    # frozen inference pipeline was already real -- this is the missing
+    # real caller (see rq3_frr_analysis.py's own module docstring).
+    @router.post("/rq3-frr-analysis", status_code=202)
+    def start_rq3_frr_analysis(body: dict):
+        return call(lambda: job_manager.start_rq3_frr_analysis_job(paper_run_id=body["paper_run_id"], bundle_id=body.get("bundle_id")))
+
     return router
