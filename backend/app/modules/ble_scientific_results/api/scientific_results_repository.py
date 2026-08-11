@@ -476,6 +476,7 @@ class ScientificResultsRepository:
         pilot_fully_executed = any(executed == total and total > 0 for executed, total in pilot_executed_counts)
         pilot_partially_executed = any(executed > 0 for executed, _ in pilot_executed_counts)
 
+        sizing_decision = self.get_study_sizing_decision()
         rq2_report = self.get_rq2_representation_comparison_report(latest_run.paper_run_id) if latest_run else None
         confirmatory_future_report = self.get_confirmatory_future_analysis_report(latest_run.paper_run_id) if latest_run else None
         channel_transport_report = self.get_channel_transport_report(latest_run.paper_run_id) if latest_run else None
@@ -508,7 +509,11 @@ class ScientificResultsRepository:
                 "real_data_available": bool(pilot_schedules),
                 "artifacts": ["ble_rffi_studio/paper_campaign/schedules/*"] if pilot_schedules else [],
             },
-            "05": {"completed": False, "in_progress": False, "real_data_available": False, "artifacts": []},
+            "05": {
+                "completed": sizing_decision is not None,
+                "in_progress": False, "real_data_available": sizing_decision is not None,
+                "artifacts": ["study_sizing_decision.json"] if sizing_decision else [],
+            },
             "06": {"completed": False, "in_progress": False, "real_data_available": study_status["real_capture_count"] > 0, "artifacts": []},
             "07": {"completed": False, "in_progress": False, "real_data_available": False, "artifacts": []},
             "08": {
@@ -775,6 +780,66 @@ class ScientificResultsRepository:
         atomic_json(self.root / "campaign_qualification_preflight_report.json", report)
         self.logger.info("campaign qualification preflight overall_status=%s", overall)
         return report
+
+    # ------------------------------------------------------------------
+    # Study Control Center, phase 05 (2026-08-11): Study Sizing. Wires the
+    # already-real, previously-unwired statistics/power_simulation.py
+    # (closed_form_power_two_proportions/evaluate_design_sufficiency/
+    # find_minimum_sufficient_design) -- this repository computes nothing
+    # new, it only calls those pure functions and persists the caller's
+    # explicit sizing DECISION (never auto-selected).
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _design_evaluation_to_dict(evaluation: Any) -> dict[str, Any]:
+        design = evaluation.design
+        return {
+            "design": {
+                "n_units": design.n_units, "n_days": design.n_days, "n_captures_per_unit_day": design.n_captures_per_unit_day,
+                "icc_unit": design.icc_unit, "icc_day": design.icc_day,
+                "total_captures": design.total_captures, "design_effect": design.design_effect, "effective_captures": design.effective_captures,
+            },
+            "power": evaluation.power, "verdict": evaluation.verdict,
+        }
+
+    def evaluate_study_sizing_candidates(
+        self, *, candidate_designs: list[dict[str, Any]], p1: float, p2: float, alpha: float = 0.05, target_power: float = 0.8,
+    ) -> dict[str, Any]:
+        from ..statistics.power_simulation import HierarchicalDesign, evaluate_design_sufficiency, find_minimum_sufficient_design
+        designs = [HierarchicalDesign(**candidate) for candidate in candidate_designs]
+        evaluations = [evaluate_design_sufficiency(d, p1=p1, p2=p2, alpha=alpha, target_power=target_power) for d in designs]
+        minimum_sufficient = find_minimum_sufficient_design(designs, p1=p1, p2=p2, alpha=alpha, target_power=target_power)
+        return {
+            "p1": p1, "p2": p2, "alpha": alpha, "target_power": target_power,
+            "evaluations": [self._design_evaluation_to_dict(e) for e in evaluations],
+            "minimum_sufficient_design": self._design_evaluation_to_dict(minimum_sufficient) if minimum_sufficient else None,
+        }
+
+    def persist_study_sizing_decision(
+        self, *, chosen_design: dict[str, Any], p1: float, p2: float, alpha: float = 0.05, target_power: float = 0.8,
+        rationale: str, decided_by: str | None = None,
+    ) -> dict[str, Any]:
+        """The sizing DECISION is always an explicit, reasoned human choice
+        -- this never auto-persists find_minimum_sufficient_design()'s
+        answer, and refuses to record a decision with no real rationale."""
+        if not rationale.strip():
+            raise ValueError("RATIONALE_REQUIRED_TO_RECORD_A_STUDY_SIZING_DECISION")
+        from ..statistics.power_simulation import HierarchicalDesign, evaluate_design_sufficiency
+        design = HierarchicalDesign(**chosen_design)
+        evaluation = evaluate_design_sufficiency(design, p1=p1, p2=p2, alpha=alpha, target_power=target_power)
+        record = {
+            "schema_version": "ble-scientific-results-study-sizing-decision-v1",
+            **self._design_evaluation_to_dict(evaluation),
+            "p1": p1, "p2": p2, "alpha": alpha, "target_power": target_power,
+            "rationale": rationale, "decided_by": decided_by, "decided_at": utc_now(),
+        }
+        atomic_json(self.root / "study_sizing_decision.json", record)
+        self.logger.info("study sizing decision recorded verdict=%s power=%.3f", evaluation.verdict, evaluation.power)
+        return record
+
+    def get_study_sizing_decision(self) -> dict[str, Any] | None:
+        path = self.root / "study_sizing_decision.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
 
     # ------------------------------------------------------------------
     # Holdout access log -- append-only, hash-chained, project-wide

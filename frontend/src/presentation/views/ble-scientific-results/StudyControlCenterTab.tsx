@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
 import { BleRffiStudioApiService, StudioJob, StudioPaperCampaignRejection, StudioPaperCampaignSchedule, StudioPhysicalUnit } from '../../../app/services/bleRffiStudioApi';
-import { BleScientificResultsApiService, HardwareQualificationJob, PaperRunRecord, Rq2BenchmarkJob, StudyControlCenterStatus } from '../../../app/services/bleScientificResultsApi';
+import {
+  BleScientificResultsApiService, HardwareQualificationJob, HierarchicalDesignInput, NoDataResponse, PaperRunRecord,
+  Rq2BenchmarkJob, StudyControlCenterStatus, StudySizingDecision, StudySizingEvaluationResult,
+} from '../../../app/services/bleScientificResultsApi';
 import NoDataNotice, { StatusBadge } from './NoDataNotice';
 
 const sciApi = new BleScientificResultsApiService();
@@ -76,6 +79,7 @@ export default function StudyControlCenterTab() {
 
       <HardwareQualificationLauncher onCompleted={refresh} />
       <PhysicalUnitQualificationLauncher onCompleted={refresh} />
+      <StudySizingLauncher onCompleted={refresh} />
       <Rq2BenchmarkLauncher onCompleted={refresh} />
       <CampaignScheduleLauncher onCompleted={refresh} />
     </div>
@@ -237,6 +241,136 @@ function CampaignScheduleLauncher({ onCompleted }: { onCompleted: () => void }) 
           </div>
           {job.message && <div className="text-xs text-slate-400">{job.message}</div>}
           {job.error && <div className="text-xs text-red-400">error: {job.error}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function isNoDataResponse(value: unknown): value is NoDataResponse {
+  return !!value && typeof value === 'object' && (value as NoDataResponse).status === 'NO_DATA';
+}
+
+function StudySizingLauncher({ onCompleted }: { onCompleted: () => void }) {
+  const [designsJson, setDesignsJson] = useState('[{"n_units": 8, "n_days": 4, "n_captures_per_unit_day": 5, "icc_unit": 0.1, "icc_day": 0.05}]');
+  const [p1, setP1] = useState(0.5);
+  const [p2, setP2] = useState(0.8);
+  const [targetPower, setTargetPower] = useState(0.8);
+  const [evaluation, setEvaluation] = useState<StudySizingEvaluationResult | null>(null);
+  const [decision, setDecision] = useState<StudySizingDecision | NoDataResponse | null>(null);
+  const [rationale, setRationale] = useState('');
+  const [chosenIndex, setChosenIndex] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    sciApi.getStudySizingDecision().then(setDecision).catch(() => setDecision(null));
+  }, []);
+
+  const evaluate = async () => {
+    setError(null);
+    let candidateDesigns: HierarchicalDesignInput[];
+    try {
+      candidateDesigns = JSON.parse(designsJson);
+    } catch {
+      setError('candidate_designs debe ser un JSON valido (lista de HierarchicalDesign).');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await sciApi.evaluateStudySizing({ candidate_designs: candidateDesigns, p1, p2, target_power: targetPower });
+      setEvaluation(result);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const recordDecision = async () => {
+    if (!evaluation || !rationale.trim()) { setError('Se requiere una rationale real para registrar la decision.'); return; }
+    setBusy(true);
+    try {
+      const chosen = evaluation.evaluations[chosenIndex].design;
+      const recorded = await sciApi.recordStudySizingDecision({
+        chosen_design: { n_units: chosen.n_units, n_days: chosen.n_days, n_captures_per_unit_day: chosen.n_captures_per_unit_day, icc_unit: chosen.icc_unit, icc_day: chosen.icc_day },
+        p1, p2, target_power: targetPower, rationale,
+      });
+      setDecision(recorded);
+      onCompleted();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded border border-slate-800 bg-slate-900/40 p-4">
+      <div className="text-sm font-semibold text-slate-200">Study Sizing (fase 05)</div>
+      <div className="mt-1 text-xs text-slate-500">
+        Envuelve statistics/power_simulation.py (closed_form_power_two_proportions / evaluate_design_sufficiency /
+        find_minimum_sufficient_design), previamente real pero sin ninguna ruta. La decision de sizing es siempre una
+        eleccion humana explicita y razonada -- nunca el diseno minimo suficiente se persiste automaticamente.
+      </div>
+      {error && <div className="mt-2 text-xs text-red-400">{error}</div>}
+
+      {decision && !isNoDataResponse(decision) && (
+        <div className="mt-2 rounded border border-emerald-800 bg-emerald-950/30 px-3 py-2 text-xs text-emerald-300">
+          Decision registrada: n_units={decision.design.n_units}, power={decision.power.toFixed(3)}, verdict={decision.verdict}
+        </div>
+      )}
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-3">
+        <div>
+          <label className="mb-1 block text-xs text-slate-500">p1 (tasa base)</label>
+          <input type="number" step="0.01" className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={p1} onChange={(e) => setP1(Number(e.target.value))} disabled={busy} />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-slate-500">p2 (tasa alternativa)</label>
+          <input type="number" step="0.01" className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={p2} onChange={(e) => setP2(Number(e.target.value))} disabled={busy} />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-slate-500">target_power</label>
+          <input type="number" step="0.01" className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={targetPower} onChange={(e) => setTargetPower(Number(e.target.value))} disabled={busy} />
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <label className="mb-1 block text-xs text-slate-500">candidate_designs (JSON -- lista de HierarchicalDesign)</label>
+        <textarea className="h-20 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 font-mono text-xs text-slate-100 focus:border-cyan-600 focus:outline-none" value={designsJson} onChange={(e) => setDesignsJson(e.target.value)} disabled={busy} />
+      </div>
+
+      <button className="mt-3 rounded bg-cyan-700 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-600 disabled:cursor-not-allowed disabled:bg-slate-700" disabled={busy} onClick={evaluate}>
+        Evaluar candidatos
+      </button>
+
+      {evaluation && (
+        <div className="mt-4 space-y-2">
+          <div className="grid gap-1 text-[11px]">
+            {evaluation.evaluations.map((e, index) => (
+              <label key={index} className="flex items-center justify-between gap-2 rounded border border-slate-800 bg-slate-950 px-2 py-1">
+                <span className="flex items-center gap-2">
+                  <input type="radio" name="chosen-design" checked={chosenIndex === index} onChange={() => setChosenIndex(index)} />
+                  n_units={e.design.n_units}, n_days={e.design.n_days}, captures/unit-day={e.design.n_captures_per_unit_day}
+                </span>
+                <span className="font-mono text-slate-300">power={e.power.toFixed(3)}</span>
+                <StatusBadge status={e.verdict} />
+              </label>
+            ))}
+          </div>
+          {evaluation.minimum_sufficient_design && (
+            <div className="text-[11px] text-slate-500">
+              minimum_sufficient_design (referencia, no auto-registrado): n_units={evaluation.minimum_sufficient_design.design.n_units}
+            </div>
+          )}
+          <div>
+            <label className="mb-1 block text-xs text-slate-500">rationale (obligatorio para registrar la decision)</label>
+            <textarea className="h-16 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs text-slate-100 focus:border-cyan-600 focus:outline-none" value={rationale} onChange={(e) => setRationale(e.target.value)} disabled={busy} />
+          </div>
+          <button className="rounded bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-700" disabled={busy || !rationale.trim()} onClick={recordDecision}>
+            Registrar decision de sizing
+          </button>
         </div>
       )}
     </div>

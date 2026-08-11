@@ -647,6 +647,46 @@ export interface Rq2BenchmarkJob {
   updated_at: string;
 }
 
+// Study Control Center, phase 05 (2026-08-11) -- Study Sizing. Wraps the
+// real, previously-unwired statistics/power_simulation.py; the decision
+// endpoint never auto-selects a design.
+
+export interface HierarchicalDesignInput {
+  n_units: number;
+  n_days: number;
+  n_captures_per_unit_day: number;
+  icc_unit: number;
+  icc_day: number;
+}
+
+export type StudySizingVerdict = 'INSUFFICIENT' | 'SUFFICIENT' | 'OVERPROVISIONED';
+
+export interface StudySizingDesignEvaluation {
+  design: HierarchicalDesignInput & { total_captures: number; design_effect: number; effective_captures: number };
+  power: number;
+  verdict: StudySizingVerdict;
+}
+
+export interface StudySizingEvaluationResult {
+  p1: number;
+  p2: number;
+  alpha: number;
+  target_power: number;
+  evaluations: StudySizingDesignEvaluation[];
+  minimum_sufficient_design: StudySizingDesignEvaluation | null;
+}
+
+export interface StudySizingDecision extends StudySizingDesignEvaluation {
+  schema_version: string;
+  p1: number;
+  p2: number;
+  alpha: number;
+  target_power: number;
+  rationale: string;
+  decided_by: string | null;
+  decided_at: string;
+}
+
 export interface StartRq2BenchmarkRequest {
   paper_run_id: string;
   dataset_id: string;
@@ -796,5 +836,15 @@ export class BleScientificResultsApiService {
   }
   async getRq2BenchmarkJob(jobId: string) {
     return (await axios.get<Rq2BenchmarkJob>(`${this.root}/jobs/${encodeURIComponent(jobId)}`)).data;
+  }
+
+  async evaluateStudySizing(body: { candidate_designs: HierarchicalDesignInput[]; p1: number; p2: number; alpha?: number; target_power?: number }) {
+    return (await axios.post<StudySizingEvaluationResult>(`${this.root}/study-sizing/evaluate`, body)).data;
+  }
+  async recordStudySizingDecision(body: { chosen_design: HierarchicalDesignInput; p1: number; p2: number; alpha?: number; target_power?: number; rationale: string; decided_by?: string }) {
+    return (await axios.post<StudySizingDecision>(`${this.root}/study-sizing/decision`, body)).data;
+  }
+  async getStudySizingDecision() {
+    return (await axios.get<StudySizingDecision | NoDataResponse>(`${this.root}/study-sizing/decision`)).data;
   }
 }

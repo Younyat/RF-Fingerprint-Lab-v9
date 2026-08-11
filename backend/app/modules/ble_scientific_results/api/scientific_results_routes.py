@@ -375,6 +375,35 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
     def study_control_center():
         return call(lambda: repository.get_study_control_center_status())
 
+    # ------------------------------------------------------------------
+    # Study Control Center, phase 05 (2026-08-11): Study Sizing. Wraps the
+    # already-real statistics/power_simulation.py; the decision endpoint
+    # never auto-selects a design, only persists the caller's explicit,
+    # reasoned choice.
+    # ------------------------------------------------------------------
+
+    @router.post("/study-sizing/evaluate")
+    def evaluate_study_sizing(body: dict):
+        return call(lambda: repository.evaluate_study_sizing_candidates(
+            candidate_designs=body["candidate_designs"], p1=float(body["p1"]), p2=float(body["p2"]),
+            alpha=float(body.get("alpha", 0.05)), target_power=float(body.get("target_power", 0.8)),
+        ))
+
+    @router.post("/study-sizing/decision", status_code=201)
+    def record_study_sizing_decision(body: dict):
+        return call(lambda: repository.persist_study_sizing_decision(
+            chosen_design=body["chosen_design"], p1=float(body["p1"]), p2=float(body["p2"]),
+            alpha=float(body.get("alpha", 0.05)), target_power=float(body.get("target_power", 0.8)),
+            rationale=body["rationale"], decided_by=body.get("decided_by"),
+        ))
+
+    @router.get("/study-sizing/decision")
+    def get_study_sizing_decision():
+        def _read():
+            decision = repository.get_study_sizing_decision()
+            return decision if decision is not None else {"status": "NO_DATA"}
+        return call(_read)
+
     @router.post("/hardware-qualification", status_code=202)
     def start_hardware_qualification(body: dict):
         return call(lambda: job_manager.start_hardware_qualification_job(
