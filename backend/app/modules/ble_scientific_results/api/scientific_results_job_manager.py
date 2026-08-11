@@ -24,6 +24,7 @@ from app.infrastructure.ble.capture.ble_capture_metadata import atomic_json
 
 from ..hardware_qualification import run_real_hardware_qualification
 from ..module_logging import build_module_logger
+from ..rq2_benchmark import run_rq2_benchmark
 from .scientific_results_repository import ScientificResultsRepository
 
 TERMINAL = {"completed", "failed", "cancelled"}
@@ -34,7 +35,7 @@ def utc_now() -> str:
 
 
 class ScientificResultsJobManager:
-    def __init__(self, repository: ScientificResultsRepository, jobs_root: Path, campaign_orchestrator: Any | None = None) -> None:
+    def __init__(self, repository: ScientificResultsRepository, jobs_root: Path, campaign_orchestrator: Any | None = None, studio_repository: Any | None = None) -> None:
         self.repository = repository
         self.jobs_root = jobs_root
         self.jobs_root.mkdir(parents=True, exist_ok=True)
@@ -59,6 +60,14 @@ class ScientificResultsJobManager:
         # through GuidedBleScientificValidationService, since it isn't a
         # guided-validation action.
         self._campaign_orchestrator = campaign_orchestrator
+        # Study Control Center, phase 08 (2026-08-11): RQ2_BENCHMARK drives
+        # StudioRepository.train_selected_models() -- real training, no
+        # hardware -- so this is a SEPARATE dependency from
+        # campaign_orchestrator (which is only ever non-None when real
+        # ble_lab hardware managers exist). None when the caller does not
+        # wire one, in which case RQ2_BENCHMARK fails closed with a clear
+        # error instead of silently doing nothing.
+        self._studio_repository = studio_repository
 
     def _job_dir(self, job_id: str) -> Path:
         if not job_id.startswith("BLE-SCI-RESULTS-JOB-") or any(part in job_id for part in ("/", "\\", "..")):
@@ -381,5 +390,44 @@ class ScientificResultsJobManager:
                 self._write(job_dir, "cancelled", job_type="HARDWARE_QUALIFICATION", physical_unit_id=physical_unit_id, message="Cancelled by operator")
             else:
                 self._write(job_dir, "failed", job_type="HARDWARE_QUALIFICATION", physical_unit_id=physical_unit_id, error=str(error))
+        finally:
+            self._cancel_flags.pop(job_id, None)
+
+    # ------------------------------------------------------------------
+    # Study Control Center, phase 08 (2026-08-11): RUN RQ2 VALIDATION
+    # BENCHMARK. Drives the SAME real StudioRepository.train_selected_models()
+    # every other training UI already uses (VALIDATION-only, TEST never
+    # opened); rq2_benchmark.py computes no new science, only maps the real
+    # per-model result onto the 4 real RQ2 branches.
+    # ------------------------------------------------------------------
+
+    def start_rq2_benchmark_job(self, *, paper_run_id: str, dataset_id: str, dataset_version: str, scientific_task: str, model_types: list[str] | None) -> dict[str, Any]:
+        job_id = self._new_job_id()
+        job_dir = self._job_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=False)
+        atomic_json(job_dir / "job.json", {
+            "schema_version": "ble-scientific-results-job-v1", "job_id": job_id, "job_type": "RQ2_BENCHMARK",
+            "paper_run_id": paper_run_id, "dataset_id": dataset_id, "dataset_version": dataset_version,
+            "state": "queued", "stage": None, "overall_progress": 0.0, "message": None, "warnings": [],
+            "started_at": utc_now(), "updated_at": utc_now(),
+        })
+        threading.Thread(target=self._run_rq2_benchmark_job, args=(job_id, paper_run_id, dataset_id, dataset_version, scientific_task, model_types), daemon=True).start()
+        return self.get_job(job_id)
+
+    def _run_rq2_benchmark_job(self, job_id: str, paper_run_id: str, dataset_id: str, dataset_version: str, scientific_task: str, model_types: list[str] | None) -> None:
+        job_dir = self._job_dir(job_id)
+        self._write(job_dir, "running", job_type="RQ2_BENCHMARK", paper_run_id=paper_run_id, stage="starting", overall_progress=0.0, message="Starting RQ2 validation benchmark")
+        try:
+            def progress(stage: str, fraction: float, message: str) -> None:
+                self._write(job_dir, "running", job_type="RQ2_BENCHMARK", paper_run_id=paper_run_id, stage=stage, overall_progress=fraction, message=str(message))
+
+            result = run_rq2_benchmark(
+                studio_repository=self._studio_repository, sci_repository=self.repository, paper_run_id=paper_run_id,
+                dataset_id=dataset_id, dataset_version=dataset_version, scientific_task=scientific_task, model_types=model_types, progress=progress,
+            )
+            message = result["stopped_reason"] or (f"overall READY -- {len(result['rq2_report']['branches'])} branch(es)" if result["rq2_report"] else "done")
+            self._write(job_dir, "completed", job_type="RQ2_BENCHMARK", paper_run_id=paper_run_id, stage="done", overall_progress=1.0, message=message, result=result)
+        except Exception as error:  # noqa: BLE001 -- includes Rq2BenchmarkError (no studio repository configured)
+            self._write(job_dir, "failed", job_type="RQ2_BENCHMARK", paper_run_id=paper_run_id, error=str(error))
         finally:
             self._cancel_flags.pop(job_id, None)

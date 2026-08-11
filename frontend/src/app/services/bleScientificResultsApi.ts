@@ -621,6 +621,40 @@ export interface StartHardwareQualificationRequest {
   duration_seconds?: number;
 }
 
+// Study Control Center, phase 08 (2026-08-11) -- RUN RQ2 VALIDATION
+// BENCHMARK. Drives the same real train_selected_models() orchestration;
+// computes no new science, only maps its real result onto the 4 RQ2
+// branches.
+
+export interface Rq2BenchmarkJob {
+  job_id: string;
+  job_type: 'RQ2_BENCHMARK';
+  paper_run_id: string;
+  dataset_id: string;
+  dataset_version: string;
+  state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  stage: string | null;
+  overall_progress: number;
+  message: string | null;
+  error?: string;
+  result?: {
+    stopped_at: string | null;
+    stopped_reason: string | null;
+    rq2_report: Rq2RepresentationComparisonReport | null;
+    skipped_models?: { model_type: string; reason: string }[];
+  };
+  started_at: string;
+  updated_at: string;
+}
+
+export interface StartRq2BenchmarkRequest {
+  paper_run_id: string;
+  dataset_id: string;
+  dataset_version: string;
+  scientific_task?: string;
+  model_types?: string[];
+}
+
 export interface Rq2RepresentationComparisonReport extends Record<string, unknown> {
   schema_version: string;
   protocol_id: string;
@@ -756,5 +790,11 @@ export class BleScientificResultsApiService {
   }
   async cancelHardwareQualificationJob(jobId: string) {
     return (await axios.post<HardwareQualificationJob>(`${this.root}/jobs/${encodeURIComponent(jobId)}/cancel`)).data;
+  }
+  async startRq2Benchmark(body: StartRq2BenchmarkRequest) {
+    return (await axios.post<Rq2BenchmarkJob>(`${this.root}/rq2-benchmark`, body)).data;
+  }
+  async getRq2BenchmarkJob(jobId: string) {
+    return (await axios.get<Rq2BenchmarkJob>(`${this.root}/jobs/${encodeURIComponent(jobId)}`)).data;
   }
 }

@@ -31,14 +31,26 @@ def _build(context):
     shared = get_shared_managers()
     if shared is not None:
         arbiter = SdrDeviceArbiter(root / "ble_rffi_studio" / "hardware_locks")
-        studio_repository = StudioRepository(
+        hardware_studio_repository = StudioRepository(
             root / "ble_rffi_studio", legacy_capture_root=root / "ble" / "iq_captures", legacy_session_root=root / "ble_lab" / "sessions",
         )
         campaign_orchestrator = CampaignOrchestrator(
-            hybrid_manager=shared.hybrid_manager, capture_manager=shared.capture_manager, arbiter=arbiter, repository=studio_repository,
+            hybrid_manager=shared.hybrid_manager, capture_manager=shared.capture_manager, arbiter=arbiter, repository=hardware_studio_repository,
         )
 
-    job_manager = ScientificResultsJobManager(repository, root / "scientific_reports" / "ble" / "jobs", campaign_orchestrator=campaign_orchestrator)
+    # Study Control Center, phase 08 (2026-08-11): RQ2_BENCHMARK needs a
+    # StudioRepository to call train_selected_models() -- real training,
+    # never real hardware -- so it is built unconditionally, independent of
+    # whether ble_lab's shared hardware managers (campaign_orchestrator,
+    # above) are available.
+    training_studio_repository = StudioRepository(
+        root / "ble_rffi_studio", legacy_capture_root=root / "ble" / "iq_captures", legacy_session_root=root / "ble_lab" / "sessions",
+    )
+
+    job_manager = ScientificResultsJobManager(
+        repository, root / "scientific_reports" / "ble" / "jobs",
+        campaign_orchestrator=campaign_orchestrator, studio_repository=training_studio_repository,
+    )
     return build_ble_scientific_results_router(repository, job_manager)
 
 

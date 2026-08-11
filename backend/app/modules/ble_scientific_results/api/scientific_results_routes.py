@@ -382,4 +382,11 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
             duration_seconds=float(body.get("duration_seconds", 180.0)),
         ))
 
+    @router.post("/rq2-benchmark", status_code=202)
+    def start_rq2_benchmark(body: dict):
+        return call(lambda: job_manager.start_rq2_benchmark_job(
+            paper_run_id=body["paper_run_id"], dataset_id=body["dataset_id"], dataset_version=body["dataset_version"],
+            scientific_task=body.get("scientific_task", "TARGET_VS_BACKGROUND"), model_types=body.get("model_types"),
+        ))
+
     return router

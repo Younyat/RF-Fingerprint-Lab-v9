@@ -1226,7 +1226,7 @@ class ScientificResultsRepository:
         return json.loads(path.read_text(encoding="utf-8"))
 
     def persist_rq2_representation_comparison_report(
-        self, *, paper_run_id: str, protocol_id: str, protocol_version: int, contract_sha256: str,
+        self, *, paper_run_id: str, protocol_id: str | None = None, protocol_version: int | None = None, contract_sha256: str | None = None,
         dataset_id: str, dataset_version: str, split_manifest_id: str, split_manifest_sha256: str,
         branch_results: list[dict[str, Any]],
     ) -> dict[str, Any]:

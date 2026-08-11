@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BleRffiStudioApiService, StudioPhysicalUnit } from '../../../app/services/bleRffiStudioApi';
-import { BleScientificResultsApiService, HardwareQualificationJob, StudyControlCenterStatus } from '../../../app/services/bleScientificResultsApi';
+import { BleScientificResultsApiService, HardwareQualificationJob, PaperRunRecord, Rq2BenchmarkJob, StudyControlCenterStatus } from '../../../app/services/bleScientificResultsApi';
 import NoDataNotice, { StatusBadge } from './NoDataNotice';
 
 const sciApi = new BleScientificResultsApiService();
@@ -76,6 +76,122 @@ export default function StudyControlCenterTab() {
 
       <HardwareQualificationLauncher onCompleted={refresh} />
       <PhysicalUnitQualificationLauncher onCompleted={refresh} />
+      <Rq2BenchmarkLauncher onCompleted={refresh} />
+    </div>
+  );
+}
+
+async function pollRq2Job(jobId: string, onUpdate: (job: Rq2BenchmarkJob) => void): Promise<Rq2BenchmarkJob> {
+  let current = await sciApi.getRq2BenchmarkJob(jobId);
+  onUpdate(current);
+  while (!JOB_TERMINAL.has(current.state)) {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    current = await sciApi.getRq2BenchmarkJob(jobId);
+    onUpdate(current);
+  }
+  return current;
+}
+
+function Rq2BenchmarkLauncher({ onCompleted }: { onCompleted: () => void }) {
+  const [runs, setRuns] = useState<PaperRunRecord[]>([]);
+  const [paperRunId, setPaperRunId] = useState('');
+  const [datasetId, setDatasetId] = useState('');
+  const [datasetVersion, setDatasetVersion] = useState('');
+  const [job, setJob] = useState<Rq2BenchmarkJob | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    sciApi.listRuns().then((list) => {
+      setRuns(list);
+      if (list.length > 0) {
+        setPaperRunId(list[0].paper_run_id);
+        setDatasetId(list[0].dataset_id);
+        setDatasetVersion(list[0].dataset_version);
+      }
+    }).catch(() => setRuns([]));
+  }, []);
+
+  const start = async () => {
+    if (!paperRunId || !datasetId || !datasetVersion) return;
+    setBusy(true);
+    setJob(null);
+    try {
+      const started = await sciApi.startRq2Benchmark({ paper_run_id: paperRunId, dataset_id: datasetId, dataset_version: datasetVersion });
+      const finished = await pollRq2Job(started.job_id, setJob);
+      if (finished.state === 'completed' && finished.result?.rq2_report) onCompleted();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded border border-slate-800 bg-slate-900/40 p-4">
+      <div className="text-sm font-semibold text-slate-200">RUN RQ2 VALIDATION BENCHMARK (fase 08)</div>
+      <div className="mt-1 text-xs text-slate-500">
+        Entrena y evalúa las 4 ramas (engineered_rf/raw_iq/stft/coarse_morphology) en un unico job real
+        (train_selected_models, VALIDATION unicamente) y persiste rq2_representation_comparison_report.json. La rama
+        PRIMARY se decide por el mismo composite_score de VALIDATION ya usado en select_primary_rq2_branch_from_validation.
+      </div>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-3">
+        <div>
+          <label className="mb-1 block text-xs text-slate-500">paper_run_id</label>
+          <select className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={paperRunId} onChange={(e) => setPaperRunId(e.target.value)} disabled={busy}>
+            <option value="">(seleccionar run)</option>
+            {runs.map((run) => (<option key={run.paper_run_id} value={run.paper_run_id}>{run.paper_run_id}</option>))}
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-slate-500">dataset_id</label>
+          <input className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={datasetId} onChange={(e) => setDatasetId(e.target.value)} disabled={busy} />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-slate-500">dataset_version</label>
+          <input className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={datasetVersion} onChange={(e) => setDatasetVersion(e.target.value)} disabled={busy} />
+        </div>
+      </div>
+
+      <button
+        className="mt-3 rounded bg-cyan-700 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-600 disabled:cursor-not-allowed disabled:bg-slate-700"
+        disabled={busy || !paperRunId || !datasetId || !datasetVersion} onClick={start}
+      >
+        {busy ? 'Ejecutando...' : 'RUN RQ2 VALIDATION BENCHMARK'}
+      </button>
+
+      {job && (
+        <div className="mt-4 space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <StatusBadge status={job.state.toUpperCase()} />
+            <span className="text-slate-500">stage: {job.stage ?? 'N/A'}</span>
+            <span className="text-slate-500">progress: {Math.round(job.overall_progress * 100)}%</span>
+          </div>
+          {job.message && <div className="text-xs text-slate-400">{job.message}</div>}
+          {job.error && <div className="text-xs text-red-400">error: {job.error}</div>}
+
+          {job.result?.stopped_at && (
+            <NoDataNotice reason={`Entrenamiento detenido en ${job.result.stopped_at}: ${job.result.stopped_reason ?? ''}`} />
+          )}
+
+          {job.result?.rq2_report && (
+            <div className="rounded border border-slate-800 bg-slate-950 p-3">
+              <div className="grid gap-1 text-[11px] sm:grid-cols-2">
+                {job.result.rq2_report.branches.map((branch) => (
+                  <div key={branch.branch} className="flex items-center justify-between gap-2 rounded border border-slate-800 bg-slate-900 px-2 py-1">
+                    <span className="text-slate-400">{branch.branch}</span>
+                    <StatusBadge status={branch.analysis_role} />
+                    <span className="font-mono text-slate-300">BA={branch.balanced_accuracy?.toFixed(3) ?? 'N/A'}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <details className="rounded border border-slate-800 bg-slate-950">
+            <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-400">JSON crudo (fuente exacta persistida)</summary>
+            <pre className="max-h-[50vh] overflow-auto p-3 text-[11px] text-slate-300">{JSON.stringify(job, null, 2)}</pre>
+          </details>
+        </div>
+      )}
     </div>
   );
 }
