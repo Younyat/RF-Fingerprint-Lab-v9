@@ -27,41 +27,84 @@ import StudyOverviewTab from './StudyOverviewTab';
 // call anywhere in this set is PaperExportTab's "Generar exports" button,
 // which only writes report files). `forensics`/`reproducibility` stay
 // disabled -- no canonical artifact/endpoint is designed for them yet.
-const TABS: { id: string; label: string; enabled: boolean }[] = [
-  { id: 'control-center', label: 'Study Control Center', enabled: true },
-  { id: 'overview', label: 'Study Overview', enabled: true },
-  { id: 'guided-validation', label: 'Guided Validation', enabled: true },
-  { id: 'protocol', label: 'Protocol', enabled: true },
-  { id: 'readiness', label: 'Readiness', enabled: true },
-  { id: 'hw-qualification', label: 'Hardware & Qualification', enabled: true },
-  { id: 'association', label: 'Association', enabled: true },
-  { id: 'campaign', label: 'Campaign', enabled: true },
-  { id: 'integrity', label: 'Integrity and Leakage', enabled: true },
-  { id: 'quality', label: 'Acquisition Quality', enabled: true },
-  { id: 'rq1', label: 'RQ1', enabled: true },
-  { id: 'rq2', label: 'RQ2', enabled: true },
-  { id: 'rq3', label: 'RQ3', enabled: true },
-  { id: 'rq4', label: 'RQ4', enabled: true },
-  { id: 'coverage', label: 'Coverage / Abstention', enabled: true },
-  { id: 's1', label: 'Channel Transport', enabled: true },
-  { id: 's2', label: 'Online Equivalence', enabled: true },
-  { id: 'sensitivity', label: 'Sensitivity', enabled: true },
-  { id: 'provenance', label: 'Provenance', enabled: true },
-  { id: 'paper-readiness', label: 'Paper Readiness', enabled: true },
-  { id: 'export', label: 'Paper Export', enabled: true },
-  { id: 'forensics', label: 'Calibration and Forensics', enabled: false },
-  { id: 'reproducibility', label: 'Reproducibility', enabled: false },
+//
+// 4-level architecture (2026-08-11): the dashboard is NOT a flat tab list --
+// A. EXPERIMENT HEALTH (is the study machinery in a sane state?),
+// B. DATA/EVIDENCE QUALITY (what does the evidence itself look like?),
+// C. SCIENTIFIC RESULTS (RQ1-4/coverage/statistical inspection/sensitivity/
+//    S1/S2 -- the actual paper findings), D. PAPER READINESS (what's left
+//    before each paper element can be written). Every tab component below
+//    is unchanged -- this is a navigation regrouping, not a rewrite.
+interface DashboardTab { id: string; label: string; enabled: boolean }
+interface DashboardSection { id: string; label: string; hint: string; tabs: DashboardTab[] }
+
+const SECTIONS: DashboardSection[] = [
+  {
+    id: 'health', label: 'A. Experiment Health',
+    hint: 'Estado de la maquinaria experimental: cronologia del estudio, calificacion de hardware, estado del receptor, calidad de captura, completitud de campana, estado de asociacion, admision/exclusion, estado del protocolo, estado del holdout.',
+    tabs: [
+      { id: 'control-center', label: 'Study Control Center', enabled: true },
+      { id: 'overview', label: 'Study Overview', enabled: true },
+      { id: 'guided-validation', label: 'Guided Validation', enabled: true },
+      { id: 'protocol', label: 'Protocol', enabled: true },
+      { id: 'readiness', label: 'Readiness', enabled: true },
+      { id: 'hw-qualification', label: 'Hardware & Qualification', enabled: true },
+      { id: 'association', label: 'Association', enabled: true },
+      { id: 'campaign', label: 'Campaign', enabled: true },
+    ],
+  },
+  {
+    id: 'data-quality', label: 'B. Data / Evidence Quality',
+    hint: 'Tablas y visualizaciones de la evidencia misma: capturas por unidad fisica/dia/rol, bursts candidatos, CRC valido, admitidos, discontinuidades, exclusiones y razones, ventanas elegibles, abstencion por evidencia insuficiente.',
+    tabs: [
+      { id: 'integrity', label: 'Integrity and Leakage', enabled: true },
+      { id: 'quality', label: 'Acquisition Quality', enabled: true },
+    ],
+  },
+  {
+    id: 'results', label: 'C. Scientific Results',
+    hint: 'RQ1-4, coverage/risk-coverage, inspeccion estadistica comun, sensibilidad (nunca mezclada con el resultado confirmatorio principal), S1 (bounded channel transport) y S2 (online/offline equivalence).',
+    tabs: [
+      { id: 'rq1', label: 'RQ1', enabled: true },
+      { id: 'rq2', label: 'RQ2', enabled: true },
+      { id: 'rq3', label: 'RQ3', enabled: true },
+      { id: 'rq4', label: 'RQ4', enabled: true },
+      { id: 'coverage', label: 'Coverage / Abstention', enabled: true },
+      { id: 's1', label: 'Channel Transport (S1)', enabled: true },
+      { id: 's2', label: 'Online Equivalence (S2)', enabled: true },
+      { id: 'sensitivity', label: 'Sensitivity', enabled: true },
+    ],
+  },
+  {
+    id: 'paper-readiness', label: 'D. Paper Readiness',
+    hint: 'Por elemento del paper: mecanismo, madurez de datos, artefacto canonico, estadisticas, tabla, figura, evidencia -- mas la cadena de provenance y el export canonico (CSV/LaTeX/PDF vectorial).',
+    tabs: [
+      { id: 'provenance', label: 'Provenance', enabled: true },
+      { id: 'paper-readiness', label: 'Paper Readiness', enabled: true },
+      { id: 'export', label: 'Paper Export', enabled: true },
+      { id: 'forensics', label: 'Calibration and Forensics', enabled: false },
+      { id: 'reproducibility', label: 'Reproducibility', enabled: false },
+    ],
+  },
 ];
 
 export default function BleScientificResultsPage() {
+  const [activeSection, setActiveSection] = useState('health');
   const [activeTab, setActiveTab] = useState('control-center');
   const [showFutureAnalysisInfo, setShowFutureAnalysisInfo] = useState(false);
 
-  // Rutas y componentes de las 9 pestañas "Fase 3+" NO se eliminan -- solo
-  // se agrupan visualmente detrás de una unica entrada mientras la
+  const section = SECTIONS.find((s) => s.id === activeSection) ?? SECTIONS[0];
+  // Rutas y componentes de las pestañas "Fase 3+" NO se eliminan -- solo se
+  // agrupan visualmente detrás de una unica entrada mientras la
   // identificacion fisica no este disponible (ver GuidedValidationTab).
-  const visibleTabs = TABS.filter((tab) => tab.enabled);
-  const futureTabs = TABS.filter((tab) => !tab.enabled);
+  const visibleTabs = section.tabs.filter((tab) => tab.enabled);
+  const futureTabs = section.tabs.filter((tab) => !tab.enabled);
+
+  const selectSection = (sectionId: string) => {
+    setActiveSection(sectionId);
+    const firstEnabled = SECTIONS.find((s) => s.id === sectionId)?.tabs.find((t) => t.enabled);
+    if (firstEnabled) setActiveTab(firstEnabled.id);
+  };
 
   return (
     <div>
@@ -74,26 +117,44 @@ export default function BleScientificResultsPage() {
             manifests o artefactos de BLE-RFFI Studio.
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-1">
+
+        <div className="flex flex-wrap items-center gap-1 border-b border-slate-800 pb-2">
+          {SECTIONS.map((s) => (
+            <button
+              key={s.id}
+              className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors ${
+                activeSection === s.id ? 'bg-cyan-600/30 text-cyan-100' : 'text-slate-400 hover:bg-slate-800'
+              }`}
+              onClick={() => selectSection(s.id)}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <div className="mt-1 text-[11px] text-slate-500">{section.hint}</div>
+
+        <div className="mt-2 flex flex-wrap items-center gap-1">
           {visibleTabs.map((tab) => (
             <button
               key={tab.id}
               className={`rounded px-2.5 py-1 text-xs transition-colors ${
-                activeTab === tab.id ? 'bg-cyan-600/30 text-cyan-100' : 'text-slate-400 hover:bg-slate-800'
+                activeTab === tab.id ? 'bg-slate-700/60 text-slate-100' : 'text-slate-400 hover:bg-slate-800'
               }`}
               onClick={() => setActiveTab(tab.id)}
             >
               {tab.label}
             </button>
           ))}
-          <button
-            className="rounded px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-800 hover:text-slate-400"
-            onClick={() => setShowFutureAnalysisInfo((v) => !v)}
-          >
-            Análisis científicos posteriores
-          </button>
+          {futureTabs.length > 0 && (
+            <button
+              className="rounded px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-800 hover:text-slate-400"
+              onClick={() => setShowFutureAnalysisInfo((v) => !v)}
+            >
+              Análisis científicos posteriores
+            </button>
+          )}
         </div>
-        {showFutureAnalysisInfo && (
+        {showFutureAnalysisInfo && futureTabs.length > 0 && (
           <div className="mt-2 rounded border border-slate-700 bg-slate-900/60 px-3 py-2 text-xs text-slate-400">
             Estas funciones ({futureTabs.map((tab) => tab.label).join(', ')}) se habilitarán cuando la asociación
             física haya sido comprobada.

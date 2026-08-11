@@ -1,7 +1,8 @@
 import { BleScientificResultsApiService } from '../../../app/services/bleScientificResultsApi';
-import BarWithCiChart, { BarWithCiDatum } from './charts/BarWithCiChart';
 import HistogramChart from './charts/HistogramChart';
+import NonInferiorityChart, { NonInferiorityDatum } from './charts/NonInferiorityChart';
 import RunScopedJsonReport from './RunScopedJsonReport';
+import StatisticalInspectionPanel, { holmSummary, nonInferiorityRow, rq4PairedComparisonRow } from './StatisticalInspectionPanel';
 
 const sciApi = new BleScientificResultsApiService();
 
@@ -16,11 +17,11 @@ function observedStatistic(report: Record<string, unknown>): number | null {
   return typeof method?.value?.randomization_test?.observed_statistic === 'number' ? method.value.randomization_test.observed_statistic : null;
 }
 
-function nonInferiorityBar(report: Record<string, unknown>): BarWithCiDatum[] {
-  const method = report.non_inferiority as { value?: { mean_difference?: number; ci_low?: number; margin?: number } } | undefined;
+function nonInferiorityChartData(report: Record<string, unknown>): NonInferiorityDatum[] {
+  const method = report.non_inferiority as { value?: { mean_difference?: number; ci_low?: number; margin?: number; non_inferior?: boolean } } | undefined;
   const value = method?.value;
-  if (!value || typeof value.mean_difference !== 'number') return [];
-  return [{ category: 'diferencia (nuevo - referencia)', value: value.mean_difference, ciLow: value.ci_low ?? null, ciHigh: null }];
+  if (!value || typeof value.mean_difference !== 'number' || typeof value.ci_low !== 'number' || typeof value.margin !== 'number') return [];
+  return [{ label: 'RQ4 (agregado)', meanDifference: value.mean_difference, ciLow: value.ci_low, margin: value.margin, nonInferior: value.non_inferior === true }];
 }
 
 export default function Rq4Tab() {
@@ -33,6 +34,14 @@ export default function Rq4Tab() {
       renderCharts={(report) => (
         <>
           <div>
+            <div className="mb-1 text-xs font-semibold text-slate-400">Inspeccion estadistica</div>
+            <StatisticalInspectionPanel
+              rows={[rq4PairedComparisonRow(report), nonInferiorityRow(report)]}
+              holm={holmSummary(report)}
+              noDataReason="rq4_paired_comparison/non_inferiority.status != EXECUTED todavia."
+            />
+          </div>
+          <div>
             <div className="mb-1 text-xs font-semibold text-slate-400">Diferencias pareadas (nuevo - referencia)</div>
             <HistogramChart
               values={pairedDifferences(report)}
@@ -42,11 +51,13 @@ export default function Rq4Tab() {
             />
           </div>
           <div>
-            <div className="mb-1 text-xs font-semibold text-slate-400">Estimacion de non-inferiority (margen unilateral)</div>
-            <BarWithCiChart data={nonInferiorityBar(report)} yLabel="diferencia media" noDataReason="non_inferiority.value no esta presente en el reporte." />
+            <div className="mb-1 text-xs font-semibold text-slate-400">Non-inferiority -- estimacion, CI unilateral y frontera de decision (-margin)</div>
+            <NonInferiorityChart data={nonInferiorityChartData(report)} noDataReason="non_inferiority.value no esta presente en el reporte." />
           </div>
-          <div className="text-[11px] text-slate-500">
-            La comparacion por region (FULL_BURST / ADVA_EXCLUDED / PRE_PDU) todavia no esta expuesta como serie independiente en confirmatory_future_analysis_report.json -- solo el contraste agregado.
+          <div className="rounded border border-dashed border-slate-700 bg-slate-900/30 px-3 py-2 text-[11px] text-amber-400/80">
+            MISSING_CANONICAL_METRIC -- el desglose por region analitica (FULL_BURST / ADVA_EXCLUDED / PRE_PDU) y por
+            condicion de paquete todavia no esta expuesto como serie independiente en
+            confirmatory_future_analysis_report.json, solo el contraste agregado. No se fabrica en el frontend.
           </div>
         </>
       )}

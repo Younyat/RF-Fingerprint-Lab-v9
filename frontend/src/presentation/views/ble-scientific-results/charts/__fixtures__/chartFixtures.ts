@@ -2,6 +2,7 @@
 // Imported ONLY by *.test.tsx files in this folder -- never by a tab
 // component or any production code path.
 import { BarWithCiDatum } from '../BarWithCiChart';
+import { NonInferiorityDatum } from '../NonInferiorityChart';
 import { PairedPrePostDatum } from '../PairedPrePostChart';
 import { RiskCoveragePoint } from '../RiskCoverageChart';
 
@@ -30,3 +31,7 @@ export const RISK_COVERAGE_SYNTHETIC_FIXTURE: RiskCoveragePoint[] = [
 export const ECDF_SYNTHETIC_FIXTURE: number[] = [12, 15, 14, 20, 18, 30, 22, 16];
 
 export const HISTOGRAM_SYNTHETIC_FIXTURE: number[] = [0.01, 0.02, 0.015, -0.01, 0.03, 0.0, -0.02, 0.04, 0.01, 0.02];
+
+export const NON_INFERIORITY_SYNTHETIC_FIXTURE: NonInferiorityDatum[] = [
+  { label: 'FULL_BURST vs ADVA_EXCLUDED', meanDifference: -0.02, ciLow: -0.06, margin: 0.1, nonInferior: true },
+];

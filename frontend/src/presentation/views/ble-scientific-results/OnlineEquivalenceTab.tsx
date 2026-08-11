@@ -96,6 +96,13 @@ export default function OnlineEquivalenceTab() {
               ))}
             </div>
           </div>
+          <div className="rounded border border-dashed border-slate-700 bg-slate-900/30 px-3 py-2 text-[11px] text-amber-400/80">
+            MISSING_CANONICAL_METRIC -- histograma de latencia, ECDF de latencia, timeline de throughput y timeline de
+            drops requieren muestras individuales por peticion; computational_behavior solo persiste resumenes
+            escalares (median_latency_ms/p95_latency_ms/throughput_per_s/drop_count/drop_rate/backlog). No se
+            fabrican series en el frontend -- si el backend llega a persistir las muestras crudas, EcdfChart y
+            HistogramChart (ya existentes) se conectaran aqui.
+          </div>
           <details className="rounded border border-slate-800 bg-slate-950">
             <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-400">JSON crudo (fuente exacta persistida)</summary>
             <pre className="max-h-[70vh] overflow-auto p-3 text-[11px] text-slate-300">{JSON.stringify(report, null, 2)}</pre>
