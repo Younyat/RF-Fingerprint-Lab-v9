@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { BleRffiStudioApiService, StudioPhysicalUnit } from '../../../app/services/bleRffiStudioApi';
+import { BleRffiStudioApiService, StudioJob, StudioPaperCampaignRejection, StudioPaperCampaignSchedule, StudioPhysicalUnit } from '../../../app/services/bleRffiStudioApi';
 import { BleScientificResultsApiService, HardwareQualificationJob, PaperRunRecord, Rq2BenchmarkJob, StudyControlCenterStatus } from '../../../app/services/bleScientificResultsApi';
 import NoDataNotice, { StatusBadge } from './NoDataNotice';
 
@@ -77,6 +77,168 @@ export default function StudyControlCenterTab() {
       <HardwareQualificationLauncher onCompleted={refresh} />
       <PhysicalUnitQualificationLauncher onCompleted={refresh} />
       <Rq2BenchmarkLauncher onCompleted={refresh} />
+      <CampaignScheduleLauncher onCompleted={refresh} />
+    </div>
+  );
+}
+
+async function pollStudioJob(jobId: string, onUpdate: (job: StudioJob) => void): Promise<StudioJob> {
+  let current = await studioApi.job(jobId);
+  onUpdate(current);
+  while (!JOB_TERMINAL.has(current.state)) {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    current = await studioApi.job(jobId);
+    onUpdate(current);
+  }
+  return current;
+}
+
+function CampaignScheduleLauncher({ onCompleted }: { onCompleted: () => void }) {
+  const [scheduleId, setScheduleId] = useState('');
+  const [protocolId, setProtocolId] = useState('');
+  const [entriesJson, setEntriesJson] = useState('[]');
+  const [qualificationOnly, setQualificationOnly] = useState(true);
+  const [schedule, setSchedule] = useState<StudioPaperCampaignSchedule | null>(null);
+  const [rejections, setRejections] = useState<StudioPaperCampaignRejection[]>([]);
+  const [job, setJob] = useState<StudioJob | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refreshSchedule = (id: string) => {
+    if (!id) return;
+    studioApi.getCampaignSchedule(id).then(setSchedule).catch(() => setSchedule(null));
+    studioApi.getCampaignScheduleRejections(id).then(setRejections).catch(() => setRejections([]));
+  };
+
+  const freeze = async () => {
+    setError(null);
+    let entries: Record<string, unknown>[];
+    try {
+      entries = JSON.parse(entriesJson);
+    } catch {
+      setError('entries debe ser un JSON valido (lista de PaperCampaignScheduleEntry).');
+      return;
+    }
+    if (!scheduleId || !protocolId) { setError('schedule_id y protocol_id son obligatorios.'); return; }
+    setBusy(true);
+    try {
+      await studioApi.freezeCampaignSchedule({ schedule_id: scheduleId, protocol_id: protocolId, entries, qualification_only: qualificationOnly });
+      refreshSchedule(scheduleId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const executeNext = async () => {
+    setBusy(true);
+    setJob(null);
+    try {
+      const started = await studioApi.executeNextCampaignScheduleCapture(scheduleId, {});
+      const finished = await pollStudioJob(started.job_id, setJob);
+      refreshSchedule(scheduleId);
+      if (finished.state === 'completed') onCompleted();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pendingCount = schedule ? schedule.entries.filter((e) => !e.executed).length : 0;
+  const nextEntry = schedule ? schedule.entries.find((e) => !e.executed) : undefined;
+
+  return (
+    <div className="rounded border border-slate-800 bg-slate-900/40 p-4">
+      <div className="text-sm font-semibold text-slate-200">Campaign Schedule (fases 04 Qualification Pilot / 06 DEVELOPMENT / 07 VALIDATION)</div>
+      <div className="mt-1 text-xs text-slate-500">
+        Un unico mecanismo real (PaperCampaignRunner) sirve las 3 fases -- solo cambia el schedule congelado y
+        qualification_only. Rechaza automaticamente cualquier captura fuera de orden o con parametros que no
+        coincidan con lo declarado (WRONG_UNIT, WRONG_CHANNEL, WRONG_CAPTURE_ORDER, etc.), persistido en
+        rejections.jsonl.
+      </div>
+      {error && <div className="mt-2 text-xs text-red-400">{error}</div>}
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-3">
+        <div>
+          <label className="mb-1 block text-xs text-slate-500">schedule_id</label>
+          <input className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={scheduleId} onChange={(e) => setScheduleId(e.target.value)} disabled={busy} />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-slate-500">protocol_id</label>
+          <input className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={protocolId} onChange={(e) => setProtocolId(e.target.value)} disabled={busy} />
+        </div>
+        <div className="flex items-end gap-2">
+          <label className="flex items-center gap-2 text-xs text-slate-400">
+            <input type="checkbox" checked={qualificationOnly} onChange={(e) => setQualificationOnly(e.target.checked)} disabled={busy} />
+            qualification_only (fase 04)
+          </label>
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <label className="mb-1 block text-xs text-slate-500">entries (JSON -- lista de PaperCampaignScheduleEntry)</label>
+        <textarea
+          className="h-32 w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 font-mono text-xs text-slate-100 focus:border-cyan-600 focus:outline-none"
+          value={entriesJson} onChange={(e) => setEntriesJson(e.target.value)} disabled={busy}
+        />
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button className="rounded bg-cyan-700 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-600 disabled:cursor-not-allowed disabled:bg-slate-700" disabled={busy} onClick={freeze}>
+          Congelar schedule
+        </button>
+        <button className="rounded border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50" disabled={busy || !scheduleId} onClick={() => refreshSchedule(scheduleId)}>
+          Ver estado
+        </button>
+        <button className="rounded bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-slate-700" disabled={busy || !schedule || pendingCount === 0} onClick={executeNext}>
+          {busy ? 'Ejecutando...' : 'RUN NEXT PLANNED CAPTURE'}
+        </button>
+      </div>
+
+      {schedule && (
+        <div className="mt-4 space-y-2">
+          <div className="text-xs text-slate-400">
+            {schedule.entries.length - pendingCount}/{schedule.entries.length} ejecutadas
+            {nextEntry && <> -- siguiente: <span className="font-mono text-slate-200">{nextEntry.planned_capture_id}</span> ({nextEntry.physical_unit_id}, {nextEntry.day_id}, {nextEntry.pre_or_post})</>}
+          </div>
+          <div className="grid gap-1 text-[11px]">
+            {schedule.entries.map((entry) => (
+              <div key={entry.planned_capture_id} className="flex items-center justify-between gap-2 rounded border border-slate-800 bg-slate-950 px-2 py-1">
+                <span className="font-mono text-slate-400">{entry.planned_capture_id}</span>
+                <span className="text-slate-500">{entry.physical_unit_id} / {entry.day_id} / {entry.pre_or_post} / {entry.intervention_arm}</span>
+                <StatusBadge status={entry.executed ? 'COMPLETE' : 'NOT_STARTED'} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {rejections.length > 0 && (
+        <div className="mt-3">
+          <div className="mb-1 text-xs font-semibold text-red-400">rejections.jsonl ({rejections.length})</div>
+          <div className="space-y-1 text-[11px]">
+            {rejections.map((rejection, index) => (
+              <div key={index} className="rounded border border-red-900 bg-red-950/30 px-2 py-1 text-red-300">
+                {rejection.planned_capture_id ?? '(sin planned_capture_id)'}: {rejection.reason}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {job && (
+        <div className="mt-4 space-y-1">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <StatusBadge status={job.state.toUpperCase()} />
+            <span className="text-slate-500">phase: {job.phase ?? 'N/A'}</span>
+            <span className="text-slate-500">progress: {Math.round((job.overall_progress ?? 0) * 100)}%</span>
+          </div>
+          {job.message && <div className="text-xs text-slate-400">{job.message}</div>}
+          {job.error && <div className="text-xs text-red-400">error: {job.error}</div>}
+        </div>
+      )}
     </div>
   );
 }

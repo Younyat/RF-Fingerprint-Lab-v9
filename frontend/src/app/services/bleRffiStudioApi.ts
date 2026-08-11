@@ -169,7 +169,7 @@ export interface StudioExample extends Record<string, unknown> {
 export type StudioJobState = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 export interface StudioJob extends Record<string, unknown> {
   job_id: string;
-  job_type: 'EVIDENCE_BUILD' | 'TRAINING_RUN' | 'PREPARE_AND_TRAIN' | 'CAMPAIGN_SESSION' | 'GUIDED_CAPTURE' | 'DEVICE_SCRUB' | 'TRAIN_SELECTED_MODELS';
+  job_type: 'EVIDENCE_BUILD' | 'TRAINING_RUN' | 'PREPARE_AND_TRAIN' | 'CAMPAIGN_SESSION' | 'GUIDED_CAPTURE' | 'DEVICE_SCRUB' | 'TRAIN_SELECTED_MODELS' | 'CAMPAIGN_SCHEDULE_EXECUTE';
   state: StudioJobState;
   phase?: string | null;
   overall_progress?: number;
@@ -177,6 +177,46 @@ export interface StudioJob extends Record<string, unknown> {
   result_summary?: Record<string, unknown>;
   training_run_id?: string;
   error?: string;
+}
+
+// Paper campaign schedule (Study Control Center, phases 04/06/07,
+// 2026-08-11) -- the SAME real mechanism serves the Qualification Pilot
+// (qualification_only=true) and DEVELOPMENT/VALIDATION campaigns
+// (qualification_only=false).
+export interface StudioPaperCampaignScheduleEntry extends Record<string, unknown> {
+  planned_capture_id: string;
+  protocol_id: string;
+  day_id: string;
+  campaign_period: string | null;
+  physical_unit_id: string;
+  capture_order: number;
+  pre_or_post: 'PRE' | 'POST' | 'NOT_APPLICABLE';
+  intervention_arm: 'RESET' | 'CONTROL' | 'NOT_APPLICABLE';
+  packet_condition: string;
+  channel: number;
+  receiver_epoch: string;
+  receiver_session_id: string;
+  capture_purpose: StudioCapturePurpose;
+  executed: boolean;
+  executed_capture_id: string | null;
+}
+export interface StudioPaperCampaignSchedule extends Record<string, unknown> {
+  schedule_id: string;
+  schedule_version: number;
+  protocol_id: string;
+  entries: StudioPaperCampaignScheduleEntry[];
+  qualification_only: boolean;
+  receiver_session_id: string;
+  frozen_at: string;
+}
+export interface StudioPaperCampaignRejection extends Record<string, unknown> {
+  schedule_id: string;
+  protocol_id: string;
+  planned_capture_id: string | null;
+  reason: string;
+  attempted: Record<string, unknown>;
+  operator_id: string | null;
+  rejected_at: string;
 }
 
 export type StudioDataOrigin = 'REAL_B200' | 'SYNTHETIC_TEST_ONLY';
@@ -654,6 +694,20 @@ export class BleRffiStudioApiService {
     capture_only?: boolean;
   }) {
     return (await axios.post<StudioJob>(`${this.root}/campaign/sessions`, body)).data;
+  }
+
+  // Paper campaign schedule (Study Control Center, phases 04/06/07, 2026-08-11).
+  async freezeCampaignSchedule(body: { schedule_id: string; protocol_id: string; entries: Record<string, unknown>[]; qualification_only?: boolean; receiver_session_id?: string }) {
+    return (await axios.post<StudioPaperCampaignSchedule>(`${this.root}/campaign/schedule`, body)).data;
+  }
+  async getCampaignSchedule(scheduleId: string) {
+    return (await axios.get<StudioPaperCampaignSchedule>(`${this.root}/campaign/schedule/${encodeURIComponent(scheduleId)}`)).data;
+  }
+  async getCampaignScheduleRejections(scheduleId: string) {
+    return (await axios.get<StudioPaperCampaignRejection[]>(`${this.root}/campaign/schedule/${encodeURIComponent(scheduleId)}/rejections`)).data;
+  }
+  async executeNextCampaignScheduleCapture(scheduleId: string, body: { duration_seconds?: number; gain_db?: number; operator_id?: string; operator_confirmed_target_absent?: boolean }) {
+    return (await axios.post<StudioJob>(`${this.root}/campaign/schedule/${encodeURIComponent(scheduleId)}/execute-next`, body)).data;
   }
 
   /** Probes with short, throwaway B200 captures for a real signal

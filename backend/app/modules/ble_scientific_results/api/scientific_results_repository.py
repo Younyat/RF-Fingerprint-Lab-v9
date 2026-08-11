@@ -458,6 +458,24 @@ class ScientificResultsRepository:
 
         guided_validation_attempts = list((self.root / "guided_validation").glob("*/association_policy.json")) if (self.root / "guided_validation").is_dir() else []
 
+        # Phase 04 (Qualification Pilot): a real PaperCampaignSchedule with
+        # qualification_only=True. Reads the LATEST version of every
+        # schedule found -- never guesses which one is "the" pilot when
+        # several exist, just reports the most advanced real one.
+        pilot_schedules: list[Any] = []
+        schedules_dir = self.ble_root / "paper_campaign" / "schedules"
+        if schedules_dir.is_dir():
+            for schedule_dir in schedules_dir.iterdir():
+                versions = sorted(int(p.stem) for p in schedule_dir.glob("*.json") if p.stem.isdigit())
+                if not versions:
+                    continue
+                data = json.loads((schedule_dir / f"{versions[-1]}.json").read_text(encoding="utf-8"))
+                if data.get("qualification_only"):
+                    pilot_schedules.append(data)
+        pilot_executed_counts = [(sum(1 for e in s["entries"] if e["executed"]), len(s["entries"])) for s in pilot_schedules]
+        pilot_fully_executed = any(executed == total and total > 0 for executed, total in pilot_executed_counts)
+        pilot_partially_executed = any(executed > 0 for executed, _ in pilot_executed_counts)
+
         rq2_report = self.get_rq2_representation_comparison_report(latest_run.paper_run_id) if latest_run else None
         confirmatory_future_report = self.get_confirmatory_future_analysis_report(latest_run.paper_run_id) if latest_run else None
         channel_transport_report = self.get_channel_transport_report(latest_run.paper_run_id) if latest_run else None
@@ -484,7 +502,12 @@ class ScientificResultsRepository:
                 "real_data_available": bool(guided_validation_attempts),
                 "artifacts": ["guided_validation/*/association_policy.json"] if guided_validation_attempts else [],
             },
-            "04": {"completed": False, "in_progress": False, "real_data_available": False, "artifacts": []},
+            "04": {
+                "completed": pilot_fully_executed,
+                "in_progress": pilot_partially_executed and not pilot_fully_executed,
+                "real_data_available": bool(pilot_schedules),
+                "artifacts": ["ble_rffi_studio/paper_campaign/schedules/*"] if pilot_schedules else [],
+            },
             "05": {"completed": False, "in_progress": False, "real_data_available": False, "artifacts": []},
             "06": {"completed": False, "in_progress": False, "real_data_available": study_status["real_capture_count"] > 0, "artifacts": []},
             "07": {"completed": False, "in_progress": False, "real_data_available": False, "artifacts": []},

@@ -138,6 +138,36 @@ def build_ble_rffi_studio_router(repository, job_manager) -> APIRouter:
         ))
 
     # ------------------------------------------------------------------
+    # Paper campaign schedule (Study Control Center, phases 04/06/07,
+    # 2026-08-11) -- the SAME real mechanism serves the Qualification Pilot
+    # (qualification_only=true) and the real DEVELOPMENT/VALIDATION
+    # campaigns (qualification_only=false); only the frozen schedule
+    # differs. See campaign/paper_campaign_runner.py.
+    # ------------------------------------------------------------------
+
+    @router.post("/campaign/schedule", status_code=201)
+    def freeze_campaign_schedule(body: dict):
+        return call(lambda: dump(repository.freeze_campaign_schedule(
+            schedule_id=body["schedule_id"], protocol_id=body["protocol_id"], entries=body["entries"],
+            qualification_only=bool(body.get("qualification_only", False)), receiver_session_id=body.get("receiver_session_id"),
+        )))
+
+    @router.get("/campaign/schedule/{schedule_id}")
+    def get_campaign_schedule(schedule_id: str, version: int | None = None):
+        return call(lambda: dump(repository.get_campaign_schedule(schedule_id, version)))
+
+    @router.get("/campaign/schedule/{schedule_id}/rejections")
+    def campaign_schedule_rejections(schedule_id: str):
+        return call(lambda: repository.list_campaign_schedule_rejections(schedule_id))
+
+    @router.post("/campaign/schedule/{schedule_id}/execute-next", status_code=202)
+    def execute_next_campaign_schedule_capture(schedule_id: str, body: dict):
+        return call(lambda: job_manager.start_campaign_schedule_execute_job(
+            schedule_id=schedule_id, duration_seconds=body.get("duration_seconds", 10.0), gain_db=body.get("gain_db", 20.0),
+            operator_id=body.get("operator_id"), operator_confirmed_target_absent=bool(body.get("operator_confirmed_target_absent", False)),
+        ))
+
+    # ------------------------------------------------------------------
     # Capture Stage
     # ------------------------------------------------------------------
 

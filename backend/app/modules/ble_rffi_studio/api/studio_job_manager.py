@@ -326,6 +326,40 @@ class StudioJobManager:
             self._write(job_dir, "failed", error=f"{type(error).__name__}: {error}")
 
     # ------------------------------------------------------------------
+    # Paper campaign schedule (Study Control Center, phases 04/06/07,
+    # 2026-08-11): executes the NEXT planned entry of an already-frozen
+    # schedule. Real B200 capture, same reject-out-of-schedule enforcement
+    # PaperCampaignRunner already provides -- this job type never bypasses
+    # it, only wraps it with progress reporting.
+    # ------------------------------------------------------------------
+
+    def start_campaign_schedule_execute_job(self, **kwargs: Any) -> dict[str, Any]:
+        job_id = self._new_job_id()
+        job_dir = self._job_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=False)
+        atomic_json(job_dir / "job.json", {
+            "schema_version": "ble-rffi-studio-job-v1", "job_id": job_id, "job_type": "CAMPAIGN_SCHEDULE_EXECUTE",
+            "schedule_id": kwargs.get("schedule_id"),
+            "state": "queued", "phase": None, "phase_progress": 0.0, "overall_progress": 0.0,
+            "message": None, "started_at": utc_now(), "updated_at": utc_now(),
+        })
+        threading.Thread(target=self._run_campaign_schedule_execute_job, args=(job_id,), kwargs=kwargs, daemon=True).start()
+        return self.get_job(job_id)
+
+    def _run_campaign_schedule_execute_job(self, job_id: str, **kwargs: Any) -> None:
+        job_dir = self._job_dir(job_id)
+
+        def progress(phase: str, phase_progress: float, message: str) -> None:
+            self._write(job_dir, "running", phase=phase, phase_progress=phase_progress, overall_progress=round(phase_progress, 4), message=message)
+
+        try:
+            capture_record = self.repository.execute_next_campaign_schedule_capture(progress=progress, **kwargs)
+            self._write(job_dir, "completed", overall_progress=1.0, phase="COMPLETED", result_summary={"capture_id": capture_record.capture_id})
+        except Exception as error:
+            self.logger.exception("job %s raised an unhandled exception", job_id)
+            self._write(job_dir, "failed", error=f"{type(error).__name__}: {error}")
+
+    # ------------------------------------------------------------------
     # Guided capture: probes for a real signal (TARGET_DEVICE_ON) or a clean
     # environment (BACKGROUND_*) with short throwaway B200 captures before
     # launching the real, saved capture -- see CampaignOrchestrator.run_guided_capture_only().

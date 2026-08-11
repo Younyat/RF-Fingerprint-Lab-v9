@@ -20,6 +20,7 @@ from app.infrastructure.ble.packet_analysis.ble_capture_locator import BleCaptur
 
 from ..acquisition.capture_stage import CaptureStage
 from ..acquisition.receiver_epoch_assignment import ReceiverEpochInput, assign_receiver_epochs, derive_effective_receiver_session_id
+from ..campaign.paper_campaign_runner import PaperCampaignRunner
 from ..contracts import (
     BackgroundKind,
     CapturePurpose,
@@ -121,6 +122,13 @@ class StudioRepository:
         # startup (e.g. isolated tests) -- real-campaign endpoints raise a
         # clear error rather than silently no-op in that case.
         self.campaign_orchestrator = campaign_orchestrator
+        # Study Control Center, phases 04/06/07 (2026-08-11): the SAME real
+        # PaperCampaignRunner mechanism serves the Qualification Pilot
+        # (qualification_only=True) and the real DEVELOPMENT/VALIDATION
+        # campaigns (qualification_only=False) -- they differ only in which
+        # schedule is frozen, never in the underlying enforcement (reject
+        # out-of-schedule/out-of-order/mismatched captures).
+        self.paper_campaign_runner = PaperCampaignRunner(storage_root=root, legacy_capture_root=legacy_capture_root, campaign_orchestrator=campaign_orchestrator)
 
         self.registry = PhysicalDeviceRegistry(root / "registry")
         self.capture_stage = CaptureStage(legacy_capture_root)
@@ -699,6 +707,67 @@ class StudioRepository:
             capture_id=capture_id, project_id=project_id, ble_channel=ble_channel, progress=progress,
         )
         return {"skipped": False, **result}
+
+    # ------------------------------------------------------------------
+    # Paper campaign schedule (Study Control Center, phases 04/06/07,
+    # 2026-08-11) -- thin wrappers over PaperCampaignRunner (see
+    # campaign/paper_campaign_runner.py, previously only invoked as a
+    # script/library, never through a route).
+    # ------------------------------------------------------------------
+
+    def freeze_campaign_schedule(self, *, schedule_id: str, protocol_id: str, entries: list[dict], qualification_only: bool = False, receiver_session_id: str | None = None):
+        return self.paper_campaign_runner.freeze_schedule(
+            schedule_id=schedule_id, protocol_id=protocol_id, entries=entries,
+            qualification_only=qualification_only, receiver_session_id=receiver_session_id,
+        )
+
+    def get_campaign_schedule(self, schedule_id: str, version: int | None = None):
+        return self.paper_campaign_runner.load_schedule(schedule_id, version)
+
+    def list_campaign_schedule_rejections(self, schedule_id: str) -> list[dict[str, Any]]:
+        return self.paper_campaign_runner.list_rejections(schedule_id)
+
+    def _rebuild_capture_record_with_schedule_metadata(self, capture_id: str) -> CaptureRecord:
+        """PaperCampaignRunner.execute() calls this AFTER writing the
+        schedule's declared day_id/pre_or_post/intervention_arm/etc onto
+        capture_manifest.json -- re-running build_capture() with the SAME
+        identity fields the first (pre-schedule-metadata) build already
+        established re-reads the now-updated manifest, so the CaptureRecord
+        this returns carries the real schedule metadata. Never guesses a
+        new identity field -- reuses exactly what the first build already
+        recorded for this capture."""
+        existing = self.get_capture(capture_id)
+        if existing is None:
+            raise FileNotFoundError(f"CAPTURE_RECORD_NOT_FOUND_BEFORE_SCHEDULE_METADATA_REBUILD:{capture_id}")
+        return self.build_capture(
+            capture_id=capture_id, project_id=existing.project_id, campaign_id=existing.campaign_id,
+            execution_id=existing.execution_id, session_id=existing.session_id,
+            isolation_declared_physical_unit_id=existing.isolation_declared_physical_unit_id,
+            capture_purpose=existing.capture_purpose, target_state=existing.target_state,
+            background_kind=existing.background_kind, target_reference_id=existing.target_reference_id,
+            dataset_role=existing.dataset_role,
+        )
+
+    def execute_next_campaign_schedule_capture(
+        self, *, schedule_id: str, duration_seconds: float, gain_db: float = 20.0,
+        operator_id: str | None = None, operator_confirmed_target_absent: bool = False, progress=None,
+    ) -> CaptureRecord:
+        if self.campaign_orchestrator is None:
+            raise RuntimeError(
+                "REAL_CAMPAIGN_NOT_AVAILABLE: ble_lab's capture/hybrid managers were not available when this "
+                "module started (BLE_IQ_CAPTURE_EXPERIMENTAL_ENABLED or hardware probing may be disabled)."
+            )
+        schedule = self.paper_campaign_runner.load_schedule(schedule_id)
+        next_entry = self.paper_campaign_runner.next_planned_capture(schedule)
+        if next_entry is None:
+            raise ValueError(f"CAMPAIGN_SCHEDULE_FULLY_EXECUTED:{schedule_id}")
+        return self.paper_campaign_runner.execute(
+            schedule, next_entry.planned_capture_id, build_capture_record=self._rebuild_capture_record_with_schedule_metadata,
+            operator_id=operator_id, progress=progress, duration_seconds=duration_seconds, gain_db=gain_db,
+            condition_label=f"paper-campaign-{schedule_id}-{next_entry.planned_capture_id}",
+            project_id=schedule.protocol_id, campaign_id=schedule_id, session_index=next_entry.capture_order,
+            isolation_declared=True, operator_confirmed_target_absent=operator_confirmed_target_absent,
+        )
 
     def campaign_device_status(self) -> dict[str, Any]:
         if self.campaign_orchestrator is None:

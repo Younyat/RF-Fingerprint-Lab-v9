@@ -70,3 +70,29 @@ def test_every_phase_reports_git_sha_and_protocol_version(tmp_path):
     for phase in status["phases"]:
         assert phase["git_sha"]
         assert "protocol_version" in phase
+
+
+def _write_pilot_schedule(repo, *, schedule_id: str, executed_count: int, total: int) -> None:
+    entries = [
+        {"planned_capture_id": f"p{i}", "executed": i < executed_count, "executed_capture_id": f"CAP-{i}" if i < executed_count else None}
+        for i in range(total)
+    ]
+    path = repo.ble_root / "paper_campaign" / "schedules" / schedule_id / "1.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"schedule_id": schedule_id, "qualification_only": True, "entries": entries}), encoding="utf-8")
+
+
+def test_phase_04_in_progress_when_a_real_pilot_schedule_is_partially_executed(tmp_path):
+    repo = _repo(tmp_path)
+    _write_pilot_schedule(repo, schedule_id="PILOT-1", executed_count=1, total=4)
+    status = repo.get_study_control_center_status()
+    phase04 = _phase(status, "04")
+    assert phase04["real_data_available"] is True
+    assert phase04["state"] == "IN_PROGRESS"
+
+
+def test_phase_04_complete_when_a_real_pilot_schedule_is_fully_executed(tmp_path):
+    repo = _repo(tmp_path)
+    _write_pilot_schedule(repo, schedule_id="PILOT-1", executed_count=4, total=4)
+    status = repo.get_study_control_center_status()
+    assert _phase(status, "04")["state"] == "COMPLETE"
