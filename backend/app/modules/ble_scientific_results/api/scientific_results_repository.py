@@ -1378,6 +1378,32 @@ class ScientificResultsRepository:
             return None
         return ScientificPreflightReport.model_validate(json.loads(path.read_text(encoding="utf-8")))
 
+    def _build_rq3_pair_registry(self) -> list[dict[str, Any]]:
+        """Dashboard closure (2026-08-11), Case A per the RQ3 pairing
+        research pass: real PrePostPair IDENTITY (unit/day/arm/capture ids/
+        receiver epoch+session ids/validity/invalidation_reason) from the
+        already-real, tested, production-called build_pre_post_pairs() --
+        this was already computed in hardware_qualification.py's
+        preflight gate but never persisted into a confirmatory report.
+        Deliberately excludes any PRE/POST numeric value or D: no function
+        anywhere in the codebase computes a per-capture score to feed one
+        (Case B, confirmed by research) -- inventing one here to complete a
+        chart would be exactly the "new metric to complete a graph" this
+        pass is forbidden from doing. The frontend must keep showing
+        MISSING_CANONICAL_METRIC for the paired-value plots themselves."""
+        from app.modules.ble_rffi_studio.campaign.pre_post_pairing import build_pre_post_pairs
+        pairs = build_pre_post_pairs(self._load_all_captures())
+        return [
+            {
+                "physical_unit_id": p.physical_unit_id, "day_id": p.day_id, "intervention_arm": p.intervention_arm,
+                "pre_capture_id": p.pre_capture_id, "post_capture_id": p.post_capture_id,
+                "pre_receiver_epoch": p.pre_receiver_epoch, "post_receiver_epoch": p.post_receiver_epoch,
+                "pre_receiver_session_id": p.pre_receiver_session_id, "post_receiver_session_id": p.post_receiver_session_id,
+                "valid": p.valid, "invalidation_reason": p.invalidation_reason,
+            }
+            for p in pairs
+        ]
+
     def run_confirmatory_statistical_plan(self, paper_run_id: str, **kwargs: Any) -> dict[str, Any]:
         """Real production caller for statistics/confirmatory_analysis_runner.py
         (2026-08-09 -- connects hierarchical_cluster_bootstrap, coverage,
@@ -1389,9 +1415,12 @@ class ScientificResultsRepository:
         never opens a holdout group. Persisted to
         06_statistics/confirmatory_statistical_plan_report.json; every
         method not given real data is honestly SKIPPED_NO_DATA, never a
-        fabricated number."""
+        fabricated number. `rq3_pairs` (2026-08-11) is real PrePostPair
+        identity, computed independently of the stats kwargs above -- see
+        _build_rq3_pair_registry."""
         report = _run_confirmatory_statistical_plan(**kwargs)
         as_dict = confirmatory_statistical_plan_to_dict(report)
+        as_dict["rq3_pairs"] = self._build_rq3_pair_registry()
         atomic_json(self._run_dir(paper_run_id) / "06_statistics" / "confirmatory_statistical_plan_report.json", as_dict)
         self.logger.info("confirmatory_statistical_plan paper_run_id=%s", paper_run_id)
         return as_dict
@@ -1766,6 +1795,171 @@ class ScientificResultsRepository:
         if not path.is_file():
             return None
         return json.loads(path.read_text(encoding="utf-8"))
+
+    # ------------------------------------------------------------------
+    # Scientific Dashboard closure, Level A: Experiment Health (2026-08-11)
+    # ------------------------------------------------------------------
+
+    def get_experiment_health_summary(self) -> dict[str, Any]:
+        """Level A -- a single, real cross-reference of already-real
+        getters (PaperCampaignSchedule entries/rejections on disk, real
+        campaign_deviations canonical rows, already-real association/
+        protocol/holdout status). Computes no new science: block counts are
+        real len()/sum() over real entries, `rejected_attempt_count` is a
+        real count of real rejections.jsonl lines keyed by
+        `planned_capture_id` (there is no "retries" field anywhere in the
+        codebase -- this is the closest real, honestly-named proxy, never
+        invented as a literal retry counter). `deviation_type_distribution`
+        uses the REAL deviation_type values `campaign_deviations.py`
+        produces today (DUPLICATE_CAPTURE/CAPTURE_NOT_FOUND/OVERFLOW/
+        DISCONTINUITY/METADATA_INCOMPLETE/SPLIT_CONFLICT/the 11 real
+        CAPTURE_OUT_OF_SCHEDULE-family runner-rejection codes/
+        NOT_DOCUMENTED_DESIGN_DIMENSION) -- never a renamed/invented
+        category."""
+        study_status = self.get_study_status()
+        git_sha, _ = self._git_provenance()
+        runs = self.list_runs()
+
+        campaigns: list[dict[str, Any]] = []
+        schedules_dir = self.ble_root / "paper_campaign" / "schedules"
+        if schedules_dir.is_dir():
+            for schedule_dir in sorted(p for p in schedules_dir.iterdir() if p.is_dir()):
+                versions = sorted(int(p.stem) for p in schedule_dir.glob("*.json") if p.stem.isdigit())
+                if not versions:
+                    continue
+                schedule = json.loads((schedule_dir / f"{versions[-1]}.json").read_text(encoding="utf-8"))
+                entries = schedule.get("entries", [])
+
+                rejected_by_planned_id: dict[str, int] = {}
+                rejections_path = schedule_dir / "rejections.jsonl"
+                if rejections_path.is_file():
+                    for line in rejections_path.read_text(encoding="utf-8").splitlines():
+                        if not line.strip():
+                            continue
+                        rejection = json.loads(line)
+                        planned_id = rejection.get("planned_capture_id")
+                        if planned_id:
+                            rejected_by_planned_id[planned_id] = rejected_by_planned_id.get(planned_id, 0) + 1
+
+                blocks_by_physical_unit: dict[str, dict[str, int]] = {}
+                for entry in entries:
+                    unit_id = entry.get("physical_unit_id") or "UNKNOWN"
+                    bucket = blocks_by_physical_unit.setdefault(unit_id, {"scheduled_blocks": 0, "completed_blocks": 0, "rejected_attempt_count": 0})
+                    bucket["scheduled_blocks"] += 1
+                    if entry.get("executed"):
+                        bucket["completed_blocks"] += 1
+                    bucket["rejected_attempt_count"] += rejected_by_planned_id.get(entry.get("planned_capture_id"), 0)
+
+                completed_blocks = sum(1 for e in entries if e.get("executed"))
+                campaigns.append({
+                    "schedule_id": schedule.get("schedule_id"), "schedule_version": versions[-1],
+                    "protocol_id": schedule.get("protocol_id"),
+                    "evidence_maturity": "QUALIFICATION" if schedule.get("qualification_only") else "DEVELOPMENT",
+                    "scheduled_blocks": len(entries), "completed_blocks": completed_blocks,
+                    "incomplete_blocks": len(entries) - completed_blocks,
+                    "rejected_attempt_count": sum(rejected_by_planned_id.values()),
+                    "physical_units": sorted(blocks_by_physical_unit.keys()),
+                    "blocks_by_physical_unit": blocks_by_physical_unit,
+                    "receiver_session_id": schedule.get("receiver_session_id"), "frozen_at": schedule.get("frozen_at"),
+                    "paper_run_ids": [r.paper_run_id for r in runs if r.campaign_id == schedule.get("schedule_id")],
+                })
+
+        deviation_type_distribution: dict[str, int] = {}
+        for run in runs:
+            for deviation in self._load_record_table(run.paper_run_id, "campaign_deviations"):
+                deviation_type = deviation.get("deviation_type") or "UNKNOWN"
+                deviation_type_distribution[deviation_type] = deviation_type_distribution.get(deviation_type, 0) + 1
+
+        return {
+            "schema_version": "ble-scientific-results-experiment-health-v1",
+            "generated_at": utc_now(), "git_sha": git_sha,
+            "association_policy_status": study_status["association_policy_status"],
+            "protocol_freeze_status": study_status["protocol_freeze_status"],
+            "protected_future_test_status": study_status["protected_future_test_status"],
+            "campaigns": campaigns,
+            "deviation_type_distribution": deviation_type_distribution,
+        }
+
+    # ------------------------------------------------------------------
+    # Scientific Dashboard closure, Level B: Data / Evidence Quality (2026-08-11)
+    # ------------------------------------------------------------------
+
+    def get_evidence_quality_summary(self, paper_run_id: str) -> dict[str, Any] | None:
+        """Level B -- real per-capture/per-burst/per-window canonical rows
+        (never re-aggregated science, only real counts/groupings over
+        already-real canonical tables) plus the already-real
+        campaign_accounting/quality_summary artifacts when they have been
+        built for this run. Returns None (never a zeroed table) when the
+        canonical record tables have not been built yet for this
+        paper_run_id."""
+        capture_rows = self._load_record_table(paper_run_id, "capture_records")
+        if not capture_rows:
+            return None
+        burst_rows = self._load_record_table(paper_run_id, "burst_records")
+        window_rows = self._load_record_table(paper_run_id, "decision_window_records")
+        deviation_rows = self._load_record_table(paper_run_id, "campaign_deviations")
+
+        candidate_bursts_per_capture: dict[str, int] = {}
+        crc_valid_per_capture: dict[str, int] = {}
+        admitted_per_capture: dict[str, int] = {}
+        for burst in burst_rows:
+            capture_id = burst.get("capture_id")
+            if not capture_id:
+                continue
+            candidate_bursts_per_capture[capture_id] = candidate_bursts_per_capture.get(capture_id, 0) + 1
+            if burst.get("crc_status") == "VALID":
+                crc_valid_per_capture[capture_id] = crc_valid_per_capture.get(capture_id, 0) + 1
+            if burst.get("packet_eligible") is True:
+                admitted_per_capture[capture_id] = admitted_per_capture.get(capture_id, 0) + 1
+
+        eligible_bursts_per_window: dict[str, int] = {}
+        insufficient_evidence_windows = 0
+        usable_windows = 0
+        for window in window_rows:
+            window_id = window.get("decision_window_id")
+            eligible_count = window.get("eligible_count")
+            if window_id is not None and isinstance(eligible_count, int):
+                eligible_bursts_per_window[window_id] = eligible_count
+            status = window.get("window_status")
+            if status == "ACTIVE_ELIGIBLE":
+                usable_windows += 1
+            elif status == "ACTIVE_INSUFFICIENT_BURSTS":
+                insufficient_evidence_windows += 1
+
+        captures_per_physical_unit: dict[str, int] = {}
+        captures_per_day: dict[str, int] = {}
+        captures_per_role: dict[str, int] = {}
+        exclusion_reason_counts: dict[str, int] = {}
+        discontinuity_count = 0
+        for capture in capture_rows:
+            unit_id = capture.get("physical_unit_id") or "UNKNOWN"
+            captures_per_physical_unit[unit_id] = captures_per_physical_unit.get(unit_id, 0) + 1
+            day_id = capture.get("day_id") or "UNKNOWN"
+            captures_per_day[day_id] = captures_per_day.get(day_id, 0) + 1
+            role = capture.get("experimental_role") or "UNKNOWN"
+            captures_per_role[role] = captures_per_role.get(role, 0) + 1
+            for reason in capture.get("blocking_reason_codes") or []:
+                exclusion_reason_counts[reason] = exclusion_reason_counts.get(reason, 0) + 1
+            if (capture.get("discontinuity_count") or 0) > 0:
+                discontinuity_count += 1
+
+        return {
+            "schema_version": "ble-scientific-results-evidence-quality-v1",
+            "generated_at": utc_now(), "paper_run_id": paper_run_id,
+            "capture_count": len(capture_rows), "burst_count": len(burst_rows), "window_count": len(window_rows),
+            "captures_per_physical_unit": captures_per_physical_unit,
+            "captures_per_day": captures_per_day,
+            "captures_per_experimental_role": captures_per_role,
+            "candidate_bursts_per_capture": candidate_bursts_per_capture,
+            "crc_valid_per_capture": crc_valid_per_capture,
+            "admitted_per_capture": admitted_per_capture,
+            "exclusion_reason_counts": exclusion_reason_counts,
+            "eligible_bursts_per_window": eligible_bursts_per_window,
+            "usable_windows": usable_windows,
+            "insufficient_evidence_abstention_windows": insufficient_evidence_windows,
+            "captures_with_discontinuities": discontinuity_count,
+            "deviation_count": len(deviation_rows),
+        }
 
     # ------------------------------------------------------------------
     # Fase 2: descriptive figures (Section F)

@@ -92,6 +92,20 @@ def run_rq2_benchmark(
     if not branch_results:
         return {"stopped_at": "no_recognized_rq2_branch", "stopped_reason": "None of the trained model_types map to a known RQ2 branch", "rq2_report": None}
 
+    # Dashboard closure (2026-08-11), Case A: train_seed_variability_analysis
+    # is a real, tested, previously-unwired function (re-trains the SAME
+    # configuration under each other frozen seed, VALIDATION-only, TEST
+    # never opened) -- computed only for the PRIMARY branch (the one the
+    # paper actually reports) to keep this job's real compute cost bounded;
+    # never fabricated, never computed for a branch that never trained.
+    if progress:
+        progress("SEED_VARIABILITY", 0.9, "Re-training the PRIMARY branch under the other frozen seeds")
+    for entry in branch_results:
+        if entry["analysis_role"] == "PRIMARY":
+            seed_results = studio_repository.train_seed_variability_analysis(training_run_id=entry["training_run_id"])
+            if seed_results:
+                entry["seed_variability"] = seed_results
+
     split = sci_repository._load_split(dataset_id, dataset_version, scientific_task)
     study_status = sci_repository.get_study_status()
     rq2_report = sci_repository.persist_rq2_representation_comparison_report(

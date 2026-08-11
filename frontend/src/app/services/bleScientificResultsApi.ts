@@ -560,7 +560,7 @@ export interface Rq2BranchResult {
   classwise_recall?: Record<string, number> | null;
   serialized_model_size_bytes?: number | null;
   inference_latency_ms?: number | null;
-  seed_variability?: unknown;
+  seed_variability?: SeedVariabilityPoint[];
   model_bundle_id?: string | null;
   model_bundle_sha256?: string | null;
 }
@@ -766,6 +766,85 @@ export interface StartRq2BenchmarkRequest {
   model_types?: string[];
 }
 
+// Scientific Dashboard closure, Level A/B (2026-08-11) -- real cross-
+// references over already-real getters/canonical tables. Mirrors
+// get_experiment_health_summary()/get_evidence_quality_summary() exactly.
+
+export interface ExperimentHealthBlockCounts {
+  scheduled_blocks: number;
+  completed_blocks: number;
+  rejected_attempt_count: number;
+}
+
+export interface ExperimentHealthCampaign {
+  schedule_id: string;
+  schedule_version: number;
+  protocol_id: string;
+  evidence_maturity: 'QUALIFICATION' | 'DEVELOPMENT';
+  scheduled_blocks: number;
+  completed_blocks: number;
+  incomplete_blocks: number;
+  rejected_attempt_count: number;
+  physical_units: string[];
+  blocks_by_physical_unit: Record<string, ExperimentHealthBlockCounts>;
+  receiver_session_id: string | null;
+  frozen_at: string | null;
+  paper_run_ids: string[];
+}
+
+export interface ExperimentHealthSummary {
+  schema_version: string;
+  generated_at: string;
+  git_sha: string;
+  association_policy_status: 'NONE' | 'FROZEN';
+  protocol_freeze_status: 'NOT_STARTED' | 'COMPLETE';
+  protected_future_test_status: 'UNTOUCHED' | 'OPENED';
+  campaigns: ExperimentHealthCampaign[];
+  deviation_type_distribution: Record<string, number>;
+}
+
+export interface EvidenceQualitySummary {
+  schema_version: string;
+  generated_at: string;
+  paper_run_id: string;
+  capture_count: number;
+  burst_count: number;
+  window_count: number;
+  captures_per_physical_unit: Record<string, number>;
+  captures_per_day: Record<string, number>;
+  captures_per_experimental_role: Record<string, number>;
+  candidate_bursts_per_capture: Record<string, number>;
+  crc_valid_per_capture: Record<string, number>;
+  admitted_per_capture: Record<string, number>;
+  exclusion_reason_counts: Record<string, number>;
+  eligible_bursts_per_window: Record<string, number>;
+  usable_windows: number;
+  insufficient_evidence_abstention_windows: number;
+  captures_with_discontinuities: number;
+  deviation_count: number;
+}
+
+export interface Rq3Pair {
+  physical_unit_id: string;
+  day_id: string;
+  intervention_arm: string;
+  pre_capture_id: string;
+  post_capture_id: string;
+  pre_receiver_epoch: string | null;
+  post_receiver_epoch: string | null;
+  pre_receiver_session_id: string | null;
+  post_receiver_session_id: string | null;
+  valid: boolean;
+  invalidation_reason: string | null;
+}
+
+export interface SeedVariabilityPoint {
+  seed: number;
+  training_run_id: string;
+  validation_accuracy: number | null;
+  validation_balanced_accuracy: number | null;
+}
+
 export interface Rq2RepresentationComparisonReport extends Record<string, unknown> {
   schema_version: string;
   protocol_id: string;
@@ -928,5 +1007,13 @@ export class BleScientificResultsApiService {
   }
   async listScientistDecisions(fieldId?: string) {
     return (await axios.get<ScientistDecisionRecord[]>(`${this.root}/scientist-decisions`, { params: fieldId ? { field_id: fieldId } : {} })).data;
+  }
+
+  // Scientific Dashboard closure, Level A/B (2026-08-11).
+  async getExperimentHealth() {
+    return (await axios.get<ExperimentHealthSummary>(`${this.root}/experiment-health`)).data;
+  }
+  async getEvidenceQualitySummary(paperRunId: string) {
+    return (await axios.get<EvidenceQualitySummary | NoDataResponse>(`${this.root}/runs/${encodeURIComponent(paperRunId)}/evidence-quality-summary`)).data;
   }
 }

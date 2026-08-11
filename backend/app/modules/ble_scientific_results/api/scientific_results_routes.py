@@ -155,6 +155,24 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
             return result
         return call(resolve)
 
+    # ------------------------------------------------------------------
+    # Scientific Dashboard closure (2026-08-11): Level A (Experiment
+    # Health, study-wide) and Level B (Data/Evidence Quality, per run) --
+    # both real cross-references over already-real getters/canonical
+    # tables, computing no new science.
+    # ------------------------------------------------------------------
+
+    @router.get("/experiment-health")
+    def experiment_health():
+        return call(lambda: repository.get_experiment_health_summary())
+
+    @router.get("/runs/{paper_run_id}/evidence-quality-summary")
+    def evidence_quality_summary(paper_run_id: str):
+        def resolve():
+            result = repository.get_evidence_quality_summary(paper_run_id)
+            return result if result is not None else {"status": "NO_DATA"}
+        return call(resolve)
+
     @router.get("/runs/{paper_run_id}/captures")
     def captures(paper_run_id: str, limit: int = 100, offset: int = 0):
         return call(lambda: repository.list_capture_records(paper_run_id, limit=limit, offset=offset))

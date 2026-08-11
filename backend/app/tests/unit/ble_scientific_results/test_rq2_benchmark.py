@@ -43,13 +43,19 @@ def _trained_model(model_type: str, *, composite_score: float, balanced_accuracy
 
 
 class _StubStudioRepository:
-    def __init__(self, result: dict) -> None:
+    def __init__(self, result: dict, *, seed_variability: list[dict] | None = None) -> None:
         self.result = result
         self.calls: list[dict] = []
+        self.seed_variability_calls: list[str] = []
+        self._seed_variability = seed_variability if seed_variability is not None else []
 
     def train_selected_models(self, **kwargs):
         self.calls.append(kwargs)
         return self.result
+
+    def train_seed_variability_analysis(self, *, training_run_id: str, seeds=None, progress=None):
+        self.seed_variability_calls.append(training_run_id)
+        return self._seed_variability
 
 
 def test_map_training_result_picks_the_best_model_per_branch_and_primary_by_composite_score():
@@ -105,6 +111,32 @@ def test_run_rq2_benchmark_raises_without_a_studio_repository(tmp_path):
     repo = _repo(tmp_path)
     with pytest.raises(Rq2BenchmarkError):
         run_rq2_benchmark(studio_repository=None, sci_repository=repo, paper_run_id="RUN-1", dataset_id="DS1", dataset_version="1.0.0")
+
+
+def test_run_rq2_benchmark_wires_real_seed_variability_into_the_primary_branch_only(tmp_path):
+    """Dashboard closure (2026-08-11), Case A: train_seed_variability_analysis
+    is real and tested but was previously never called from RQ2 Benchmark --
+    now wired for the PRIMARY branch only (bounded real compute cost), never
+    for an UNSELECTED branch that never needed it for the paper."""
+    repo = _repo(tmp_path)
+    _write_split(repo, dataset_id="DS1", dataset_version="1.0.0", scientific_task="TARGET_VS_BACKGROUND")
+    training_result = {"trained_models": [
+        _trained_model("cnn1d", composite_score=0.9, balanced_accuracy=0.95, run_suffix="CNN1D"),
+        _trained_model("logistic_regression", composite_score=0.5, balanced_accuracy=0.7, run_suffix="LR"),
+    ], "skipped_models": []}
+    seed_variability = [
+        {"seed": 137, "training_run_id": "RUN-CNN1D-seed-137", "validation_accuracy": 0.93, "validation_balanced_accuracy": 0.94},
+        {"seed": 2024, "training_run_id": "RUN-CNN1D-seed-2024", "validation_accuracy": 0.94, "validation_balanced_accuracy": 0.95},
+    ]
+    studio = _StubStudioRepository(training_result, seed_variability=seed_variability)
+
+    result = run_rq2_benchmark(studio_repository=studio, sci_repository=repo, paper_run_id="RUN-1", dataset_id="DS1", dataset_version="1.0.0")
+
+    assert studio.seed_variability_calls == ["RUN-CNN1D"]  # only the PRIMARY branch's training_run_id
+    by_branch = {b["branch"]: b for b in result["rq2_report"]["branches"]}
+    assert by_branch["raw_iq"]["analysis_role"] == "PRIMARY"
+    assert by_branch["raw_iq"]["seed_variability"] == seed_variability
+    assert "seed_variability" not in by_branch["engineered_rf"]  # UNSELECTED -- never fabricated
 
 
 def test_run_rq2_benchmark_passes_all_model_types_by_default(tmp_path):
