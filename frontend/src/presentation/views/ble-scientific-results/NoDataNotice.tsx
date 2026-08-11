@@ -18,6 +18,8 @@ export function StatusBadge({ status }: { status: string }) {
     FROZEN: 'bg-emerald-900/40 text-emerald-300 border-emerald-800',
     PRELIMINARY: 'bg-amber-900/40 text-amber-300 border-amber-800',
     IN_PROGRESS: 'bg-amber-900/40 text-amber-300 border-amber-800',
+    SCIENTIST_DECISION_REQUIRED: 'bg-amber-900/40 text-amber-300 border-amber-800',
+    INCOMPLETE: 'bg-amber-900/40 text-amber-300 border-amber-800',
     BLOCKED: 'bg-red-900/40 text-red-300 border-red-800',
     INVALIDATED: 'bg-red-900/40 text-red-300 border-red-800',
     NOT_READY: 'bg-red-900/40 text-red-300 border-red-800',

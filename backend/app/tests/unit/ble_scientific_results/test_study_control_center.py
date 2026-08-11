@@ -96,3 +96,33 @@ def test_phase_04_complete_when_a_real_pilot_schedule_is_fully_executed(tmp_path
     _write_pilot_schedule(repo, schedule_id="PILOT-1", executed_count=4, total=4)
     status = repo.get_study_control_center_status()
     assert _phase(status, "04")["state"] == "COMPLETE"
+
+
+def test_mechanism_launcher_execution_are_three_independent_states(tmp_path):
+    """Normalization (2026-08-11): mechanism_state/launcher_state are never
+    conflated with execution_state -- a phase whose mechanism+launcher are
+    both real (READY) can still legitimately report execution_state=NOT_RUN,
+    and that must never collapse into a single blended READY that could be
+    misread as "already executed"."""
+    repo = _repo(tmp_path)
+    status = repo.get_study_control_center_status()
+    phase01 = _phase(status, "01")
+    assert phase01["mechanism_state"] == "READY"
+    assert phase01["launcher_state"] == "READY"
+    assert phase01["execution_state"] == "NOT_RUN"
+
+    # Phases 11/12/13 have a real, tested mechanism but no dedicated
+    # launcher yet -- must be reported as such, never as READY overall.
+    for phase_id in ("11", "12", "13"):
+        phase = _phase(status, phase_id)
+        assert phase["mechanism_state"] == "READY"
+        assert phase["launcher_state"] == "NOT_STARTED"
+
+
+def test_operationally_closed_count_requires_both_mechanism_and_launcher_ready(tmp_path):
+    repo = _repo(tmp_path)
+    status = repo.get_study_control_center_status()
+    assert status["phases_total"] == 17
+    # 01-10, 16, 17 have both mechanism and launcher READY (12 phases);
+    # 11/12/13 have mechanism only; 14/15 have launcher PARTIAL.
+    assert status["phases_with_mechanism_and_launcher_ready"] == 12

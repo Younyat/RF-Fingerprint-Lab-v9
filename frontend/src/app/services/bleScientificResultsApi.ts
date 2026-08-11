@@ -573,10 +573,20 @@ export interface Rq2BranchResult {
 
 export type StudyControlCenterPhaseState = 'NOT_STARTED' | 'READY' | 'IN_PROGRESS' | 'PRELIMINARY' | 'BLOCKED' | 'COMPLETE' | 'INVALIDATED' | 'NOT_APPLICABLE';
 
+// Normalized 2026-08-11: three independent states, never conflated into
+// one blended READY. mechanism/launcher are static facts about what code
+// exists; execution is the only one computed from real runtime artifacts.
+export type StudyControlCenterMechanismState = 'READY' | 'PARTIAL' | 'NOT_STARTED';
+export type StudyControlCenterLauncherState = 'READY' | 'PARTIAL' | 'NOT_STARTED';
+export type StudyControlCenterExecutionState = 'NOT_RUN' | 'IN_PROGRESS' | 'COMPLETE' | 'BLOCKED' | 'PRELIMINARY';
+
 export interface StudyControlCenterPhase {
   phase_id: string;
   label: string;
   state: StudyControlCenterPhaseState;
+  mechanism_state: StudyControlCenterMechanismState;
+  launcher_state: StudyControlCenterLauncherState;
+  execution_state: StudyControlCenterExecutionState;
   prerequisites: string[];
   blocking_reasons: string[];
   real_data_available: boolean;
@@ -592,6 +602,8 @@ export interface StudyControlCenterStatus {
   schema_version: string;
   generated_at: string;
   phases: StudyControlCenterPhase[];
+  phases_with_mechanism_and_launcher_ready: number;
+  phases_total: number;
 }
 
 export interface HardwareQualificationJob {
@@ -685,6 +697,65 @@ export interface StudySizingDecision extends StudySizingDesignEvaluation {
   rationale: string;
   decided_by: string | null;
   decided_at: string;
+}
+
+// Study Control Center, phase 09 (2026-08-11) -- Analysis Contract
+// Readiness. Never a generic JSON editor: every field declares whether it
+// is DERIVED (a real, already-frozen artifact/constant) or a genuine
+// SCIENTIST_DECISION, and status is restricted to
+// COMPLETE/INCOMPLETE/SCIENTIST_DECISION_REQUIRED.
+
+export type AnalysisContractFieldKind = 'DERIVED' | 'SCIENTIST_DECISION';
+export type AnalysisContractFieldStatus = 'COMPLETE' | 'INCOMPLETE' | 'SCIENTIST_DECISION_REQUIRED';
+
+export interface AnalysisContractFieldReadiness {
+  field_id: string;
+  label: string;
+  kind: AnalysisContractFieldKind;
+  value: unknown;
+  source: string | null;
+  evidence_maturity: string | null;
+  status: AnalysisContractFieldStatus;
+  rationale: string | null;
+}
+
+export interface AnalysisContractReadinessGate {
+  gate_id: string;
+  label: string;
+  status: 'COMPLETE' | 'INCOMPLETE';
+}
+
+export interface ProtocolFreezeReadiness {
+  status: 'READY' | 'BLOCKED';
+  missing: string[];
+}
+
+export interface AnalysisContractReadiness {
+  schema_version: string;
+  generated_at: string;
+  fields: AnalysisContractFieldReadiness[];
+  readiness_gates: AnalysisContractReadinessGate[];
+  protocol_freeze_readiness: ProtocolFreezeReadiness;
+}
+
+export interface ScientistDecisionRecord {
+  schema_version: string;
+  field_id: string;
+  selected_value: unknown;
+  rationale: string;
+  evidence_used: string;
+  decided_by: string | null;
+  protocol_version_candidate: number | null;
+  decided_at: string;
+}
+
+export interface RecordScientistDecisionRequest {
+  field_id: string;
+  selected_value: unknown;
+  rationale: string;
+  evidence_used?: string;
+  decided_by?: string;
+  protocol_version_candidate?: number;
 }
 
 export interface StartRq2BenchmarkRequest {
@@ -846,5 +917,16 @@ export class BleScientificResultsApiService {
   }
   async getStudySizingDecision() {
     return (await axios.get<StudySizingDecision | NoDataResponse>(`${this.root}/study-sizing/decision`)).data;
+  }
+
+  // Study Control Center, phase 09 (2026-08-11) -- Analysis Contract Readiness.
+  async getAnalysisContractReadiness() {
+    return (await axios.get<AnalysisContractReadiness>(`${this.root}/analysis-contract-readiness`)).data;
+  }
+  async recordScientistDecision(body: RecordScientistDecisionRequest) {
+    return (await axios.post<ScientistDecisionRecord>(`${this.root}/scientist-decisions`, body)).data;
+  }
+  async listScientistDecisions(fieldId?: string) {
+    return (await axios.get<ScientistDecisionRecord[]>(`${this.root}/scientist-decisions`, { params: fieldId ? { field_id: fieldId } : {} })).data;
   }
 }

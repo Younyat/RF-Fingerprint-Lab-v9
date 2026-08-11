@@ -409,28 +409,33 @@ class ScientificResultsRepository:
             "generated_at": utc_now(),
         }
 
-    # Study Control Center, Phase 1 (2026-08-11): the 17-phase workflow this
-    # method describes, in dependency order. Purely descriptive metadata
-    # (label/prerequisites/paper_section) -- no science, no gating logic
-    # lives in this tuple itself.
-    _STUDY_CONTROL_CENTER_PHASES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
-        ("01", "Hardware Qualification", (), "Methods"),
-        ("02", "Physical Unit Qualification", ("01",), "Methods/Qualification"),
-        ("03", "Association Calibration", ("01",), "Methods/Association"),
-        ("04", "Qualification Pilot", ("01", "02", "03"), "Methods"),
-        ("05", "Study Sizing", ("04",), "Methods"),
-        ("06", "DEVELOPMENT Campaign", ("04", "05"), "Methods"),
-        ("07", "VALIDATION Campaign", ("06",), "Methods"),
-        ("08", "RQ2 Benchmark", ("07",), "Results/RQ2"),
-        ("09", "Analysis Contract", ("08",), "Methods"),
-        ("10", "Protocol Freeze", ("09",), "Methods"),
-        ("11", "Definitive Controlled Campaign", ("10",), "Methods"),
-        ("12", "Protected FUTURE", ("10",), "Methods"),
-        ("13", "Confirmatory Analysis", ("11", "12"), "Results"),
-        ("14", "S1 Channel Transport", ("10",), "Engineering"),
-        ("15", "S2 Offline/Near-Live", ("10",), "Engineering"),
-        ("16", "Provenance Audit", ("13",), "Methods"),
-        ("17", "Paper Export", ("13", "14", "15", "16"), "All"),
+    # Study Control Center (2026-08-11, normalized 2026-08-11): the 17-phase
+    # workflow, in dependency order. `mechanism_state`/`launcher_state` are
+    # STATIC facts about what code exists (never computed from runtime
+    # data) -- READY means the real backend function/route (mechanism) or
+    # the real Study Control Center UI (launcher) exists and is tested;
+    # PARTIAL means it exists but is incomplete (e.g. a read-only view with
+    # no launcher to compute new data); NOT_STARTED means neither exists.
+    # `execution_state` (COMPLETE/IN_PROGRESS/NOT_RUN) is the only one
+    # computed from real runtime artifacts below -- see `signals`.
+    _STUDY_CONTROL_CENTER_PHASES: tuple[tuple[str, str, tuple[str, ...], str, str, str], ...] = (
+        ("01", "Hardware Qualification", (), "Methods", "READY", "READY"),
+        ("02", "Physical Unit Qualification", ("01",), "Methods/Qualification", "READY", "READY"),
+        ("03", "Association Calibration", ("01",), "Methods/Association", "READY", "READY"),
+        ("04", "Qualification Pilot", ("01", "02", "03"), "Methods", "READY", "READY"),
+        ("05", "Study Sizing", ("04",), "Methods", "READY", "READY"),
+        ("06", "DEVELOPMENT Campaign", ("04", "05"), "Methods", "READY", "READY"),
+        ("07", "VALIDATION Campaign", ("06",), "Methods", "READY", "READY"),
+        ("08", "RQ2 Benchmark", ("07",), "Results/RQ2", "READY", "READY"),
+        ("09", "Analysis Contract", ("08",), "Methods", "READY", "READY"),
+        ("10", "Protocol Freeze", ("09",), "Methods", "READY", "READY"),
+        ("11", "Definitive Controlled Campaign", ("10",), "Methods", "READY", "NOT_STARTED"),
+        ("12", "Protected FUTURE", ("10",), "Methods", "READY", "NOT_STARTED"),
+        ("13", "Confirmatory Analysis", ("11", "12"), "Results", "READY", "NOT_STARTED"),
+        ("14", "S1 Channel Transport", ("10",), "Engineering", "READY", "PARTIAL"),
+        ("15", "S2 Offline/Near-Live", ("10",), "Engineering", "READY", "PARTIAL"),
+        ("16", "Provenance Audit", ("13",), "Methods", "READY", "READY"),
+        ("17", "Paper Export", ("13", "14", "15", "16"), "All", "READY", "READY"),
     )
 
     def get_study_control_center_status(self) -> dict[str, Any]:
@@ -572,21 +577,33 @@ class ScientificResultsRepository:
         next_action_overrides = {
             "03": "Usar la pestana Guided Validation (POST /guided-validation) -- freezing de politica de asociacion es una etapa de ese job real, no una accion aislada",
         }
-        labels_by_id = {phase_id: label for phase_id, label, _prereqs, _section in self._STUDY_CONTROL_CENTER_PHASES}
+        labels_by_id = {phase_id: label for phase_id, label, _prereqs, _section, _mech, _launch in self._STUDY_CONTROL_CENTER_PHASES}
         phases: list[dict[str, Any]] = []
-        for phase_id, label, prereq_ids, paper_section in self._STUDY_CONTROL_CENTER_PHASES:
+        for phase_id, label, prereq_ids, paper_section, mechanism_state, launcher_state in self._STUDY_CONTROL_CENTER_PHASES:
             signal = signals[phase_id]
             incomplete_prereqs = [labels_by_id[pid] for pid in prereq_ids if not signals[pid]["completed"]]
+            # execution_state (2026-08-11 normalization): the ONLY one of the
+            # three states computed from real runtime artifacts -- never
+            # conflated with mechanism_state/launcher_state, which are
+            # static facts about what code exists. Blocking is a property of
+            # execution readiness, never of the mechanism/launcher
+            # themselves (those either exist or don't).
             if signal["completed"]:
-                state = "COMPLETE"
+                execution_state = "COMPLETE"
             elif signal["in_progress"]:
-                state = "IN_PROGRESS" if phase_id != "01" else ("PRELIMINARY" if qualification_report and qualification_report.get("overall_status") == "PRELIMINARY" else "BLOCKED")
+                execution_state = "IN_PROGRESS" if phase_id != "01" else ("PRELIMINARY" if qualification_report and qualification_report.get("overall_status") == "PRELIMINARY" else "BLOCKED")
             elif incomplete_prereqs:
-                state = "BLOCKED"
+                execution_state = "BLOCKED"
             else:
-                state = "READY"
+                execution_state = "NOT_RUN" if launcher_state == "READY" else "BLOCKED"
+            # `state` kept for backward compatibility with existing UI gating
+            # logic (READY/BLOCKED drive next_allowed_operation) -- the 3
+            # explicit fields below are the ones a caller should read to
+            # avoid conflating mechanism/launcher/execution.
+            state = "READY" if execution_state == "NOT_RUN" else execution_state
             phases.append({
                 "phase_id": phase_id, "label": label, "state": state,
+                "mechanism_state": mechanism_state, "launcher_state": launcher_state, "execution_state": execution_state,
                 "prerequisites": [labels_by_id[pid] for pid in prereq_ids],
                 "blocking_reasons": incomplete_prereqs if state == "BLOCKED" else [],
                 "real_data_available": signal["real_data_available"],
@@ -596,7 +613,202 @@ class ScientificResultsRepository:
                 "next_allowed_operation": (next_action_overrides.get(phase_id) or f"RUN {label.upper()}") if state == "READY" else None,
             })
 
-        return {"schema_version": "ble-scientific-results-study-control-center-v1", "generated_at": utc_now(), "phases": phases}
+        operationally_closed = sum(1 for p in phases if p["mechanism_state"] == "READY" and p["launcher_state"] == "READY")
+        return {
+            "schema_version": "ble-scientific-results-study-control-center-v2", "generated_at": utc_now(), "phases": phases,
+            # "Operationally closed" = mechanism AND launcher are both real
+            # (READY) -- i.e. runnable end-to-end from this UI with zero
+            # hidden CLI step -- REGARDLESS of whether it has been run for
+            # real yet (execution_state is reported separately per phase,
+            # never folded into this count).
+            "phases_with_mechanism_and_launcher_ready": operationally_closed,
+            "phases_total": len(phases),
+        }
+
+    # ------------------------------------------------------------------
+    # Phase 09: Analysis Contract Readiness (2026-08-11) -- NOT a generic
+    # JSON editor. Every field the confirmatory contract needs is either
+    # DERIVED (a real, already-frozen artifact or a real, frozen constant
+    # elsewhere in the codebase -- this method only reads it, never invents
+    # a value) or SCIENTIST_DECISION (a genuine judgment call that software
+    # must never auto-decide -- see record_scientist_decision below).
+    # ------------------------------------------------------------------
+
+    _SCIENTIST_DECISION_FIELD_IDS: tuple[str, ...] = (
+        "rq2_primary_branch", "rq3_primary_analysis", "rq4_primary_analysis", "sensitivity_analyses",
+        "preprocessing_profile", "rq3_reset_control_definition", "non_inferiority_margin",
+        "non_inferiority_direction", "alpha", "confirmatory_hypotheses", "holm_family",
+    )
+
+    def _scientist_decisions_path(self) -> Path:
+        return self.root / "scientist_decisions.jsonl"
+
+    def record_scientist_decision(
+        self, *, field_id: str, selected_value: Any, rationale: str, evidence_used: str,
+        decided_by: str | None = None, protocol_version_candidate: int | None = None,
+    ) -> dict[str, Any]:
+        """Append-only record of a genuine human scientific judgment call --
+        never auto-derived, never overwritten in place (a later decision for
+        the same field_id is a NEW entry; get_latest_scientist_decisions()
+        resolves latest-per-field). Refuses a decision with no real
+        rationale (same discipline as persist_study_sizing_decision), and
+        refuses evidence_used that cites the protected FUTURE TEST holdout
+        -- no scientific decision made before protocol freeze may be
+        justified by data that must remain untouched until confirmatory
+        analysis."""
+        if field_id not in self._SCIENTIST_DECISION_FIELD_IDS:
+            raise ValueError(f"UNKNOWN_SCIENTIST_DECISION_FIELD:{field_id}")
+        if not rationale.strip():
+            raise ValueError("RATIONALE_REQUIRED_TO_RECORD_A_SCIENTIST_DECISION")
+        if evidence_used and "future" in evidence_used.lower():
+            raise ValueError("SCIENTIST_DECISION_MUST_NOT_CITE_PROTECTED_FUTURE_TEST_AS_EVIDENCE")
+        record = {
+            "schema_version": "ble-scientific-results-scientist-decision-v1",
+            "field_id": field_id, "selected_value": selected_value, "rationale": rationale,
+            "evidence_used": evidence_used, "decided_by": decided_by,
+            "protocol_version_candidate": protocol_version_candidate, "decided_at": utc_now(),
+        }
+        path = self._scientist_decisions_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+        self.logger.info("scientist decision recorded field_id=%s decided_by=%s", field_id, decided_by)
+        return record
+
+    def list_scientist_decisions(self, field_id: str | None = None) -> list[dict[str, Any]]:
+        path = self._scientist_decisions_path()
+        if not path.is_file():
+            return []
+        records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        return [r for r in records if field_id is None or r["field_id"] == field_id]
+
+    def get_latest_scientist_decisions(self) -> dict[str, dict[str, Any]]:
+        """Append-only log, chronological write order -> later entries for
+        the same field_id legitimately overwrite the dict entry here, which
+        is exactly "latest wins" without needing a separate timestamp sort."""
+        latest: dict[str, dict[str, Any]] = {}
+        for record in self.list_scientist_decisions():
+            latest[record["field_id"]] = record
+        return latest
+
+    def get_analysis_contract_readiness(self) -> dict[str, Any]:
+        """Per-field readiness for the AnalysisContract (Phase 09). status is
+        restricted to COMPLETE/INCOMPLETE/SCIENTIST_DECISION_REQUIRED --
+        never a fabricated READY. DERIVED fields mirror a real, already-
+        frozen artifact or a real, frozen constant elsewhere in the codebase
+        (never a second, independently-chosen definition -- see
+        contracts/protocol.py's own "mirrors ble_rffi_studio's real, frozen
+        constants" comment for decision_window_duration_s/
+        minimum_eligible_bursts/score_aggregation_rule/
+        threshold_selection_procedure). SCIENTIST_DECISION fields are
+        resolved only from record_scientist_decision()'s append-only log --
+        this method never guesses one."""
+        from app.modules.ble_rffi_studio.api.studio_repository import FROZEN_TRAINING_SEEDS
+        from app.modules.ble_rffi_studio.inference.decision_windows import (
+            AGGREGATION_RULE, DEFAULT_MINIMUM_ELIGIBLE_BURSTS, DEFAULT_WINDOW_DURATION_S,
+        )
+
+        study_status = self.get_study_status()
+        control_center = self.get_study_control_center_status()
+        phases_by_id = {p["phase_id"]: p for p in control_center["phases"]}
+        frozen_policy = self.find_frozen_association_policy()
+        decisions = self.get_latest_scientist_decisions()
+
+        def _derived(field_id: str, label: str, value: Any, source: str, evidence_maturity: str | None, complete: bool) -> dict[str, Any]:
+            return {
+                "field_id": field_id, "label": label, "kind": "DERIVED",
+                "value": value, "source": source, "evidence_maturity": evidence_maturity,
+                "status": "COMPLETE" if complete else "INCOMPLETE", "rationale": None,
+            }
+
+        def _scientist(field_id: str, label: str) -> dict[str, Any]:
+            decision = decisions.get(field_id)
+            if decision is None:
+                return {
+                    "field_id": field_id, "label": label, "kind": "SCIENTIST_DECISION",
+                    "value": None, "source": None, "evidence_maturity": None,
+                    "status": "SCIENTIST_DECISION_REQUIRED", "rationale": None,
+                }
+            return {
+                "field_id": field_id, "label": label, "kind": "SCIENTIST_DECISION",
+                "value": decision["selected_value"],
+                "source": f"scientist decision by {decision.get('decided_by') or 'UNKNOWN'} at {decision['decided_at']}",
+                "evidence_maturity": decision.get("evidence_used"), "status": "COMPLETE",
+                "rationale": decision["rationale"],
+            }
+
+        fields = [
+            _derived(
+                "stochastic_seeds", "Stochastic seeds", list(FROZEN_TRAINING_SEEDS),
+                "ble_rffi_studio.api.studio_repository.FROZEN_TRAINING_SEEDS", "QUALIFICATION", True,
+            ),
+            _derived(
+                "rq4_analytical_regions", "RQ4 analytical regions", ["FULL_BURST", "ADVA_EXCLUDED", "PRE_PDU"],
+                "fixed convention already used by confirmatory_analysis_runner.py/paper_export.py", "QUALIFICATION", True,
+            ),
+            _derived(
+                "packet_conditions", "Packet conditions", ["ORIGINAL", "CONTROLLED_VARIANT"],
+                "ble_rffi_studio.contracts.capture.PacketCondition", "QUALIFICATION", True,
+            ),
+            _derived(
+                "decision_window_duration_s", "Decision-window duration (s)", DEFAULT_WINDOW_DURATION_S,
+                "ble_rffi_studio.inference.decision_windows.DEFAULT_WINDOW_DURATION_S", "QUALIFICATION", True,
+            ),
+            _derived(
+                "minimum_eligible_bursts", "Minimum eligible bursts", DEFAULT_MINIMUM_ELIGIBLE_BURSTS,
+                "ble_rffi_studio.inference.decision_windows.DEFAULT_MINIMUM_ELIGIBLE_BURSTS", "QUALIFICATION", True,
+            ),
+            _derived(
+                "score_aggregation_rule", "Score aggregation rule", AGGREGATION_RULE,
+                "ble_rffi_studio.inference.decision_windows.AGGREGATION_RULE", "QUALIFICATION", True,
+            ),
+            _derived(
+                "threshold_selection_procedure", "Operating-threshold procedure",
+                frozen_policy.selection_rule if frozen_policy else None,
+                "AssociationPolicy.selection_rule (frozen calibration policy)",
+                "VALIDATION" if frozen_policy else None, frozen_policy is not None,
+            ),
+            _derived(
+                "operating_threshold_ms", "Operating threshold, ms (when available)",
+                frozen_policy.threshold_ms if frozen_policy else None,
+                "AssociationPolicy.threshold_ms (frozen calibration policy)",
+                "VALIDATION" if frozen_policy else None, frozen_policy is not None,
+            ),
+            _scientist("rq2_primary_branch", "RQ2 primary branch"),
+            _scientist("rq3_primary_analysis", "RQ3 primary analysis"),
+            _scientist("rq4_primary_analysis", "RQ4 primary analysis"),
+            _scientist("sensitivity_analyses", "Sensitivity analyses"),
+            _scientist("preprocessing_profile", "Preprocessing profile"),
+            _scientist("rq3_reset_control_definition", "RQ3 intervention (RESET/CONTROL) definition"),
+            _scientist("non_inferiority_margin", "Non-inferiority margin"),
+            _scientist("non_inferiority_direction", "Non-inferiority direction"),
+            _scientist("alpha", "Alpha"),
+            _scientist("confirmatory_hypotheses", "Confirmatory hypotheses"),
+            _scientist("holm_family", "Holm family / multiplicity rule"),
+        ]
+
+        def _gate(gate_id: str, label: str, complete: bool) -> dict[str, Any]:
+            return {"gate_id": gate_id, "label": label, "status": "COMPLETE" if complete else "INCOMPLETE"}
+
+        readiness_gates = [
+            _gate("qualification_state", "Hardware qualification (Phase 01)", phases_by_id["01"]["execution_state"] == "COMPLETE"),
+            _gate("association_policy_state", "Association policy frozen (Phase 03)", study_status["association_policy_status"] == "FROZEN"),
+            _gate("development_completion", "DEVELOPMENT campaign complete (Phase 06)", phases_by_id["06"]["execution_state"] == "COMPLETE"),
+            _gate("validation_completion", "VALIDATION campaign complete (Phase 07)", phases_by_id["07"]["execution_state"] == "COMPLETE"),
+            _gate("rq2_primary_selection", "RQ2 primary branch selected", "rq2_primary_branch" in decisions),
+            _gate("protected_future_untouched", "Protected FUTURE untouched", study_status["protected_future_test_status"] == "UNTOUCHED"),
+        ]
+
+        missing = [f["field_id"] for f in fields if f["status"] != "COMPLETE"] + [g["gate_id"] for g in readiness_gates if g["status"] != "COMPLETE"]
+        protocol_freeze_readiness = {"status": "READY" if not missing else "BLOCKED", "missing": missing}
+
+        return {
+            "schema_version": "ble-scientific-results-analysis-contract-readiness-v1",
+            "generated_at": utc_now(),
+            "fields": fields,
+            "readiness_gates": readiness_gates,
+            "protocol_freeze_readiness": protocol_freeze_readiness,
+        }
 
     # One row per paper element -> which canonical artifact backs it, and
     # whether that artifact exists on disk today. Presence-only; this never

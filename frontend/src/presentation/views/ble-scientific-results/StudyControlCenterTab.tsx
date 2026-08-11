@@ -5,6 +5,7 @@ import {
   Rq2BenchmarkJob, StudyControlCenterStatus, StudySizingDecision, StudySizingEvaluationResult,
 } from '../../../app/services/bleScientificResultsApi';
 import NoDataNotice, { StatusBadge } from './NoDataNotice';
+import AnalysisContractReadinessPanel from './AnalysisContractReadinessPanel';
 
 const sciApi = new BleScientificResultsApiService();
 const studioApi = new BleRffiStudioApiService();
@@ -48,39 +49,50 @@ export default function StudyControlCenterTab() {
 
       {!status && <NoDataNotice reason="Cargando el estado del Study Control Center..." />}
       {status && (
-        <div className="space-y-2">
-          {status.phases.map((phase) => (
-            <div key={phase.phase_id} className="rounded border border-slate-800 bg-slate-950 p-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-mono text-xs text-slate-500">{phase.phase_id}</span>
-                <span className="text-sm font-semibold text-slate-200">{phase.label}</span>
-                <StatusBadge status={phase.state} />
-                {phase.next_allowed_operation && <span className="text-[11px] text-cyan-400">{phase.next_allowed_operation}</span>}
-              </div>
-              {phase.blocking_reasons.length > 0 && (
-                <div className="mt-1 text-[11px] text-red-400">
-                  BLOCKED -- Missing: {phase.blocking_reasons.join(', ')}
+        <>
+          <div className="rounded border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-400">
+            <span className="font-semibold text-slate-200">{status.phases_with_mechanism_and_launcher_ready}/{status.phases_total}</span> fases
+            operacionalmente cerradas (mechanism=READY y launcher=READY) -- independiente de si ya se han ejecutado de verdad.
+          </div>
+          <div className="space-y-2">
+            {status.phases.map((phase) => (
+              <div key={phase.phase_id} className="rounded border border-slate-800 bg-slate-950 p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-xs text-slate-500">{phase.phase_id}</span>
+                  <span className="text-sm font-semibold text-slate-200">{phase.label}</span>
+                  {phase.next_allowed_operation && <span className="text-[11px] text-cyan-400">{phase.next_allowed_operation}</span>}
                 </div>
-              )}
-              <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-500">
-                <span>run_id: {phase.run_id ?? 'N/A'}</span>
-                <span>git_sha: {phase.git_sha.slice(0, 12)}</span>
-                <span>protocol_version: {phase.protocol_version ?? 'N/A'}</span>
-                <span>paper_section: {phase.paper_section}</span>
-                <span>real_data: {phase.real_data_available ? 'yes' : 'no'}</span>
+                <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[11px]">
+                  <span className="flex items-center gap-1"><span className="text-slate-500">mechanism</span><StatusBadge status={phase.mechanism_state} /></span>
+                  <span className="flex items-center gap-1"><span className="text-slate-500">launcher</span><StatusBadge status={phase.launcher_state} /></span>
+                  <span className="flex items-center gap-1"><span className="text-slate-500">execution</span><StatusBadge status={phase.execution_state} /></span>
+                </div>
+                {phase.blocking_reasons.length > 0 && (
+                  <div className="mt-1 text-[11px] text-red-400">
+                    BLOCKED -- Missing: {phase.blocking_reasons.join(', ')}
+                  </div>
+                )}
+                <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-500">
+                  <span>run_id: {phase.run_id ?? 'N/A'}</span>
+                  <span>git_sha: {phase.git_sha.slice(0, 12)}</span>
+                  <span>protocol_version: {phase.protocol_version ?? 'N/A'}</span>
+                  <span>paper_section: {phase.paper_section}</span>
+                  <span>real_data: {phase.real_data_available ? 'yes' : 'no'}</span>
+                </div>
+                {phase.artifacts.length > 0 && (
+                  <div className="mt-1 text-[11px] text-slate-600">artifacts: {phase.artifacts.join(', ')}</div>
+                )}
               </div>
-              {phase.artifacts.length > 0 && (
-                <div className="mt-1 text-[11px] text-slate-600">artifacts: {phase.artifacts.join(', ')}</div>
-              )}
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        </>
       )}
 
       <HardwareQualificationLauncher onCompleted={refresh} />
       <PhysicalUnitQualificationLauncher onCompleted={refresh} />
       <StudySizingLauncher onCompleted={refresh} />
       <Rq2BenchmarkLauncher onCompleted={refresh} />
+      <AnalysisContractReadinessPanel onCompleted={refresh} />
       <CampaignScheduleLauncher onCompleted={refresh} />
     </div>
   );

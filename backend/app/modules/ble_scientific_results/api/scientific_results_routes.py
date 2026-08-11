@@ -404,6 +404,30 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
             return decision if decision is not None else {"status": "NO_DATA"}
         return call(_read)
 
+    # ------------------------------------------------------------------
+    # Study Control Center, phase 09 (2026-08-11): Analysis Contract
+    # Readiness. Never a generic JSON editor -- the GET reports, per field,
+    # DERIVED (real, already-frozen artifact/constant) vs SCIENTIST_DECISION
+    # (only ever resolved from a real recorded decision). The POST records a
+    # decision -- it never computes or suggests one.
+    # ------------------------------------------------------------------
+
+    @router.get("/analysis-contract-readiness")
+    def analysis_contract_readiness():
+        return call(lambda: repository.get_analysis_contract_readiness())
+
+    @router.post("/scientist-decisions", status_code=201)
+    def record_scientist_decision(body: dict):
+        return call(lambda: repository.record_scientist_decision(
+            field_id=body["field_id"], selected_value=body.get("selected_value"),
+            rationale=body["rationale"], evidence_used=body.get("evidence_used", ""),
+            decided_by=body.get("decided_by"), protocol_version_candidate=body.get("protocol_version_candidate"),
+        ))
+
+    @router.get("/scientist-decisions")
+    def list_scientist_decisions(field_id: str | None = None):
+        return call(lambda: repository.list_scientist_decisions(field_id))
+
     @router.post("/hardware-qualification", status_code=202)
     def start_hardware_qualification(body: dict):
         return call(lambda: job_manager.start_hardware_qualification_job(
