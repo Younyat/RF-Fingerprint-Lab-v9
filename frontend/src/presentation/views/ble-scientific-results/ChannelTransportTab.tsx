@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { BleScientificResultsApiService, ChannelTransportReport, NoDataResponse } from '../../../app/services/bleScientificResultsApi';
 import BarWithCiChart, { BarWithCiDatum } from './charts/BarWithCiChart';
 import ConfusionMatrixHeatmap from './charts/ConfusionMatrixHeatmap';
+import EvidenceMaturityBadge from './EvidenceMaturityBadge';
 import MechanismDataNotice from './MechanismDataNotice';
 import NoDataNotice from './NoDataNotice';
 import { READ_ONLY_PICKER_CLASS, useReadOnlyRuns } from './useReadOnlyRuns';
@@ -12,10 +13,10 @@ function isNoData(report: ChannelTransportReport | NoDataResponse | null): repor
   return !!report && (report as NoDataResponse).status === 'NO_DATA';
 }
 
-function balancedAccuracyBars(report: ChannelTransportReport): BarWithCiDatum[] {
+function channelBars(report: ChannelTransportReport, field: 'balanced_accuracy' | 'macro_f1' | 'coverage'): BarWithCiDatum[] {
   return report.per_channel
-    .filter((c) => typeof c.balanced_accuracy === 'number')
-    .map((c) => ({ category: `CH${c.channel}`, value: c.balanced_accuracy as number }));
+    .filter((c) => typeof c[field] === 'number')
+    .map((c) => ({ category: `CH${c.channel}`, value: c[field] as number }));
 }
 
 /** S1 (2026-08-11): CH37->CH38/39 bounded channel transport. Real renderer
@@ -42,6 +43,9 @@ export default function ChannelTransportTab() {
           invariance".
         </div>
       </div>
+      <div className="flex items-center gap-2 text-[11px] text-slate-500">
+        <span>evidence maturity:</span><EvidenceMaturityBadge maturity="ENGINEERING" />
+      </div>
       <MechanismDataNotice
         data={report && !isNoData(report) ? 'AVAILABLE' : 'NO_DATA'}
         dataReason="No existe todavia un bundle congelado real evaluado por canal (compute_channel_transport_report requiere predicciones ya puntuadas de UN solo modelo congelado)."
@@ -59,7 +63,28 @@ export default function ChannelTransportTab() {
         <>
           <div>
             <div className="mb-1 text-xs font-semibold text-slate-400">Balanced accuracy por canal</div>
-            <BarWithCiChart data={balancedAccuracyBars(report)} yLabel="Balanced accuracy" noDataReason="Ningun canal tiene balanced_accuracy real en el reporte." />
+            <BarWithCiChart data={channelBars(report, 'balanced_accuracy')} yLabel="Balanced accuracy" noDataReason="Ningun canal tiene balanced_accuracy real en el reporte." />
+          </div>
+          <div>
+            <div className="mb-1 text-xs font-semibold text-slate-400">Macro-F1 por canal</div>
+            <BarWithCiChart data={channelBars(report, 'macro_f1')} yLabel="Macro-F1" noDataReason="Ningun canal tiene macro_f1 real en el reporte." />
+          </div>
+          <div>
+            <div className="mb-1 text-xs font-semibold text-slate-400">Coverage por canal</div>
+            <BarWithCiChart data={channelBars(report, 'coverage')} yLabel="Coverage" noDataReason="Ningun canal tiene coverage real en el reporte." />
+          </div>
+          <div className="grid grid-cols-3 gap-2 text-[11px]">
+            {report.per_channel.map((c) => (
+              <div key={c.channel} className="rounded border border-slate-800 bg-slate-950 p-2">
+                <div className="text-slate-500">CH{c.channel} windows</div>
+                <div className="font-mono text-slate-200">{c.windows}</div>
+              </div>
+            ))}
+          </div>
+          <div className="rounded border border-dashed border-slate-700 bg-slate-900/30 px-3 py-2 text-[11px] text-amber-400/80">
+            MISSING_CANONICAL_METRIC -- recall por unidad fisica y un heatmap unidad x canal no estan disponibles:
+            compute_channel_transport_report agrupa predicciones solo por canal (predictions_by_channel), sin una
+            dimension de physical_unit_id en su entrada. No se fabrica aqui.
           </div>
           {report.per_channel.map((c) => (
             <div key={c.channel}>

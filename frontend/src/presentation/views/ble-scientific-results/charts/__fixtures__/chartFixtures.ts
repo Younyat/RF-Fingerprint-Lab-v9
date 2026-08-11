@@ -5,6 +5,7 @@ import { BarWithCiDatum } from '../BarWithCiChart';
 import { NonInferiorityDatum } from '../NonInferiorityChart';
 import { PairedPrePostDatum } from '../PairedPrePostChart';
 import { RiskCoveragePoint } from '../RiskCoverageChart';
+import { ScatterDatum } from '../ScatterChart';
 
 export const BAR_WITH_CI_SYNTHETIC_FIXTURE: BarWithCiDatum[] = [
   { category: 'capture-dependent', value: 0.91, ciLow: 0.85, ciHigh: 0.95 },
@@ -34,4 +35,9 @@ export const HISTOGRAM_SYNTHETIC_FIXTURE: number[] = [0.01, 0.02, 0.015, -0.01, 
 
 export const NON_INFERIORITY_SYNTHETIC_FIXTURE: NonInferiorityDatum[] = [
   { label: 'FULL_BURST vs ADVA_EXCLUDED', meanDifference: -0.02, ciLow: -0.06, margin: 0.1, nonInferior: true },
+];
+
+export const SCATTER_SYNTHETIC_FIXTURE: ScatterDatum[] = [
+  { label: 'engineered_rf', x: 4.2, y: 0.91 },
+  { label: 'raw_iq', x: 12.5, y: 0.95 },
 ];

@@ -33,7 +33,7 @@ export default function RunScopedJsonReport({
   description: string;
   noDataReason: string;
   fetchReport: (paperRunId: string) => Promise<Report>;
-  renderCharts?: (report: Record<string, unknown>) => ReactNode;
+  renderCharts?: (report: Record<string, unknown>, paperRunId: string) => ReactNode;
 }) {
   const { runs, paperRunId, setPaperRunId } = useReadOnlyRuns();
   const [report, setReport] = useState<Report | null>(null);
@@ -67,7 +67,7 @@ export default function RunScopedJsonReport({
       {!paperRunId && <NoDataNotice reason="Ningun paper run seleccionado." />}
       {paperRunId && isNoData(report) && <NoDataNotice reason={noDataReason} />}
       {paperRunId && report && !isNoData(report) && renderCharts && (
-        <div className="space-y-6">{renderCharts(report)}</div>
+        <div className="space-y-6">{renderCharts(report, paperRunId)}</div>
       )}
       {paperRunId && report && !isNoData(report) && (
         <details className="rounded border border-slate-800 bg-slate-950">

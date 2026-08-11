@@ -1,10 +1,27 @@
-import { BleScientificResultsApiService } from '../../../app/services/bleScientificResultsApi';
+import { BleScientificResultsApiService, NoDataResponse } from '../../../app/services/bleScientificResultsApi';
 import HistogramChart from './charts/HistogramChart';
 import NonInferiorityChart, { NonInferiorityDatum } from './charts/NonInferiorityChart';
+import EvidenceMaturityBadge, { EvidenceMaturity } from './EvidenceMaturityBadge';
 import RunScopedJsonReport from './RunScopedJsonReport';
 import StatisticalInspectionPanel, { holmSummary, nonInferiorityRow, rq4PairedComparisonRow } from './StatisticalInspectionPanel';
 
 const sciApi = new BleScientificResultsApiService();
+
+function isNoData(report: Record<string, unknown> | NoDataResponse): report is NoDataResponse {
+  return (report as NoDataResponse).status === 'NO_DATA';
+}
+
+/** Same VALIDATION-fallback pattern as RQ3: prefer the real CONFIRMATORY
+ * (FUTURE-gated) report when it exists, otherwise the non-FUTURE
+ * VALIDATION dry-run -- same statistical engine either way, badge shows
+ * which one actually backs the currently-displayed figures. */
+async function fetchRq4Report(paperRunId: string): Promise<Record<string, unknown> | NoDataResponse> {
+  const confirmatory = await sciApi.confirmatoryFutureAnalysis(paperRunId).catch(() => ({ status: 'NO_DATA' as const }));
+  if (!isNoData(confirmatory)) return { ...confirmatory, _evidence_source: 'CONFIRMATORY' };
+  const validation = await sciApi.confirmatoryStatisticalPlan(paperRunId).catch(() => ({ status: 'NO_DATA' as const }));
+  if (!isNoData(validation)) return { ...validation, _evidence_source: 'VALIDATION' };
+  return { status: 'NO_DATA' };
+}
 
 function pairedDifferences(report: Record<string, unknown>): number[] {
   const method = report.rq4_paired_comparison as { value?: { contrast?: { differences?: number[] } } } | undefined;
@@ -29,10 +46,13 @@ export default function Rq4Tab() {
     <RunScopedJsonReport
       title="RQ4 -- Packet-content dependence"
       description="FULL_BURST / ADVA_EXCLUDED / PRE_PDU (analytical_region) vs ORIGINAL / CONTROLLED_VARIANT (packet_condition), comparacion pareada y non-inferiority -- leido de confirmatory_future_analysis_report.json (rq4_paired_comparison, non_inferiority)."
-      noDataReason="confirmatory_future_analysis_report.json no existe todavia para este run -- pendiente de CONFIRMATORY_FUTURE."
-      fetchReport={(paperRunId) => sciApi.confirmatoryFutureAnalysis(paperRunId)}
+      noDataReason="Ni confirmatory_future_analysis_report.json ni confirmatory_statistical_plan_report.json existen todavia para este run."
+      fetchReport={fetchRq4Report}
       renderCharts={(report) => (
         <>
+          <div className="flex items-center gap-2 text-[11px] text-slate-500">
+            <span>fuente de evidencia:</span><EvidenceMaturityBadge maturity={(report._evidence_source as EvidenceMaturity) ?? 'VALIDATION'} />
+          </div>
           <div>
             <div className="mb-1 text-xs font-semibold text-slate-400">Inspeccion estadistica</div>
             <StatisticalInspectionPanel

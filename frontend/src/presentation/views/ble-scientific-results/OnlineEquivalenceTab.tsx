@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BleScientificResultsApiService, NoDataResponse, OfflineNearliveReport } from '../../../app/services/bleScientificResultsApi';
+import EvidenceMaturityBadge from './EvidenceMaturityBadge';
 import MechanismDataNotice from './MechanismDataNotice';
 import NoDataNotice from './NoDataNotice';
 import { READ_ONLY_PICKER_CLASS, useReadOnlyRuns } from './useReadOnlyRuns';
@@ -40,6 +41,9 @@ export default function OnlineEquivalenceTab() {
           acuerdo de score, acuerdo de abstencion) y (B) comportamiento computacional (latencia, throughput, drops).
           Nunca 0 cuando no este medido -- NOT_MEASURED explicito.
         </div>
+      </div>
+      <div className="flex items-center gap-2 text-[11px] text-slate-500">
+        <span>evidence maturity:</span><EvidenceMaturityBadge maturity="ENGINEERING" />
       </div>
       <MechanismDataNotice
         data={analytical ? 'AVAILABLE' : 'NO_DATA'}
@@ -99,9 +103,13 @@ export default function OnlineEquivalenceTab() {
           <div className="rounded border border-dashed border-slate-700 bg-slate-900/30 px-3 py-2 text-[11px] text-amber-400/80">
             MISSING_CANONICAL_METRIC -- histograma de latencia, ECDF de latencia, timeline de throughput y timeline de
             drops requieren muestras individuales por peticion; computational_behavior solo persiste resumenes
-            escalares (median_latency_ms/p95_latency_ms/throughput_per_s/drop_count/drop_rate/backlog). No se
-            fabrican series en el frontend -- si el backend llega a persistir las muestras crudas, EcdfChart y
-            HistogramChart (ya existentes) se conectaran aqui.
+            escalares (median_latency_ms/p95_latency_ms/throughput_per_s/drop_count/drop_rate/backlog). Confirmado
+            por revision directa del codebase (2026-08-11): ningun codigo mide latencia individual de una prediccion
+            offline/near-live real (el unico timing existente, training_service.py's _measure_latency_ms, colapsa un
+            micro-benchmark de 10 repeticiones sobre la MISMA muestra en su propia media antes de devolver nada), y
+            "near-live" no existe todavia como concepto de request individual en ble_rffi_studio. No se fabrican
+            series en el frontend -- si el backend llega a instrumentar y persistir muestras crudas reales, EcdfChart
+            y HistogramChart (ya existentes) se conectaran aqui.
           </div>
           <details className="rounded border border-slate-800 bg-slate-950">
             <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-400">JSON crudo (fuente exacta persistida)</summary>

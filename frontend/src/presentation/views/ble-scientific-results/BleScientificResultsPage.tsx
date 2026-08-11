@@ -4,6 +4,8 @@ import AssociationTab from './AssociationTab';
 import CampaignTab from './CampaignTab';
 import ChannelTransportTab from './ChannelTransportTab';
 import CoverageTab from './CoverageTab';
+import EvidenceQualityTab from './EvidenceQualityTab';
+import ExperimentHealthTab from './ExperimentHealthTab';
 import GuidedValidationTab from './GuidedValidationTab';
 import IntegrityLeakageTab from './IntegrityLeakageTab';
 import OnlineEquivalenceTab from './OnlineEquivalenceTab';
@@ -43,6 +45,7 @@ const SECTIONS: DashboardSection[] = [
     id: 'health', label: 'A. Experiment Health',
     hint: 'Estado de la maquinaria experimental: cronologia del estudio, calificacion de hardware, estado del receptor, calidad de captura, completitud de campana, estado de asociacion, admision/exclusion, estado del protocolo, estado del holdout.',
     tabs: [
+      { id: 'experiment-health', label: 'Experiment Health', enabled: true },
       { id: 'control-center', label: 'Study Control Center', enabled: true },
       { id: 'overview', label: 'Study Overview', enabled: true },
       { id: 'guided-validation', label: 'Guided Validation', enabled: true },
@@ -57,6 +60,7 @@ const SECTIONS: DashboardSection[] = [
     id: 'data-quality', label: 'B. Data / Evidence Quality',
     hint: 'Tablas y visualizaciones de la evidencia misma: capturas por unidad fisica/dia/rol, bursts candidatos, CRC valido, admitidos, discontinuidades, exclusiones y razones, ventanas elegibles, abstencion por evidencia insuficiente.',
     tabs: [
+      { id: 'evidence-quality', label: 'Evidence Quality', enabled: true },
       { id: 'integrity', label: 'Integrity and Leakage', enabled: true },
       { id: 'quality', label: 'Acquisition Quality', enabled: true },
     ],
@@ -162,6 +166,8 @@ export default function BleScientificResultsPage() {
         )}
       </div>
 
+      {activeTab === 'experiment-health' && <ExperimentHealthTab />}
+      {activeTab === 'evidence-quality' && <EvidenceQualityTab />}
       {activeTab === 'control-center' && <StudyControlCenterTab />}
       {activeTab === 'overview' && <StudyOverviewTab />}
       {activeTab === 'guided-validation' && <GuidedValidationTab />}
