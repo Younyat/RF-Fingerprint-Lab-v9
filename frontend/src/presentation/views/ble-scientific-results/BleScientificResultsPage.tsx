@@ -18,6 +18,7 @@ import Rq2Tab from './Rq2Tab';
 import Rq3Tab from './Rq3Tab';
 import Rq4Tab from './Rq4Tab';
 import SensitivityTab from './SensitivityTab';
+import StudyControlCenterTab from './StudyControlCenterTab';
 import StudyOverviewTab from './StudyOverviewTab';
 
 // Paper progress dashboard (2026-08-10): every tab below is real and reads
@@ -27,6 +28,7 @@ import StudyOverviewTab from './StudyOverviewTab';
 // which only writes report files). `forensics`/`reproducibility` stay
 // disabled -- no canonical artifact/endpoint is designed for them yet.
 const TABS: { id: string; label: string; enabled: boolean }[] = [
+  { id: 'control-center', label: 'Study Control Center', enabled: true },
   { id: 'overview', label: 'Study Overview', enabled: true },
   { id: 'guided-validation', label: 'Guided Validation', enabled: true },
   { id: 'protocol', label: 'Protocol', enabled: true },
@@ -52,7 +54,7 @@ const TABS: { id: string; label: string; enabled: boolean }[] = [
 ];
 
 export default function BleScientificResultsPage() {
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = useState('control-center');
   const [showFutureAnalysisInfo, setShowFutureAnalysisInfo] = useState(false);
 
   // Rutas y componentes de las 9 pestañas "Fase 3+" NO se eliminan -- solo
@@ -99,6 +101,7 @@ export default function BleScientificResultsPage() {
         )}
       </div>
 
+      {activeTab === 'control-center' && <StudyControlCenterTab />}
       {activeTab === 'overview' && <StudyOverviewTab />}
       {activeTab === 'guided-validation' && <GuidedValidationTab />}
       {activeTab === 'protocol' && <ProtocolTab />}

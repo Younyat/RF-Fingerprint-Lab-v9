@@ -22,6 +22,7 @@ from typing import Any
 
 from app.infrastructure.ble.capture.ble_capture_metadata import atomic_json
 
+from ..hardware_qualification import run_real_hardware_qualification
 from ..module_logging import build_module_logger
 from .scientific_results_repository import ScientificResultsRepository
 
@@ -52,6 +53,12 @@ class ScientificResultsJobManager:
         # fail closed with a clear error instead of touching hardware.
         from ..guided_validation import GuidedBleScientificValidationService
         self._guided_validation_service = GuidedBleScientificValidationService(repository, campaign_orchestrator=campaign_orchestrator)
+        # Same real CampaignOrchestrator as above, stored directly too --
+        # the HARDWARE_QUALIFICATION job (Study Control Center, Phase 1)
+        # drives it straight via hardware_qualification.py rather than
+        # through GuidedBleScientificValidationService, since it isn't a
+        # guided-validation action.
+        self._campaign_orchestrator = campaign_orchestrator
 
     def _job_dir(self, job_id: str) -> Path:
         if not job_id.startswith("BLE-SCI-RESULTS-JOB-") or any(part in job_id for part in ("/", "\\", "..")):
@@ -325,5 +332,54 @@ class ScientificResultsJobManager:
                 self._write(job_dir, "cancelled", job_type="TARGET_ABSENCE_CONTROL", run_id=run_id, message="Cancelled by operator")
             else:
                 self._write(job_dir, "failed", job_type="TARGET_ABSENCE_CONTROL", run_id=run_id, error=str(error))
+        finally:
+            self._cancel_flags.pop(job_id, None)
+
+    # ------------------------------------------------------------------
+    # Study Control Center, Phase 1 (2026-08-11): RUN REAL HARDWARE
+    # QUALIFICATION. Same job.json/background-thread pattern as every job
+    # above; drives the SAME real CampaignOrchestrator (never a second
+    # competing instance) via hardware_qualification.py, which computes no
+    # new science -- only real hardware/decode/preprocessing calls feeding
+    # the untouched run_campaign_qualification_preflight() classifier.
+    # ------------------------------------------------------------------
+
+    def start_hardware_qualification_job(self, *, physical_unit_id: str, channel: int, duration_seconds: float) -> dict[str, Any]:
+        job_id = self._new_job_id()
+        job_dir = self._job_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=False)
+        cancel_event = threading.Event()
+        self._cancel_flags[job_id] = cancel_event
+        atomic_json(job_dir / "job.json", {
+            "schema_version": "ble-scientific-results-job-v1", "job_id": job_id, "job_type": "HARDWARE_QUALIFICATION",
+            "physical_unit_id": physical_unit_id, "channel": channel, "duration_seconds": duration_seconds,
+            "state": "queued", "stage": None, "overall_progress": 0.0, "message": None, "warnings": [],
+            "started_at": utc_now(), "updated_at": utc_now(),
+        })
+        threading.Thread(target=self._run_hardware_qualification_job, args=(job_id, physical_unit_id, channel, duration_seconds, cancel_event), daemon=True).start()
+        return self.get_job(job_id)
+
+    def _run_hardware_qualification_job(self, job_id: str, physical_unit_id: str, channel: int, duration_seconds: float, cancel_event: threading.Event) -> None:
+        job_dir = self._job_dir(job_id)
+        self._write(job_dir, "running", job_type="HARDWARE_QUALIFICATION", physical_unit_id=physical_unit_id, stage="starting", overall_progress=0.0, message="Starting real hardware qualification")
+        try:
+            def progress(stage: str, fraction: float, message: str) -> None:
+                self._write(job_dir, "running", job_type="HARDWARE_QUALIFICATION", physical_unit_id=physical_unit_id, stage=stage, overall_progress=fraction, message=str(message))
+
+            result = run_real_hardware_qualification(
+                sci_repository=self.repository, campaign_orchestrator=self._campaign_orchestrator,
+                physical_unit_id=physical_unit_id, channel=channel, duration_seconds=duration_seconds,
+                progress=progress, cancel_event=cancel_event,
+            )
+            overall_status = result["preflight_report"]["overall_status"]
+            self._write(
+                job_dir, "completed", job_type="HARDWARE_QUALIFICATION", physical_unit_id=physical_unit_id, stage="done",
+                overall_progress=1.0, message=overall_status, result=result,
+            )
+        except Exception as error:  # noqa: BLE001 -- includes HardwareQualificationError (no orchestrator configured, missing capture record)
+            if "CANCELLED_BY_OPERATOR" in str(error):
+                self._write(job_dir, "cancelled", job_type="HARDWARE_QUALIFICATION", physical_unit_id=physical_unit_id, message="Cancelled by operator")
+            else:
+                self._write(job_dir, "failed", job_type="HARDWARE_QUALIFICATION", physical_unit_id=physical_unit_id, error=str(error))
         finally:
             self._cancel_flags.pop(job_id, None)

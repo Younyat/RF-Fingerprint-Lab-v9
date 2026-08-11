@@ -364,4 +364,22 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
             return report if report is not None else {"status": "NO_DATA"}
         return call(_read)
 
+    # ------------------------------------------------------------------
+    # Study Control Center, Phase 1 (2026-08-11) -- the 17-phase workflow
+    # status aggregator (read-only, computes no science, only real gating
+    # over already-real getters) and the RUN REAL HARDWARE QUALIFICATION
+    # launcher (the one job here that touches real hardware).
+    # ------------------------------------------------------------------
+
+    @router.get("/study-control-center")
+    def study_control_center():
+        return call(lambda: repository.get_study_control_center_status())
+
+    @router.post("/hardware-qualification", status_code=202)
+    def start_hardware_qualification(body: dict):
+        return call(lambda: job_manager.start_hardware_qualification_job(
+            physical_unit_id=body["physical_unit_id"], channel=int(body.get("channel", 37)),
+            duration_seconds=float(body.get("duration_seconds", 180.0)),
+        ))
+
     return router

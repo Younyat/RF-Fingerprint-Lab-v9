@@ -21,6 +21,7 @@ from typing import Any
 
 from app.infrastructure.ble.capture.ble_capture_metadata import atomic_json
 from app.modules.ble_rffi_studio.contracts import CaptureRecord, DatasetManifest, DatasetQualityReport, ExampleRecord, SplitManifest
+from app.modules.ble_rffi_studio.registry.physical_device_registry import PhysicalDeviceRegistry
 
 from ..contracts import (
     AnalysisContract,
@@ -407,6 +408,160 @@ class ScientificResultsRepository:
             "current_phase": current_phase,
             "generated_at": utc_now(),
         }
+
+    # Study Control Center, Phase 1 (2026-08-11): the 17-phase workflow this
+    # method describes, in dependency order. Purely descriptive metadata
+    # (label/prerequisites/paper_section) -- no science, no gating logic
+    # lives in this tuple itself.
+    _STUDY_CONTROL_CENTER_PHASES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
+        ("01", "Hardware Qualification", (), "Methods"),
+        ("02", "Physical Unit Qualification", ("01",), "Methods/Qualification"),
+        ("03", "Association Calibration", ("01",), "Methods/Association"),
+        ("04", "Qualification Pilot", ("01", "02", "03"), "Methods"),
+        ("05", "Study Sizing", ("04",), "Methods"),
+        ("06", "DEVELOPMENT Campaign", ("04", "05"), "Methods"),
+        ("07", "VALIDATION Campaign", ("06",), "Methods"),
+        ("08", "RQ2 Benchmark", ("07",), "Results/RQ2"),
+        ("09", "Analysis Contract", ("08",), "Methods"),
+        ("10", "Protocol Freeze", ("09",), "Methods"),
+        ("11", "Definitive Controlled Campaign", ("10",), "Methods"),
+        ("12", "Protected FUTURE", ("10",), "Methods"),
+        ("13", "Confirmatory Analysis", ("11", "12"), "Results"),
+        ("14", "S1 Channel Transport", ("10",), "Engineering"),
+        ("15", "S2 Offline/Near-Live", ("10",), "Engineering"),
+        ("16", "Provenance Audit", ("13",), "Methods"),
+        ("17", "Paper Export", ("13", "14", "15", "16"), "All"),
+    )
+
+    def get_study_control_center_status(self) -> dict[str, Any]:
+        """Read-only aggregation of the 17-phase experimental workflow --
+        computes no new science, only real gating logic over already-real
+        getters (get_study_status/list_runs/list_protocol_freezes/
+        find_frozen_association_policy/list_inference_runs/the per-run
+        canonical report getters). A phase's `state` is BLOCKED (with real
+        `blocking_reasons`) whenever it has not started and at least one of
+        its prerequisites is not COMPLETE -- never a generic disabled
+        button with no explanation."""
+        git_sha, _ = self._git_provenance()
+        study_status = self.get_study_status()
+        runs = self.list_runs()
+        latest_run = max(runs, key=lambda r: r.created_at) if runs else None
+
+        qualification_report = None
+        qualification_path = self.root / "campaign_qualification_preflight_report.json"
+        if qualification_path.is_file():
+            qualification_report = json.loads(qualification_path.read_text(encoding="utf-8"))
+
+        registry = PhysicalDeviceRegistry(self.ble_root / "registry")
+        units = registry.list_physical_units()
+        confirmed_units = [u for u in units if u.same_model_confirmation == "CONFIRMED"]
+
+        guided_validation_attempts = list((self.root / "guided_validation").glob("*/association_policy.json")) if (self.root / "guided_validation").is_dir() else []
+
+        rq2_report = self.get_rq2_representation_comparison_report(latest_run.paper_run_id) if latest_run else None
+        confirmatory_future_report = self.get_confirmatory_future_analysis_report(latest_run.paper_run_id) if latest_run else None
+        channel_transport_report = self.get_channel_transport_report(latest_run.paper_run_id) if latest_run else None
+        offline_nearlive_report = self.get_offline_nearlive_report(latest_run.paper_run_id) if latest_run else None
+        inference_runs = self.list_inference_runs()
+        export_manifest = self.get_paper_export_manifest()
+
+        signals: dict[str, dict[str, Any]] = {
+            "01": {
+                "completed": qualification_report is not None and qualification_report.get("overall_status") == "READY",
+                "in_progress": qualification_report is not None and qualification_report.get("overall_status") in ("PRELIMINARY", "NOT_READY"),
+                "real_data_available": qualification_report is not None,
+                "artifacts": ["campaign_qualification_preflight_report.json"] if qualification_report else [],
+            },
+            "02": {
+                "completed": bool(units) and len(confirmed_units) == len(units),
+                "in_progress": bool(confirmed_units) and len(confirmed_units) < len(units),
+                "real_data_available": bool(units),
+                "artifacts": ["ble_rffi_studio/registry/physical_units"] if units else [],
+            },
+            "03": {
+                "completed": study_status["association_policy_status"] == "FROZEN",
+                "in_progress": bool(guided_validation_attempts) and study_status["association_policy_status"] != "FROZEN",
+                "real_data_available": bool(guided_validation_attempts),
+                "artifacts": ["guided_validation/*/association_policy.json"] if guided_validation_attempts else [],
+            },
+            "04": {"completed": False, "in_progress": False, "real_data_available": False, "artifacts": []},
+            "05": {"completed": False, "in_progress": False, "real_data_available": False, "artifacts": []},
+            "06": {"completed": False, "in_progress": False, "real_data_available": study_status["real_capture_count"] > 0, "artifacts": []},
+            "07": {"completed": False, "in_progress": False, "real_data_available": False, "artifacts": []},
+            "08": {
+                "completed": bool(rq2_report and rq2_report.get("branches")),
+                "in_progress": False, "real_data_available": bool(rq2_report),
+                "artifacts": ["rq2_representation_comparison_report.json"] if rq2_report else [],
+            },
+            "09": {
+                "completed": study_status["contract_status"] in ("COMPLETE", "FROZEN"),
+                "in_progress": study_status["contract_status"] == "INCOMPLETE",
+                "real_data_available": study_status["contract_status"] != "NO_DATA",
+                "artifacts": ["_protocols"] if study_status["contract_status"] != "NO_DATA" else [],
+            },
+            "10": {
+                "completed": study_status["protocol_freeze_status"] == "COMPLETE",
+                "in_progress": False, "real_data_available": study_status["protocol_freeze_status"] == "COMPLETE",
+                "artifacts": ["protocol_freeze_ledger.jsonl"] if study_status["protocol_freeze_status"] == "COMPLETE" else [],
+            },
+            "11": {"completed": False, "in_progress": False, "real_data_available": False, "artifacts": []},
+            "12": {
+                "completed": study_status["protected_future_test_status"] == "OPENED",
+                "in_progress": False, "real_data_available": study_status["protected_future_test_status"] == "OPENED",
+                "artifacts": ["holdout_access_log.jsonl"] if study_status["protected_future_test_status"] == "OPENED" else [],
+            },
+            "13": {
+                "completed": bool(confirmatory_future_report),
+                "in_progress": False, "real_data_available": bool(confirmatory_future_report),
+                "artifacts": ["confirmatory_future_analysis_report.json"] if confirmatory_future_report else [],
+            },
+            "14": {
+                "completed": bool(channel_transport_report and channel_transport_report.get("per_channel")),
+                "in_progress": False, "real_data_available": bool(channel_transport_report),
+                "artifacts": ["channel_transport_report.json"] if channel_transport_report else [],
+            },
+            "15": {
+                "completed": bool(offline_nearlive_report and offline_nearlive_report.get("analytical_agreement")),
+                "in_progress": False, "real_data_available": bool(offline_nearlive_report),
+                "artifacts": ["offline_nearlive_report.json"] if offline_nearlive_report else [],
+            },
+            "16": {
+                "completed": bool(inference_runs),
+                "in_progress": False, "real_data_available": bool(inference_runs),
+                "artifacts": ["inference_runs/"] if inference_runs else [],
+            },
+            "17": {
+                "completed": bool(export_manifest and export_manifest.get("generated_count")),
+                "in_progress": False, "real_data_available": bool(export_manifest),
+                "artifacts": ["paper_exports/export_manifest.json"] if export_manifest else [],
+            },
+        }
+
+        labels_by_id = {phase_id: label for phase_id, label, _prereqs, _section in self._STUDY_CONTROL_CENTER_PHASES}
+        phases: list[dict[str, Any]] = []
+        for phase_id, label, prereq_ids, paper_section in self._STUDY_CONTROL_CENTER_PHASES:
+            signal = signals[phase_id]
+            incomplete_prereqs = [labels_by_id[pid] for pid in prereq_ids if not signals[pid]["completed"]]
+            if signal["completed"]:
+                state = "COMPLETE"
+            elif signal["in_progress"]:
+                state = "IN_PROGRESS" if phase_id != "01" else ("PRELIMINARY" if qualification_report and qualification_report.get("overall_status") == "PRELIMINARY" else "BLOCKED")
+            elif incomplete_prereqs:
+                state = "BLOCKED"
+            else:
+                state = "READY"
+            phases.append({
+                "phase_id": phase_id, "label": label, "state": state,
+                "prerequisites": [labels_by_id[pid] for pid in prereq_ids],
+                "blocking_reasons": incomplete_prereqs if state == "BLOCKED" else [],
+                "real_data_available": signal["real_data_available"],
+                "run_id": latest_run.paper_run_id if latest_run else None,
+                "git_sha": git_sha, "protocol_version": study_status["protocol_version"],
+                "artifacts": signal["artifacts"], "paper_section": paper_section,
+                "next_allowed_operation": f"RUN {label.upper()}" if state == "READY" else None,
+            })
+
+        return {"schema_version": "ble-scientific-results-study-control-center-v1", "generated_at": utc_now(), "phases": phases}
 
     # One row per paper element -> which canonical artifact backs it, and
     # whether that artifact exists on disk today. Presence-only; this never
@@ -842,6 +997,12 @@ class ScientificResultsRepository:
         if not path.is_file():
             return None
         return CaptureRecord.model_validate(json.loads(path.read_text(encoding="utf-8")))
+
+    def _load_all_captures(self) -> list[CaptureRecord]:
+        captures_dir = self.ble_root / "captures"
+        if not captures_dir.is_dir():
+            return []
+        return [CaptureRecord.model_validate(json.loads(path.read_text(encoding="utf-8"))) for path in sorted(captures_dir.glob("*.json"))]
 
     def _load_examples(self, capture_id: str) -> list[ExampleRecord]:
         path = self.ble_root / "evidence" / capture_id / "examples.jsonl"

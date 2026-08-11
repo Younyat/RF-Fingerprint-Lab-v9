@@ -18,6 +18,7 @@ from typing import Any
 
 import numpy as np
 
+from app.config.runtime_settings import get_runtime_value
 from app.infrastructure.ble.capture.ble_offline_replay import sha256_file, utc_now, write_json, write_jsonl
 
 from ..contracts import CaptureRecord, ExampleRecord
@@ -26,6 +27,10 @@ from ..evidence.evidence_stage import BLE_ADVERTISING_CHANNEL_FREQUENCIES_HZ
 DEMO_PROJECT_ID = "SYNTHETIC_DEMO"
 DEMO_CAMPAIGN_ID = "SYNTHETIC_DEMO-CAMPAIGN"
 DEMO_DEVICE_FAMILY = "SYNTHETIC_DEMO_DEVICE"
+
+
+class RealCampaignModeError(Exception):
+    pass
 
 
 class SyntheticDemoSeeder:
@@ -44,6 +49,11 @@ class SyntheticDemoSeeder:
         cfo_step_hz: float = 50_000.0,
         ble_channel: int = 37,
     ) -> dict[str, Any]:
+        if get_runtime_value("SCIENTIFIC_REAL_CAMPAIGN_MODE", False):
+            raise RealCampaignModeError(
+                "SCIENTIFIC_REAL_CAMPAIGN_MODE is on -- synthetic/demo data generation is forbidden while the real "
+                "experimental campaign is running. Turn the setting off first if a demo is genuinely intended."
+            )
         physical_unit_ids: list[str] = []
         capture_ids: list[str] = []
         created_at = utc_now()

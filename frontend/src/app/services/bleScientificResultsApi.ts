@@ -565,6 +565,62 @@ export interface Rq2BranchResult {
   model_bundle_sha256?: string | null;
 }
 
+// Study Control Center, Phase 1 (2026-08-11) -- the 17-phase workflow
+// aggregator and the RUN REAL HARDWARE QUALIFICATION job. Both compute no
+// new science: the status endpoint only reads already-real getters, and
+// the job only drives real hardware/decode/preprocessing functions into
+// the untouched run_campaign_qualification_preflight() classifier.
+
+export type StudyControlCenterPhaseState = 'NOT_STARTED' | 'READY' | 'IN_PROGRESS' | 'PRELIMINARY' | 'BLOCKED' | 'COMPLETE' | 'INVALIDATED' | 'NOT_APPLICABLE';
+
+export interface StudyControlCenterPhase {
+  phase_id: string;
+  label: string;
+  state: StudyControlCenterPhaseState;
+  prerequisites: string[];
+  blocking_reasons: string[];
+  real_data_available: boolean;
+  run_id: string | null;
+  git_sha: string;
+  protocol_version: number | null;
+  artifacts: string[];
+  paper_section: string;
+  next_allowed_operation: string | null;
+}
+
+export interface StudyControlCenterStatus {
+  schema_version: string;
+  generated_at: string;
+  phases: StudyControlCenterPhase[];
+}
+
+export interface HardwareQualificationJob {
+  job_id: string;
+  job_type: 'HARDWARE_QUALIFICATION';
+  physical_unit_id: string;
+  channel: number;
+  duration_seconds: number;
+  state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  stage: string | null;
+  overall_progress: number;
+  message: string | null;
+  error?: string;
+  result?: {
+    capture_id: string | null;
+    session_id: string | null;
+    acquisition_error?: string;
+    preflight_report: Record<string, unknown>;
+  };
+  started_at: string;
+  updated_at: string;
+}
+
+export interface StartHardwareQualificationRequest {
+  physical_unit_id: string;
+  channel?: number;
+  duration_seconds?: number;
+}
+
 export interface Rq2RepresentationComparisonReport extends Record<string, unknown> {
   schema_version: string;
   protocol_id: string;
@@ -686,5 +742,19 @@ export class BleScientificResultsApiService {
   }
   async getOfflineNearlive(paperRunId: string) {
     return (await axios.get<OfflineNearliveReport | NoDataResponse>(`${this.root}/runs/${encodeURIComponent(paperRunId)}/offline-nearlive`)).data;
+  }
+
+  // Study Control Center, Phase 1 (2026-08-11).
+  async getStudyControlCenterStatus() {
+    return (await axios.get<StudyControlCenterStatus>(`${this.root}/study-control-center`)).data;
+  }
+  async startHardwareQualification(body: StartHardwareQualificationRequest) {
+    return (await axios.post<HardwareQualificationJob>(`${this.root}/hardware-qualification`, body)).data;
+  }
+  async getHardwareQualificationJob(jobId: string) {
+    return (await axios.get<HardwareQualificationJob>(`${this.root}/jobs/${encodeURIComponent(jobId)}`)).data;
+  }
+  async cancelHardwareQualificationJob(jobId: string) {
+    return (await axios.post<HardwareQualificationJob>(`${this.root}/jobs/${encodeURIComponent(jobId)}/cancel`)).data;
   }
 }

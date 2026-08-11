@@ -562,6 +562,17 @@ SETTING_CATALOG: dict[str, dict[str, Any]] = {
         "limit_kind": "software",
         "risk": "medium",
     },
+    "SCIENTIFIC_REAL_CAMPAIGN_MODE": {
+        "section": "Scientific study",
+        "tab": "Study Control Center",
+        "type": "boolean",
+        "default": False,
+        "description": "When on, forbids synthetic/demo data generation anywhere in the backend (e.g. the BLE-RFFI synthetic demo seeder) -- only REAL_B200-origin evidence may enter storage.",
+        "impact": "Blocks SyntheticDemoSeeder.seed() (and any future synthetic-data entrypoint that checks this flag) with a clear error instead of running. Turn on before/during the real experimental campaign; leave off for demos.",
+        "restart_required": False,
+        "limit_kind": "scientific_policy",
+        "risk": "high",
+    },
 }
 
 
