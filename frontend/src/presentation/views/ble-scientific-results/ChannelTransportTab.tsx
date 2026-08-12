@@ -81,10 +81,30 @@ export default function ChannelTransportTab() {
               </div>
             ))}
           </div>
+          <div>
+            <div className="mb-1 text-xs font-semibold text-slate-400">Recall por unidad fisica y canal (real, physical_unit_id join)</div>
+            {report.per_channel.every((c) => !c.per_unit_recall) ? (
+              <NoDataNotice reason="Ningun canal tiene per_unit_recall real todavia -- las predicciones deben declarar physical_unit_id." />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[500px] border-collapse text-[11px]">
+                  <thead><tr className="border-b border-slate-800 text-left text-slate-500"><th className="py-1 pr-2">canal</th><th className="py-1 pr-2">recall por unidad</th></tr></thead>
+                  <tbody>
+                    {report.per_channel.filter((c) => c.per_unit_recall).map((c) => (
+                      <tr key={c.channel} className="border-b border-slate-900 text-slate-300">
+                        <td className="py-1.5 pr-2">CH{c.channel}</td>
+                        <td className="py-1.5 pr-2 font-mono">{Object.entries(c.per_unit_recall as Record<string, number>).map(([unit, r]) => `${unit}=${r.toFixed(3)}`).join(', ')}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
           <div className="rounded border border-dashed border-slate-700 bg-slate-900/30 px-3 py-2 text-[11px] text-amber-400/80">
-            MISSING_CANONICAL_METRIC -- recall por unidad fisica y un heatmap unidad x canal no estan disponibles:
-            compute_channel_transport_report agrupa predicciones solo por canal (predictions_by_channel), sin una
-            dimension de physical_unit_id en su entrada. No se fabrica aqui.
+            MISSING_CANONICAL_METRIC -- un heatmap unidad x canal (una matriz densa cruzando ambas dimensiones a la
+            vez) no esta expuesto todavia; solo el recall por unidad dentro de cada canal (arriba, real). No se
+            fabrica una matriz cruzada aqui.
           </div>
           {report.per_channel.map((c) => (
             <div key={c.channel}>

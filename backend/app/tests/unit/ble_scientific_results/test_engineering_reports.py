@@ -58,6 +58,34 @@ def test_channel_transport_report_rejects_empty_input():
         compute_channel_transport_report(frozen_bundle_id="B", predictions_by_channel={}, known_classes=["A"], center_frequency_hz_by_channel={})
 
 
+def test_channel_transport_report_is_none_for_per_unit_recall_when_no_physical_unit_id_was_ever_supplied():
+    report = compute_channel_transport_report(
+        frozen_bundle_id="BUNDLE-CH37-DEV", predictions_by_channel=CHANNEL_TRANSPORT_SYNTHETIC_FIXTURE,
+        known_classes=["A", "B"], center_frequency_hz_by_channel={37: 2_402_000_000, 38: 2_426_000_000},
+    )
+    by_channel = {row["channel"]: row for row in report.per_channel}
+    assert by_channel[37]["per_unit_recall"] is None  # honest -- CHANNEL_TRANSPORT_SYNTHETIC_FIXTURE never declares physical_unit_id
+
+
+def test_channel_transport_report_computes_real_per_unit_recall_when_supplied():
+    """S1 closure (2026-08-12): reuses the SAME physical_unit_id join point
+    7 already put on every prediction dict -- never a new identity source."""
+    predictions_by_channel = {
+        37: [
+            {"example_id": "e1", "true_label": "UNIT-A", "predicted_label": "UNIT-A", "final_decision": "IDENTIFIED", "physical_unit_id": "UNIT-A"},
+            {"example_id": "e2", "true_label": "UNIT-A", "predicted_label": "UNIT-B", "final_decision": "IDENTIFIED", "physical_unit_id": "UNIT-A"},
+            {"example_id": "e3", "true_label": "UNIT-B", "predicted_label": "UNIT-B", "final_decision": "IDENTIFIED", "physical_unit_id": "UNIT-B"},
+        ],
+    }
+    report = compute_channel_transport_report(
+        frozen_bundle_id="BUNDLE-X", predictions_by_channel=predictions_by_channel,
+        known_classes=["UNIT-A", "UNIT-B"], center_frequency_hz_by_channel={37: 1},
+    )
+    per_unit_recall = report.per_channel[0]["per_unit_recall"]
+    assert per_unit_recall["UNIT-A"] == pytest.approx(0.5)  # 1 correct of 2 trials genuinely from UNIT-A
+    assert per_unit_recall["UNIT-B"] == pytest.approx(1.0)
+
+
 def test_channel_transport_uses_only_the_one_named_frozen_bundle():
     report = compute_channel_transport_report(
         frozen_bundle_id="BUNDLE-X", predictions_by_channel=CHANNEL_TRANSPORT_SYNTHETIC_FIXTURE,

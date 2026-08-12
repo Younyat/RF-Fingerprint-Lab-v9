@@ -138,6 +138,12 @@ class TrainingService:
                     "true_label": true_labels[i],
                     "predicted_label": predicted_labels[i],
                     "probabilities": {cls: float(p) for cls, p in zip(classes, proba[i])},
+                    # Canonical physical_unit_id join (2026-08-12, Scientific
+                    # Closure pass point 7): the SAME real identity
+                    # ExampleRecord already carries, propagated once here so
+                    # Coverage/S1/Sensitivity/per-unit summaries never infer
+                    # identity from a filename or display label.
+                    "physical_unit_id": exs[i].physical_unit_id,
                 }
                 for i in range(len(exs))
             ]
@@ -223,6 +229,7 @@ class TrainingService:
                     "true_label": true_labels[i],
                     "predicted_label": predicted_labels[i],
                     "probabilities": {cls: float(p) for cls, p in zip(classes, proba[i])},
+                    "physical_unit_id": exs[i].physical_unit_id,
                 }
                 for i in range(len(exs))
             ]
@@ -301,6 +308,7 @@ class TrainingService:
                     "true_label": true_labels[i],
                     "predicted_label": predicted_labels[i],
                     "probabilities": {cls: float(p) for cls, p in zip(classes, proba[i])},
+                    "physical_unit_id": exs[i].physical_unit_id,
                 }
                 for i in range(len(exs))
             ]

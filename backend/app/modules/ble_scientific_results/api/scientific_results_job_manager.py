@@ -476,3 +476,79 @@ class ScientificResultsJobManager:
             self._write(job_dir, "failed", job_type="RQ3_FRR_ANALYSIS", paper_run_id=paper_run_id, error=str(error))
         finally:
             self._cancel_flags.pop(job_id, None)
+
+    # ------------------------------------------------------------------
+    # Coverage audit finding (2026-08-12): real decision records already
+    # carry everything coverage needs -- nothing aggregated them by
+    # evaluation_domain/branch/physical_unit. Same real bundle-loading path
+    # as RQ3_FRR_ANALYSIS, just driven over EVERY frozen RQ2 branch.
+    # ------------------------------------------------------------------
+
+    def start_coverage_analysis_job(self, *, paper_run_id: str, bundle_ids: dict[str, str] | None = None) -> dict[str, Any]:
+        job_id = self._new_job_id()
+        job_dir = self._job_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=False)
+        atomic_json(job_dir / "job.json", {
+            "schema_version": "ble-scientific-results-job-v1", "job_id": job_id, "job_type": "COVERAGE_ANALYSIS",
+            "paper_run_id": paper_run_id, "state": "queued", "stage": None, "overall_progress": 0.0, "message": None,
+            "warnings": [], "started_at": utc_now(), "updated_at": utc_now(),
+        })
+        threading.Thread(target=self._run_coverage_analysis_job, args=(job_id, paper_run_id, bundle_ids), daemon=True).start()
+        return self.get_job(job_id)
+
+    def _run_coverage_analysis_job(self, job_id: str, paper_run_id: str, bundle_ids: dict[str, str] | None) -> None:
+        job_dir = self._job_dir(job_id)
+        self._write(job_dir, "running", job_type="COVERAGE_ANALYSIS", paper_run_id=paper_run_id, stage="starting", overall_progress=0.0, message="Starting coverage analysis")
+        try:
+            if self._studio_repository is None:
+                raise ValueError("NO_STUDIO_REPOSITORY_CONFIGURED:Coverage analysis needs a real StudioRepository to load bundles/IQ")
+            from ..inference.offline_inference import OfflineInferenceService  # deferred: ble_rffi_studio import from this package
+
+            self._write(job_dir, "running", job_type="COVERAGE_ANALYSIS", paper_run_id=paper_run_id, stage="resolving_bundles_and_iq", overall_progress=0.2, message="Resolving frozen RQ2 branch bundles and real capture IQ paths")
+            all_captures = self.repository._load_all_captures()
+            capture_iq_paths = self._studio_repository.capture_iq_paths_for([c.capture_id for c in all_captures])
+            offline_inference_service = OfflineInferenceService(self._studio_repository.bundle_builder.root, capture_iq_paths)
+
+            self._write(job_dir, "running", job_type="COVERAGE_ANALYSIS", paper_run_id=paper_run_id, stage="scoring_windows", overall_progress=0.5, message="Scoring decision windows per branch")
+            result = self.repository.run_coverage_analysis(paper_run_id=paper_run_id, offline_inference_service=offline_inference_service, bundle_ids=bundle_ids)
+            overall = result.get("overall") or {}
+            message = f"coverage={overall.get('coverage')} across {len(result.get('bundle_ids', {}))} branch(es)"
+            self._write(job_dir, "completed", job_type="COVERAGE_ANALYSIS", paper_run_id=paper_run_id, stage="done", overall_progress=1.0, message=message, result=result)
+        except Exception as error:  # noqa: BLE001 -- includes missing StudioRepository/no frozen RQ2 branches
+            self._write(job_dir, "failed", job_type="COVERAGE_ANALYSIS", paper_run_id=paper_run_id, error=str(error))
+        finally:
+            self._cancel_flags.pop(job_id, None)
+
+    # ------------------------------------------------------------------
+    # Sensitivity closure (2026-08-12): consolidates LODO (already real),
+    # offset-retaining preprocessing (real, previously uncalled), and RQ2's
+    # own seed_variability (reused, never recomputed) into one report.
+    # ------------------------------------------------------------------
+
+    def start_sensitivity_analysis_job(self, *, paper_run_id: str) -> dict[str, Any]:
+        job_id = self._new_job_id()
+        job_dir = self._job_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=False)
+        atomic_json(job_dir / "job.json", {
+            "schema_version": "ble-scientific-results-job-v1", "job_id": job_id, "job_type": "SENSITIVITY_ANALYSIS",
+            "paper_run_id": paper_run_id, "state": "queued", "stage": None, "overall_progress": 0.0, "message": None,
+            "warnings": [], "started_at": utc_now(), "updated_at": utc_now(),
+        })
+        threading.Thread(target=self._run_sensitivity_analysis_job, args=(job_id, paper_run_id), daemon=True).start()
+        return self.get_job(job_id)
+
+    def _run_sensitivity_analysis_job(self, job_id: str, paper_run_id: str) -> None:
+        job_dir = self._job_dir(job_id)
+        self._write(job_dir, "running", job_type="SENSITIVITY_ANALYSIS", paper_run_id=paper_run_id, stage="starting", overall_progress=0.0, message="Starting sensitivity analysis (LODO + offset-retaining)")
+        try:
+            def progress(stage: str, fraction: float, message: str) -> None:
+                self._write(job_dir, "running", job_type="SENSITIVITY_ANALYSIS", paper_run_id=paper_run_id, stage=stage, overall_progress=fraction, message=str(message))
+
+            result = self.repository.run_sensitivity_analysis(paper_run_id=paper_run_id, studio_repository=self._studio_repository)
+            offset = result.get("offset_retaining") or {}
+            message = f"LODO {len(result.get('leave_one_device_out', {}).get('rows', []))} unit(s), offset-retaining delta_vs_primary={offset.get('delta_vs_primary')}"
+            self._write(job_dir, "completed", job_type="SENSITIVITY_ANALYSIS", paper_run_id=paper_run_id, stage="done", overall_progress=1.0, message=message, result=result)
+        except Exception as error:  # noqa: BLE001 -- includes missing StudioRepository/no frozen PRIMARY branch
+            self._write(job_dir, "failed", job_type="SENSITIVITY_ANALYSIS", paper_run_id=paper_run_id, error=str(error))
+        finally:
+            self._cancel_flags.pop(job_id, None)

@@ -165,7 +165,12 @@ class OfflineInferenceService:
             # window decision (median-per-class, see decision_windows.py) --
             # classify_with_threshold's own return only keeps the top-1
             # confidence, so it is added back here rather than lost.
-            result = {**decision, "probabilities": probabilities}
+            # Canonical physical_unit_id join (2026-08-12, Scientific
+            # Closure pass point 7): the SAME real ground-truth identity
+            # ExampleRecord already carries, propagated once here so
+            # Coverage/S1/Sensitivity/per-unit summaries never infer
+            # identity from a filename or display label.
+            result = {**decision, "probabilities": probabilities, "physical_unit_id": example.physical_unit_id}
             if provenance is not None:
                 result["preprocessing_provenance"] = dataclasses.asdict(provenance)
             results.append(result)
@@ -201,6 +206,13 @@ class OfflineInferenceService:
             burst_example_ids = [e.example_id for e in window_examples]
             window_burst_decisions = [by_example_id[eid] for eid in burst_example_ids]
             window_id = f"{capture_id}-decision-win-{window_index:05d}"
+            # Canonical physical_unit_id join (2026-08-12, Scientific
+            # Closure pass point 7): real ground truth ONLY when every
+            # constituent burst genuinely agrees on the same unit (true by
+            # construction for a physically-isolated capture) -- None
+            # (never guessed) on a mixed or undeclared window.
+            window_units = {e.physical_unit_id for e in window_examples}
+            window_physical_unit_id = next(iter(window_units)) if len(window_units) == 1 else None
 
             if len(window_burst_decisions) < minimum_eligible_bursts:
                 results.append({
@@ -208,7 +220,7 @@ class OfflineInferenceService:
                     "window_duration_s": window_duration_s, "burst_example_ids": burst_example_ids, "burst_count": len(burst_example_ids),
                     "aggregation_rule": AGGREGATION_RULE, "bundle_id": bundle_id, "aggregated_probabilities": None,
                     "predicted_class": None, "class_probability": None, "acceptance_threshold": acceptance_threshold,
-                    "final_decision": "INSUFFICIENT_EVIDENCE",
+                    "final_decision": "INSUFFICIENT_EVIDENCE", "physical_unit_id": window_physical_unit_id,
                     "abstention_reason": f"BELOW_MINIMUM_ELIGIBLE_BURSTS:{len(window_burst_decisions)}<{minimum_eligible_bursts}",
                 })
                 continue
@@ -219,6 +231,7 @@ class OfflineInferenceService:
                 "decision_window_id": window_id, "capture_id": capture_id, "window_index": window_index,
                 "window_duration_s": window_duration_s, "burst_example_ids": burst_example_ids, "burst_count": len(burst_example_ids),
                 "aggregation_rule": AGGREGATION_RULE, "bundle_id": bundle_id, "aggregated_probabilities": aggregated_probabilities,
+                "physical_unit_id": window_physical_unit_id,
                 "predicted_class": decision["predicted_class"], "class_probability": decision["class_probability"],
                 "acceptance_threshold": acceptance_threshold, "final_decision": decision["final_decision"], "abstention_reason": None,
             })

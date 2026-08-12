@@ -468,4 +468,30 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
     def start_rq3_frr_analysis(body: dict):
         return call(lambda: job_manager.start_rq3_frr_analysis_job(paper_run_id=body["paper_run_id"], bundle_id=body.get("bundle_id")))
 
+    # Coverage audit finding (2026-08-12): real decision records already
+    # carry everything coverage needs -- this is the missing aggregation.
+    @router.post("/coverage-analysis", status_code=202)
+    def start_coverage_analysis(body: dict):
+        return call(lambda: job_manager.start_coverage_analysis_job(paper_run_id=body["paper_run_id"], bundle_ids=body.get("bundle_ids")))
+
+    @router.get("/runs/{paper_run_id}/coverage-analysis")
+    def get_coverage_analysis(paper_run_id: str):
+        def resolve():
+            result = repository.get_coverage_analysis_report(paper_run_id)
+            return result if result is not None else {"status": "NO_DATA"}
+        return call(resolve)
+
+    # Sensitivity closure (2026-08-12): LODO + offset-retaining + reused
+    # RQ2 seed_variability, consolidated into one real report.
+    @router.post("/sensitivity-analysis", status_code=202)
+    def start_sensitivity_analysis(body: dict):
+        return call(lambda: job_manager.start_sensitivity_analysis_job(paper_run_id=body["paper_run_id"]))
+
+    @router.get("/runs/{paper_run_id}/sensitivity-analysis")
+    def get_sensitivity_analysis(paper_run_id: str):
+        def resolve():
+            result = repository.get_sensitivity_report(paper_run_id)
+            return result if result is not None else {"status": "NO_DATA"}
+        return call(resolve)
+
     return router

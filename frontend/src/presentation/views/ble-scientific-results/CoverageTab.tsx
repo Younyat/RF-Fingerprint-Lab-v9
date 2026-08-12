@@ -1,10 +1,15 @@
 import { useEffect, useState } from 'react';
-import { BleScientificResultsApiService, NoDataResponse, Rq2RepresentationComparisonReport } from '../../../app/services/bleScientificResultsApi';
+import { BleScientificResultsApiService, CoverageAnalysisReport, CoverageBucket, NoDataResponse } from '../../../app/services/bleScientificResultsApi';
 import BarWithCiChart, { BarWithCiDatum } from './charts/BarWithCiChart';
 import RiskCoverageChart, { RiskCoveragePoint } from './charts/RiskCoverageChart';
+import NoDataNotice from './NoDataNotice';
 import RunScopedJsonReport from './RunScopedJsonReport';
 
 const sciApi = new BleScientificResultsApiService();
+
+function isNoData(report: CoverageAnalysisReport | NoDataResponse | null): report is NoDataResponse {
+  return !!report && (report as NoDataResponse).status === 'NO_DATA';
+}
 
 function riskCoveragePoints(report: Record<string, unknown>): RiskCoveragePoint[] {
   const method = report.risk_coverage as { status?: string; value?: { coverage?: number; risk?: number }[] } | undefined;
@@ -19,34 +24,75 @@ function coverageMethodValue(report: Record<string, unknown>): number | null {
   return method?.status === 'EXECUTED' && typeof method.value === 'number' ? method.value : null;
 }
 
-/** Coverage-by-branch reuses RQ2's own real per-branch `coverage` field
- * (rq2_representation_comparison_report.json) -- a real, already-persisted
- * artifact, never a new computation. Coverage-by-domain/by-unit and an
- * abstention-reason distribution are NOT wired: no canonical report tags
- * a risk-coverage curve with a domain, and no per-unit coverage or
- * abstention-reason taxonomy is computed anywhere (campaign_deviations'
- * real deviation_type values carry no "abstention" category) -- shown
- * honestly as MISSING_CANONICAL_METRIC below rather than guessed. */
-function CoverageByBranch({ paperRunId }: { paperRunId: string }) {
-  const [report, setReport] = useState<Rq2RepresentationComparisonReport | NoDataResponse | null>(null);
+function bucketsToBars(buckets: Record<string, CoverageBucket>): BarWithCiDatum[] {
+  return Object.entries(buckets).map(([key, bucket]) => ({ category: key, value: bucket.coverage }));
+}
+
+/** Coverage canonical producer (2026-08-12, Scientific Closure pass) --
+ * real decision-window rows (OfflineInferenceService.run_decision_windows,
+ * the SAME frozen pipeline RQ3 uses) grouped by overall/evaluation_domain/
+ * branch/physical_unit -- nothing computed in the frontend. */
+function CoverageAnalysisSection({ paperRunId }: { paperRunId: string }) {
+  const [report, setReport] = useState<CoverageAnalysisReport | NoDataResponse | null>(null);
   useEffect(() => {
-    sciApi.rq2RepresentationComparison(paperRunId).then(setReport).catch(() => setReport({ status: 'NO_DATA' }));
+    sciApi.getCoverageAnalysis(paperRunId).then(setReport).catch(() => setReport({ status: 'NO_DATA' }));
   }, [paperRunId]);
 
-  const bars: BarWithCiDatum[] = report && (report as Rq2RepresentationComparisonReport).branches
-    ? (report as Rq2RepresentationComparisonReport).branches
-        .filter((b) => typeof b.coverage === 'number')
-        .map((b) => ({ category: `${b.branch} (${b.analysis_role})`, value: b.coverage as number }))
-    : [];
+  if (!report) return <div className="text-xs text-slate-500">Cargando coverage_analysis_report...</div>;
+  if (isNoData(report)) {
+    return <NoDataNotice reason="coverage_analysis_report.json no existe todavia para este run -- ejecuta Coverage Analysis (Study Control Center) primero." />;
+  }
 
-  return <BarWithCiChart data={bars} yLabel="Coverage" noDataReason="rq2_representation_comparison_report.json no tiene coverage real por rama todavia." />;
+  const overall = report.overall;
+  return (
+    <>
+      {overall && (
+        <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-5">
+          <div className="rounded border border-slate-800 bg-slate-950 p-2"><div className="text-slate-500">eligible</div><div className="font-mono text-slate-200">{overall.eligible_windows}</div></div>
+          <div className="rounded border border-slate-800 bg-slate-950 p-2"><div className="text-slate-500">decided</div><div className="font-mono text-slate-200">{overall.decided_windows}</div></div>
+          <div className="rounded border border-slate-800 bg-slate-950 p-2"><div className="text-slate-500">abstained</div><div className="font-mono text-slate-200">{overall.abstained_windows}</div></div>
+          <div className="rounded border border-slate-800 bg-slate-950 p-2"><div className="text-slate-500">coverage</div><div className="font-mono text-slate-200">{overall.coverage.toFixed(4)}</div></div>
+          <div className="rounded border border-slate-800 bg-slate-950 p-2"><div className="text-slate-500">risk among decided</div><div className="font-mono text-slate-200">{overall.risk_among_decided?.toFixed(4) ?? 'N/A'}</div></div>
+        </div>
+      )}
+      <div className="grid gap-4 md:grid-cols-3">
+        <div>
+          <div className="mb-1 text-xs font-semibold text-slate-400">Coverage por dominio de evaluacion</div>
+          <BarWithCiChart data={bucketsToBars(report.by_evaluation_domain)} yLabel="Coverage" noDataReason="Ninguna ventana real con dominio de split resuelto todavia." />
+        </div>
+        <div>
+          <div className="mb-1 text-xs font-semibold text-slate-400">Coverage por rama (RQ2)</div>
+          <BarWithCiChart data={bucketsToBars(report.by_branch)} yLabel="Coverage" noDataReason="Sin ramas reales todavia." />
+        </div>
+        <div>
+          <div className="mb-1 text-xs font-semibold text-slate-400">Coverage por unidad fisica</div>
+          <BarWithCiChart data={bucketsToBars(report.by_physical_unit)} yLabel="Coverage" noDataReason="Sin unidades reales todavia." />
+        </div>
+      </div>
+      <div>
+        <div className="mb-1 text-xs font-semibold text-slate-400">Distribucion de razones de abstencion (real, run_decision_windows)</div>
+        {report.abstention_reason_counts === 'NOT_AVAILABLE' ? (
+          <NoDataNotice reason="Ninguna razon de abstencion fue registrada todavia -- NOT_AVAILABLE, nunca inferida retrospectivamente." />
+        ) : (
+          <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
+            {Object.entries(report.abstention_reason_counts).map(([reason, count]) => (
+              <div key={reason} className="rounded border border-slate-800 bg-slate-950 p-2">
+                <div className="text-slate-500">{reason}</div>
+                <div className="font-mono text-slate-200">{count}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  );
 }
 
 export default function CoverageTab() {
   return (
     <RunScopedJsonReport
       title="Coverage / Abstention"
-      description="Ventanas elegibles, decididas, abstenidas y curva risk-coverage -- leido de confirmatory_future_analysis_report.json (coverage, risk_coverage). Obligatorio para el paper: ningun BA/F1 que use una regla con abstencion deberia mostrarse sin su coverage."
+      description="Ventanas elegibles, decididas, abstenidas y curva risk-coverage -- leido de confirmatory_future_analysis_report.json (coverage, risk_coverage) + coverage_analysis_report.json (por dominio/rama/unidad, real, run_decision_windows). Obligatorio para el paper: ningun BA/F1 que use una regla con abstencion deberia mostrarse sin su coverage."
       noDataReason="confirmatory_future_analysis_report.json no existe todavia para este run."
       fetchReport={(paperRunId) => sciApi.confirmatoryFutureAnalysis(paperRunId)}
       renderCharts={(report, paperRunId) => (
@@ -56,19 +102,10 @@ export default function CoverageTab() {
             <span className="font-mono text-slate-200">{coverageMethodValue(report) ?? 'N/A'}</span>
           </div>
           <div>
-            <div className="mb-1 text-xs font-semibold text-slate-400">Curva risk-coverage</div>
+            <div className="mb-1 text-xs font-semibold text-slate-400">Curva risk-coverage (regla operativa ya definida -- ninguna familia de thresholds nueva)</div>
             <RiskCoverageChart points={riskCoveragePoints(report)} noDataReason="risk_coverage no esta EXECUTED en el reporte para este run." />
           </div>
-          <div>
-            <div className="mb-1 text-xs font-semibold text-slate-400">Coverage por rama (RQ2, real, reutilizado)</div>
-            <CoverageByBranch paperRunId={paperRunId} />
-          </div>
-          <div className="rounded border border-dashed border-slate-700 bg-slate-900/30 px-3 py-2 text-[11px] text-amber-400/80">
-            MISSING_CANONICAL_METRIC -- coverage por dominio de evaluacion, coverage por unidad fisica y una
-            distribucion de razones de abstencion no estan expuestos como series independientes en ningun reporte
-            canonico todavia: risk_coverage no lleva una etiqueta de dominio, no existe coverage per-unit en ningun
-            producer, y campaign_deviations no tiene una categoria "abstention" real. No se fabrican aqui.
-          </div>
+          <CoverageAnalysisSection paperRunId={paperRunId} />
         </>
       )}
     />

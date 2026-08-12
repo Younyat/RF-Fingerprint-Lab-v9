@@ -1491,6 +1491,144 @@ class ScientificResultsRepository:
         self.logger.info("rq3 FRR analysis persisted paper_run_id=%s bundle_id=%s pairs=%s", paper_run_id, bundle_id, len(enriched_pairs))
         return as_dict
 
+    def run_coverage_analysis(
+        self, *, paper_run_id: str, offline_inference_service: Any, bundle_ids: dict[str, str] | None = None,
+        window_duration_s: float | None = None, minimum_eligible_bursts: int | None = None,
+    ) -> dict[str, Any]:
+        """Coverage audit finding (2026-08-12): the real decision records
+        (offline_inference_service.run_decision_windows(), the SAME frozen
+        pipeline RQ3 already drives) already carry everything coverage
+        needs -- nothing aggregated them by evaluation_domain/branch/
+        physical_unit. This is the real orchestration that was missing --
+        see coverage_analysis.py's own module docstring for the exact
+        abstention/coverage definitions reused (never invented here).
+        `bundle_ids` defaults to EVERY frozen RQ2 branch's model_bundle_id
+        (coverage-by-branch needs all of them, unlike RQ3's single
+        primary-branch scope) -- raises if none are recorded yet, never
+        guesses. Real evaluation_domain comes from a real SplitManifest
+        join (VALIDATION/TRAIN/TEST) when one exists for this run's
+        dataset/scientific_task, else None (never guessed)."""
+        from app.modules.ble_rffi_studio.inference.decision_windows import DEFAULT_MINIMUM_ELIGIBLE_BURSTS, DEFAULT_WINDOW_DURATION_S
+        from ..coverage_analysis import CoverageRow, compute_coverage_summary, coverage_row_from_decision_window
+
+        window_duration_s = window_duration_s if window_duration_s is not None else DEFAULT_WINDOW_DURATION_S
+        minimum_eligible_bursts = minimum_eligible_bursts if minimum_eligible_bursts is not None else DEFAULT_MINIMUM_ELIGIBLE_BURSTS
+
+        if bundle_ids is None:
+            rq2_report = self.get_rq2_representation_comparison_report(paper_run_id)
+            bundle_ids = {b["branch"]: b["model_bundle_id"] for b in (rq2_report or {}).get("branches", []) if b.get("model_bundle_id")}
+        if not bundle_ids:
+            raise ValueError("NO_FROZEN_RQ2_BRANCHES_WITH_A_MODEL_BUNDLE_ID:run RQ2 Benchmark first, or pass bundle_ids explicitly")
+
+        run = self.get_run(paper_run_id)
+        captures = [c for c in self._load_all_captures() if (c.target_reference_id or c.isolation_declared_physical_unit_id)]
+        examples_by_capture_id = {c.capture_id: self._load_examples(c.capture_id) for c in captures}
+
+        try:
+            split = self._load_split(run.dataset_id, run.dataset_version, run.scientific_task)
+            domain_by_example_id = {a.example_id: a.split for a in split.assignments}
+        except FileNotFoundError:
+            domain_by_example_id = {}
+
+        rows: list[CoverageRow] = []
+        for branch, bundle_id in sorted(bundle_ids.items()):
+            for capture in captures:
+                examples = examples_by_capture_id[capture.capture_id]
+                if not examples:
+                    continue
+                windows = offline_inference_service.run_decision_windows(
+                    bundle_id=bundle_id, examples=examples, window_duration_s=window_duration_s, minimum_eligible_bursts=minimum_eligible_bursts,
+                )
+                for window in windows:
+                    # A window's evaluation_domain is real only when every
+                    # constituent burst example resolves to the SAME real
+                    # split assignment -- never guessed for a window whose
+                    # bursts disagree or were never split-assigned.
+                    burst_domains = {domain_by_example_id.get(eid) for eid in window.get("burst_example_ids", [])}
+                    domain = next(iter(burst_domains)) if len(burst_domains) == 1 and None not in burst_domains else None
+                    rows.append(coverage_row_from_decision_window(window, evaluation_domain=domain, branch=branch))
+
+        summary = compute_coverage_summary(rows)
+        as_dict = {
+            "schema_version": "ble-scientific-results-coverage-analysis-v1", "generated_at": utc_now(),
+            "paper_run_id": paper_run_id, "bundle_ids": bundle_ids,
+            "window_duration_s": window_duration_s, "minimum_eligible_bursts": minimum_eligible_bursts,
+            **summary,
+        }
+        atomic_json(self._run_dir(paper_run_id) / "06_statistics" / "coverage_analysis_report.json", as_dict)
+        self.logger.info("coverage analysis persisted paper_run_id=%s branches=%s rows=%s", paper_run_id, list(bundle_ids), len(rows))
+        return as_dict
+
+    def get_coverage_analysis_report(self, paper_run_id: str) -> dict[str, Any] | None:
+        path = self._run_dir(paper_run_id) / "06_statistics" / "coverage_analysis_report.json"
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def run_sensitivity_analysis(self, *, paper_run_id: str, studio_repository: Any) -> dict[str, Any]:
+        """Sensitivity closure (2026-08-12): consolidates the three real
+        sensitivity mechanisms this study already defines -- LODO (already
+        wired, real, tested since 2026-08-09), offset-retaining
+        preprocessing (train_offset_retaining_sensitivity, closed this
+        pass), and RQ2's seed_variability (REUSED verbatim from the RQ2
+        report, never recomputed) -- into one report that explicitly
+        separates PRIMARY from each SENSITIVITY variant. `studio_repository`
+        is required (never optional): every real input here -- predictions,
+        label_classes, the offset-retaining re-train -- lives in
+        ble_rffi_studio's own storage. Raises rather than silently skipping
+        when the PRIMARY branch or its predictions are not real yet --
+        never persists a report built on missing pieces."""
+        if studio_repository is None:
+            raise ValueError("NO_STUDIO_REPOSITORY_CONFIGURED:sensitivity analysis needs a real StudioRepository to read predictions/re-train")
+        from ..sensitivity_analysis import enrich_lodo_with_delta_vs_full_set, full_set_balanced_accuracy
+        from ..statistics.sensitivity import leave_one_device_out_sensitivity
+
+        rq2_report = self.get_rq2_representation_comparison_report(paper_run_id)
+        primary = next((b for b in (rq2_report or {}).get("branches", []) if b.get("analysis_role") == "PRIMARY"), None)
+        if primary is None:
+            raise ValueError("NO_FROZEN_PRIMARY_RQ2_BRANCH:run RQ2 Benchmark first")
+        training_run_id = primary.get("training_run_id")
+        if not training_run_id:
+            raise ValueError("PRIMARY_RQ2_BRANCH_HAS_NO_TRAINING_RUN_ID:cannot re-read its real predictions")
+
+        predictions = studio_repository.get_training_run_predictions(training_run_id, "VALIDATION") or []
+        label_classes = (studio_repository.get_training_run(training_run_id) or {}).get("label_classes") or []
+        # Real device_id join reuses the SAME physical_unit_id every
+        # prediction dict now carries (Scientific Closure pass point 7) --
+        # never a second identity source.
+        device_id_by_example_id = {p["example_id"]: p["physical_unit_id"] for p in predictions if p.get("physical_unit_id")}
+
+        lodo_raw = leave_one_device_out_sensitivity(predictions, device_id_by_example_id, label_classes)
+        baseline_ba = full_set_balanced_accuracy(predictions, label_classes)
+        lodo_rows = enrich_lodo_with_delta_vs_full_set(lodo_raw, full_set_ba=baseline_ba)
+
+        offset_result = studio_repository.train_offset_retaining_sensitivity(training_run_id=training_run_id)
+        primary_ba = primary.get("balanced_accuracy")
+        offset_ba = offset_result.get("validation_balanced_accuracy")
+        offset_retaining = {
+            "analysis_role": "OFFSET_RETAINING_SENSITIVITY", "training_run_id": offset_result["training_run_id"],
+            "base_run_training_run_id": training_run_id, "base_preprocessing_profile_id": offset_result["base_preprocessing_profile_id"],
+            "estimate": offset_ba, "coverage": offset_result.get("coverage"),
+            "delta_vs_primary": (offset_ba - primary_ba) if (offset_ba is not None and primary_ba is not None) else None,
+        }
+
+        as_dict = {
+            "schema_version": "ble-scientific-results-sensitivity-analysis-v1", "generated_at": utc_now(), "paper_run_id": paper_run_id,
+            "primary": {"analysis_role": "PRIMARY", "branch": primary.get("branch"), "training_run_id": training_run_id, "balanced_accuracy": primary_ba},
+            "leave_one_device_out": {"analysis_role": "SENSITIVITY", "full_set_balanced_accuracy": baseline_ba, "rows": lodo_rows},
+            "offset_retaining": offset_retaining,
+            "seed_variability": {"analysis_role": "SENSITIVITY", "rows": primary.get("seed_variability")} if primary.get("seed_variability") else None,
+        }
+        atomic_json(self._run_dir(paper_run_id) / "06_statistics" / "sensitivity_report.json", as_dict)
+        self.logger.info("sensitivity analysis persisted paper_run_id=%s lodo_rows=%s", paper_run_id, len(lodo_rows))
+        return as_dict
+
+    def get_sensitivity_report(self, paper_run_id: str) -> dict[str, Any] | None:
+        path = self._run_dir(paper_run_id) / "06_statistics" / "sensitivity_report.json"
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
     class ProtocolFreezeGateError(Exception):
         pass
 

@@ -1548,6 +1548,17 @@ class StudioRepository:
             "error": read_json(error_path) if error_path.is_file() else None,
         }
 
+    def get_training_run_predictions(self, training_run_id: str, split: str) -> list[dict[str, Any]] | None:
+        """Real, already-persisted per-example predictions for one split of
+        one training run (predictions.json, written by run_training()) --
+        the SAME shape Evaluator.evaluate_split()/leave_one_device_out_
+        sensitivity() already consume. Returns None (never []) when the
+        run has no predictions yet or never had that split."""
+        predictions_path = self.training_dir / training_run_id / "predictions.json"
+        if not predictions_path.is_file():
+            return None
+        return read_json(predictions_path).get(split)
+
     def bootstrap_accuracy_ci(self, training_run_id: str, *, split: str = "VALIDATION", n_resamples: int = 2000, confidence_level: float = 0.95) -> dict[str, Any] | None:
         """Bootstrap correction (2026-08-08): a real session-clustered
         percentile CI on a training run's own already-computed predictions
@@ -1622,6 +1633,53 @@ class StudioRepository:
                 "validation_balanced_accuracy": (validation_report or {}).get("balanced_accuracy"),
             })
         return results
+
+    def train_offset_retaining_sensitivity(self, *, training_run_id: str, progress=None) -> dict[str, Any]:
+        """Sensitivity closure (2026-08-12): the offset-retaining-v1
+        preprocessing profile (base_preprocessing_registry.py) already
+        existed as "the deliberate sensitivity-analysis counterpart to"
+        the paper's real Eq.(6)-(7) offset compensation, but had zero real
+        callers. Structurally identical to train_seed_variability_analysis
+        above -- re-trains the EXACT SAME configuration (dataset/split/
+        model_type/hyperparameters/representation/random_seed) of an
+        already-completed run, varying ONLY base_preprocessing_profile_id
+        -- never a new model selection, never a new threshold choice.
+        VALIDATION-only (include_test=False), matching every other
+        sensitivity diagnostic's own discipline: TEST is never opened for
+        a sensitivity re-run."""
+        base_run_dict = self.get_training_run(training_run_id)
+        if base_run_dict is None:
+            raise FileNotFoundError(f"TRAINING_RUN_NOT_FOUND:{training_run_id}")
+        if base_run_dict["status"] != "COMPLETED":
+            raise ValueError(f"CANNOT_RUN_OFFSET_RETAINING_SENSITIVITY_ON_AN_INCOMPLETE_TRAINING_RUN:{training_run_id}:{base_run_dict['status']}")
+        base_run = TrainingRun.model_validate({k: v for k, v in base_run_dict.items() if k not in ("metrics", "label_classes", "error")})
+
+        if progress:
+            progress("OFFSET_RETAINING_SENSITIVITY", 0.0, f"Re-training {training_run_id} with offset-retaining-v1")
+        variant_run = base_run.model_copy(update={
+            "training_run_id": f"{training_run_id}-offset-retaining", "base_preprocessing_profile_id": "offset-retaining-v1",
+            "status": "QUEUED", "started_at": None, "completed_at": None,
+            "analysis_contract_protocol_id": None, "analysis_contract_protocol_version": None, "analysis_contract_hash": None,
+        })
+        completed = self.run_training(training_run=variant_run)
+        # include_test=False here is load-bearing, not a default left alone
+        # -- a sensitivity run must never open TEST.
+        evaluation = self.evaluate_training_run(completed.training_run_id, include_test=False)
+        validation_report = evaluation["evaluation_report"].get("VALIDATION")
+        return {
+            "training_run_id": completed.training_run_id, "base_run_training_run_id": training_run_id,
+            "base_preprocessing_profile_id": "offset-retaining-v1",
+            "validation_accuracy": (validation_report or {}).get("accuracy"),
+            "validation_balanced_accuracy": (validation_report or {}).get("balanced_accuracy"),
+            # A real, single scalar operating-point "coverage" is not
+            # available from this VALIDATION-accuracy evaluation path (it
+            # never applies the calibrated acceptance_threshold/abstention
+            # rule -- that only happens in the decision-window inference
+            # path, see coverage_analysis.py) -- reported honestly as None,
+            # never approximated from the risk_coverage curve below.
+            "coverage": None,
+            "validation_risk_coverage": (validation_report or {}).get("risk_coverage"),
+        }
 
     # ------------------------------------------------------------------
     # P0.3 correction (2026-08-08): connecting ble_scientific_results'

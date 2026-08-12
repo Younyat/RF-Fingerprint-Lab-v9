@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { BleRffiStudioApiService, StudioJob, StudioPaperCampaignRejection, StudioPaperCampaignSchedule, StudioPhysicalUnit } from '../../../app/services/bleRffiStudioApi';
 import {
-  BleScientificResultsApiService, HardwareQualificationJob, HierarchicalDesignInput, NoDataResponse, PaperRunRecord,
-  Rq2BenchmarkJob, Rq3FrrAnalysisJob, StudyControlCenterStatus, StudySizingDecision, StudySizingEvaluationResult,
+  BleScientificResultsApiService, CoverageAnalysisJob, HardwareQualificationJob, HierarchicalDesignInput, NoDataResponse,
+  PaperRunRecord, Rq2BenchmarkJob, Rq3FrrAnalysisJob, SensitivityAnalysisJob, StudyControlCenterStatus,
+  StudySizingDecision, StudySizingEvaluationResult,
 } from '../../../app/services/bleScientificResultsApi';
 import NoDataNotice, { StatusBadge } from './NoDataNotice';
 import AnalysisContractReadinessPanel from './AnalysisContractReadinessPanel';
@@ -93,6 +94,8 @@ export default function StudyControlCenterTab() {
       <StudySizingLauncher onCompleted={refresh} />
       <Rq2BenchmarkLauncher onCompleted={refresh} />
       <Rq3FrrAnalysisLauncher onCompleted={refresh} />
+      <CoverageAnalysisLauncher onCompleted={refresh} />
+      <SensitivityAnalysisLauncher onCompleted={refresh} />
       <AnalysisContractReadinessPanel onCompleted={refresh} />
       <CampaignScheduleLauncher onCompleted={refresh} />
     </div>
@@ -597,6 +600,159 @@ function Rq2BenchmarkLauncher({ onCompleted }: { onCompleted: () => void }) {
             <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-400">JSON crudo (fuente exacta persistida)</summary>
             <pre className="max-h-[50vh] overflow-auto p-3 text-[11px] text-slate-300">{JSON.stringify(job, null, 2)}</pre>
           </details>
+        </div>
+      )}
+    </div>
+  );
+}
+
+async function pollCoverageAnalysisJob(jobId: string, onUpdate: (job: CoverageAnalysisJob) => void): Promise<CoverageAnalysisJob> {
+  let current = await sciApi.getCoverageAnalysisJob(jobId);
+  onUpdate(current);
+  while (!JOB_TERMINAL.has(current.state)) {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    current = await sciApi.getCoverageAnalysisJob(jobId);
+    onUpdate(current);
+  }
+  return current;
+}
+
+/** Coverage audit finding (2026-08-12): real decision records already
+ * carry everything coverage needs -- this launcher drives the missing
+ * aggregation (by overall/evaluation_domain/branch/physical_unit) over
+ * EVERY frozen RQ2 branch's bundle. */
+function CoverageAnalysisLauncher({ onCompleted }: { onCompleted: () => void }) {
+  const [runs, setRuns] = useState<PaperRunRecord[]>([]);
+  const [paperRunId, setPaperRunId] = useState('');
+  const [job, setJob] = useState<CoverageAnalysisJob | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    sciApi.listRuns().then((list) => {
+      setRuns(list);
+      if (list.length > 0) setPaperRunId(list[0].paper_run_id);
+    }).catch(() => setRuns([]));
+  }, []);
+
+  const start = async () => {
+    if (!paperRunId) return;
+    setBusy(true);
+    setJob(null);
+    try {
+      const started = await sciApi.startCoverageAnalysis({ paper_run_id: paperRunId });
+      const finished = await pollCoverageAnalysisJob(started.job_id, setJob);
+      if (finished.state === 'completed') onCompleted();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded border border-slate-800 bg-slate-900/40 p-4">
+      <div className="text-sm font-semibold text-slate-200">RUN COVERAGE ANALYSIS</div>
+      <div className="mt-1 text-xs text-slate-500">
+        Agrega ventanas de decision reales (run_decision_windows, mismo pipeline congelado de RQ3) por overall/dominio
+        de evaluacion/rama/unidad fisica -- para TODAS las ramas congeladas de RQ2, no solo la PRIMARY. Nada se
+        calcula en el frontend.
+      </div>
+      <div className="mt-3">
+        <label className="mb-1 block text-xs text-slate-500">paper_run_id</label>
+        <select className="w-full max-w-md rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={paperRunId} onChange={(e) => setPaperRunId(e.target.value)} disabled={busy}>
+          <option value="">(seleccionar run)</option>
+          {runs.map((run) => (<option key={run.paper_run_id} value={run.paper_run_id}>{run.paper_run_id}</option>))}
+        </select>
+      </div>
+      <button
+        className="mt-3 rounded bg-cyan-700 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-600 disabled:cursor-not-allowed disabled:bg-slate-700"
+        disabled={busy || !paperRunId} onClick={start}
+      >
+        {busy ? 'Ejecutando...' : 'RUN COVERAGE ANALYSIS'}
+      </button>
+      {job && (
+        <div className="mt-4 space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <StatusBadge status={job.state.toUpperCase()} />
+            <span className="text-slate-500">stage: {job.stage ?? 'N/A'}</span>
+            <span className="text-slate-500">progress: {Math.round(job.overall_progress * 100)}%</span>
+          </div>
+          {job.message && <div className="text-xs text-slate-400">{job.message}</div>}
+          {job.error && <div className="text-xs text-red-400">error: {job.error}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+async function pollSensitivityAnalysisJob(jobId: string, onUpdate: (job: SensitivityAnalysisJob) => void): Promise<SensitivityAnalysisJob> {
+  let current = await sciApi.getSensitivityAnalysisJob(jobId);
+  onUpdate(current);
+  while (!JOB_TERMINAL.has(current.state)) {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    current = await sciApi.getSensitivityAnalysisJob(jobId);
+    onUpdate(current);
+  }
+  return current;
+}
+
+/** Sensitivity closure (2026-08-12): LODO + offset-retaining preprocessing
+ * + reused RQ2 seed_variability, consolidated into one real report. */
+function SensitivityAnalysisLauncher({ onCompleted }: { onCompleted: () => void }) {
+  const [runs, setRuns] = useState<PaperRunRecord[]>([]);
+  const [paperRunId, setPaperRunId] = useState('');
+  const [job, setJob] = useState<SensitivityAnalysisJob | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    sciApi.listRuns().then((list) => {
+      setRuns(list);
+      if (list.length > 0) setPaperRunId(list[0].paper_run_id);
+    }).catch(() => setRuns([]));
+  }, []);
+
+  const start = async () => {
+    if (!paperRunId) return;
+    setBusy(true);
+    setJob(null);
+    try {
+      const started = await sciApi.startSensitivityAnalysis(paperRunId);
+      const finished = await pollSensitivityAnalysisJob(started.job_id, setJob);
+      if (finished.state === 'completed') onCompleted();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded border border-slate-800 bg-slate-900/40 p-4">
+      <div className="text-sm font-semibold text-slate-200">RUN SENSITIVITY ANALYSIS</div>
+      <div className="mt-1 text-xs text-slate-500">
+        Leave-one-device-out (real, delta_vs_full_set anadido) + offset-retaining-v1 (re-entrena la MISMA
+        configuracion de la rama PRIMARY, solo cambia el perfil de preprocesamiento -- nunca una nueva seleccion de
+        modelo ni un nuevo umbral) + variabilidad por semilla (reutilizada de RQ2, nunca recalculada). Requiere que
+        RQ2 Benchmark ya haya congelado una rama PRIMARY.
+      </div>
+      <div className="mt-3">
+        <label className="mb-1 block text-xs text-slate-500">paper_run_id</label>
+        <select className="w-full max-w-md rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={paperRunId} onChange={(e) => setPaperRunId(e.target.value)} disabled={busy}>
+          <option value="">(seleccionar run)</option>
+          {runs.map((run) => (<option key={run.paper_run_id} value={run.paper_run_id}>{run.paper_run_id}</option>))}
+        </select>
+      </div>
+      <button
+        className="mt-3 rounded bg-cyan-700 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-600 disabled:cursor-not-allowed disabled:bg-slate-700"
+        disabled={busy || !paperRunId} onClick={start}
+      >
+        {busy ? 'Ejecutando...' : 'RUN SENSITIVITY ANALYSIS'}
+      </button>
+      {job && (
+        <div className="mt-4 space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <StatusBadge status={job.state.toUpperCase()} />
+            <span className="text-slate-500">stage: {job.stage ?? 'N/A'}</span>
+            <span className="text-slate-500">progress: {Math.round(job.overall_progress * 100)}%</span>
+          </div>
+          {job.message && <div className="text-xs text-slate-400">{job.message}</div>}
+          {job.error && <div className="text-xs text-red-400">error: {job.error}</div>}
         </div>
       )}
     </div>

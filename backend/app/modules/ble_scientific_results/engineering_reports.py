@@ -66,6 +66,22 @@ def _confusion_matrix(true_labels: Sequence[str], predicted_labels: Sequence[str
     return matrix
 
 
+def _per_unit_recall(decided: list[dict[str, Any]]) -> dict[str, float] | None:
+    """S1 closure (2026-08-12): real per-unit recall from the SAME real
+    physical_unit_id join every decided prediction now carries (Scientific
+    Closure pass point 7) -- None (never a fabricated dict) when no
+    prediction here ever declared a physical_unit_id at all."""
+    units = sorted({p.get("physical_unit_id") for p in decided if p.get("physical_unit_id")})
+    if not units:
+        return None
+    result: dict[str, float] = {}
+    for unit in units:
+        unit_trials = [p for p in decided if p.get("physical_unit_id") == unit and p["true_label"] == unit]
+        if unit_trials:
+            result[unit] = sum(1 for p in unit_trials if p["predicted_label"] == p["true_label"]) / len(unit_trials)
+    return result or None
+
+
 @dataclass
 class ChannelTransportReport:
     schema_version: str = CHANNEL_TRANSPORT_SCHEMA_VERSION
@@ -100,11 +116,13 @@ def compute_channel_transport_report(
             entry["macro_f1"] = _macro_f1(true_labels, predicted_labels, known_classes)
             entry["coverage"] = coverage(len(comparable), len(comparable) - len(decided)) if comparable else None
             entry["confusion_matrix"] = _confusion_matrix(true_labels, predicted_labels, known_classes)
+            entry["per_unit_recall"] = _per_unit_recall(decided)
         else:
             entry["balanced_accuracy"] = None
             entry["macro_f1"] = None
             entry["coverage"] = None
             entry["confusion_matrix"] = None
+            entry["per_unit_recall"] = None
         per_channel.append(entry)
     return ChannelTransportReport(per_channel=per_channel)
 

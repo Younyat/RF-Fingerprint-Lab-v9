@@ -523,6 +523,98 @@ export interface ChannelTransportChannelResult {
   macro_f1: number | null;
   coverage: number | null;
   confusion_matrix: Record<string, Record<string, number>> | null;
+  per_unit_recall: Record<string, number> | null;
+}
+
+// Coverage canonical producer (2026-08-12, Scientific Closure pass) --
+// mirrors coverage_analysis.py exactly.
+
+export interface CoverageBucket {
+  eligible_windows: number;
+  decided_windows: number;
+  abstained_windows: number;
+  coverage: number;
+  errors_among_decided: number | null;
+  risk_among_decided: number | null;
+}
+
+export interface CoverageAnalysisReport {
+  schema_version: string;
+  generated_at: string;
+  paper_run_id: string;
+  bundle_ids: Record<string, string>;
+  window_duration_s: number;
+  minimum_eligible_bursts: number;
+  overall: CoverageBucket | null;
+  by_evaluation_domain: Record<string, CoverageBucket>;
+  by_branch: Record<string, CoverageBucket>;
+  by_physical_unit: Record<string, CoverageBucket>;
+  abstention_reason_counts: Record<string, number> | 'NOT_AVAILABLE';
+}
+
+export interface StartCoverageAnalysisRequest {
+  paper_run_id: string;
+  bundle_ids?: Record<string, string>;
+}
+
+export interface CoverageAnalysisJob {
+  job_id: string;
+  job_type: 'COVERAGE_ANALYSIS';
+  paper_run_id: string;
+  state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  stage: string | null;
+  overall_progress: number;
+  message: string | null;
+  error?: string;
+  result?: CoverageAnalysisReport;
+  started_at: string;
+  updated_at: string;
+}
+
+// Sensitivity canonical producer (2026-08-12, Scientific Closure pass) --
+// mirrors sensitivity_analysis.py / run_sensitivity_analysis exactly.
+
+export interface LodoRow {
+  omitted_physical_unit: string;
+  estimate: number | null;
+  accuracy: number | null;
+  n_comparable: number;
+  coverage: number | null;
+  delta_vs_full_set: number | null;
+}
+
+export interface OffsetRetainingResult {
+  analysis_role: 'OFFSET_RETAINING_SENSITIVITY';
+  training_run_id: string;
+  base_run_training_run_id: string;
+  base_preprocessing_profile_id: string;
+  estimate: number | null;
+  coverage: number | null;
+  delta_vs_primary: number | null;
+}
+
+export interface SensitivityReport {
+  schema_version: string;
+  generated_at: string;
+  paper_run_id: string;
+  primary: { analysis_role: 'PRIMARY'; branch: string | null; training_run_id: string; balanced_accuracy: number | null };
+  leave_one_device_out: { analysis_role: 'SENSITIVITY'; full_set_balanced_accuracy: number | null; rows: LodoRow[] };
+  offset_retaining: OffsetRetainingResult;
+  seed_variability: { analysis_role: 'SENSITIVITY'; rows: SeedVariabilityPoint[] } | null;
+}
+
+export interface SensitivityAnalysisJob {
+  job_id: string;
+  job_type: 'SENSITIVITY_ANALYSIS';
+  paper_run_id: string;
+  state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  stage: string | null;
+  overall_progress: number;
+  message: string | null;
+  error?: string;
+  result?: SensitivityReport;
+  started_at: string;
+  updated_at: string;
 }
 
 export interface ChannelTransportReport {
@@ -1047,6 +1139,28 @@ export class BleScientificResultsApiService {
   }
   async getRq3FrrAnalysisJob(jobId: string) {
     return (await axios.get<Rq3FrrAnalysisJob>(`${this.root}/jobs/${encodeURIComponent(jobId)}`)).data;
+  }
+
+  // Coverage canonical producer (2026-08-12, Scientific Closure pass).
+  async startCoverageAnalysis(body: StartCoverageAnalysisRequest) {
+    return (await axios.post<CoverageAnalysisJob>(`${this.root}/coverage-analysis`, body)).data;
+  }
+  async getCoverageAnalysisJob(jobId: string) {
+    return (await axios.get<CoverageAnalysisJob>(`${this.root}/jobs/${encodeURIComponent(jobId)}`)).data;
+  }
+  async getCoverageAnalysis(paperRunId: string) {
+    return (await axios.get<CoverageAnalysisReport | NoDataResponse>(`${this.root}/runs/${encodeURIComponent(paperRunId)}/coverage-analysis`)).data;
+  }
+
+  // Sensitivity canonical producer (2026-08-12, Scientific Closure pass).
+  async startSensitivityAnalysis(paperRunId: string) {
+    return (await axios.post<SensitivityAnalysisJob>(`${this.root}/sensitivity-analysis`, { paper_run_id: paperRunId })).data;
+  }
+  async getSensitivityAnalysisJob(jobId: string) {
+    return (await axios.get<SensitivityAnalysisJob>(`${this.root}/jobs/${encodeURIComponent(jobId)}`)).data;
+  }
+  async getSensitivityAnalysis(paperRunId: string) {
+    return (await axios.get<SensitivityReport | NoDataResponse>(`${this.root}/runs/${encodeURIComponent(paperRunId)}/sensitivity-analysis`)).data;
   }
 
   // Scientific Dashboard closure, Level A/B (2026-08-11).
