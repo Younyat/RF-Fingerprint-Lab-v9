@@ -9,14 +9,14 @@ on-demand artifact, not part of the evidence identity/labeling schema.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
 from app.infrastructure.ble.capture.ble_offline_replay import read_jsonl
 
 from ..contracts import ExampleRecord
-from .field_mapping import AnalyticalRegion, derive_packet_content_variants
+from .field_mapping import AdvaExcludedArtifact, AnalyticalRegion, derive_packet_content_variants
 
 
 def resolve_latest_replay_dir(legacy_capture_root: Path, capture_id: str) -> Path | None:
@@ -61,3 +61,32 @@ def build_packet_content_variants_for_examples(
             iq_window=window, iq_start_sample=example.iq_start_sample, sample_rate_sps=float(example.sample_rate_sps), pdu_type_name=pdu_type_name,
         )
     return results
+
+
+def region_restricted_provider_and_eligible_ids(
+    examples: list[ExampleRecord], *, analytical_region: AnalyticalRegion, legacy_capture_root: Path, capture_iq_paths: dict[str, Path],
+) -> tuple[Callable[[ExampleRecord], np.ndarray], set[str]]:
+    """RQ4 region-specific fitting (2026-08-12): builds the
+    TrainingService/OfflineInferenceService `iq_window_provider` hook for
+    ONE analytical_region, plus the real set of example_ids for which that
+    region actually has a real array (never None) -- an example whose
+    derived region variant is None (e.g. ADVA_EXCLUDED for a PDU type
+    outside PDU_TYPES_WITH_LEADING_ADVA) is simply absent from both the
+    provider and the eligible set, never substituted with a fallback
+    window. Comparability (point 6/7 of the RQ4 closure): the SAME
+    derive_packet_content_variants used everywhere else in this package is
+    reused here, never a second derivation -- FULL_BURST never needs this
+    helper at all (the caller should keep using the plain, unrestricted
+    path for it, since FULL_BURST IS the original, already-loaded window)."""
+    variants = build_packet_content_variants_for_examples(examples, legacy_capture_root=legacy_capture_root, capture_iq_paths=capture_iq_paths)
+    windows_by_example_id: dict[str, np.ndarray] = {}
+    for example_id, region_variants in variants.items():
+        value = region_variants.get(analytical_region)
+        if value is None:
+            continue
+        windows_by_example_id[example_id] = value.window if isinstance(value, AdvaExcludedArtifact) else value
+
+    def provider(example: ExampleRecord) -> np.ndarray:
+        return windows_by_example_id[example.example_id]
+
+    return provider, set(windows_by_example_id.keys())

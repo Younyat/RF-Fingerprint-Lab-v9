@@ -161,12 +161,16 @@ def run_confirmatory_statistical_plan(
 
 def confirmatory_statistical_plan_to_dict(report: ConfirmatoryStatisticalPlanReport) -> dict[str, Any]:
     def _method(result: MethodResult) -> dict[str, Any]:
-        value = result.value
-        if hasattr(value, "__dict__") and not isinstance(value, (dict, list)):
-            value = _dataclass_or_value(value)
-        elif isinstance(value, list):
-            value = [_dataclass_or_value(v) for v in value]
-        return {"status": result.status, "detail": result.detail, "value": value}
+        # Serialization-completeness correction (2026-08-12, RQ4 closure):
+        # _dataclass_or_value already recurses correctly through
+        # dataclass/dict/list/tuple/plain values -- the old hand-rolled
+        # gating above never routed a DICT-shaped value (e.g.
+        # rq4_paired_comparison's {"contrast": PairedContrast(...),
+        # "randomization_test": ...}) through it at all, so any dataclass
+        # nested inside a dict value was left unconverted and broke
+        # json.dump. Invisible until now because no real caller had ever
+        # fed real rq4_scores_a/rq4_scores_b through this path.
+        return {"status": result.status, "detail": result.detail, "value": _dataclass_or_value(result.value)}
 
     return {
         "hierarchical_cluster_bootstrap": _method(report.hierarchical_cluster_bootstrap),

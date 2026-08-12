@@ -10,9 +10,10 @@ import hashlib
 import shutil
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import joblib
+import numpy as np
 import torch
 
 from app.infrastructure.ble.capture.ble_offline_replay import BleOfflineReplayService, read_json, read_jsonl, sha256_file, utc_now, write_json, write_jsonl
@@ -1458,7 +1459,11 @@ class StudioRepository:
     # Training
     # ------------------------------------------------------------------
 
-    def run_training(self, *, training_run: TrainingRun, progress=None) -> TrainingRun:
+    def run_training(
+        self, *, training_run: TrainingRun, progress=None,
+        iq_window_provider: Callable[[ExampleRecord], np.ndarray] | None = None,
+        eligible_example_ids: set[str] | None = None,
+    ) -> TrainingRun:
         dataset = self._require_dataset(training_run.dataset_id, training_run.dataset_version)
         if training_run.data_origin != dataset.data_origin:
             raise ValueError(
@@ -1473,6 +1478,16 @@ class StudioRepository:
         split = self.get_split(training_run.dataset_id, training_run.dataset_version, training_run.scientific_task)
         if split is None:
             raise FileNotFoundError(f"SPLIT_NOT_BUILT_YET:{training_run.dataset_id}:{training_run.dataset_version}:{training_run.scientific_task}")
+        # RQ4 region-specific fitting (2026-08-12): a block available in
+        # FULL_BURST but not validly available in the target analytical
+        # region (e.g. no known AdvA offset for ADVA_EXCLUDED) must never
+        # contribute to that region's fit -- filtering assignments here
+        # (never examples_by_id, which every split.assignments lookup below
+        # still indexes into) keeps TRAIN/VALIDATION/TEST membership
+        # otherwise identical to the base run's own split, restricted only
+        # to examples this region actually has a real derived window for.
+        if eligible_example_ids is not None:
+            split = split.model_copy(update={"assignments": [a for a in split.assignments if a.example_id in eligible_example_ids]})
         examples_by_id = {e.example_id: e for e in self._dataset_examples(dataset)}
         iq_paths = self.capture_iq_paths_for(dataset.captures)
 
@@ -1482,7 +1497,9 @@ class StudioRepository:
         # flags a declared profile_id means, never a bare, flag-less
         # placeholder -- previously this always trained with identity
         # preprocessing regardless of what base_preprocessing_profile_id said.
-        service = TrainingService(iq_paths, resolve_preprocessing_profile(training_run.base_preprocessing_profile_id))
+        service = TrainingService(
+            iq_paths, resolve_preprocessing_profile(training_run.base_preprocessing_profile_id), iq_window_provider=iq_window_provider,
+        )
         try:
             if training_run.model_type in _TORCH_MODEL_TYPES:
                 artifacts = service.run_cnn(training_run=training_run, split=split, examples_by_id=examples_by_id)
@@ -1679,6 +1696,87 @@ class StudioRepository:
             # never approximated from the risk_coverage curve below.
             "coverage": None,
             "validation_risk_coverage": (validation_report or {}).get("risk_coverage"),
+        }
+
+    def train_region_specific_variant(self, *, training_run_id: str, analytical_region: str, progress=None) -> dict[str, Any]:
+        """RQ4 region-specific fitting (2026-08-12): rq4_primary_analysis=
+        REGION_SPECIFIC_FITTING_AND_EVALUATION (recorded via
+        record_scientist_decision). Re-fits the EXACT SAME frozen
+        configuration (dataset/split/model_type/hyperparameters/
+        representation/random_seed) of an already-completed training run
+        -- structurally identical to train_offset_retaining_sensitivity
+        above -- restricting BOTH the raw IQ source AND example eligibility
+        to one analytical_region (ADVA_EXCLUDED/PRE_PDU) via
+        packet_content.region_restricted_provider_and_eligible_ids. Never a
+        new model selection, never a new hyperparameter search: this is one
+        of the three realizations point 4 of the RQ4 closure describes, not
+        a second training pipeline. FULL_BURST is deliberately NOT trained
+        through this path -- FULL_BURST already IS the base run's own
+        input, so the caller should reuse the base run's own bundle_id
+        directly rather than risk a nondeterministic duplicate of the same
+        configuration. VALIDATION-only (include_test=False), matching every
+        other RQ4/sensitivity diagnostic: TEST is never opened for a
+        region-specific re-fit. Exports a real bundle immediately
+        (acceptance_criteria={}, the same non-blocking, informational-only
+        value export_and_approve_all_candidates already uses) so the
+        caller can score decision windows for this region via
+        OfflineInferenceService -- this is what makes the region's own
+        independently-calibrated acceptance_threshold
+        (evaluate_training_run's calibrate_unknown_threshold call, VALIDATION-
+        only) usable downstream, matching the SAME real per-run calibration
+        mechanism every other bundle in this system already gets, with no
+        new threshold policy invented for RQ4."""
+        if analytical_region not in ("ADVA_EXCLUDED", "PRE_PDU"):
+            raise ValueError(f"REGION_SPECIFIC_FITTING_ONLY_SUPPORTS_ADVA_EXCLUDED_OR_PRE_PDU:got {analytical_region}")
+        base_run_dict = self.get_training_run(training_run_id)
+        if base_run_dict is None:
+            raise FileNotFoundError(f"TRAINING_RUN_NOT_FOUND:{training_run_id}")
+        if base_run_dict["status"] != "COMPLETED":
+            raise ValueError(f"CANNOT_RUN_REGION_SPECIFIC_FITTING_ON_AN_INCOMPLETE_TRAINING_RUN:{training_run_id}:{base_run_dict['status']}")
+        base_run = TrainingRun.model_validate({k: v for k, v in base_run_dict.items() if k not in ("metrics", "label_classes", "error")})
+
+        dataset = self._require_dataset(base_run.dataset_id, base_run.dataset_version)
+        examples = self._dataset_examples(dataset)
+        iq_paths = self.capture_iq_paths_for(dataset.captures)
+
+        if progress:
+            progress("REGION_SPECIFIC_FITTING", 0.0, f"Deriving {analytical_region} variants for {training_run_id}")
+        from ..packet_content import region_restricted_provider_and_eligible_ids
+        provider, eligible_ids = region_restricted_provider_and_eligible_ids(
+            examples, analytical_region=analytical_region, legacy_capture_root=self.legacy_capture_root, capture_iq_paths=iq_paths,
+        )
+        if not eligible_ids:
+            raise ValueError(f"NO_EXAMPLES_ELIGIBLE_FOR_ANALYTICAL_REGION:{analytical_region}")
+
+        variant_run = base_run.model_copy(update={
+            "training_run_id": f"{training_run_id}-region-{analytical_region.lower().replace('_', '-')}",
+            "status": "QUEUED", "started_at": None, "completed_at": None,
+            "analysis_contract_protocol_id": None, "analysis_contract_protocol_version": None, "analysis_contract_hash": None,
+        })
+        if progress:
+            progress("REGION_SPECIFIC_FITTING", 0.2, f"Training {variant_run.training_run_id}")
+        completed = self.run_training(training_run=variant_run, iq_window_provider=provider, eligible_example_ids=eligible_ids)
+        if progress:
+            progress("REGION_SPECIFIC_FITTING", 0.7, "Evaluating VALIDATION")
+        evaluation = self.evaluate_training_run(completed.training_run_id, include_test=False)
+        validation_report = evaluation["evaluation_report"].get("VALIDATION")
+
+        bundle_id = f"{completed.training_run_id}-bundle"
+        if progress:
+            progress("REGION_SPECIFIC_FITTING", 0.85, f"Exporting bundle {bundle_id}")
+        manifest, gate_reasons = self.export_bundle(
+            training_run_id=completed.training_run_id, bundle_id=bundle_id, acceptance_criteria={},
+            model_card_text=f"# {bundle_id}\nRQ4 region-specific variant ({analytical_region}) of base run {training_run_id}.",
+        )
+        if progress:
+            progress("REGION_SPECIFIC_FITTING", 1.0, "Region-specific fitting completed")
+
+        return {
+            "training_run_id": completed.training_run_id, "base_run_training_run_id": training_run_id,
+            "analytical_region": analytical_region, "bundle_id": bundle_id, "approval_status": manifest.approval_status,
+            "gate_reasons": gate_reasons, "n_eligible_examples": len(eligible_ids),
+            "validation_accuracy": (validation_report or {}).get("accuracy"),
+            "validation_balanced_accuracy": (validation_report or {}).get("balanced_accuracy"),
         }
 
     # ------------------------------------------------------------------

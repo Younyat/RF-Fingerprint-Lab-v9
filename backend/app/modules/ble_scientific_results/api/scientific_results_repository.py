@@ -1491,6 +1491,94 @@ class ScientificResultsRepository:
         self.logger.info("rq3 FRR analysis persisted paper_run_id=%s bundle_id=%s pairs=%s", paper_run_id, bundle_id, len(enriched_pairs))
         return as_dict
 
+    def run_rq4_region_analysis(
+        self, *, paper_run_id: str, offline_inference_service: Any, studio_repository: Any,
+        full_burst_bundle_id: str | None = None, window_duration_s: float | None = None, minimum_eligible_bursts: int | None = None,
+    ) -> dict[str, Any]:
+        """RQ4 region-specific fitting closure (2026-08-12): rq4_primary_analysis=
+        REGION_SPECIFIC_FITTING_AND_EVALUATION (recorded via
+        record_scientist_decision -- see get_analysis_contract_readiness).
+        Reuses RQ2's own frozen PRIMARY bundle+training_run_id directly for
+        FULL_BURST (FULL_BURST already IS that run's own input -- retraining
+        it again here would risk a nondeterministic duplicate of the exact
+        same configuration, not a second real region), and trains
+        ADVA_EXCLUDED/PRE_PDU as independent realizations of that SAME
+        frozen configuration via studio_repository.train_region_specific_variant
+        (never a new model selection per region -- see rq4_region_analysis.py's
+        own module docstring). Scores every real matched_region_block
+        (physical_unit_id, day_id, packet_condition) under all three regions
+        via the SAME frozen decision-window pipeline RQ1-3 already use, and
+        feeds ONLY the PRIMARY contrast (FULL_BURST vs PRE_PDU) into the
+        untouched NI/Holm confirmatory pipeline via rq4_scores_a/
+        rq4_scores_b -- FULL_BURST vs ADVA_EXCLUDED stays SECONDARY/
+        diagnostic, reported but never Holm-corrected (adding it to the
+        hypothesis family is a separate, explicit future decision, never
+        made implicitly here). Raises rather than silently skipping when no
+        frozen PRIMARY RQ2 branch or no real matched-region-block captures
+        exist yet -- an empty/NO_DATA report from the caller's side, never
+        a fabricated one from this method."""
+        from app.modules.ble_rffi_studio.inference.decision_windows import DEFAULT_MINIMUM_ELIGIBLE_BURSTS, DEFAULT_WINDOW_DURATION_S
+        from app.modules.ble_rffi_studio.inference.offline_inference import OfflineInferenceService
+        from app.modules.ble_rffi_studio.packet_content import region_restricted_provider_and_eligible_ids
+        from ..rq4_region_analysis import build_matched_region_blocks, compute_rq4_region_report, matched_region_block_id
+
+        window_duration_s = window_duration_s if window_duration_s is not None else DEFAULT_WINDOW_DURATION_S
+        minimum_eligible_bursts = minimum_eligible_bursts if minimum_eligible_bursts is not None else DEFAULT_MINIMUM_ELIGIBLE_BURSTS
+
+        base_training_run_id = None
+        if full_burst_bundle_id is None:
+            rq2_report = self.get_rq2_representation_comparison_report(paper_run_id)
+            primary = next((b for b in (rq2_report or {}).get("branches", []) if b.get("analysis_role") == "PRIMARY"), None)
+            if primary is None or not primary.get("model_bundle_id") or not primary.get("training_run_id"):
+                raise ValueError("NO_FROZEN_PRIMARY_RQ2_BRANCH_WITH_A_MODEL_BUNDLE_ID:run RQ2 Benchmark first, or pass full_burst_bundle_id explicitly")
+            full_burst_bundle_id = primary["model_bundle_id"]
+            base_training_run_id = primary["training_run_id"]
+
+        captures = self._load_all_captures()
+        blocks = build_matched_region_blocks(captures)
+        if not blocks:
+            raise ValueError(
+                "NO_CAPTURES_WITH_A_REAL_MATCHED_REGION_BLOCK_IDENTITY:physical_unit_id/day_id/packet_condition "
+                "must all be real on at least one capture -- 0 real region-specific captures exist yet"
+            )
+
+        relevant_captures = [c for c in captures if matched_region_block_id(c) is not None]
+        examples_by_capture_id = {c.capture_id: self._load_examples(c.capture_id) for c in relevant_captures}
+        all_examples = [e for exs in examples_by_capture_id.values() for e in exs]
+        iq_paths = {c.capture_id: self._resolve_iq_path(c) for c in relevant_captures}
+
+        bundle_ids: dict[str, str | None] = {"FULL_BURST": full_burst_bundle_id}
+        inference_services: dict[str, Any] = {"FULL_BURST": offline_inference_service}
+        eligible_example_ids_by_region: dict[str, set[str]] = {"FULL_BURST": {e.example_id for e in all_examples}}
+
+        for region in ("ADVA_EXCLUDED", "PRE_PDU"):
+            provider, eligible_ids = region_restricted_provider_and_eligible_ids(
+                all_examples, analytical_region=region, legacy_capture_root=self.legacy_capture_root, capture_iq_paths=iq_paths,
+            )
+            eligible_example_ids_by_region[region] = eligible_ids
+            if not eligible_ids or base_training_run_id is None:
+                bundle_ids[region] = None
+                inference_services[region] = None
+                continue
+            variant = studio_repository.train_region_specific_variant(training_run_id=base_training_run_id, analytical_region=region)
+            bundle_ids[region] = variant["bundle_id"]
+            inference_services[region] = OfflineInferenceService(offline_inference_service.bundle_root, iq_paths, iq_window_provider=provider)
+
+        report = compute_rq4_region_report(
+            blocks=blocks, examples_by_capture_id=examples_by_capture_id, eligible_example_ids_by_region=eligible_example_ids_by_region,
+            inference_services=inference_services, bundle_ids=bundle_ids,
+            window_duration_s=window_duration_s, minimum_eligible_bursts=minimum_eligible_bursts,
+        )
+
+        stats_kwargs: dict[str, Any] = {}
+        if report["primary_contrast_scores_a"] and report["primary_contrast_scores_b"]:
+            stats_kwargs = {"rq4_scores_a": report["primary_contrast_scores_a"], "rq4_scores_b": report["primary_contrast_scores_b"]}
+        as_dict = self.run_confirmatory_statistical_plan(paper_run_id, **stats_kwargs)
+        as_dict["rq4_region_report"] = report
+        atomic_json(self._run_dir(paper_run_id) / "06_statistics" / "confirmatory_statistical_plan_report.json", as_dict)
+        self.logger.info("rq4 region-specific analysis persisted paper_run_id=%s blocks=%s", paper_run_id, len(blocks))
+        return as_dict
+
     def run_coverage_analysis(
         self, *, paper_run_id: str, offline_inference_service: Any, bundle_ids: dict[str, str] | None = None,
         window_duration_s: float | None = None, minimum_eligible_bursts: int | None = None,

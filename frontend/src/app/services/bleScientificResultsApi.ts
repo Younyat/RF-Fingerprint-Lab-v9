@@ -962,6 +962,55 @@ export interface Rq3FrrAnalysisJob {
   updated_at: string;
 }
 
+export interface StartRq4RegionAnalysisRequest {
+  paper_run_id: string;
+  full_burst_bundle_id?: string;
+}
+
+export interface Rq4RegionAnalysisJob {
+  job_id: string;
+  job_type: 'RQ4_REGION_ANALYSIS';
+  paper_run_id: string;
+  state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  stage: string | null;
+  overall_progress: number;
+  message: string | null;
+  error?: string;
+  result?: Record<string, unknown>;
+  started_at: string;
+  updated_at: string;
+}
+
+export interface Rq4RegionResult {
+  analytical_region: string;
+  eligible_windows: number;
+  decided_windows: number | null;
+  abstained_windows: number | null;
+  coverage: number | null;
+  recall: number | null;
+}
+
+export interface Rq4MatchedRegionBlock {
+  matched_region_block_id: string;
+  physical_unit_id: string | null;
+  day_id: string | null;
+  packet_condition: string | null;
+  capture_ids: string[];
+  regions: Record<string, Rq4RegionResult | null>;
+}
+
+export interface Rq4RegionReport {
+  schema_version: string;
+  matched_region_blocks: Rq4MatchedRegionBlock[];
+  bundle_ids: Record<string, string | null>;
+  primary_contrast: { a_region: string; b_region: string; n_matched_blocks: number };
+  primary_contrast_scores_a: number[];
+  primary_contrast_scores_b: number[];
+  secondary_contrast: { a_region: string; b_region: string; n_matched_blocks: number };
+  secondary_contrast_scores_a: number[];
+  secondary_contrast_scores_b: number[];
+}
+
 export interface SeedVariabilityPoint {
   seed: number;
   training_run_id: string;
@@ -1161,6 +1210,17 @@ export class BleScientificResultsApiService {
   }
   async getSensitivityAnalysis(paperRunId: string) {
     return (await axios.get<SensitivityReport | NoDataResponse>(`${this.root}/runs/${encodeURIComponent(paperRunId)}/sensitivity-analysis`)).data;
+  }
+
+  // RQ4 region-specific fitting closure (2026-08-12): rq4_primary_analysis=
+  // REGION_SPECIFIC_FITTING_AND_EVALUATION. Persists into the SAME
+  // confirmatory_statistical_plan_report.json RQ3 writes to (rq4_region_report) --
+  // read via confirmatoryStatisticalPlan(), no separate GET route.
+  async startRq4RegionAnalysis(body: StartRq4RegionAnalysisRequest) {
+    return (await axios.post<Rq4RegionAnalysisJob>(`${this.root}/rq4-region-analysis`, body)).data;
+  }
+  async getRq4RegionAnalysisJob(jobId: string) {
+    return (await axios.get<Rq4RegionAnalysisJob>(`${this.root}/jobs/${encodeURIComponent(jobId)}`)).data;
   }
 
   // Scientific Dashboard closure, Level A/B (2026-08-11).

@@ -7,7 +7,12 @@ from .field_mapping import (
     derive_packet_content_variants,
     pdu_field_sample_ranges,
 )
-from .service import build_packet_content_variants_for_examples, load_pdu_type_by_packet_id, resolve_latest_replay_dir
+from .service import (
+    build_packet_content_variants_for_examples,
+    load_pdu_type_by_packet_id,
+    region_restricted_provider_and_eligible_ids,
+    resolve_latest_replay_dir,
+)
 
 __all__ = [
     "PDU_TYPES_WITH_LEADING_ADVA",
@@ -20,4 +25,5 @@ __all__ = [
     "build_packet_content_variants_for_examples",
     "load_pdu_type_by_packet_id",
     "resolve_latest_replay_dir",
+    "region_restricted_provider_and_eligible_ids",
 ]

@@ -1,9 +1,17 @@
-import { BleScientificResultsApiService, NoDataResponse } from '../../../app/services/bleScientificResultsApi';
+import { BleScientificResultsApiService, NoDataResponse, Rq4RegionReport } from '../../../app/services/bleScientificResultsApi';
 import HistogramChart from './charts/HistogramChart';
 import NonInferiorityChart, { NonInferiorityDatum } from './charts/NonInferiorityChart';
 import EvidenceMaturityBadge, { EvidenceMaturity } from './EvidenceMaturityBadge';
+import NoDataNotice from './NoDataNotice';
 import RunScopedJsonReport from './RunScopedJsonReport';
 import StatisticalInspectionPanel, { holmSummary, nonInferiorityRow, rq4PairedComparisonRow } from './StatisticalInspectionPanel';
+
+const ANALYTICAL_REGIONS = ['FULL_BURST', 'ADVA_EXCLUDED', 'PRE_PDU'] as const;
+
+function rq4RegionReport(report: Record<string, unknown>): Rq4RegionReport | null {
+  const value = report.rq4_region_report as Rq4RegionReport | undefined;
+  return value && Array.isArray(value.matched_region_blocks) ? value : null;
+}
 
 const sciApi = new BleScientificResultsApiService();
 
@@ -74,10 +82,63 @@ export default function Rq4Tab() {
             <div className="mb-1 text-xs font-semibold text-slate-400">Non-inferiority -- estimacion, CI unilateral y frontera de decision (-margin)</div>
             <NonInferiorityChart data={nonInferiorityChartData(report)} noDataReason="non_inferiority.value no esta presente en el reporte." />
           </div>
-          <div className="rounded border border-dashed border-slate-700 bg-slate-900/30 px-3 py-2 text-[11px] text-amber-400/80">
-            MISSING_CANONICAL_METRIC -- el desglose por region analitica (FULL_BURST / ADVA_EXCLUDED / PRE_PDU) y por
-            condicion de paquete todavia no esta expuesto como serie independiente en
-            confirmatory_future_analysis_report.json, solo el contraste agregado. No se fabrica en el frontend.
+          <div>
+            <div className="mb-1 text-xs font-semibold text-slate-400">
+              Desglose por matched_region_block (rq4_primary_analysis=REGION_SPECIFIC_FITTING_AND_EVALUATION)
+            </div>
+            {(() => {
+              const regionReport = rq4RegionReport(report);
+              if (!regionReport) {
+                return <NoDataNotice reason="rq4_region_report no existe todavia -- ejecuta RQ4 Region-Specific Analysis (Study Control Center) primero." />;
+              }
+              return (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
+                    <div className="rounded border border-slate-800 bg-slate-950 p-2">
+                      <div className="text-slate-500">contraste PRIMARIO</div>
+                      <div className="font-mono text-slate-200">{regionReport.primary_contrast.a_region} vs {regionReport.primary_contrast.b_region}</div>
+                      <div className="text-slate-500">n bloques pareados: <span className="font-mono text-slate-300">{regionReport.primary_contrast.n_matched_blocks}</span></div>
+                    </div>
+                    <div className="rounded border border-slate-800 bg-slate-950 p-2">
+                      <div className="text-slate-500">contraste SECUNDARIO/diagnostico</div>
+                      <div className="font-mono text-slate-200">{regionReport.secondary_contrast.a_region} vs {regionReport.secondary_contrast.b_region}</div>
+                      <div className="text-slate-500">n bloques pareados: <span className="font-mono text-slate-300">{regionReport.secondary_contrast.n_matched_blocks}</span></div>
+                    </div>
+                    {ANALYTICAL_REGIONS.map((region) => (
+                      <div key={region} className="rounded border border-slate-800 bg-slate-950 p-2">
+                        <div className="text-slate-500">bundle {region}</div>
+                        <div className="truncate font-mono text-slate-300">{regionReport.bundle_ids[region] ?? 'NO_DATA'}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[720px] border-collapse text-[11px]">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-left text-slate-500">
+                          <th className="py-1 pr-2">matched_region_block_id</th>
+                          {ANALYTICAL_REGIONS.map((region) => (<th key={region} className="py-1 pr-2">{region} (recall / coverage)</th>))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {regionReport.matched_region_blocks.map((row) => (
+                          <tr key={row.matched_region_block_id} className="border-b border-slate-900 text-slate-300">
+                            <td className="py-1.5 pr-2 font-mono">{row.matched_region_block_id}</td>
+                            {ANALYTICAL_REGIONS.map((region) => {
+                              const cell = row.regions[region];
+                              return (
+                                <td key={region} className="py-1.5 pr-2 font-mono">
+                                  {cell ? `${cell.recall?.toFixed(3) ?? 'N/A'} / ${cell.coverage?.toFixed(3) ?? 'N/A'} (n=${cell.eligible_windows})` : 'NO_DATA'}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </>
       )}

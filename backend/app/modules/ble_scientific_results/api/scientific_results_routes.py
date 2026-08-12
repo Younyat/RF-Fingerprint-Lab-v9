@@ -494,4 +494,13 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
             return result if result is not None else {"status": "NO_DATA"}
         return call(resolve)
 
+    # RQ4 region-specific fitting closure (2026-08-12): rq4_primary_analysis=
+    # REGION_SPECIFIC_FITTING_AND_EVALUATION. Persists into the SAME
+    # confirmatory_statistical_plan_report.json RQ3 already writes to (under
+    # rq4_region_report) -- read via the existing
+    # /confirmatory-statistical-plan GET route above, same as rq3_pairs.
+    @router.post("/rq4-region-analysis", status_code=202)
+    def start_rq4_region_analysis(body: dict):
+        return call(lambda: job_manager.start_rq4_region_analysis_job(paper_run_id=body["paper_run_id"], full_burst_bundle_id=body.get("full_burst_bundle_id")))
+
     return router

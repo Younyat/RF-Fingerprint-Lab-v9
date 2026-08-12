@@ -11,7 +11,7 @@ import dataclasses
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -53,9 +53,21 @@ class TrainingArtifacts:
 
 
 class TrainingService:
-    def __init__(self, capture_iq_paths: dict[str, Path], base_profile: BasePreprocessingProfile | None = None) -> None:
+    def __init__(
+        self,
+        capture_iq_paths: dict[str, Path],
+        base_profile: BasePreprocessingProfile | None = None,
+        iq_window_provider: Callable[[ExampleRecord], np.ndarray] | None = None,
+    ) -> None:
         self.capture_iq_paths = capture_iq_paths
         self.base_profile = base_profile or BasePreprocessingProfile(profile_id="base-v1")
+        # RQ4 region-specific fitting (2026-08-12): when supplied, replaces
+        # the raw-window source (load_iq_window from capture_iq_paths) with
+        # an already-region-restricted array (e.g. PRE_PDU/ADVA_EXCLUDED).
+        # The SAME apply_base_preprocessing_with_provenance step below still
+        # runs on it -- this is not a second training pipeline, only a
+        # different raw-IQ source feeding the identical downstream code path.
+        self._iq_window_provider = iq_window_provider
         # Reset per TrainingService instance -- each run_* call below starts
         # a fresh accumulation (a new TrainingService is the normal usage
         # pattern; run_* also clears this explicitly at its own start so
@@ -71,8 +83,11 @@ class TrainingService:
         return train_label_for(scientific_task, example)
 
     def _window_for(self, example: ExampleRecord) -> np.ndarray:
-        path = self.capture_iq_paths[example.capture_id]
-        window = load_iq_window(path, example.iq_start_sample, example.iq_end_sample)
+        if self._iq_window_provider is not None:
+            window = self._iq_window_provider(example)
+        else:
+            path = self.capture_iq_paths[example.capture_id]
+            window = load_iq_window(path, example.iq_start_sample, example.iq_end_sample)
         result, provenance = apply_base_preprocessing_with_provenance(window, self.base_profile, float(example.sample_rate_sps))
         if provenance is not None:
             self._provenance_by_example_id[example.example_id] = dataclasses.asdict(provenance)

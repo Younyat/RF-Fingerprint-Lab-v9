@@ -552,3 +552,50 @@ class ScientificResultsJobManager:
             self._write(job_dir, "failed", job_type="SENSITIVITY_ANALYSIS", paper_run_id=paper_run_id, error=str(error))
         finally:
             self._cancel_flags.pop(job_id, None)
+
+    # ------------------------------------------------------------------
+    # RQ4 region-specific fitting closure (2026-08-12): rq4_primary_analysis=
+    # REGION_SPECIFIC_FITTING_AND_EVALUATION. Same real bundle-loading path
+    # as RQ3_FRR_ANALYSIS/COVERAGE_ANALYSIS for FULL_BURST; ADVA_EXCLUDED/
+    # PRE_PDU are real-trained inside run_rq4_region_analysis itself via
+    # self._studio_repository.train_region_specific_variant (never a second
+    # training path here).
+    # ------------------------------------------------------------------
+
+    def start_rq4_region_analysis_job(self, *, paper_run_id: str, full_burst_bundle_id: str | None = None) -> dict[str, Any]:
+        job_id = self._new_job_id()
+        job_dir = self._job_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=False)
+        atomic_json(job_dir / "job.json", {
+            "schema_version": "ble-scientific-results-job-v1", "job_id": job_id, "job_type": "RQ4_REGION_ANALYSIS",
+            "paper_run_id": paper_run_id, "state": "queued", "stage": None, "overall_progress": 0.0, "message": None,
+            "warnings": [], "started_at": utc_now(), "updated_at": utc_now(),
+        })
+        threading.Thread(target=self._run_rq4_region_analysis_job, args=(job_id, paper_run_id, full_burst_bundle_id), daemon=True).start()
+        return self.get_job(job_id)
+
+    def _run_rq4_region_analysis_job(self, job_id: str, paper_run_id: str, full_burst_bundle_id: str | None) -> None:
+        job_dir = self._job_dir(job_id)
+        self._write(job_dir, "running", job_type="RQ4_REGION_ANALYSIS", paper_run_id=paper_run_id, stage="starting", overall_progress=0.0, message="Starting RQ4 region-specific fitting analysis")
+        try:
+            if self._studio_repository is None:
+                raise ValueError("NO_STUDIO_REPOSITORY_CONFIGURED:RQ4 region analysis needs a real StudioRepository to fit ADVA_EXCLUDED/PRE_PDU variants and load bundles/IQ")
+            from ..inference.offline_inference import OfflineInferenceService  # deferred: ble_rffi_studio import from this package
+
+            self._write(job_dir, "running", job_type="RQ4_REGION_ANALYSIS", paper_run_id=paper_run_id, stage="resolving_full_burst_bundle_and_iq", overall_progress=0.1, message="Resolving FULL_BURST bundle and real capture IQ paths")
+            all_captures = self.repository._load_all_captures()
+            capture_iq_paths = self._studio_repository.capture_iq_paths_for([c.capture_id for c in all_captures])
+            offline_inference_service = OfflineInferenceService(self._studio_repository.bundle_builder.root, capture_iq_paths)
+
+            self._write(job_dir, "running", job_type="RQ4_REGION_ANALYSIS", paper_run_id=paper_run_id, stage="fitting_adva_excluded_and_pre_pdu", overall_progress=0.3, message="Fitting ADVA_EXCLUDED/PRE_PDU region-specific variants (same frozen configuration, only the analytical_region changes)")
+            result = self.repository.run_rq4_region_analysis(
+                paper_run_id=paper_run_id, offline_inference_service=offline_inference_service, studio_repository=self._studio_repository,
+                full_burst_bundle_id=full_burst_bundle_id,
+            )
+            report = result.get("rq4_region_report") or {}
+            message = f"{len(report.get('matched_region_blocks', []))} matched region block(s), primary contrast n={report.get('primary_contrast', {}).get('n_matched_blocks')}"
+            self._write(job_dir, "completed", job_type="RQ4_REGION_ANALYSIS", paper_run_id=paper_run_id, stage="done", overall_progress=1.0, message=message, result=result)
+        except Exception as error:  # noqa: BLE001 -- includes missing StudioRepository/no frozen PRIMARY branch/no matched blocks
+            self._write(job_dir, "failed", job_type="RQ4_REGION_ANALYSIS", paper_run_id=paper_run_id, error=str(error))
+        finally:
+            self._cancel_flags.pop(job_id, None)

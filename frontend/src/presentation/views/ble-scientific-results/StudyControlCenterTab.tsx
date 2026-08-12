@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { BleRffiStudioApiService, StudioJob, StudioPaperCampaignRejection, StudioPaperCampaignSchedule, StudioPhysicalUnit } from '../../../app/services/bleRffiStudioApi';
 import {
   BleScientificResultsApiService, CoverageAnalysisJob, HardwareQualificationJob, HierarchicalDesignInput, NoDataResponse,
-  PaperRunRecord, Rq2BenchmarkJob, Rq3FrrAnalysisJob, SensitivityAnalysisJob, StudyControlCenterStatus,
+  PaperRunRecord, Rq2BenchmarkJob, Rq3FrrAnalysisJob, Rq4RegionAnalysisJob, SensitivityAnalysisJob, StudyControlCenterStatus,
   StudySizingDecision, StudySizingEvaluationResult,
 } from '../../../app/services/bleScientificResultsApi';
 import NoDataNotice, { StatusBadge } from './NoDataNotice';
@@ -94,6 +94,7 @@ export default function StudyControlCenterTab() {
       <StudySizingLauncher onCompleted={refresh} />
       <Rq2BenchmarkLauncher onCompleted={refresh} />
       <Rq3FrrAnalysisLauncher onCompleted={refresh} />
+      <Rq4RegionAnalysisLauncher onCompleted={refresh} />
       <CoverageAnalysisLauncher onCompleted={refresh} />
       <SensitivityAnalysisLauncher onCompleted={refresh} />
       <AnalysisContractReadinessPanel onCompleted={refresh} />
@@ -753,6 +754,107 @@ function SensitivityAnalysisLauncher({ onCompleted }: { onCompleted: () => void 
           </div>
           {job.message && <div className="text-xs text-slate-400">{job.message}</div>}
           {job.error && <div className="text-xs text-red-400">error: {job.error}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+async function pollRq4RegionAnalysisJob(jobId: string, onUpdate: (job: Rq4RegionAnalysisJob) => void): Promise<Rq4RegionAnalysisJob> {
+  let current = await sciApi.getRq4RegionAnalysisJob(jobId);
+  onUpdate(current);
+  while (!JOB_TERMINAL.has(current.state)) {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    current = await sciApi.getRq4RegionAnalysisJob(jobId);
+    onUpdate(current);
+  }
+  return current;
+}
+
+/** RQ4 region-specific fitting closure (2026-08-12): rq4_primary_analysis=
+ * REGION_SPECIFIC_FITTING_AND_EVALUATION. FULL_BURST reuses RQ2's own
+ * frozen PRIMARY bundle directly; ADVA_EXCLUDED/PRE_PDU are fitted here as
+ * independent realizations of that SAME frozen configuration (same
+ * DEVELOPMENT/VALIDATION partitions, hyperparameters, seed -- only the
+ * analytical_region changes), then scored per matched_region_block
+ * (physical_unit_id/day_id/packet_condition) with the SAME frozen
+ * decision-window pipeline RQ1-3 already use. Can take a while (two real
+ * re-fits + real decision-window scoring), hence the background job. */
+function Rq4RegionAnalysisLauncher({ onCompleted }: { onCompleted: () => void }) {
+  const [runs, setRuns] = useState<PaperRunRecord[]>([]);
+  const [paperRunId, setPaperRunId] = useState('');
+  const [fullBurstBundleId, setFullBurstBundleId] = useState('');
+  const [job, setJob] = useState<Rq4RegionAnalysisJob | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    sciApi.listRuns().then((list) => {
+      setRuns(list);
+      if (list.length > 0) setPaperRunId(list[0].paper_run_id);
+    }).catch(() => setRuns([]));
+  }, []);
+
+  const start = async () => {
+    if (!paperRunId) return;
+    setBusy(true);
+    setJob(null);
+    try {
+      const started = await sciApi.startRq4RegionAnalysis({ paper_run_id: paperRunId, full_burst_bundle_id: fullBurstBundleId || undefined });
+      const finished = await pollRq4RegionAnalysisJob(started.job_id, setJob);
+      if (finished.state === 'completed') onCompleted();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded border border-slate-800 bg-slate-900/40 p-4">
+      <div className="text-sm font-semibold text-slate-200">RUN RQ4 REGION-SPECIFIC ANALYSIS</div>
+      <div className="mt-1 text-xs text-slate-500">
+        Ajusta ADVA_EXCLUDED y PRE_PDU como realizaciones independientes de la MISMA configuracion congelada de la
+        rama PRIMARY de RQ2 (mismos hiperparametros/semilla/particiones DEVELOPMENT-VALIDATION -- solo cambia
+        analytical_region), reutiliza el bundle PRIMARY de RQ2 directamente para FULL_BURST, y puntua cada
+        matched_region_block (physical_unit_id/day_id/packet_condition) con el mismo pipeline de ventana de decision
+        congelado. Contraste PRIMARIO: FULL_BURST vs PRE_PDU (alimenta NI/Holm). SECUNDARIO/diagnostico: FULL_BURST
+        vs ADVA_EXCLUDED (nunca corregido por Holm). Requiere que RQ2 Benchmark ya haya congelado una rama PRIMARY.
+      </div>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-xs text-slate-500">paper_run_id</label>
+          <select className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={paperRunId} onChange={(e) => setPaperRunId(e.target.value)} disabled={busy}>
+            <option value="">(seleccionar run)</option>
+            {runs.map((run) => (<option key={run.paper_run_id} value={run.paper_run_id}>{run.paper_run_id}</option>))}
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-slate-500">full_burst_bundle_id (opcional -- por defecto la rama PRIMARY congelada de RQ2)</label>
+          <input className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={fullBurstBundleId} onChange={(e) => setFullBurstBundleId(e.target.value)} disabled={busy} />
+        </div>
+      </div>
+
+      <button
+        className="mt-3 rounded bg-cyan-700 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-600 disabled:cursor-not-allowed disabled:bg-slate-700"
+        disabled={busy || !paperRunId} onClick={start}
+      >
+        {busy ? 'Ejecutando...' : 'RUN RQ4 REGION-SPECIFIC ANALYSIS'}
+      </button>
+
+      {job && (
+        <div className="mt-4 space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <StatusBadge status={job.state.toUpperCase()} />
+            <span className="text-slate-500">stage: {job.stage ?? 'N/A'}</span>
+            <span className="text-slate-500">progress: {Math.round(job.overall_progress * 100)}%</span>
+          </div>
+          {job.message && <div className="text-xs text-slate-400">{job.message}</div>}
+          {job.error && <div className="text-xs text-red-400">error: {job.error}</div>}
+          {job.result && (
+            <details className="rounded border border-slate-800 bg-slate-950">
+              <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-400">JSON crudo (fuente exacta persistida)</summary>
+              <pre className="max-h-[50vh] overflow-auto p-3 text-[11px] text-slate-300">{JSON.stringify(job.result, null, 2)}</pre>
+            </details>
+          )}
         </div>
       )}
     </div>

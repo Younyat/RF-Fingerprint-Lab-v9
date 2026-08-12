@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import joblib
 import numpy as np
@@ -37,10 +37,22 @@ class BundleNotFoundError(Exception):
 
 
 class OfflineInferenceService:
-    def __init__(self, bundle_root: Path, capture_iq_paths: dict[str, Path]) -> None:
+    def __init__(
+        self,
+        bundle_root: Path,
+        capture_iq_paths: dict[str, Path],
+        iq_window_provider: Callable[[ExampleRecord], np.ndarray] | None = None,
+    ) -> None:
         self.bundle_root = bundle_root
         self.capture_iq_paths = capture_iq_paths
         self.evaluator = Evaluator()
+        # RQ4 region-specific fitting (2026-08-12): mirrors TrainingService's
+        # own provider hook -- when supplied, run() scores an already
+        # region-restricted array instead of the full captured burst. Never
+        # a second scoring path: the same apply_base_preprocessing_with_
+        # provenance -> representation -> predict_proba sequence below runs
+        # regardless of the raw-window source.
+        self._iq_window_provider = iq_window_provider
 
     def _load_bundle(self, bundle_id: str) -> dict[str, Any]:
         bundle_dir = self.bundle_root / bundle_id
@@ -144,8 +156,11 @@ class OfflineInferenceService:
 
         results: list[dict[str, Any]] = []
         for example in examples:
-            iq_path = self.capture_iq_paths[example.capture_id]
-            window = load_iq_window(iq_path, example.iq_start_sample, example.iq_end_sample)
+            if self._iq_window_provider is not None:
+                window = self._iq_window_provider(example)
+            else:
+                iq_path = self.capture_iq_paths[example.capture_id]
+                window = load_iq_window(iq_path, example.iq_start_sample, example.iq_end_sample)
             # Eq.(6)-(7) provenance correction (2026-08-08, point 3):
             # inference calls the EXACT same apply_base_preprocessing_with_
             # provenance TrainingService uses -- never a second

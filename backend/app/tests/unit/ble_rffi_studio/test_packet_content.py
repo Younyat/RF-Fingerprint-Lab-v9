@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from app.infrastructure.ble.capture.ble_offline_replay import write_jsonl
-from app.modules.ble_rffi_studio.packet_content import build_packet_content_variants_for_examples
+from app.modules.ble_rffi_studio.packet_content import build_packet_content_variants_for_examples, region_restricted_provider_and_eligible_ids
 from app.modules.ble_rffi_studio.packet_content.field_mapping import (
     PRE_PDU_BITS,
     derive_packet_content_variants,
@@ -149,3 +149,49 @@ def test_build_packet_content_variants_for_examples_reads_the_real_ledgers_pdu_t
     assert results[example.example_id]["FULL_BURST"] is not None
     assert results[unresolvable_example.example_id]["ADVA_EXCLUDED"] is None
     assert results[unresolvable_example.example_id]["FULL_BURST"] is not None
+
+
+def test_region_restricted_provider_and_eligible_ids_pre_pdu_is_real_for_every_example(tmp_path):
+    """RQ4 region-specific fitting (2026-08-12): PRE_PDU never depends on a
+    resolvable pdu_type -- both examples (one with a ledger, one without)
+    must be eligible, and the provider must return the SAME real PRE_PDU
+    array derive_packet_content_variants would."""
+    legacy_capture_root = tmp_path / "captures"
+    capture_dir = legacy_capture_root / "CAP-1"
+    capture_dir.mkdir(parents=True)
+    iq_path = capture_dir / "iq.cf32"
+    (np.ones(400, dtype=np.complex64)).tofile(iq_path)
+
+    example = make_example(example_index=0, physical_unit_id="U1", session_id="S1", capture_id="CAP-1", candidate_id="cand-0", packet_id="pkt-0", iq_start_sample=0, iq_end_sample=400)
+    provider, eligible_ids = region_restricted_provider_and_eligible_ids(
+        [example], analytical_region="PRE_PDU", legacy_capture_root=legacy_capture_root, capture_iq_paths={"CAP-1": iq_path},
+    )
+    assert eligible_ids == {example.example_id}
+    window = provider(example)
+    assert len(window) == 160  # 40 bits * 4 samples/bit, same as derive_packet_content_variants
+
+
+def test_region_restricted_provider_and_eligible_ids_adva_excluded_excludes_unmapped_pdu_types(tmp_path):
+    """A capture whose real ledger has no leading-AdvA PDU type yields
+    ADVA_EXCLUDED=None for that example -- region_restricted_provider_and_eligible_ids
+    must leave it out of BOTH the provider and the eligible set, never
+    substitute a fallback window."""
+    legacy_capture_root = tmp_path / "captures"
+    capture_dir = legacy_capture_root / "CAP-1"
+    capture_dir.mkdir(parents=True)
+    iq_path = capture_dir / "iq.cf32"
+    (np.ones(400, dtype=np.complex64)).tofile(iq_path)
+    ledger_dir = capture_dir / "offline_replays" / "run-1"
+    ledger_dir.mkdir(parents=True)
+    write_jsonl(ledger_dir / "packet_association_ledger.jsonl", [
+        {"packet_id": "pkt-adv", "pdu_type": "ADV_IND"}, {"packet_id": "pkt-connect", "pdu_type": "CONNECT_IND"},
+    ])
+
+    example_adv = make_example(example_index=0, physical_unit_id="U1", session_id="S1", capture_id="CAP-1", candidate_id="cand-0", packet_id="pkt-adv", iq_start_sample=0, iq_end_sample=400)
+    example_connect = make_example(example_index=1, physical_unit_id="U1", session_id="S1", capture_id="CAP-1", candidate_id="cand-1", packet_id="pkt-connect", source_iq_sha256="sha-2", iq_start_sample=0, iq_end_sample=400)
+
+    provider, eligible_ids = region_restricted_provider_and_eligible_ids(
+        [example_adv, example_connect], analytical_region="ADVA_EXCLUDED", legacy_capture_root=legacy_capture_root, capture_iq_paths={"CAP-1": iq_path},
+    )
+    assert eligible_ids == {example_adv.example_id}
+    assert len(provider(example_adv)) == 400 - 176  # spliced, matches derive_packet_content_variants' own math
