@@ -599,3 +599,130 @@ class ScientificResultsJobManager:
             self._write(job_dir, "failed", job_type="RQ4_REGION_ANALYSIS", paper_run_id=paper_run_id, error=str(error))
         finally:
             self._cancel_flags.pop(job_id, None)
+
+    # ------------------------------------------------------------------
+    # Fast-closure pass (2026-08-12), Phase 14 (S1): compute_channel_
+    # transport_report was real and tested but had no real caller -- same
+    # real bundle-loading path as RQ3_FRR_ANALYSIS/COVERAGE_ANALYSIS.
+    # ------------------------------------------------------------------
+
+    def start_channel_transport_analysis_job(self, *, paper_run_id: str, bundle_id: str | None = None) -> dict[str, Any]:
+        job_id = self._new_job_id()
+        job_dir = self._job_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=False)
+        atomic_json(job_dir / "job.json", {
+            "schema_version": "ble-scientific-results-job-v1", "job_id": job_id, "job_type": "CHANNEL_TRANSPORT_ANALYSIS",
+            "paper_run_id": paper_run_id, "state": "queued", "stage": None, "overall_progress": 0.0, "message": None,
+            "warnings": [], "started_at": utc_now(), "updated_at": utc_now(),
+        })
+        threading.Thread(target=self._run_channel_transport_analysis_job, args=(job_id, paper_run_id, bundle_id), daemon=True).start()
+        return self.get_job(job_id)
+
+    def _run_channel_transport_analysis_job(self, job_id: str, paper_run_id: str, bundle_id: str | None) -> None:
+        job_dir = self._job_dir(job_id)
+        self._write(job_dir, "running", job_type="CHANNEL_TRANSPORT_ANALYSIS", paper_run_id=paper_run_id, stage="starting", overall_progress=0.0, message="Starting S1 channel transport analysis")
+        try:
+            if self._studio_repository is None:
+                raise ValueError("NO_STUDIO_REPOSITORY_CONFIGURED:S1 channel transport analysis needs a real StudioRepository to load bundles/IQ")
+            from ..inference.offline_inference import OfflineInferenceService  # deferred: ble_rffi_studio import from this package
+
+            self._write(job_dir, "running", job_type="CHANNEL_TRANSPORT_ANALYSIS", paper_run_id=paper_run_id, stage="resolving_bundle_and_iq", overall_progress=0.2, message="Resolving frozen PRIMARY bundle and real capture IQ paths")
+            all_captures = self.repository._load_all_captures()
+            capture_iq_paths = self._studio_repository.capture_iq_paths_for([c.capture_id for c in all_captures])
+            offline_inference_service = OfflineInferenceService(self._studio_repository.bundle_builder.root, capture_iq_paths)
+
+            self._write(job_dir, "running", job_type="CHANNEL_TRANSPORT_ANALYSIS", paper_run_id=paper_run_id, stage="scoring_by_channel", overall_progress=0.5, message="Scoring every real capture's examples with the frozen bundle, grouped by channel")
+            report = self.repository.run_channel_transport_analysis(paper_run_id=paper_run_id, offline_inference_service=offline_inference_service, bundle_id=bundle_id)
+            message = f"{len(report.get('per_channel', []))} channel(s) scored"
+            self._write(job_dir, "completed", job_type="CHANNEL_TRANSPORT_ANALYSIS", paper_run_id=paper_run_id, stage="done", overall_progress=1.0, message=message, result=report)
+        except Exception as error:  # noqa: BLE001 -- includes missing StudioRepository/no frozen PRIMARY branch/no real examples
+            self._write(job_dir, "failed", job_type="CHANNEL_TRANSPORT_ANALYSIS", paper_run_id=paper_run_id, error=str(error))
+        finally:
+            self._cancel_flags.pop(job_id, None)
+
+    # ------------------------------------------------------------------
+    # Fast-closure pass (2026-08-12), Phase 15 (S2): wraps compute_offline_
+    # nearlive_report as a real, callable job -- never invents a near-live
+    # prediction source. With no real predictions supplied yet, this
+    # honestly persists a NO_DATA/NOT_MEASURED report, exactly the existing
+    # behavior.
+    # ------------------------------------------------------------------
+
+    def start_offline_nearlive_analysis_job(self, *, paper_run_id: str) -> dict[str, Any]:
+        job_id = self._new_job_id()
+        job_dir = self._job_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=False)
+        atomic_json(job_dir / "job.json", {
+            "schema_version": "ble-scientific-results-job-v1", "job_id": job_id, "job_type": "OFFLINE_NEARLIVE_ANALYSIS",
+            "paper_run_id": paper_run_id, "state": "queued", "stage": None, "overall_progress": 0.0, "message": None,
+            "warnings": [], "started_at": utc_now(), "updated_at": utc_now(),
+        })
+        threading.Thread(target=self._run_offline_nearlive_analysis_job, args=(job_id, paper_run_id), daemon=True).start()
+        return self.get_job(job_id)
+
+    def _run_offline_nearlive_analysis_job(self, job_id: str, paper_run_id: str) -> None:
+        job_dir = self._job_dir(job_id)
+        self._write(job_dir, "running", job_type="OFFLINE_NEARLIVE_ANALYSIS", paper_run_id=paper_run_id, stage="starting", overall_progress=0.0, message="Starting S2 offline/near-live analysis")
+        try:
+            report = self.repository.run_offline_nearlive_analysis(paper_run_id=paper_run_id)
+            message = f"pairing_status={report.get('pairing_status')}"
+            self._write(job_dir, "completed", job_type="OFFLINE_NEARLIVE_ANALYSIS", paper_run_id=paper_run_id, stage="done", overall_progress=1.0, message=message, result=report)
+        except Exception as error:  # noqa: BLE001
+            self._write(job_dir, "failed", job_type="OFFLINE_NEARLIVE_ANALYSIS", paper_run_id=paper_run_id, error=str(error))
+        finally:
+            self._cancel_flags.pop(job_id, None)
+
+    # ------------------------------------------------------------------
+    # Fast-closure pass (2026-08-12), Phase 13: run_confirmatory_future_
+    # analysis already existed as the single real, gate-protected
+    # CONFIRMATORY_FUTURE entrypoint (protocol-freeze close-out, 2026-08-10)
+    # but had no route to trigger it -- only a read-only GET. This job is
+    # exactly that missing trigger. Nothing here recalibrates, re-selects a
+    # model, or touches thresholds/NI/hypotheses -- it only calls the
+    # untouched engine with the caller's already-real inputs.
+    # ------------------------------------------------------------------
+
+    def start_confirmatory_future_analysis_job(
+        self, *, paper_run_id: str, protocol_id: str, dataset_id: str, dataset_version: str, bundle_id: str,
+        declared_contract_sha256: str | None = None, stats_kwargs: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        job_id = self._new_job_id()
+        job_dir = self._job_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=False)
+        atomic_json(job_dir / "job.json", {
+            "schema_version": "ble-scientific-results-job-v1", "job_id": job_id, "job_type": "CONFIRMATORY_FUTURE_ANALYSIS",
+            "paper_run_id": paper_run_id, "state": "queued", "stage": None, "overall_progress": 0.0, "message": None,
+            "warnings": [], "started_at": utc_now(), "updated_at": utc_now(),
+        })
+        threading.Thread(
+            target=self._run_confirmatory_future_analysis_job,
+            args=(job_id, paper_run_id, protocol_id, dataset_id, dataset_version, bundle_id, declared_contract_sha256, stats_kwargs or {}),
+            daemon=True,
+        ).start()
+        return self.get_job(job_id)
+
+    def _run_confirmatory_future_analysis_job(
+        self, job_id: str, paper_run_id: str, protocol_id: str, dataset_id: str, dataset_version: str,
+        bundle_id: str, declared_contract_sha256: str | None, stats_kwargs: dict[str, Any],
+    ) -> None:
+        job_dir = self._job_dir(job_id)
+        self._write(job_dir, "running", job_type="CONFIRMATORY_FUTURE_ANALYSIS", paper_run_id=paper_run_id, stage="starting", overall_progress=0.0, message="Starting confirmatory FUTURE analysis")
+        try:
+            if self._studio_repository is None:
+                raise ValueError("NO_STUDIO_REPOSITORY_CONFIGURED:confirmatory FUTURE analysis needs a real StudioRepository to resolve bundle confirmatory-eligibility")
+            self._write(job_dir, "running", job_type="CONFIRMATORY_FUTURE_ANALYSIS", paper_run_id=paper_run_id, stage="checking_gates", overall_progress=0.3, message="Checking protocol freeze / FUTURE_TEST holdout / bundle confirmatory-eligibility gates")
+            bundle = self._studio_repository.get_bundle(bundle_id)
+            if bundle is None:
+                raise ValueError(f"BUNDLE_NOT_FOUND:{bundle_id}")
+
+            self._write(job_dir, "running", job_type="CONFIRMATORY_FUTURE_ANALYSIS", paper_run_id=paper_run_id, stage="running_confirmatory_engine", overall_progress=0.6, message="Running the untouched 11-method confirmatory statistical engine over FUTURE-scoped data")
+            report = self.repository.run_confirmatory_future_analysis(
+                paper_run_id=paper_run_id, protocol_id=protocol_id, dataset_id=dataset_id, dataset_version=dataset_version,
+                bundle_confirmatory_eligible=bundle.confirmatory_eligible, declared_contract_sha256=declared_contract_sha256,
+                **stats_kwargs,
+            )
+            self._write(job_dir, "completed", job_type="CONFIRMATORY_FUTURE_ANALYSIS", paper_run_id=paper_run_id, stage="done", overall_progress=1.0, message="Confirmatory FUTURE analysis report persisted", result=report)
+        except Exception as error:  # noqa: BLE001 -- includes any of the 5 non-bypassable gates failing
+            self._write(job_dir, "failed", job_type="CONFIRMATORY_FUTURE_ANALYSIS", paper_run_id=paper_run_id, error=str(error))
+        finally:
+            self._cancel_flags.pop(job_id, None)

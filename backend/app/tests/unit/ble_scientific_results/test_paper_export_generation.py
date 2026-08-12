@@ -86,7 +86,10 @@ def test_rq1_results_and_figures_generated_when_rq1_report_exists(tmp_path):
     assert _entry(manifest, "figures/rq1_acquisition_dependence.pdf")["status"] == "GENERATED"
     assert (repo.root / "paper_exports" / "figures" / "rq1_acquisition_dependence.pdf").read_bytes()[:4] == b"%PDF"
     assert _entry(manifest, "confusion_matrix_capture.csv")["status"] == "GENERATED"
+    assert _entry(manifest, "figures/rq1_confusion_matrix_capture.pdf")["status"] == "GENERATED"
+    assert (repo.root / "paper_exports" / "figures" / "rq1_confusion_matrix_capture.pdf").read_bytes()[:4] == b"%PDF"
     assert _entry(manifest, "confusion_matrix_future.csv")["status"] == "SKIPPED_NO_DATA"
+    assert _entry(manifest, "figures/rq1_confusion_matrix_future.pdf")["status"] == "SKIPPED_NO_DATA"
     assert _entry(manifest, "figures/rq1_per_unit_recall.pdf")["status"] == "GENERATED"
     assert (repo.root / "paper_exports" / "figures" / "rq1_per_unit_recall.pdf").read_bytes()[:4] == b"%PDF"
     assert _entry(manifest, "paper_tables.tex")["status"] == "GENERATED"
@@ -140,6 +143,49 @@ def test_rq3_and_rq4_generated_from_confirmatory_future_analysis_report(tmp_path
     # No rq2_representation_comparison_report.json was persisted in this
     # fixture -- honest gap (absence of data, not absence of mechanism).
     assert _entry(manifest, "rq2_results.csv")["status"] == "SKIPPED_NO_DATA"
+
+
+def test_rq3_and_rq4_figures_generated_from_the_validation_dry_run_series(tmp_path):
+    """Fast-closure pass (2026-08-12): rq3_pairs/rq3_reset_mean_d_ci/
+    rq4_region_report only ever live in confirmatory_statistical_plan_
+    report.json (the VALIDATION dry-run, from run_rq3_frr_analysis/
+    run_rq4_region_analysis) -- confirmatory_future_analysis_report.json
+    never carries them. The PRE-POST/D/region-comparison/non-inferiority
+    figures must read the VALIDATION series for their per-unit/per-region
+    data while the pass/fail hypothesis-test status still comes exclusively
+    from the FUTURE-gated report."""
+    repo = _repo(tmp_path)
+    _write_run(repo)
+    run_dir = repo.root / "RUN-1"
+    _write_json(run_dir / "06_statistics" / "confirmatory_future_analysis_report.json", {
+        "rq3_within_device_permutation_test": {"status": "EXECUTED", "detail": None, "value": {"observed_statistic": 0.2, "p_value": 0.01}},
+        "rq4_paired_comparison": {"status": "EXECUTED", "detail": None, "value": {"delta": 0.05}},
+        "non_inferiority": {"status": "EXECUTED", "detail": None, "value": {"mean_difference": 0.02, "ci_low": -0.01, "margin": 0.05, "non_inferior": True}},
+        "holm_correction": {"status": "EXECUTED", "detail": None, "value": {"adjusted_p_values": [0.01, 0.02]}},
+    })
+    _write_json(run_dir / "06_statistics" / "confirmatory_statistical_plan_report.json", {
+        "rq3_pairs": [
+            {"physical_unit_id": "UNIT-A", "intervention_arm": "RESET", "valid": True, "pre_frr": 0.2, "post_frr": 0.3},
+            {"physical_unit_id": "UNIT-B", "intervention_arm": "CONTROL", "valid": False, "pre_frr": None, "post_frr": None},
+        ],
+        "rq3_reset_mean_d_ci": {"point_estimate": 0.1, "ci_low": 0.05, "ci_high": 0.15, "n_resamples": 200, "confidence_level": 0.95},
+        "rq3_control_mean_d_ci": None,
+        "rq4_region_report": {
+            "matched_region_blocks": [
+                {"regions": {"FULL_BURST": {"recall": 0.9}, "ADVA_EXCLUDED": {"recall": 0.7}, "PRE_PDU": {"recall": 0.6}}},
+            ],
+        },
+    })
+    manifest = generate_paper_exports(repo)
+
+    assert _entry(manifest, "figures/rq3_pre_post.pdf")["status"] == "GENERATED"
+    assert (repo.root / "paper_exports" / "figures" / "rq3_pre_post.pdf").read_bytes()[:4] == b"%PDF"
+    assert _entry(manifest, "figures/rq3_delta_cycle.pdf")["status"] == "GENERATED"
+    assert (repo.root / "paper_exports" / "figures" / "rq3_delta_cycle.pdf").read_bytes()[:4] == b"%PDF"
+    assert _entry(manifest, "figures/rq4_region_dependence.pdf")["status"] == "GENERATED"
+    assert (repo.root / "paper_exports" / "figures" / "rq4_region_dependence.pdf").read_bytes()[:4] == b"%PDF"
+    assert _entry(manifest, "figures/rq4_noninferiority.pdf")["status"] == "GENERATED"
+    assert (repo.root / "paper_exports" / "figures" / "rq4_noninferiority.pdf").read_bytes()[:4] == b"%PDF"
 
 
 def test_rq2_results_and_figures_generated_when_rq2_report_exists(tmp_path):

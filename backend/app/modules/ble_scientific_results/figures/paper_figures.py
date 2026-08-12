@@ -123,6 +123,25 @@ def ecdf_figure(*, values: Sequence[float], xlabel: str, title: str, out_path: P
     return _save_pdf(fig, out_path)
 
 
+def non_inferiority_figure(*, mean_difference: float, ci_low: float, margin: float, non_inferior: bool, title: str, out_path: Path) -> str:
+    """Fast-closure pass (2026-08-12): the paper's required RQ4
+    non-inferiority figure -- a one-sided forest plot (point estimate + CI
+    lower bound, margin decision boundary at -margin), mirroring
+    NonInferiorityChart.tsx's own frontend rendering exactly. Pure renderer
+    over already-computed non_inferiority.value fields -- never recomputes
+    the test itself."""
+    fig, ax = plt.subplots(figsize=(FIGSIZE[0], 2.5))
+    color = "#2f855a" if non_inferior else "#c53030"
+    ax.errorbar([mean_difference], [0], xerr=[[mean_difference - ci_low], [0]], fmt="o", color=color, capsize=6, markersize=8)
+    ax.axvline(-margin, color="#c53030", linestyle="--", linewidth=1, label=f"non-inferiority margin (-{margin:g})")
+    ax.axvline(0, color="#4a5568", linestyle=":", linewidth=1)
+    ax.set_yticks([])
+    ax.set_xlabel("mean difference (new - reference)")
+    ax.set_title(title)
+    ax.legend(loc="upper right", fontsize=8)
+    return _save_pdf(fig, out_path)
+
+
 def histogram_figure(*, values: Sequence[float], bins: int, xlabel: str, title: str, out_path: Path) -> str:
     """RQ3 permutation-test null distribution + observed statistic overlay,
     when the canonical report supplies the permutation draws; also reusable

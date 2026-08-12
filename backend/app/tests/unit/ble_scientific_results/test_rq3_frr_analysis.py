@@ -22,6 +22,7 @@ from app.modules.ble_scientific_results.rq3_frr_analysis import (
     Rq3FrrAnalysisError,
     compute_rq3_pair_frr,
     device_day_values_for_permutation_test,
+    mean_d_with_ci,
     per_unit_mean_d,
 )
 from ._helpers import make_example, write_examples
@@ -119,6 +120,26 @@ def test_per_unit_mean_d_averages_only_valid_pairs_with_a_real_d():
     result = per_unit_mean_d(pairs)
     assert result["reset"]["UNIT-A"] == pytest.approx(0.3)
     assert result["control"]["UNIT-A"] == pytest.approx(0.1)
+
+
+def test_mean_d_with_ci_computes_a_real_bootstrap_ci_clustered_by_unit():
+    pairs = [
+        {"valid": True, "physical_unit_id": "UNIT-A", "intervention_arm": "RESET", "d": 0.2},
+        {"valid": True, "physical_unit_id": "UNIT-A", "intervention_arm": "RESET", "d": 0.3},
+        {"valid": True, "physical_unit_id": "UNIT-B", "intervention_arm": "RESET", "d": 0.1},
+        {"valid": True, "physical_unit_id": "UNIT-B", "intervention_arm": "CONTROL", "d": 0.05},
+        {"valid": False, "physical_unit_id": "UNIT-C", "intervention_arm": "RESET", "d": None},
+    ]
+    result = mean_d_with_ci(pairs, intervention_arm="RESET", n_resamples=200)
+    assert result is not None
+    assert result["point_estimate"] == pytest.approx((0.2 + 0.3 + 0.1) / 3)
+    assert result["ci_low"] <= result["point_estimate"] <= result["ci_high"]
+    assert result["n_resamples"] == 200
+
+
+def test_mean_d_with_ci_returns_none_for_an_arm_with_zero_valid_pairs():
+    pairs = [{"valid": True, "physical_unit_id": "UNIT-A", "intervention_arm": "CONTROL", "d": 0.1}]
+    assert mean_d_with_ci(pairs, intervention_arm="RESET") is None
 
 
 def test_device_day_values_excludes_units_with_only_one_arm():

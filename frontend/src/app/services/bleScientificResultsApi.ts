@@ -78,6 +78,18 @@ export interface HoldoutAccessLogEntry {
   reason: string;
 }
 
+export interface HoldoutGroupAssignment {
+  assignment_id: string;
+  dataset_id: string;
+  dataset_version: string;
+  group: string;
+  physical_unit_ids: string[];
+  day_ids: string[];
+  session_ids: string[];
+  frozen_at: string;
+  group_manifest_sha256: string;
+}
+
 export type HoldoutChainStatus = 'VALID' | 'BROKEN' | 'EMPTY';
 export interface HoldoutChainVerificationResult {
   status: HoldoutChainStatus;
@@ -439,14 +451,16 @@ export interface StudyStatusResponse {
 }
 
 export interface PaperReadinessRow {
-  paper_element: string;
-  status: 'DATA_PENDING' | 'PRELIMINARY' | 'COMPLETE';
-  required_artifact: string;
+  manuscript_element: string;
+  scientific_mechanism: string;
+  evidence_maturity: 'QUALIFICATION' | 'DEVELOPMENT' | 'VALIDATION' | 'CONFIRMATORY' | 'ENGINEERING' | null;
+  canonical_artifact: string;
   available: boolean;
   confirmatory: boolean;
+  statistics_ready: boolean;
   table_ready: boolean;
   figure_ready: boolean;
-  text_ready: boolean;
+  paper_evidence_status: 'DATA_PENDING' | 'PRELIMINARY' | 'COMPLETE';
 }
 
 export interface ProtocolFreezeStatusResponse {
@@ -917,6 +931,14 @@ export interface EvidenceQualitySummary {
   physical_unit_by_capture_id: Record<string, string>;
 }
 
+export interface BootstrapCiResult {
+  point_estimate: number;
+  ci_low: number;
+  ci_high: number;
+  n_resamples: number;
+  confidence_level: number;
+}
+
 export interface Rq3Pair {
   physical_unit_id: string;
   day_id: string;
@@ -970,6 +992,48 @@ export interface StartRq4RegionAnalysisRequest {
 export interface Rq4RegionAnalysisJob {
   job_id: string;
   job_type: 'RQ4_REGION_ANALYSIS';
+  paper_run_id: string;
+  state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  stage: string | null;
+  overall_progress: number;
+  message: string | null;
+  error?: string;
+  result?: Record<string, unknown>;
+  started_at: string;
+  updated_at: string;
+}
+
+export interface ConfirmatoryFutureAnalysisJob {
+  job_id: string;
+  job_type: 'CONFIRMATORY_FUTURE_ANALYSIS';
+  paper_run_id: string;
+  state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  stage: string | null;
+  overall_progress: number;
+  message: string | null;
+  error?: string;
+  result?: Record<string, unknown>;
+  started_at: string;
+  updated_at: string;
+}
+
+export interface ChannelTransportAnalysisJob {
+  job_id: string;
+  job_type: 'CHANNEL_TRANSPORT_ANALYSIS';
+  paper_run_id: string;
+  state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  stage: string | null;
+  overall_progress: number;
+  message: string | null;
+  error?: string;
+  result?: Record<string, unknown>;
+  started_at: string;
+  updated_at: string;
+}
+
+export interface OfflineNearliveAnalysisJob {
+  job_id: string;
+  job_type: 'OFFLINE_NEARLIVE_ANALYSIS';
   paper_run_id: string;
   state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   stage: string | null;
@@ -1047,6 +1111,18 @@ export class BleScientificResultsApiService {
   async holdoutAccessLog() { return (await axios.get<HoldoutAccessLogEntry[]>(`${this.root}/holdout-access-log`)).data; }
   async verifyHoldoutAccessChain() { return (await axios.get<HoldoutChainVerificationResult>(`${this.root}/holdout-access-log/verify`)).data; }
 
+  // Holdout groups (2026-08-12, fast-closure pass, Phase 12): the ONLY
+  // FUTURE-specific step -- declares which real physical_unit_ids/day_ids/
+  // session_ids belong to group=FUTURE_TEST. Metadata-only, never acquires
+  // data (real acquisition reuses the same generic campaign mechanism
+  // every other phase already uses).
+  async freezeHoldoutGroups(body: { dataset_id: string; dataset_version: string; group: string; physical_unit_ids?: string[]; day_ids?: string[]; session_ids?: string[] }) {
+    return (await axios.post<HoldoutGroupAssignment>(`${this.root}/holdout-groups`, body)).data;
+  }
+  async listHoldoutGroups(datasetId: string, datasetVersion: string) {
+    return (await axios.get<HoldoutGroupAssignment[]>(`${this.root}/holdout-groups/${encodeURIComponent(datasetId)}/${encodeURIComponent(datasetVersion)}`)).data;
+  }
+
   async createRun(body: CreateRunRequest) { return (await axios.post<PaperRunRecord>(`${this.root}/runs`, body)).data; }
   async listRuns() { return (await axios.get<PaperRunRecord[]>(`${this.root}/runs`)).data; }
   async getRun(paperRunId: string) { return (await axios.get<PaperRunRecord>(`${this.root}/runs/${encodeURIComponent(paperRunId)}`)).data; }
@@ -1117,6 +1193,15 @@ export class BleScientificResultsApiService {
   }
   async confirmatoryFutureAnalysis(paperRunId: string) {
     return (await axios.get<Record<string, unknown> | NoDataResponse>(`${this.root}/runs/${encodeURIComponent(paperRunId)}/confirmatory-future-analysis`)).data;
+  }
+  // Phase 13 launcher (2026-08-12, fast-closure pass): the single real
+  // trigger for the untouched CONFIRMATORY_FUTURE engine -- no
+  // recalibration, no model re-selection, no threshold/NI/hypothesis edits.
+  async startConfirmatoryFutureAnalysis(body: { paper_run_id: string; protocol_id: string; dataset_id: string; dataset_version: string; bundle_id: string; declared_contract_sha256?: string }) {
+    return (await axios.post<ConfirmatoryFutureAnalysisJob>(`${this.root}/confirmatory-future-analysis`, body)).data;
+  }
+  async getConfirmatoryFutureAnalysisJob(jobId: string) {
+    return (await axios.get<ConfirmatoryFutureAnalysisJob>(`${this.root}/jobs/${encodeURIComponent(jobId)}`)).data;
   }
   async rq1AcquisitionDependence(paperRunId: string) {
     return (await axios.get<Record<string, unknown> | NoDataResponse>(`${this.root}/runs/${encodeURIComponent(paperRunId)}/rq1-acquisition-dependence`)).data;
@@ -1221,6 +1306,20 @@ export class BleScientificResultsApiService {
   }
   async getRq4RegionAnalysisJob(jobId: string) {
     return (await axios.get<Rq4RegionAnalysisJob>(`${this.root}/jobs/${encodeURIComponent(jobId)}`)).data;
+  }
+
+  // Fast-closure pass (2026-08-12), Phase 14 (S1) / Phase 15 (S2) launchers.
+  async startChannelTransportAnalysis(paperRunId: string, bundleId?: string) {
+    return (await axios.post<ChannelTransportAnalysisJob>(`${this.root}/channel-transport-analysis`, { paper_run_id: paperRunId, bundle_id: bundleId || undefined })).data;
+  }
+  async getChannelTransportAnalysisJob(jobId: string) {
+    return (await axios.get<ChannelTransportAnalysisJob>(`${this.root}/jobs/${encodeURIComponent(jobId)}`)).data;
+  }
+  async startOfflineNearliveAnalysis(paperRunId: string) {
+    return (await axios.post<OfflineNearliveAnalysisJob>(`${this.root}/offline-nearlive-analysis`, { paper_run_id: paperRunId })).data;
+  }
+  async getOfflineNearliveAnalysisJob(jobId: string) {
+    return (await axios.get<OfflineNearliveAnalysisJob>(`${this.root}/jobs/${encodeURIComponent(jobId)}`)).data;
   }
 
   // Scientific Dashboard closure, Level A/B (2026-08-11).

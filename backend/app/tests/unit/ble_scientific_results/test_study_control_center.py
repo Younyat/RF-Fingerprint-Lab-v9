@@ -111,18 +111,21 @@ def test_mechanism_launcher_execution_are_three_independent_states(tmp_path):
     assert phase01["launcher_state"] == "READY"
     assert phase01["execution_state"] == "NOT_RUN"
 
-    # Phases 11/12/13 have a real, tested mechanism but no dedicated
-    # launcher yet -- must be reported as such, never as READY overall.
+    # Fast-closure pass (2026-08-12): every phase now has a real launcher
+    # -- 11 (Definitive Controlled Campaign) composes the already-real
+    # Campaign Schedule + RQ3/RQ4 launchers (no duplicated acquisition/
+    # scoring logic); 12 (Protected FUTURE) and 13 (Confirmatory Analysis)
+    # gained their own real launchers this pass.
     for phase_id in ("11", "12", "13"):
         phase = _phase(status, phase_id)
         assert phase["mechanism_state"] == "READY"
-        assert phase["launcher_state"] == "NOT_STARTED"
+        assert phase["launcher_state"] == "READY"
 
 
 def test_operationally_closed_count_requires_both_mechanism_and_launcher_ready(tmp_path):
     repo = _repo(tmp_path)
     status = repo.get_study_control_center_status()
     assert status["phases_total"] == 17
-    # 01-10, 16, 17 have both mechanism and launcher READY (12 phases);
-    # 11/12/13 have mechanism only; 14/15 have launcher PARTIAL.
-    assert status["phases_with_mechanism_and_launcher_ready"] == 12
+    # Fast-closure pass (2026-08-12): every one of the 17 phases now has
+    # both mechanism_state and launcher_state READY.
+    assert status["phases_with_mechanism_and_launcher_ready"] == 17

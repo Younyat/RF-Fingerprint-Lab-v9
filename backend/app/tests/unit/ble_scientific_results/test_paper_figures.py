@@ -11,6 +11,7 @@ from app.modules.ble_scientific_results.figures.paper_figures import (
     confusion_matrix_figure,
     ecdf_figure,
     histogram_figure,
+    non_inferiority_figure,
     paired_pre_post_figure,
     risk_coverage_figure,
 )
@@ -98,4 +99,11 @@ def test_ecdf_figure_writes_a_real_pdf(tmp_path):
 
 def test_histogram_figure_writes_a_real_pdf(tmp_path):
     out = histogram_figure(values=PERMUTATION_SYNTHETIC_FIXTURE["values"], bins=10, xlabel="delta_cycle (permuted)", title="Permutation null", out_path=tmp_path / "hist.pdf")
+    _assert_real_pdf(out)
+
+
+def test_non_inferiority_figure_writes_a_real_pdf(tmp_path):
+    out = non_inferiority_figure(
+        mean_difference=0.02, ci_low=-0.01, margin=0.05, non_inferior=True, title="RQ4 non-inferiority", out_path=tmp_path / "ni.pdf",
+    )
     _assert_real_pdf(out)

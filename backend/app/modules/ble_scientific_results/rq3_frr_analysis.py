@@ -29,12 +29,14 @@ honest one.
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 from typing import Any
 
 from app.modules.ble_rffi_studio.campaign.pre_post_pairing import PrePostPair
 from app.modules.ble_rffi_studio.contracts import ExampleRecord
 
+from .statistics.inference import hierarchical_cluster_bootstrap
 from .statistics.metrics import far_frr
 
 _TARGET_VS_BACKGROUND = "TARGET_VS_BACKGROUND"
@@ -123,6 +125,25 @@ def per_unit_mean_d(pairs: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
         "reset": {unit: sum(values) / len(values) for unit, values in reset_by_unit.items()},
         "control": {unit: sum(values) / len(values) for unit, values in control_by_unit.items()},
     }
+
+
+def mean_d_with_ci(pairs: list[dict[str, Any]], *, intervention_arm: str, n_resamples: int = 5000, confidence_level: float = 0.95) -> dict[str, Any] | None:
+    """Fast-closure pass (2026-08-12): a real CI on RQ3's own D statistic,
+    required for the paper's "D / delta_cycle + CI" figure -- reuses
+    hierarchical_cluster_bootstrap() verbatim (the SAME primitive
+    bootstrap_accuracy_ci already uses elsewhere), clustered by
+    physical_unit_id (never resamples individual pair D values across unit
+    boundaries -- each unit is its own cluster, matching per_unit_mean_d's
+    own grouping). Never a new statistical method. None (not a fabricated
+    interval) when zero valid pairs exist for this arm."""
+    by_unit: dict[str, list[float]] = {}
+    for pair in pairs:
+        if pair["valid"] and pair["d"] is not None and pair["intervention_arm"] == intervention_arm:
+            by_unit.setdefault(pair["physical_unit_id"], []).append(pair["d"])
+    if not by_unit:
+        return None
+    result = hierarchical_cluster_bootstrap(list(by_unit.values()), n_resamples=n_resamples, confidence_level=confidence_level)
+    return dataclasses.asdict(result)
 
 
 def device_day_values_for_permutation_test(pairs: list[dict[str, Any]]) -> tuple[dict[str, list[float]], dict[str, list[bool]]]:

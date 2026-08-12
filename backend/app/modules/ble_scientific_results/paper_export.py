@@ -262,13 +262,17 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
         if rq1_report.get("confusion_matrix_capture"):
             _write_csv(exports_dir / "confusion_matrix_capture.csv", confusion_matrix_rows(rq1_report["confusion_matrix_capture"]))
             emit("confusion_matrix_capture.csv", ExportOutcome("GENERATED", "real, from rq1_acquisition_dependence_report.json"))
+            _emit_confusion_matrix_figure(emit, rq1_report["confusion_matrix_capture"], "figures/rq1_confusion_matrix_capture.pdf", figures_dir / "rq1_confusion_matrix_capture.pdf", "RQ1 -- confusion matrix (capture-disjoint)")
         else:
             emit("confusion_matrix_capture.csv", ExportOutcome("SKIPPED_NO_DATA", "rq1_acquisition_dependence_report.json has no confusion_matrix_capture", "06_statistics/rq1_acquisition_dependence_report.json"))
+            emit("figures/rq1_confusion_matrix_capture.pdf", ExportOutcome("SKIPPED_NO_DATA", "rq1_acquisition_dependence_report.json has no confusion_matrix_capture", "06_statistics/rq1_acquisition_dependence_report.json"))
         if rq1_report.get("confusion_matrix_future"):
             _write_csv(exports_dir / "confusion_matrix_future.csv", confusion_matrix_rows(rq1_report["confusion_matrix_future"]))
             emit("confusion_matrix_future.csv", ExportOutcome("GENERATED", "real, from rq1_acquisition_dependence_report.json"))
+            _emit_confusion_matrix_figure(emit, rq1_report["confusion_matrix_future"], "figures/rq1_confusion_matrix_future.pdf", figures_dir / "rq1_confusion_matrix_future.pdf", "RQ1 -- confusion matrix (protected FUTURE)")
         else:
             emit("confusion_matrix_future.csv", ExportOutcome("SKIPPED_NO_DATA", "rq1_acquisition_dependence_report.json has no confusion_matrix_future", "06_statistics/rq1_acquisition_dependence_report.json"))
+            emit("figures/rq1_confusion_matrix_future.pdf", ExportOutcome("SKIPPED_NO_DATA", "rq1_acquisition_dependence_report.json has no confusion_matrix_future", "06_statistics/rq1_acquisition_dependence_report.json"))
         scored_units = {unit: v.get("recall") for unit, v in (rq1_report.get("per_unit_recall") or {}).items() if v.get("recall") is not None}
         if scored_units:
             paper_figures.bar_with_ci_figure(
@@ -279,7 +283,10 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
         else:
             emit("figures/rq1_per_unit_recall.pdf", ExportOutcome("SKIPPED_NO_DATA", "rq1_acquisition_dependence_report.json has no per-unit recall values", "06_statistics/rq1_acquisition_dependence_report.json"))
     else:
-        for name in ("rq1_results.csv", "figures/rq1_acquisition_dependence.pdf", "confusion_matrix_capture.csv", "confusion_matrix_future.csv", "figures/rq1_per_unit_recall.pdf"):
+        for name in (
+            "rq1_results.csv", "figures/rq1_acquisition_dependence.pdf", "confusion_matrix_capture.csv", "confusion_matrix_future.csv",
+            "figures/rq1_per_unit_recall.pdf", "figures/rq1_confusion_matrix_capture.pdf", "figures/rq1_confusion_matrix_future.pdf",
+        ):
             emit(name, ExportOutcome("SKIPPED_NO_DATA", "no rq1_acquisition_dependence_report.json for any real paper run", "06_statistics/rq1_acquisition_dependence_report.json"))
 
     rq2_report = repository.get_rq2_representation_comparison_report(run_dir.name) if run_dir else None
@@ -312,9 +319,9 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
             emit(name, ExportOutcome("SKIPPED_NO_DATA", "no rq2_representation_comparison_report.json for any real paper run", rq2_source))
 
     confirmatory_future = repository.get_confirmatory_future_analysis_report(run_dir.name) if run_dir else None
-    _emit_confirmatory_derived_exports(emit, confirmatory_future, run_dir, exports_dir, figures_dir)
-
     sensitivity_source = repository.get_confirmatory_statistical_plan_report(run_dir.name) if run_dir else None
+    _emit_confirmatory_derived_exports(emit, confirmatory_future, run_dir, exports_dir, figures_dir, validation_dry_run=sensitivity_source)
+
     if sensitivity_source and sensitivity_source.get("leave_one_device_out", {}).get("status") == "EXECUTED":
         _write_csv(exports_dir / "sensitivity_results.csv", statistical_method_rows(sensitivity_source, ["leave_one_device_out", "fixed_seed_variability"]))
         emit("sensitivity_results.csv", ExportOutcome("GENERATED", f"real, from {run_dir.name}/06_statistics/confirmatory_statistical_plan_report.json"))
@@ -394,14 +401,58 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
     return manifest
 
 
-def _emit_confirmatory_derived_exports(emit: Callable[[str, ExportOutcome], None], confirmatory_future: dict[str, Any] | None, run_dir: Path | None, exports_dir: Path, figures_dir: Path) -> None:
+def _emit_confusion_matrix_figure(emit: Callable[[str, ExportOutcome], None], confusion_matrix: dict[str, dict[str, int]], filename: str, out_path: Path, title: str) -> None:
+    labels = list(confusion_matrix.keys())
+    matrix = [[confusion_matrix[t].get(p, 0) for p in labels] for t in labels]
+    paper_figures.confusion_matrix_figure(labels=labels, matrix=matrix, title=title, out_path=out_path)
+    emit(filename, ExportOutcome("GENERATED", "real"))
+
+
+def _emit_confirmatory_derived_exports(
+    emit: Callable[[str, ExportOutcome], None], confirmatory_future: dict[str, Any] | None, run_dir: Path | None,
+    exports_dir: Path, figures_dir: Path, validation_dry_run: dict[str, Any] | None = None,
+) -> None:
+    """Fast-closure pass (2026-08-12): RQ3/RQ4's per-unit/per-region series
+    (rq3_pairs, rq3_reset_mean_d_ci/rq3_control_mean_d_ci, rq4_region_report)
+    are real but only ever attached to confirmatory_statistical_plan_report.json
+    (the VALIDATION dry-run, from run_rq3_frr_analysis/run_rq4_region_analysis)
+    -- run_confirmatory_future_analysis's own report never carries them (it
+    only re-runs the aggregate 11-method engine over FUTURE-scoped data, see
+    its own docstring). `validation_dry_run` is that VALIDATION report, read
+    ONLY for these already-real series -- never for the confirmatory
+    (CONFIRMATORY_FUTURE-vs-VALIDATION_DRY_RUN) hypothesis-test status
+    itself, which still comes exclusively from confirmatory_future."""
     source = "06_statistics/confirmatory_future_analysis_report.json"
+    validation_source = "06_statistics/confirmatory_statistical_plan_report.json"
     rq3 = (confirmatory_future or {}).get("rq3_within_device_permutation_test")
     if rq3 and rq3.get("status") == "EXECUTED":
         _write_csv(exports_dir / "rq3_results.csv", statistical_method_rows(confirmatory_future, ["rq3_within_device_permutation_test", "holm_correction"]))
         emit("rq3_results.csv", ExportOutcome("GENERATED", f"real, from {run_dir.name}/{source}" if run_dir else "real"))
-        emit("figures/rq3_pre_post.pdf", ExportOutcome("SKIPPED_NO_DATA", "per-unit paired PRE/POST values are not part of the aggregate permutation-test result -- need per-unit series", source))
-        emit("figures/rq3_delta_cycle.pdf", ExportOutcome("SKIPPED_NO_DATA", "delta_cycle point estimate exists in the permutation-test result but no CI/distribution is attached to plot yet", source))
+
+        valid_pairs = [p for p in (validation_dry_run or {}).get("rq3_pairs", []) if p.get("valid") and p.get("pre_frr") is not None and p.get("post_frr") is not None]
+        if valid_pairs:
+            paper_figures.paired_pre_post_figure(
+                unit_ids=[f"{p['physical_unit_id']} ({p['intervention_arm']})" for p in valid_pairs],
+                pre_values=[p["pre_frr"] for p in valid_pairs], post_values=[p["post_frr"] for p in valid_pairs],
+                ylabel="FRR", title="RQ3 -- PRE->POST (RESET/CONTROL)", out_path=figures_dir / "rq3_pre_post.pdf",
+            )
+            emit("figures/rq3_pre_post.pdf", ExportOutcome("GENERATED", f"real, from {run_dir.name}/{validation_source}" if run_dir else "real"))
+        else:
+            emit("figures/rq3_pre_post.pdf", ExportOutcome("SKIPPED_NO_DATA", "no valid rq3_pairs with real pre_frr/post_frr in confirmatory_statistical_plan_report.json", validation_source))
+
+        reset_ci, control_ci = (validation_dry_run or {}).get("rq3_reset_mean_d_ci"), (validation_dry_run or {}).get("rq3_control_mean_d_ci")
+        categories = [name for name, ci in (("RESET", reset_ci), ("CONTROL", control_ci)) if ci]
+        if categories:
+            values = [ci["point_estimate"] for name, ci in (("RESET", reset_ci), ("CONTROL", control_ci)) if ci]
+            ci_low = [ci["ci_low"] for name, ci in (("RESET", reset_ci), ("CONTROL", control_ci)) if ci]
+            ci_high = [ci["ci_high"] for name, ci in (("RESET", reset_ci), ("CONTROL", control_ci)) if ci]
+            paper_figures.bar_with_ci_figure(
+                categories=categories, values=values, ci_low=ci_low, ci_high=ci_high,
+                ylabel="D = FRR_post - FRR_pre (bootstrap CI)", title="RQ3 -- D by arm, with cluster-bootstrap CI", out_path=figures_dir / "rq3_delta_cycle.pdf",
+            )
+            emit("figures/rq3_delta_cycle.pdf", ExportOutcome("GENERATED", f"real, from {run_dir.name}/{validation_source}" if run_dir else "real"))
+        else:
+            emit("figures/rq3_delta_cycle.pdf", ExportOutcome("SKIPPED_NO_DATA", "no rq3_reset_mean_d_ci/rq3_control_mean_d_ci in confirmatory_statistical_plan_report.json", validation_source))
     else:
         for name in ("rq3_results.csv", "figures/rq3_pre_post.pdf", "figures/rq3_delta_cycle.pdf"):
             emit(name, ExportOutcome("SKIPPED_NO_DATA", "no EXECUTED rq3_within_device_permutation_test in confirmatory_future_analysis_report.json", source))
@@ -411,9 +462,35 @@ def _emit_confirmatory_derived_exports(emit: Callable[[str, ExportOutcome], None
     if rq4 and rq4.get("status") == "EXECUTED":
         _write_csv(exports_dir / "rq4_results.csv", statistical_method_rows(confirmatory_future, ["rq4_paired_comparison", "non_inferiority", "holm_correction"]))
         emit("rq4_results.csv", ExportOutcome("GENERATED", f"real, from {run_dir.name}/{source}" if run_dir else "real"))
-        emit("figures/rq4_region_dependence.pdf", ExportOutcome("SKIPPED_NO_DATA", "per-region (FULL_BURST/ADVA_EXCLUDED/PRE_PDU) recall series not attached to the aggregate paired-comparison result yet", source))
+
+        region_report = (validation_dry_run or {}).get("rq4_region_report") or {}
+        blocks = region_report.get("matched_region_blocks") or []
+        region_means: dict[str, list[float]] = {}
+        for row in blocks:
+            for region_name, cell in (row.get("regions") or {}).items():
+                if cell and cell.get("recall") is not None:
+                    region_means.setdefault(region_name, []).append(cell["recall"])
+        if region_means:
+            categories = sorted(region_means.keys())
+            values = [sum(region_means[c]) / len(region_means[c]) for c in categories]
+            paper_figures.bar_with_ci_figure(
+                categories=categories, values=values, ci_low=None, ci_high=None,
+                ylabel="Mean recall (1 - FRR)", title="RQ4 -- region comparison", out_path=figures_dir / "rq4_region_dependence.pdf",
+            )
+            emit("figures/rq4_region_dependence.pdf", ExportOutcome("GENERATED", f"real, from {run_dir.name}/{validation_source}" if run_dir else "real"))
+        else:
+            emit("figures/rq4_region_dependence.pdf", ExportOutcome("SKIPPED_NO_DATA", "no rq4_region_report.matched_region_blocks with a real recall value in confirmatory_statistical_plan_report.json", validation_source))
+
         if non_inferiority and non_inferiority.get("status") == "EXECUTED":
-            emit("figures/rq4_noninferiority.pdf", ExportOutcome("SKIPPED_NO_DATA", "non_inferiority result exists but has no plottable CI series attached yet", source))
+            ni_value = non_inferiority.get("value") or {}
+            if all(ni_value.get(k) is not None for k in ("mean_difference", "ci_low", "margin")):
+                paper_figures.non_inferiority_figure(
+                    mean_difference=ni_value["mean_difference"], ci_low=ni_value["ci_low"], margin=ni_value["margin"],
+                    non_inferior=bool(ni_value.get("non_inferior")), title="RQ4 -- non-inferiority", out_path=figures_dir / "rq4_noninferiority.pdf",
+                )
+                emit("figures/rq4_noninferiority.pdf", ExportOutcome("GENERATED", f"real, from {run_dir.name}/{source}" if run_dir else "real"))
+            else:
+                emit("figures/rq4_noninferiority.pdf", ExportOutcome("SKIPPED_NO_DATA", "non_inferiority.value is missing mean_difference/ci_low/margin", source))
         else:
             emit("figures/rq4_noninferiority.pdf", ExportOutcome("SKIPPED_NO_DATA", "no EXECUTED non_inferiority in confirmatory_future_analysis_report.json", source))
     else:

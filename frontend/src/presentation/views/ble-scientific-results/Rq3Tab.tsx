@@ -1,4 +1,4 @@
-import { BleScientificResultsApiService, NoDataResponse, Rq3Pair, Rq3PerUnitMeanD } from '../../../app/services/bleScientificResultsApi';
+import { BleScientificResultsApiService, BootstrapCiResult, NoDataResponse, Rq3Pair, Rq3PerUnitMeanD } from '../../../app/services/bleScientificResultsApi';
 import EvidenceMaturityBadge, { EvidenceMaturity } from './EvidenceMaturityBadge';
 import BarWithCiChart, { BarWithCiDatum } from './charts/BarWithCiChart';
 import HistogramChart from './charts/HistogramChart';
@@ -38,6 +38,18 @@ function perUnitDBars(realPairs: Rq3Pair[]): BarWithCiDatum[] {
   return realPairs
     .filter((p) => p.valid && typeof p.d === 'number')
     .map((p) => ({ category: `${p.physical_unit_id} (${p.day_id}, ${p.intervention_arm})`, value: p.d as number }));
+}
+
+/** Fast-closure pass (2026-08-12): the arm-level D + CI figure the paper
+ * requires ("D / delta_cycle + CI"), reusing hierarchical_cluster_bootstrap
+ * (mean_d_with_ci, backend) -- never a new statistic. */
+function meanDWithCiBars(report: Record<string, unknown>): BarWithCiDatum[] {
+  const reset = report.rq3_reset_mean_d_ci as BootstrapCiResult | null | undefined;
+  const control = report.rq3_control_mean_d_ci as BootstrapCiResult | null | undefined;
+  const bars: BarWithCiDatum[] = [];
+  if (reset) bars.push({ category: 'RESET', value: reset.point_estimate, ciLow: reset.ci_low, ciHigh: reset.ci_high });
+  if (control) bars.push({ category: 'CONTROL', value: control.point_estimate, ciLow: control.ci_low, ciHigh: control.ci_high });
+  return bars;
 }
 
 function perUnitMeanD(report: Record<string, unknown>): { reset: BarWithCiDatum[]; control: BarWithCiDatum[] } {
@@ -111,6 +123,10 @@ export default function Rq3Tab() {
             <div>
               <div className="mb-1 text-xs font-semibold text-slate-400">D = FRR_post - FRR_pre, por unidad/dia/arm</div>
               <BarWithCiChart data={perUnitDBars(realPairs)} yLabel="D" noDataReason="Sin D real calculado todavia." />
+            </div>
+            <div>
+              <div className="mb-1 text-xs font-semibold text-slate-400">D medio por arm, con CI bootstrap por cluster (unidad fisica)</div>
+              <BarWithCiChart data={meanDWithCiBars(report)} yLabel="D medio (bootstrap CI)" noDataReason="rq3_reset_mean_d_ci/rq3_control_mean_d_ci no estan presentes en el reporte todavia." />
             </div>
             <div className="grid gap-4 md:grid-cols-2">
               <div>

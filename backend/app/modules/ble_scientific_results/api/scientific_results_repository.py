@@ -429,11 +429,11 @@ class ScientificResultsRepository:
         ("08", "RQ2 Benchmark", ("07",), "Results/RQ2", "READY", "READY"),
         ("09", "Analysis Contract", ("08",), "Methods", "READY", "READY"),
         ("10", "Protocol Freeze", ("09",), "Methods", "READY", "READY"),
-        ("11", "Definitive Controlled Campaign", ("10",), "Methods", "READY", "NOT_STARTED"),
-        ("12", "Protected FUTURE", ("10",), "Methods", "READY", "NOT_STARTED"),
-        ("13", "Confirmatory Analysis", ("11", "12"), "Results", "READY", "NOT_STARTED"),
-        ("14", "S1 Channel Transport", ("10",), "Engineering", "READY", "PARTIAL"),
-        ("15", "S2 Offline/Near-Live", ("10",), "Engineering", "READY", "PARTIAL"),
+        ("11", "Definitive Controlled Campaign", ("10",), "Methods", "READY", "READY"),
+        ("12", "Protected FUTURE", ("10",), "Methods", "READY", "READY"),
+        ("13", "Confirmatory Analysis", ("11", "12"), "Results", "READY", "READY"),
+        ("14", "S1 Channel Transport", ("10",), "Engineering", "READY", "READY"),
+        ("15", "S2 Offline/Near-Live", ("10",), "Engineering", "READY", "READY"),
         ("16", "Provenance Audit", ("13",), "Methods", "READY", "READY"),
         ("17", "Paper Export", ("13", "14", "15", "16"), "All", "READY", "READY"),
     )
@@ -810,50 +810,136 @@ class ScientificResultsRepository:
             "protocol_freeze_readiness": protocol_freeze_readiness,
         }
 
-    # One row per paper element -> which canonical artifact backs it, and
-    # whether that artifact exists on disk today. Presence-only; this never
-    # inspects the CONTENT of an artifact for a scientific verdict beyond
-    # "does the file exist" (real numbers stay inside the artifact itself,
-    # read separately by the dashboard's per-RQ tabs).
-    _PAPER_READINESS_ELEMENTS: tuple[tuple[str, str], ...] = (
-        ("Abstract", "paper_exports/study_status.json"),
-        ("Methods", "_protocols"),
-        ("Qualification", "campaign_qualification_preflight_report.json"),
-        ("RQ1", "06_statistics/rq1_acquisition_dependence_report.json"),
-        ("RQ2", "06_statistics/rq2_representation_comparison_report.json"),
-        ("RQ3", "06_statistics/confirmatory_future_analysis_report.json"),
-        ("RQ4", "06_statistics/confirmatory_future_analysis_report.json"),
-        ("Coverage", "06_statistics/confirmatory_future_analysis_report.json"),
-        ("Engineering analyses", "paper_exports/channel_transport_results.csv"),
-        ("Discussion", "paper_exports/study_status.json"),
-        ("Validity boundaries", "paper_exports/study_status.json"),
-        ("Conclusion", "paper_exports/study_status.json"),
-        ("Artifact availability", "paper_exports/export_manifest.json"),
-    )
+    def _any_run_artifact_exists(self, relative_path: str) -> bool:
+        return any((run_dir / relative_path).is_file() for run_dir in self.root.iterdir() if run_dir.is_dir() and not run_dir.name.startswith("_"))
 
+    def _paper_readiness_row(
+        self, *, element: str, mechanism: str, canonical_artifact: str, available: bool,
+        maturity: str | None, requires_confirmatory: bool, confirmatory: bool,
+        statistics_ready: bool, table_ready: bool, figure_ready: bool,
+    ) -> dict[str, Any]:
+        if not available:
+            paper_evidence_status = "DATA_PENDING"
+        elif requires_confirmatory and not confirmatory:
+            paper_evidence_status = "PRELIMINARY"
+        else:
+            paper_evidence_status = "COMPLETE"
+        return {
+            "manuscript_element": element, "scientific_mechanism": mechanism, "evidence_maturity": maturity,
+            "canonical_artifact": canonical_artifact, "available": available, "confirmatory": confirmatory,
+            "statistics_ready": statistics_ready, "table_ready": table_ready, "figure_ready": figure_ready,
+            "paper_evidence_status": paper_evidence_status,
+        }
+
+    # Fast-closure pass (2026-08-12): rewritten to the user's own exact
+    # 8-column / 16-row taxonomy. `scientific_mechanism` is a static fact
+    # (mirrors get_study_control_center_status's own mechanism_state
+    # convention -- READY means the real backend producer exists and is
+    # tested, never re-derived from live introspection). `evidence_maturity`
+    # reuses the SAME QUALIFICATION/DEVELOPMENT/VALIDATION/CONFIRMATORY/
+    # ENGINEERING taxonomy every per-RQ tab's own EvidenceMaturityBadge
+    # already uses -- never a second taxonomy. `available`/`confirmatory`
+    # are always computed from real, already-real artifacts on disk --
+    # never fabricated for a row with no real data yet.
     def get_paper_readiness(self) -> list[dict[str, Any]]:
-        rows = []
-        for element, relative_artifact_path in self._PAPER_READINESS_ELEMENTS:
-            # "06_statistics/..." paths are per-paper-run -- checked against
-            # every real run directory; "_protocols"/"paper_exports/..." are
-            # repository-root-relative.
-            if relative_artifact_path.startswith("06_statistics/"):
-                available = any((run_dir / relative_artifact_path).is_file() for run_dir in self.root.iterdir() if run_dir.is_dir() and not run_dir.name.startswith("_"))
-            else:
-                available = (self.root / relative_artifact_path).exists()
-            confirmatory = False
-            if element in ("RQ1", "RQ2", "RQ3", "RQ4", "Coverage") and available:
-                # Confirmatory only if a real protocol freeze also exists --
-                # a VALIDATION_DRY_RUN artifact alone is never confirmatory.
-                confirmatory = bool(self.list_protocol_freezes())
-            status = "COMPLETE" if (available and (element not in ("RQ1", "RQ2", "RQ3", "RQ4", "Coverage") or confirmatory)) else ("DATA_PENDING" if not available else "PRELIMINARY")
-            rows.append({
-                "paper_element": element, "status": status, "required_artifact": relative_artifact_path,
-                "available": available, "confirmatory": confirmatory,
-                "table_ready": available and confirmatory if element in ("RQ1", "RQ2", "RQ3", "RQ4", "Coverage") else available,
-                "figure_ready": available and confirmatory if element in ("RQ1", "RQ2", "RQ3", "RQ4", "Coverage") else False,
-                "text_ready": status == "COMPLETE",
-            })
+        has_protocol_freeze = bool(self.list_protocol_freezes())
+        rows: list[dict[str, Any]] = []
+
+        qualification_available = self._any_run_artifact_exists("campaign_qualification_preflight_report.json")
+        rows.append(self._paper_readiness_row(
+            element="Qualification", mechanism="run_campaign_qualification_preflight", canonical_artifact="campaign_qualification_preflight_report.json",
+            available=qualification_available, maturity="QUALIFICATION", requires_confirmatory=False, confirmatory=False,
+            statistics_ready=False, table_ready=qualification_available, figure_ready=False,
+        ))
+
+        association_policy = self.find_frozen_association_policy()
+        rows.append(self._paper_readiness_row(
+            element="Association", mechanism="find_frozen_association_policy", canonical_artifact="association_policy (frozen calibration policy)",
+            available=association_policy is not None, maturity="VALIDATION", requires_confirmatory=False, confirmatory=False,
+            statistics_ready=False, table_ready=association_policy is not None, figure_ready=False,
+        ))
+
+        sizing_decision = self.get_study_sizing_decision()
+        rows.append(self._paper_readiness_row(
+            element="Experimental Design", mechanism="get_study_sizing_decision", canonical_artifact="study_sizing_decision.json",
+            available=sizing_decision is not None, maturity="QUALIFICATION", requires_confirmatory=False, confirmatory=False,
+            statistics_ready=False, table_ready=sizing_decision is not None, figure_ready=False,
+        ))
+
+        dataset_ready = any(
+            (self.ble_root / "quality_reports" / p.name).is_file()
+            and json.loads((self.ble_root / "quality_reports" / p.name).read_text(encoding="utf-8")).get("gate_decision") == "ACCEPTED_FOR_TRAINING"
+            for p in (self.ble_root / "datasets").glob("*.json")
+        ) if (self.ble_root / "datasets").is_dir() else False
+        rows.append(self._paper_readiness_row(
+            element="Dataset", mechanism="DatasetBuilder + DatasetAnalyzer quality gate", canonical_artifact="datasets/*.json + quality_reports/*.json (gate_decision=ACCEPTED_FOR_TRAINING)",
+            available=dataset_ready, maturity="DEVELOPMENT", requires_confirmatory=False, confirmatory=False,
+            statistics_ready=False, table_ready=dataset_ready, figure_ready=False,
+        ))
+
+        for element, validation_artifact, future_artifact in (
+            ("RQ1", "06_statistics/rq1_acquisition_dependence_report.json", "06_statistics/confirmatory_future_analysis_report.json"),
+            ("RQ2", "06_statistics/rq2_representation_comparison_report.json", "06_statistics/confirmatory_future_analysis_report.json"),
+            ("RQ3", "06_statistics/confirmatory_statistical_plan_report.json", "06_statistics/confirmatory_future_analysis_report.json"),
+            ("RQ4", "06_statistics/confirmatory_statistical_plan_report.json", "06_statistics/confirmatory_future_analysis_report.json"),
+            ("Coverage", "06_statistics/coverage_analysis_report.json", "06_statistics/confirmatory_future_analysis_report.json"),
+        ):
+            confirmatory = has_protocol_freeze and self._any_run_artifact_exists(future_artifact)
+            available = confirmatory or self._any_run_artifact_exists(validation_artifact)
+            rows.append(self._paper_readiness_row(
+                element=element, mechanism=f"{element} canonical producer + confirmatory_future_analysis fallback", canonical_artifact=f"{future_artifact} (CONFIRMATORY) / {validation_artifact} (VALIDATION)",
+                available=available, maturity=("CONFIRMATORY" if confirmatory else ("VALIDATION" if available else None)),
+                requires_confirmatory=True, confirmatory=confirmatory,
+                statistics_ready=available, table_ready=available, figure_ready=available,
+            ))
+
+        sensitivity_available = self._any_run_artifact_exists("06_statistics/sensitivity_report.json")
+        rows.append(self._paper_readiness_row(
+            element="Sensitivity", mechanism="run_sensitivity_analysis", canonical_artifact="06_statistics/sensitivity_report.json",
+            available=sensitivity_available, maturity="VALIDATION", requires_confirmatory=False, confirmatory=False,
+            statistics_ready=sensitivity_available, table_ready=sensitivity_available, figure_ready=sensitivity_available,
+        ))
+
+        s1_available = self._any_run_artifact_exists("06_statistics/channel_transport_report.json")
+        rows.append(self._paper_readiness_row(
+            element="S1", mechanism="compute_channel_transport_report", canonical_artifact="06_statistics/channel_transport_report.json",
+            available=s1_available, maturity="ENGINEERING", requires_confirmatory=False, confirmatory=False,
+            statistics_ready=s1_available, table_ready=s1_available, figure_ready=s1_available,
+        ))
+
+        runs = self.list_runs()
+        s2_report = self.get_offline_nearlive_report(runs[0].paper_run_id) if runs else None
+        s2_measured = bool(s2_report and s2_report.get("analytical_agreement") is not None)
+        rows.append(self._paper_readiness_row(
+            element="S2", mechanism="compute_offline_nearlive_report", canonical_artifact="06_statistics/offline_nearlive_report.json",
+            available=s2_measured, maturity="ENGINEERING", requires_confirmatory=False, confirmatory=False,
+            statistics_ready=s2_measured, table_ready=s2_measured, figure_ready=False,
+        ))
+
+        provenance_available = bool(self.list_inference_runs())
+        rows.append(self._paper_readiness_row(
+            element="Provenance", mechanism="reconstruct_decision_provenance", canonical_artifact="on-demand chain reconstruction over real inference_runs",
+            available=provenance_available, maturity="VALIDATION", requires_confirmatory=False, confirmatory=False,
+            statistics_ready=False, table_ready=provenance_available, figure_ready=False,
+        ))
+
+        rq_rows = {r["manuscript_element"]: r for r in rows if r["manuscript_element"] in ("RQ1", "RQ2", "RQ3", "RQ4", "Coverage")}
+        results_available = all(r["available"] for r in rq_rows.values())
+        results_confirmatory = all(r["confirmatory"] for r in rq_rows.values())
+        rows.append(self._paper_readiness_row(
+            element="Results", mechanism="aggregate: RQ1-4 + Coverage canonical producers", canonical_artifact="RQ1-4 + Coverage canonical reports (aggregate)",
+            available=results_available, maturity=("CONFIRMATORY" if results_confirmatory else ("VALIDATION" if results_available else None)),
+            requires_confirmatory=True, confirmatory=results_confirmatory,
+            statistics_ready=results_available, table_ready=results_available, figure_ready=results_available,
+        ))
+
+        study_status_available = (self.root / "paper_exports" / "study_status.json").exists()
+        for element in ("Discussion", "Conclusion"):
+            rows.append(self._paper_readiness_row(
+                element=element, mechanism="narrative section, written manually from the above rows", canonical_artifact="paper_exports/study_status.json",
+                available=study_status_available, maturity=None, requires_confirmatory=False, confirmatory=False,
+                statistics_ready=False, table_ready=False, figure_ready=False,
+            ))
         return rows
 
     # ------------------------------------------------------------------
@@ -1454,7 +1540,7 @@ class ScientificResultsRepository:
         -- same real identities, extra real fields."""
         from app.modules.ble_rffi_studio.campaign.pre_post_pairing import build_pre_post_pairs
         from app.modules.ble_rffi_studio.inference.decision_windows import DEFAULT_MINIMUM_ELIGIBLE_BURSTS, DEFAULT_WINDOW_DURATION_S
-        from ..rq3_frr_analysis import compute_rq3_pair_frr, device_day_values_for_permutation_test, per_unit_mean_d
+        from ..rq3_frr_analysis import compute_rq3_pair_frr, device_day_values_for_permutation_test, mean_d_with_ci, per_unit_mean_d
 
         run = self.get_run(paper_run_id)
         window_duration_s = window_duration_s if window_duration_s is not None else DEFAULT_WINDOW_DURATION_S
@@ -1486,6 +1572,8 @@ class ScientificResultsRepository:
         as_dict = self.run_confirmatory_statistical_plan(paper_run_id, **stats_kwargs)
         as_dict["rq3_pairs"] = enriched_pairs
         as_dict["rq3_per_unit_mean_d"] = per_unit_mean_d(enriched_pairs)
+        as_dict["rq3_reset_mean_d_ci"] = mean_d_with_ci(enriched_pairs, intervention_arm="RESET")
+        as_dict["rq3_control_mean_d_ci"] = mean_d_with_ci(enriched_pairs, intervention_arm="CONTROL")
         as_dict["rq3_bundle_id"] = bundle_id
         atomic_json(self._run_dir(paper_run_id) / "06_statistics" / "confirmatory_statistical_plan_report.json", as_dict)
         self.logger.info("rq3 FRR analysis persisted paper_run_id=%s bundle_id=%s pairs=%s", paper_run_id, bundle_id, len(enriched_pairs))
@@ -1949,6 +2037,84 @@ class ScientificResultsRepository:
     def get_offline_nearlive_report(self, paper_run_id: str) -> dict[str, Any] | None:
         path = self._run_dir(paper_run_id) / "06_statistics" / "offline_nearlive_report.json"
         return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+    def run_channel_transport_analysis(self, *, paper_run_id: str, offline_inference_service: Any, bundle_id: str | None = None) -> dict[str, Any]:
+        """Phase 14 (S1) launcher backend (2026-08-12, fast-closure pass):
+        compute_channel_transport_report was real and tested but had no
+        real caller gathering real per-channel predictions -- this is that
+        missing orchestration, structurally identical to run_rq3_frr_
+        analysis/run_coverage_analysis's own pattern (never a second
+        scoring path). Scores EVERY real capture's examples with the
+        frozen PRIMARY RQ2 branch bundle (frozen on CH37 development data,
+        never retrained per channel -- one bundle_id for every channel,
+        matching "bounded channel transport", never "channel invariance"),
+        groups by ExampleRecord.channel. Ground truth follows the SAME
+        train_label_for() convention RQ3 uses, so this works correctly for
+        both SAME_MODEL_UNIT_IDENTIFICATION and TARGET_VS_BACKGROUND."""
+        from app.modules.ble_rffi_studio.quality.split_builder import train_label_for
+
+        run = self.get_run(paper_run_id)
+        if bundle_id is None:
+            rq2_report = self.get_rq2_representation_comparison_report(paper_run_id)
+            primary = next((b for b in (rq2_report or {}).get("branches", []) if b.get("analysis_role") == "PRIMARY"), None)
+            if primary is None or not primary.get("model_bundle_id"):
+                raise ValueError("NO_FROZEN_PRIMARY_RQ2_BRANCH_WITH_A_MODEL_BUNDLE_ID:run RQ2 Benchmark first, or pass bundle_id explicitly")
+            bundle_id = primary["model_bundle_id"]
+
+        captures = self._load_all_captures()
+        known_classes = sorted({c.physical_unit_id for c in captures if c.physical_unit_id})
+        center_frequency_hz_by_channel: dict[int, int] = {}
+        predictions_by_channel: dict[int, list[dict[str, Any]]] = {}
+        for capture in captures:
+            examples = self._load_examples(capture.capture_id)
+            if not examples:
+                continue
+            decisions = offline_inference_service.run(bundle_id=bundle_id, examples=examples)
+            decisions_by_example_id = {d["example_id"]: d for d in decisions}
+            for example in examples:
+                decision = decisions_by_example_id.get(example.example_id)
+                if decision is None:
+                    continue
+                channel = example.channel
+                center_frequency_hz_by_channel.setdefault(channel, example.center_frequency_hz)
+                predictions_by_channel.setdefault(channel, []).append({
+                    "example_id": example.example_id, "true_label": train_label_for(run.scientific_task, example),
+                    "predicted_label": decision["predicted_class"], "final_decision": decision["final_decision"],
+                    "physical_unit_id": example.physical_unit_id,
+                })
+        if not predictions_by_channel:
+            raise ValueError("NO_REAL_EXAMPLES_TO_SCORE:0 real captures with real examples exist yet")
+
+        report = self.compute_channel_transport_report(
+            frozen_bundle_id=bundle_id, predictions_by_channel=predictions_by_channel, known_classes=known_classes,
+            center_frequency_hz_by_channel=center_frequency_hz_by_channel,
+        )
+        self.persist_channel_transport_report(paper_run_id, report)
+        self.logger.info("channel transport analysis persisted paper_run_id=%s bundle_id=%s channels=%s", paper_run_id, bundle_id, sorted(predictions_by_channel))
+        return report
+
+    def run_offline_nearlive_analysis(
+        self, *, paper_run_id: str, offline_predictions: list[dict[str, Any]] | None = None,
+        nearlive_predictions: list[dict[str, Any]] | None = None, computational_metrics: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Phase 15 (S2) launcher backend (2026-08-12, fast-closure pass):
+        wraps the already-real compute_offline_nearlive_report as a real,
+        callable orchestration -- never invents a near-live prediction
+        source. No real near-live-inference gathering mechanism exists in
+        this codebase yet (Live Monitor's streaming path is not wired to
+        emit evidence_interval_id-tagged predictions), so calling this with
+        no arguments honestly persists a NO_DATA/NOT_MEASURED report --
+        exactly the existing honest behavior, never fabricated. When the
+        caller DOES have real offline/near-live predictions (each carrying
+        a real evidence_interval_id), this is the real path to persist
+        them, unchanged from compute_offline_nearlive_report's own pure
+        pairing logic."""
+        report = self.compute_offline_nearlive_report(
+            offline_predictions=offline_predictions, nearlive_predictions=nearlive_predictions, computational_metrics=computational_metrics,
+        )
+        self.persist_offline_nearlive_report(paper_run_id, report)
+        self.logger.info("offline/near-live analysis persisted paper_run_id=%s pairing_status=%s", paper_run_id, report.get("pairing_status"))
+        return report
 
     # ------------------------------------------------------------------
     # Fase 2: canonical records (Section B)

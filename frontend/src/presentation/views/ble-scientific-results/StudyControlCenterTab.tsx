@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { BleRffiStudioApiService, StudioJob, StudioPaperCampaignRejection, StudioPaperCampaignSchedule, StudioPhysicalUnit } from '../../../app/services/bleRffiStudioApi';
 import {
-  BleScientificResultsApiService, CoverageAnalysisJob, HardwareQualificationJob, HierarchicalDesignInput, NoDataResponse,
-  PaperRunRecord, Rq2BenchmarkJob, Rq3FrrAnalysisJob, Rq4RegionAnalysisJob, SensitivityAnalysisJob, StudyControlCenterStatus,
+  BleScientificResultsApiService, ChannelTransportAnalysisJob, ConfirmatoryFutureAnalysisJob, CoverageAnalysisJob, HardwareQualificationJob, HierarchicalDesignInput, HoldoutGroupAssignment, NoDataResponse,
+  OfflineNearliveAnalysisJob, PaperRunRecord, Rq2BenchmarkJob, Rq3FrrAnalysisJob, Rq4RegionAnalysisJob, SensitivityAnalysisJob, StudyControlCenterStatus,
   StudySizingDecision, StudySizingEvaluationResult,
 } from '../../../app/services/bleScientificResultsApi';
 import NoDataNotice, { StatusBadge } from './NoDataNotice';
@@ -93,10 +93,18 @@ export default function StudyControlCenterTab() {
       <PhysicalUnitQualificationLauncher onCompleted={refresh} />
       <StudySizingLauncher onCompleted={refresh} />
       <Rq2BenchmarkLauncher onCompleted={refresh} />
+      <DefinitiveControlledCampaignPanel protocolFrozen={status?.phases.find((p) => p.phase_id === '10')?.execution_state === 'COMPLETE'} />
       <Rq3FrrAnalysisLauncher onCompleted={refresh} />
       <Rq4RegionAnalysisLauncher onCompleted={refresh} />
       <CoverageAnalysisLauncher onCompleted={refresh} />
       <SensitivityAnalysisLauncher onCompleted={refresh} />
+      <ChannelTransportAnalysisLauncher onCompleted={refresh} />
+      <OfflineNearliveAnalysisLauncher onCompleted={refresh} />
+      <ProtectedFutureLauncher
+        protocolFrozen={status?.phases.find((p) => p.phase_id === '10')?.execution_state === 'COMPLETE'}
+        onCompleted={refresh}
+      />
+      <ConfirmatoryFutureAnalysisLauncher onCompleted={refresh} />
       <AnalysisContractReadinessPanel onCompleted={refresh} />
       <CampaignScheduleLauncher onCompleted={refresh} />
     </div>
@@ -855,6 +863,406 @@ function Rq4RegionAnalysisLauncher({ onCompleted }: { onCompleted: () => void })
               <pre className="max-h-[50vh] overflow-auto p-3 text-[11px] text-slate-300">{JSON.stringify(job.result, null, 2)}</pre>
             </details>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+async function pollChannelTransportAnalysisJob(jobId: string, onUpdate: (job: ChannelTransportAnalysisJob) => void): Promise<ChannelTransportAnalysisJob> {
+  let current = await sciApi.getChannelTransportAnalysisJob(jobId);
+  onUpdate(current);
+  while (!JOB_TERMINAL.has(current.state)) {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    current = await sciApi.getChannelTransportAnalysisJob(jobId);
+    onUpdate(current);
+  }
+  return current;
+}
+
+/** Phase 14 (S1) launcher, fast-closure pass (2026-08-12):
+ * compute_channel_transport_report was real and tested but had no real
+ * caller -- scores every real capture with the frozen PRIMARY RQ2 branch
+ * bundle (never retrained per channel), grouped by real ExampleRecord
+ * channel. "Bounded channel transport", never "channel invariance". */
+function ChannelTransportAnalysisLauncher({ onCompleted }: { onCompleted: () => void }) {
+  const [runs, setRuns] = useState<PaperRunRecord[]>([]);
+  const [paperRunId, setPaperRunId] = useState('');
+  const [bundleId, setBundleId] = useState('');
+  const [job, setJob] = useState<ChannelTransportAnalysisJob | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    sciApi.listRuns().then((list) => {
+      setRuns(list);
+      if (list.length > 0) setPaperRunId(list[0].paper_run_id);
+    }).catch(() => setRuns([]));
+  }, []);
+
+  const start = async () => {
+    if (!paperRunId) return;
+    setBusy(true);
+    setJob(null);
+    try {
+      const started = await sciApi.startChannelTransportAnalysis(paperRunId, bundleId || undefined);
+      const finished = await pollChannelTransportAnalysisJob(started.job_id, setJob);
+      if (finished.state === 'completed') onCompleted();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded border border-slate-800 bg-slate-900/40 p-4">
+      <div className="text-sm font-semibold text-slate-200">RUN S1 CHANNEL TRANSPORT ANALYSIS</div>
+      <div className="mt-1 text-xs text-slate-500">
+        Puntua cada captura real con la rama PRIMARY congelada de RQ2 (mismo bundle para todos los canales -- nunca
+        reentrenado por canal) y agrega por canal real (ExampleRecord.channel). Requiere que RQ2 Benchmark ya haya
+        congelado una rama PRIMARY.
+      </div>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-xs text-slate-500">paper_run_id</label>
+          <select className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={paperRunId} onChange={(e) => setPaperRunId(e.target.value)} disabled={busy}>
+            <option value="">(seleccionar run)</option>
+            {runs.map((run) => (<option key={run.paper_run_id} value={run.paper_run_id}>{run.paper_run_id}</option>))}
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-slate-500">bundle_id (opcional -- por defecto la rama PRIMARY congelada de RQ2)</label>
+          <input className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={bundleId} onChange={(e) => setBundleId(e.target.value)} disabled={busy} />
+        </div>
+      </div>
+      <button
+        className="mt-3 rounded bg-cyan-700 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-600 disabled:cursor-not-allowed disabled:bg-slate-700"
+        disabled={busy || !paperRunId} onClick={start}
+      >
+        {busy ? 'Ejecutando...' : 'RUN S1 CHANNEL TRANSPORT ANALYSIS'}
+      </button>
+      {job && (
+        <div className="mt-4 space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <StatusBadge status={job.state.toUpperCase()} />
+            <span className="text-slate-500">stage: {job.stage ?? 'N/A'}</span>
+            <span className="text-slate-500">progress: {Math.round(job.overall_progress * 100)}%</span>
+          </div>
+          {job.message && <div className="text-xs text-slate-400">{job.message}</div>}
+          {job.error && <div className="text-xs text-red-400">error: {job.error}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+async function pollOfflineNearliveAnalysisJob(jobId: string, onUpdate: (job: OfflineNearliveAnalysisJob) => void): Promise<OfflineNearliveAnalysisJob> {
+  let current = await sciApi.getOfflineNearliveAnalysisJob(jobId);
+  onUpdate(current);
+  while (!JOB_TERMINAL.has(current.state)) {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    current = await sciApi.getOfflineNearliveAnalysisJob(jobId);
+    onUpdate(current);
+  }
+  return current;
+}
+
+/** Phase 15 (S2) launcher, fast-closure pass (2026-08-12): wraps
+ * compute_offline_nearlive_report as a real, callable job -- never invents
+ * a near-live prediction source. No real near-live-inference gathering
+ * mechanism exists yet in this codebase, so running this today honestly
+ * persists a NO_DATA/NOT_MEASURED report -- never fabricated, never
+ * blocking the rest of scientific closure. */
+function OfflineNearliveAnalysisLauncher({ onCompleted }: { onCompleted: () => void }) {
+  const [runs, setRuns] = useState<PaperRunRecord[]>([]);
+  const [paperRunId, setPaperRunId] = useState('');
+  const [job, setJob] = useState<OfflineNearliveAnalysisJob | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    sciApi.listRuns().then((list) => {
+      setRuns(list);
+      if (list.length > 0) setPaperRunId(list[0].paper_run_id);
+    }).catch(() => setRuns([]));
+  }, []);
+
+  const start = async () => {
+    if (!paperRunId) return;
+    setBusy(true);
+    setJob(null);
+    try {
+      const started = await sciApi.startOfflineNearliveAnalysis(paperRunId);
+      const finished = await pollOfflineNearliveAnalysisJob(started.job_id, setJob);
+      if (finished.state === 'completed') onCompleted();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded border border-slate-800 bg-slate-900/40 p-4">
+      <div className="text-sm font-semibold text-slate-200">RUN S2 OFFLINE/NEAR-LIVE ANALYSIS</div>
+      <div className="mt-1 text-xs text-slate-500">
+        Empareja predicciones offline y near-live por evidence_interval_id real (exacto, nunca por proximidad
+        temporal). Sin un mecanismo real de inferencia near-live todavia, esto persiste honestamente
+        pairing_status=NO_DATA / campos NOT_MEASURED -- nunca fabricado, y nunca bloquea el resto del cierre
+        cientifico.
+      </div>
+      <div className="mt-3">
+        <label className="mb-1 block text-xs text-slate-500">paper_run_id</label>
+        <select className="w-full max-w-md rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={paperRunId} onChange={(e) => setPaperRunId(e.target.value)} disabled={busy}>
+          <option value="">(seleccionar run)</option>
+          {runs.map((run) => (<option key={run.paper_run_id} value={run.paper_run_id}>{run.paper_run_id}</option>))}
+        </select>
+      </div>
+      <button
+        className="mt-3 rounded bg-cyan-700 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-600 disabled:cursor-not-allowed disabled:bg-slate-700"
+        disabled={busy || !paperRunId} onClick={start}
+      >
+        {busy ? 'Ejecutando...' : 'RUN S2 OFFLINE/NEAR-LIVE ANALYSIS'}
+      </button>
+      {job && (
+        <div className="mt-4 space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <StatusBadge status={job.state.toUpperCase()} />
+            <span className="text-slate-500">stage: {job.stage ?? 'N/A'}</span>
+            <span className="text-slate-500">progress: {Math.round(job.overall_progress * 100)}%</span>
+          </div>
+          {job.message && <div className="text-xs text-slate-400">{job.message}</div>}
+          {job.error && <div className="text-xs text-red-400">error: {job.error}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Phase 11 -- Definitive Controlled Campaign, fast-closure pass
+ * (2026-08-12). "No duplicar logica": acquisition reuses the EXACT same
+ * CAMPAIGN SCHEDULE launcher below (freeze_schedule/execute via
+ * PaperCampaignRunner -- the same generic mechanism DEVELOPMENT/VALIDATION
+ * already use, qualification_only=False) and scoring reuses the RQ3/RQ4
+ * launchers already on this page -- there is no separate acquisition or
+ * scoring code for "definitive" data. This panel is a pure orchestration
+ * label: run Campaign Schedule (below) for the definitive captures once
+ * frozen, then re-run RQ3 FRR Analysis / RQ4 Region-Specific Analysis
+ * (above) to score them. */
+function DefinitiveControlledCampaignPanel({ protocolFrozen }: { protocolFrozen: boolean | undefined }) {
+  return (
+    <div className="rounded border border-slate-800 bg-slate-900/40 p-4">
+      <div className="text-sm font-semibold text-slate-200">PHASE 11 -- DEFINITIVE CONTROLLED CAMPAIGN</div>
+      {!protocolFrozen ? (
+        <div className="mt-2 rounded border border-dashed border-red-800 bg-red-950/20 px-3 py-2 text-xs text-red-400">
+          BLOCKED -- requiere Protocol Freeze (Fase 10) completado primero.
+        </div>
+      ) : (
+        <div className="mt-2 text-xs text-slate-500">
+          Desbloqueada. No hay un mecanismo de adquisicion/puntuacion separado para la campana definitiva -- reutiliza
+          los MISMOS launchers ya reales de esta pagina: (1) <span className="text-slate-300">Campaign Schedule</span> (mas
+          abajo) para adquirir las capturas reales bajo el Analysis Contract congelado, luego (2){' '}
+          <span className="text-slate-300">RQ3 FRR Analysis</span> / <span className="text-slate-300">RQ4 Region-Specific Analysis</span> (arriba)
+          para puntuarlas con la rama PRIMARY congelada.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Phase 12 -- Protected FUTURE, fast-closure pass (2026-08-12). Maximum
+ * simplicity, maximum protection: BLOCKED before protocol freeze,
+ * ACQUIRE PROTECTED FUTURE after. freeze_holdout_groups is metadata-only
+ * (declares which real physical_unit_ids/day_ids/session_ids belong to
+ * group=FUTURE_TEST) -- it never acquires data itself and never scores
+ * anything, so this launcher shows only the real assignment_id it
+ * created, NEVER a scientific result. Confirmatory analysis (Phase 13) is
+ * a completely separate launcher below. */
+function ProtectedFutureLauncher({ protocolFrozen, onCompleted }: { protocolFrozen: boolean | undefined; onCompleted: () => void }) {
+  const [datasetId, setDatasetId] = useState('');
+  const [datasetVersion, setDatasetVersion] = useState('');
+  const [physicalUnitIds, setPhysicalUnitIds] = useState('');
+  const [dayIds, setDayIds] = useState('');
+  const [sessionIds, setSessionIds] = useState('');
+  const [assignment, setAssignment] = useState<HoldoutGroupAssignment | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const acquire = async () => {
+    if (!datasetId.trim() || !datasetVersion.trim()) return;
+    setBusy(true);
+    setError(null);
+    setAssignment(null);
+    try {
+      const result = await sciApi.freezeHoldoutGroups({
+        dataset_id: datasetId.trim(), dataset_version: datasetVersion.trim(), group: 'FUTURE_TEST',
+        physical_unit_ids: physicalUnitIds.split(',').map((s) => s.trim()).filter(Boolean),
+        day_ids: dayIds.split(',').map((s) => s.trim()).filter(Boolean),
+        session_ids: sessionIds.split(',').map((s) => s.trim()).filter(Boolean),
+      });
+      setAssignment(result);
+      onCompleted();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded border border-slate-800 bg-slate-900/40 p-4">
+      <div className="text-sm font-semibold text-slate-200">PHASE 12 -- PROTECTED FUTURE</div>
+      <div className="mt-1 text-xs text-slate-500">
+        Declara que unidades/dias/sesiones reales quedan selladas como FUTURE_TEST (metadata-only -- la adquisicion
+        real usa el mismo mecanismo generico de campana que cualquier otra fase). Nunca muestra un resultado
+        cientifico: el analisis confirmatorio (Fase 13) es un launcher completamente separado, mas abajo.
+      </div>
+      {!protocolFrozen ? (
+        <div className="mt-3 rounded border border-dashed border-red-800 bg-red-950/20 px-3 py-2 text-xs text-red-400">
+          BLOCKED -- requiere Protocol Freeze (Fase 10) completado primero.
+        </div>
+      ) : (
+        <>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">dataset_id</label>
+              <input className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={datasetId} onChange={(e) => setDatasetId(e.target.value)} disabled={busy} />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">dataset_version</label>
+              <input className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={datasetVersion} onChange={(e) => setDatasetVersion(e.target.value)} disabled={busy} />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">physical_unit_ids (coma-separado)</label>
+              <input className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={physicalUnitIds} onChange={(e) => setPhysicalUnitIds(e.target.value)} disabled={busy} />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">day_ids (coma-separado)</label>
+              <input className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={dayIds} onChange={(e) => setDayIds(e.target.value)} disabled={busy} />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-slate-500">session_ids (coma-separado, opcional)</label>
+              <input className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={sessionIds} onChange={(e) => setSessionIds(e.target.value)} disabled={busy} />
+            </div>
+          </div>
+          <button
+            className="mt-3 rounded bg-red-800 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-slate-700"
+            disabled={busy || !datasetId.trim() || !datasetVersion.trim()} onClick={acquire}
+          >
+            {busy ? 'Sellando...' : 'ACQUIRE PROTECTED FUTURE'}
+          </button>
+          {error && <div className="mt-2 text-xs text-red-400">{error}</div>}
+          {assignment && (
+            <div className="mt-3 rounded border border-emerald-800 bg-emerald-950/20 px-3 py-2 text-[11px] text-emerald-300">
+              Sellado: assignment_id=<span className="font-mono">{assignment.assignment_id}</span>, group_manifest_sha256=
+              <span className="font-mono">{assignment.group_manifest_sha256.slice(0, 16)}...</span>, frozen_at={assignment.frozen_at}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+async function pollConfirmatoryFutureAnalysisJob(jobId: string, onUpdate: (job: ConfirmatoryFutureAnalysisJob) => void): Promise<ConfirmatoryFutureAnalysisJob> {
+  let current = await sciApi.getConfirmatoryFutureAnalysisJob(jobId);
+  onUpdate(current);
+  while (!JOB_TERMINAL.has(current.state)) {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    current = await sciApi.getConfirmatoryFutureAnalysisJob(jobId);
+    onUpdate(current);
+  }
+  return current;
+}
+
+/** Phase 13 -- Confirmatory Analysis, fast-closure pass (2026-08-12). A
+ * single launcher for the already-existing, gate-protected
+ * run_confirmatory_future_analysis engine (protocol-freeze close-out,
+ * 2026-08-10) -- checks (in order): real protocol freeze, real
+ * contract_sha256, real FUTURE_TEST holdout role, bundle confirmatory-
+ * eligibility, contract-hash match. No recalibration, no model
+ * re-selection, no threshold/NI/hypothesis edits happen here or inside the
+ * engine it calls. */
+function ConfirmatoryFutureAnalysisLauncher({ onCompleted }: { onCompleted: () => void }) {
+  const [runs, setRuns] = useState<PaperRunRecord[]>([]);
+  const [paperRunId, setPaperRunId] = useState('');
+  const [protocolId, setProtocolId] = useState('');
+  const [datasetId, setDatasetId] = useState('');
+  const [datasetVersion, setDatasetVersion] = useState('');
+  const [bundleId, setBundleId] = useState('');
+  const [job, setJob] = useState<ConfirmatoryFutureAnalysisJob | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    sciApi.listRuns().then((list) => {
+      setRuns(list);
+      if (list.length > 0) {
+        setPaperRunId(list[0].paper_run_id);
+        setProtocolId(list[0].protocol_id);
+        setDatasetId(list[0].dataset_id);
+        setDatasetVersion(list[0].dataset_version);
+      }
+    }).catch(() => setRuns([]));
+  }, []);
+
+  const start = async () => {
+    if (!paperRunId || !protocolId || !datasetId || !datasetVersion || !bundleId) return;
+    setBusy(true);
+    setJob(null);
+    try {
+      const started = await sciApi.startConfirmatoryFutureAnalysis({
+        paper_run_id: paperRunId, protocol_id: protocolId, dataset_id: datasetId, dataset_version: datasetVersion, bundle_id: bundleId,
+      });
+      const finished = await pollConfirmatoryFutureAnalysisJob(started.job_id, setJob);
+      if (finished.state === 'completed') onCompleted();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded border border-slate-800 bg-slate-900/40 p-4">
+      <div className="text-sm font-semibold text-slate-200">PHASE 13 -- RUN CONFIRMATORY ANALYSIS</div>
+      <div className="mt-1 text-xs text-slate-500">
+        Invoca run_confirmatory_future_analysis (ya existente) -- 5 gates no bypasseables (protocol freeze real,
+        contract_sha256 real, FUTURE_TEST holdout declarado, bundle confirmatory-eligible, contract hash coincide).
+        Ningun umbral, hipotesis, NI o seleccion de modelo se modifica aqui.
+      </div>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-xs text-slate-500">paper_run_id</label>
+          <select className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={paperRunId} onChange={(e) => setPaperRunId(e.target.value)} disabled={busy}>
+            <option value="">(seleccionar run)</option>
+            {runs.map((run) => (<option key={run.paper_run_id} value={run.paper_run_id}>{run.paper_run_id}</option>))}
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-slate-500">protocol_id</label>
+          <input className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={protocolId} onChange={(e) => setProtocolId(e.target.value)} disabled={busy} />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-slate-500">dataset_id</label>
+          <input className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={datasetId} onChange={(e) => setDatasetId(e.target.value)} disabled={busy} />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs text-slate-500">dataset_version</label>
+          <input className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={datasetVersion} onChange={(e) => setDatasetVersion(e.target.value)} disabled={busy} />
+        </div>
+        <div className="sm:col-span-2">
+          <label className="mb-1 block text-xs text-slate-500">bundle_id (a verificar confirmatory_eligible)</label>
+          <input className="w-full rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100 focus:border-cyan-600 focus:outline-none" value={bundleId} onChange={(e) => setBundleId(e.target.value)} disabled={busy} />
+        </div>
+      </div>
+      <button
+        className="mt-3 rounded bg-red-800 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-slate-700"
+        disabled={busy || !paperRunId || !protocolId || !datasetId || !datasetVersion || !bundleId} onClick={start}
+      >
+        {busy ? 'Ejecutando...' : 'RUN CONFIRMATORY ANALYSIS'}
+      </button>
+      {job && (
+        <div className="mt-4 space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <StatusBadge status={job.state.toUpperCase()} />
+            <span className="text-slate-500">stage: {job.stage ?? 'N/A'}</span>
+            <span className="text-slate-500">progress: {Math.round(job.overall_progress * 100)}%</span>
+          </div>
+          {job.message && <div className="text-xs text-slate-400">{job.message}</div>}
+          {job.error && <div className="text-xs text-red-400">error: {job.error}</div>}
         </div>
       )}
     </div>

@@ -70,8 +70,10 @@ def test_study_status_reflects_a_real_frozen_protocol(tmp_path):
 def test_paper_readiness_is_data_pending_for_everything_with_no_real_artifacts(tmp_path):
     repo = _repo(tmp_path)
     rows = repo.get_paper_readiness()
-    by_element = {r["paper_element"]: r for r in rows}
-    assert by_element["RQ1"]["status"] == "DATA_PENDING"
+    by_element = {r["manuscript_element"]: r for r in rows}
+    assert {"Qualification", "Association", "Experimental Design", "Dataset", "RQ1", "RQ2", "RQ3", "RQ4", "Coverage",
+            "Sensitivity", "S1", "S2", "Provenance", "Results", "Discussion", "Conclusion"} == set(by_element.keys())
+    assert by_element["RQ1"]["paper_evidence_status"] == "DATA_PENDING"
     assert by_element["RQ1"]["available"] is False
     assert by_element["RQ1"]["table_ready"] is False
     assert by_element["RQ1"]["figure_ready"] is False
@@ -84,11 +86,12 @@ def test_paper_readiness_rq1_available_but_not_confirmatory_without_a_real_freez
     (run_dir / "rq1_acquisition_dependence_report.json").write_text(json.dumps({"ba_window": 0.9}), encoding="utf-8")
 
     rows = repo.get_paper_readiness()
-    by_element = {r["paper_element"]: r for r in rows}
+    by_element = {r["manuscript_element"]: r for r in rows}
     assert by_element["RQ1"]["available"] is True
     assert by_element["RQ1"]["confirmatory"] is False  # no real protocol freeze exists
-    assert by_element["RQ1"]["status"] == "PRELIMINARY"
-    assert by_element["RQ1"]["table_ready"] is False
+    assert by_element["RQ1"]["evidence_maturity"] == "VALIDATION"
+    assert by_element["RQ1"]["paper_evidence_status"] == "PRELIMINARY"
+    assert by_element["RQ1"]["table_ready"] is True  # VALIDATION dry-run tables are real, just not CONFIRMATORY
 
 
 def test_paper_readiness_rq2_points_at_its_own_real_canonical_artifact(tmp_path):
@@ -99,14 +102,14 @@ def test_paper_readiness_rq2_points_at_its_own_real_canonical_artifact(tmp_path)
     comparison_report's output)."""
     repo = _repo(tmp_path)
     rows = repo.get_paper_readiness()
-    by_element = {r["paper_element"]: r for r in rows}
-    assert by_element["RQ2"]["required_artifact"] == "06_statistics/rq2_representation_comparison_report.json"
+    by_element = {r["manuscript_element"]: r for r in rows}
+    assert "06_statistics/rq2_representation_comparison_report.json" in by_element["RQ2"]["canonical_artifact"]
 
     run_dir = tmp_path / "sci_results" / "RUN-1" / "06_statistics"
     run_dir.mkdir(parents=True)
     (run_dir / "rq2_representation_comparison_report.json").write_text(json.dumps({"branches": []}), encoding="utf-8")
     rows = repo.get_paper_readiness()
-    by_element = {r["paper_element"]: r for r in rows}
+    by_element = {r["manuscript_element"]: r for r in rows}
     assert by_element["RQ2"]["available"] is True
 
 

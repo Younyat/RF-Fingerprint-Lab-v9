@@ -73,6 +73,26 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
         return call(lambda: dump(repository.verify_holdout_access_chain()))
 
     # ------------------------------------------------------------------
+    # Holdout groups (2026-08-12, fast-closure pass, Phase 12): declares
+    # which physical_unit_ids/day_ids/session_ids belong to a group
+    # (FUTURE_TEST being the protected one) -- metadata-only, never
+    # acquires data itself (real acquisition reuses the same generic
+    # PaperCampaignRunner every other phase already uses). This is the
+    # ONLY FUTURE-specific step in the whole pipeline.
+    # ------------------------------------------------------------------
+
+    @router.post("/holdout-groups", status_code=201)
+    def freeze_holdout_groups(body: dict):
+        return call(lambda: dump(repository.freeze_holdout_groups(
+            dataset_id=body["dataset_id"], dataset_version=body["dataset_version"], group=body["group"],
+            physical_unit_ids=body.get("physical_unit_ids"), day_ids=body.get("day_ids"), session_ids=body.get("session_ids"),
+        )))
+
+    @router.get("/holdout-groups/{dataset_id}/{dataset_version}")
+    def list_holdout_groups(dataset_id: str, dataset_version: str):
+        return call(lambda: dump_list(repository.list_holdout_groups(dataset_id, dataset_version)))
+
+    # ------------------------------------------------------------------
     # Runs
     # ------------------------------------------------------------------
 
@@ -502,5 +522,25 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
     @router.post("/rq4-region-analysis", status_code=202)
     def start_rq4_region_analysis(body: dict):
         return call(lambda: job_manager.start_rq4_region_analysis_job(paper_run_id=body["paper_run_id"], full_burst_bundle_id=body.get("full_burst_bundle_id")))
+
+    # Fast-closure pass (2026-08-12), Phase 14 (S1) / Phase 15 (S2) launchers.
+    @router.post("/channel-transport-analysis", status_code=202)
+    def start_channel_transport_analysis(body: dict):
+        return call(lambda: job_manager.start_channel_transport_analysis_job(paper_run_id=body["paper_run_id"], bundle_id=body.get("bundle_id")))
+
+    @router.post("/offline-nearlive-analysis", status_code=202)
+    def start_offline_nearlive_analysis(body: dict):
+        return call(lambda: job_manager.start_offline_nearlive_analysis_job(paper_run_id=body["paper_run_id"]))
+
+    # Fast-closure pass (2026-08-12), Phase 13: the single real
+    # CONFIRMATORY_FUTURE trigger -- run_confirmatory_future_analysis
+    # already existed (protocol-freeze close-out, 2026-08-10) but had no
+    # route to call it, only a read-only GET (below).
+    @router.post("/confirmatory-future-analysis", status_code=202)
+    def start_confirmatory_future_analysis(body: dict):
+        return call(lambda: job_manager.start_confirmatory_future_analysis_job(
+            paper_run_id=body["paper_run_id"], protocol_id=body["protocol_id"], dataset_id=body["dataset_id"], dataset_version=body["dataset_version"],
+            bundle_id=body["bundle_id"], declared_contract_sha256=body.get("declared_contract_sha256"), stats_kwargs=body.get("stats_kwargs"),
+        ))
 
     return router

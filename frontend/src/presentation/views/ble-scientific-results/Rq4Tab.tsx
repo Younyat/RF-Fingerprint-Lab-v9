@@ -1,4 +1,5 @@
 import { BleScientificResultsApiService, NoDataResponse, Rq4RegionReport } from '../../../app/services/bleScientificResultsApi';
+import BarWithCiChart, { BarWithCiDatum } from './charts/BarWithCiChart';
 import HistogramChart from './charts/HistogramChart';
 import NonInferiorityChart, { NonInferiorityDatum } from './charts/NonInferiorityChart';
 import EvidenceMaturityBadge, { EvidenceMaturity } from './EvidenceMaturityBadge';
@@ -11,6 +12,23 @@ const ANALYTICAL_REGIONS = ['FULL_BURST', 'ADVA_EXCLUDED', 'PRE_PDU'] as const;
 function rq4RegionReport(report: Record<string, unknown>): Rq4RegionReport | null {
   const value = report.rq4_region_report as Rq4RegionReport | undefined;
   return value && Array.isArray(value.matched_region_blocks) ? value : null;
+}
+
+/** Mean recall per analytical_region across every matched_region_block that
+ * has a real (non-null) result for it -- point comparison, no CI (recall
+ * here is already an aggregate across windows within one block; a CI across
+ * the small number of matched blocks would need its own bootstrap, not yet
+ * computed anywhere -- reported as a plain bar, never fabricated). */
+function regionComparisonBars(regionReport: Rq4RegionReport): BarWithCiDatum[] {
+  const bars: BarWithCiDatum[] = [];
+  for (const region of ANALYTICAL_REGIONS) {
+    const values = regionReport.matched_region_blocks
+      .map((row) => row.regions[region]?.recall)
+      .filter((v): v is number => typeof v === 'number');
+    if (values.length === 0) continue;
+    bars.push({ category: region, value: values.reduce((a, b) => a + b, 0) / values.length });
+  }
+  return bars;
 }
 
 const sciApi = new BleScientificResultsApiService();
@@ -81,6 +99,19 @@ export default function Rq4Tab() {
           <div>
             <div className="mb-1 text-xs font-semibold text-slate-400">Non-inferiority -- estimacion, CI unilateral y frontera de decision (-margin)</div>
             <NonInferiorityChart data={nonInferiorityChartData(report)} noDataReason="non_inferiority.value no esta presente en el reporte." />
+          </div>
+          <div>
+            <div className="mb-1 text-xs font-semibold text-slate-400">Comparacion por region analitica (recall medio, FULL_BURST / ADVA_EXCLUDED / PRE_PDU)</div>
+            {(() => {
+              const regionReport = rq4RegionReport(report);
+              return (
+                <BarWithCiChart
+                  data={regionReport ? regionComparisonBars(regionReport) : []}
+                  yLabel="Recall medio (1 - FRR)"
+                  noDataReason="rq4_region_report no existe todavia -- ejecuta RQ4 Region-Specific Analysis (Study Control Center) primero."
+                />
+              );
+            })()}
           </div>
           <div>
             <div className="mb-1 text-xs font-semibold text-slate-400">
