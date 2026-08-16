@@ -592,6 +592,11 @@ user-interface control.
 
 ## Documentation
 
+- [`PENDING_TO_CLOSE.md`](PENDING_TO_CLOSE.md) -- everything real that is
+  still needed to fully close the platform and the paper: the confirmatory
+  readiness gate (16 real scientist decisions), the RQ3 physical campaign,
+  protected FUTURE evaluation, S1/S2, and the remaining paper-text updates,
+  with a suggested order of operations. Start here for "what's left."
 - [`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md) --
   current BLE scientific evidence, full capability status, and the complete
   evidence-to-decision trace (start here for technical depth).
