@@ -312,6 +312,20 @@ BLE Scientific Results Studio → **Evidence Dashboard** tab, `GET
 /api/ble-scientific-results/evidence-dashboard` — every number there is read straight off
 the same real, persisted artifacts summarized above, refreshable on demand.
 
+The Evidence Dashboard additionally surfaces real curves already computed and persisted
+by the platform, not yet listed above, that directly support the manuscript's own stated
+methodology:
+
+- **Risk-coverage curve** (PRIMARY branch, held-out TEST) — the exact selective-prediction
+  curve (El-Yaniv & Wiener, 2010) the manuscript's abstention mechanism is built on, one
+  point per achievable confidence threshold on the real closed-set TEST split.
+- **Seed variability** — the PRIMARY branch (`engineered_rf`) re-trained under the two
+  other frozen seeds (`137`, `2024`, VALIDATION-only), a real reproducibility check.
+- **Computational cost** — real inference latency (ms) and serialized model size (bytes)
+  per RQ2 branch, supporting the manuscript's stated computational-cost comparison.
+- **Precision / F1 per unit** (TEST, PRIMARY branch) — alongside the recall-per-unit figures
+  already listed above, from the same real, persisted evaluation.
+
 ---
 
 ## Quick start

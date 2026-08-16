@@ -8,6 +8,7 @@ import {
 } from '../../../app/services/bleScientificResultsApi';
 import BarWithCiChart, { BarWithCiDatum } from './charts/BarWithCiChart';
 import ConfusionMatrixHeatmap from './charts/ConfusionMatrixHeatmap';
+import RiskCoverageChart from './charts/RiskCoverageChart';
 import NoDataNotice, { StatusBadge } from './NoDataNotice';
 
 const sciApi = new BleScientificResultsApiService();
@@ -26,6 +27,28 @@ function branchBars(rq2: EvidenceDashboardClosedSet['rq2'], field: 'balanced_acc
   return branches
     .filter((b) => typeof b[field] === 'number')
     .map((b) => ({ category: `${b.branch} (${b.analysis_role})`, value: b[field] as number }));
+}
+
+function computationalCostBars(rq2: EvidenceDashboardClosedSet['rq2'], field: 'inference_latency_ms' | 'serialized_model_size_bytes'): BarWithCiDatum[] {
+  const branches = (rq2?.branches as Rq2BranchResult[] | undefined) ?? [];
+  return branches.filter((b) => typeof b[field] === 'number').map((b) => ({ category: b.branch, value: b[field] as number }));
+}
+
+function primaryBranch(rq2: EvidenceDashboardClosedSet['rq2']): Rq2BranchResult | undefined {
+  const branches = (rq2?.branches as Rq2BranchResult[] | undefined) ?? [];
+  return branches.find((b) => b.analysis_role === 'PRIMARY');
+}
+
+function seedVariabilityBars(rq2: EvidenceDashboardClosedSet['rq2']): BarWithCiDatum[] {
+  const primary = primaryBranch(rq2);
+  return (primary?.seed_variability ?? [])
+    .filter((s) => typeof s.validation_balanced_accuracy === 'number')
+    .map((s) => ({ category: `seed ${s.seed}`, value: s.validation_balanced_accuracy as number }));
+}
+
+function perClassBars(byClass: Record<string, number> | null | undefined): BarWithCiDatum[] {
+  if (!byClass) return [];
+  return Object.entries(byClass).map(([unit, value]) => ({ category: unit, value }));
 }
 
 function Provenance({ items }: { items: (string | null | undefined)[] }) {
@@ -74,6 +97,22 @@ function ClosedSetSection({ closedSet }: { closedSet: EvidenceDashboardClosedSet
 
       <div className="grid gap-4 md:grid-cols-2">
         <div>
+          <div className="mb-1 text-xs font-semibold text-slate-400">Costo computacional -- latencia de inferencia por rama (ms)</div>
+          <BarWithCiChart data={computationalCostBars(closedSet.rq2, 'inference_latency_ms')} yLabel="ms" noDataReason="inference_latency_ms no esta presente en ninguna rama." />
+        </div>
+        <div>
+          <div className="mb-1 text-xs font-semibold text-slate-400">Costo computacional -- tamano de modelo serializado por rama (bytes)</div>
+          <BarWithCiChart data={computationalCostBars(closedSet.rq2, 'serialized_model_size_bytes')} yLabel="bytes" noDataReason="serialized_model_size_bytes no esta presente en ninguna rama." />
+        </div>
+      </div>
+
+      <div>
+        <div className="mb-1 text-xs font-semibold text-slate-400">Seed variability -- branch primaria (re-entrenada bajo las semillas congeladas restantes, VALIDATION-only)</div>
+        <BarWithCiChart data={seedVariabilityBars(closedSet.rq2)} yLabel="Balanced accuracy" noDataReason="La branch primaria no tiene seed_variability calculado todavia." />
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <div>
           <div className="mb-1 text-xs font-semibold text-slate-400">Matriz de confusion -- VALIDATION (capture-disjoint)</div>
           <ConfusionMatrixHeatmap matrix={closedSet.rq1?.confusion_matrix_capture ?? null} noDataReason="confusion_matrix_capture no esta presente en el reporte." />
         </div>
@@ -88,8 +127,27 @@ function ClosedSetSection({ closedSet }: { closedSet: EvidenceDashboardClosedSet
           PRIMARY TEST: BA = <span className="font-mono text-slate-300">{primaryTest.balanced_accuracy?.toFixed(4) ?? '—'}</span>
           {' · '}macro-F1 = <span className="font-mono text-slate-300">{primaryTest.macro_f1?.toFixed(4) ?? '—'}</span>
           {' · '}accuracy = <span className="font-mono text-slate-300">{primaryTest.accuracy?.toFixed(4) ?? '—'}</span>
+          {' · '}n_comparable = <span className="font-mono text-slate-300">{primaryTest.n_comparable_to_known_classes ?? '—'}</span> / <span className="font-mono text-slate-300">{primaryTest.n_examples ?? '—'}</span>
+          {' · '}evaluation_validity = <span className="font-mono text-slate-300">{primaryTest.evaluation_validity ?? '—'}</span>
         </div>
       )}
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <div>
+          <div className="mb-1 text-xs font-semibold text-slate-400">Precision por unidad (TEST, branch primaria)</div>
+          <BarWithCiChart data={perClassBars(primaryTest?.precision_per_class)} yLabel="Precision" noDataReason="precision_per_class no esta presente en la evaluacion TEST." />
+        </div>
+        <div>
+          <div className="mb-1 text-xs font-semibold text-slate-400">F1 por unidad (TEST, branch primaria)</div>
+          <BarWithCiChart data={perClassBars(primaryTest?.f1_per_class)} yLabel="F1" noDataReason="f1_per_class no esta presente en la evaluacion TEST." />
+        </div>
+      </div>
+
+      <div>
+        <div className="mb-1 text-xs font-semibold text-slate-400">Risk-coverage (TEST, branch primaria) -- El-Yaniv &amp; Wiener (2010)</div>
+        <RiskCoverageChart points={primaryTest?.risk_coverage ?? null} noDataReason="risk_coverage no esta presente en la evaluacion TEST." />
+      </div>
+
       {primaryTest?.recall_per_class && (
         <div>
           <div className="mb-1 text-xs font-semibold text-slate-400">Recall por unidad (TEST, branch primaria)</div>
@@ -118,6 +176,8 @@ function PerUnitAuxiliarySection({ runs }: { runs: EvidenceDashboardPerUnitRun[]
             <th className="px-3 py-2 text-right">delta_dependence</th>
             <th className="px-3 py-2 text-left">primary branch</th>
             <th className="px-3 py-2 text-right">primary BA (VALIDATION)</th>
+            <th className="px-3 py-2 text-right">latency (ms)</th>
+            <th className="px-3 py-2 text-right">model size (bytes)</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-800">
@@ -132,6 +192,8 @@ function PerUnitAuxiliarySection({ runs }: { runs: EvidenceDashboardPerUnitRun[]
                 <td className="px-3 py-2 text-right font-mono text-slate-300">{run.rq1?.delta_dependence?.toFixed(4) ?? '—'}</td>
                 <td className="px-3 py-2 font-mono text-slate-300">{primary?.branch ?? '—'}</td>
                 <td className="px-3 py-2 text-right font-mono text-slate-300">{primary?.balanced_accuracy?.toFixed(4) ?? '—'}</td>
+                <td className="px-3 py-2 text-right font-mono text-slate-300">{primary?.inference_latency_ms?.toFixed(2) ?? '—'}</td>
+                <td className="px-3 py-2 text-right font-mono text-slate-300">{primary?.serialized_model_size_bytes ?? '—'}</td>
               </tr>
             );
           })}

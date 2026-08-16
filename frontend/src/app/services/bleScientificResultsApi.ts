@@ -1123,8 +1123,16 @@ export interface EvidenceDashboardTestEvaluation {
   balanced_accuracy?: number | null;
   macro_f1?: number | null;
   recall_per_class?: Record<string, number> | null;
+  precision_per_class?: Record<string, number> | null;
+  f1_per_class?: Record<string, number> | null;
   confusion_matrix?: Record<string, Record<string, number>> | null;
   n_examples?: number | null;
+  n_comparable_to_known_classes?: number | null;
+  evaluation_validity?: string | null;
+  // El-Yaniv & Wiener (2010) selective-prediction curve -- same shape
+  // Evaluator._risk_coverage() already produces server-side, one point per
+  // achievable confidence threshold on this same TEST split.
+  risk_coverage?: { coverage: number; risk: number; threshold: number }[] | null;
 }
 
 export interface EvidenceDashboardClosedSet {
