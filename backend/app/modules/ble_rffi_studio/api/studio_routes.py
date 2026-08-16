@@ -438,6 +438,13 @@ def build_ble_rffi_studio_router(repository, job_manager) -> APIRouter:
             scientific_task=body["scientific_task"], ble_channel=body.get("ble_channel", 37),
             dataset_id=body.get("dataset_id"), dataset_version=body.get("dataset_version", "1.0.0"),
             speed_profile=body.get("speed_profile", "normal"),
+            # Already-implemented in StudioRepository.prepare_and_train()/
+            # build_dataset() (the same real CC2541SensorTag/CC2650-UNIT-01
+            # cross-contamination fix /auto-train/{unit} already relies on)
+            # -- exposed here too so a caller assembling a specific, curated
+            # capture_ids list (not the auto-resolved set) can still opt into
+            # the same protection instead of only getting it via auto-train.
+            target_physical_unit_ids=set(body["target_physical_unit_ids"]) if body.get("target_physical_unit_ids") else None,
         ))
 
     # ------------------------------------------------------------------

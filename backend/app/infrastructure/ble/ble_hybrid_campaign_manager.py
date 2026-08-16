@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.infrastructure.ble.capture.ble_capture_metadata import atomic_json
+
 from .campaign_policy import (
     EXPLORATORY_TARGET_SEARCH,
     NEGATIVE_CONTROL,
@@ -30,8 +32,17 @@ class BleHybridCampaignManager:
         if any(x in sid for x in ("/","\\","..")): raise ValueError("INVALID_SESSION_ID")
         return self.root/sid
     def _write(self,sid,**fields):
+        # Real-hardware bug fix (2026-08-13): session_manifest.json used a
+        # plain write_text() (truncate-then-write, not atomic) while get()
+        # polls the SAME file every ~1s with an unguarded json.loads() --
+        # a real, observed race during a live timing-diagnostic capture
+        # (json.loads caught the file mid-truncation and crashed with
+        # "Expecting value: line 1 column 1 (char 0)"). atomic_json's
+        # write-to-.tmp-then-os.replace() pattern (already used everywhere
+        # else in this codebase) makes every read see either the old or the
+        # new complete content, never a transiently-empty file.
         path=self._path(sid); path.mkdir(parents=True,exist_ok=True); target=path/"session_manifest.json"; old=json.loads(target.read_text()) if target.exists() else {}
-        target.write_text(json.dumps({**old,**fields,"session_id":sid,"updated_at_utc":utc()},indent=2)+"\n",encoding="utf-8")
+        atomic_json(target,{**old,**fields,"session_id":sid,"updated_at_utc":utc()})
     def _canonical_sha256(self,value:dict[str,Any]):
         return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(",",":"),ensure_ascii=True).encode("utf-8")).hexdigest()
     def _git_output(self,*args):

@@ -221,11 +221,12 @@ second never follows automatically from the first anywhere in this project.
 | Dataset + capture-disjoint leakage protection | Yes | Yes |
 | TRAIN / VALIDATION / protected TEST mechanism | Yes | Mechanism tested; definitive campaign pending |
 | `paper-eq6-7-v1` preprocessing (Eq. 6-7) | Yes | Unit/integration tested; no definitive real bundle yet |
-| Four RQ2 model branches | Yes | Definitive common benchmark pending |
+| RQ1 acquisition-dependence measurement | Yes | **Executed** — real closed-set `delta_dependence = +0.2182` (see below) |
+| Four RQ2 model branches | Yes | **Executed** — real closed-set benchmark, `engineered_rf` selected PRIMARY (see below) |
 | Decision-window aggregation | Yes | Definitive campaign pending |
 | Abstention / coverage / risk-coverage | Yes | Definitive campaign pending |
-| PRE/POST RESET-CONTROL framework (RQ3) | Yes | No definitive real pairs yet |
-| FULL_BURST / ADVA_EXCLUDED / PRE_PDU (RQ4) | Yes | Definitive RQ4 campaign pending |
+| PRE/POST RESET-CONTROL framework (RQ3) | Yes | Sample size frozen (80 pairs); 0 real pairs captured yet |
+| FULL_BURST / ADVA_EXCLUDED / PRE_PDU (RQ4) | Yes | **0/4 enrolled units eligible** — `DATA_NOT_AVAILABLE`, real evidence recorded per unit (see below) |
 | Strong native <-> SDR association | Mechanism yes | **No — 0 STRONG, no accepted calibration policy** |
 | Protected future scientific result | Mechanism yes | **Not yet executed** |
 
@@ -245,6 +246,71 @@ get a pass.
 Full current-state detail, every real number behind the table above, and
 the complete evidence-to-decision trace live in
 [`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md).
+
+### Real closed-set benchmark result (2026-08-16)
+
+First real, definitive run of the 4-unit closed-set comparison (`CC2541SensorTag`,
+`CC2650-UNIT-01`, `keyfobdemo 01`, `keyfobdemo 02` — V2-admitted, session-disjoint,
+leakage check `PASSED`, 9,891 real examples across 79 real B200 captures, Shelly excluded
+as a class, no background pooled in as a fifth class):
+
+| Evaluation domain (RQ1) | Balanced accuracy | n |
+|---|---:|---:|
+| `BA_window` (intentionally capture-dependent diagnostic) | 0.9676 | 1,790 |
+| `BA_capture` (capture-disjoint, confirmatory) | 0.7494 | 2,203 |
+| Held-out TEST (PRIMARY branch) | 0.7666 | 2,464 |
+
+`delta_dependence = BA_window - BA_capture = +0.2182` — a real, on-hardware measurement
+of exactly the optimism RQ1 is designed to detect: a single-recording evaluation would
+have overstated closed-set discrimination by roughly 22 balanced-accuracy points relative
+to genuinely disjoint captures.
+
+RQ2 branch comparison (VALIDATION, same admitted groups):
+
+| Branch | Balanced accuracy | Macro-F1 |
+|---|---:|---:|
+| coarse_morphology | 0.277 | 0.128 |
+| **engineered_rf (PRIMARY)** | **0.634** | **0.586** |
+| raw_iq | 0.248 | 0.226 |
+| stft | 0.537 | 0.498 |
+
+`engineered_rf` (best of Logistic Regression / SVM-RBF / Random Forest, selected on
+VALIDATION only) was selected PRIMARY in this run and independently in all 4 per-unit
+auxiliary runs below — a real, repeated finding, not a single cherry-picked outcome.
+
+Per-unit TEST recall (PRIMARY branch), reported individually because the aggregate
+balanced-accuracy number hides real, large per-source spread on this naturally imbalanced
+split (TEST alone ranges from 166 to 1,857 examples per unit):
+
+| Unit | Recall (TEST) |
+|---|---:|
+| CC2650-UNIT-01 | 1.000 |
+| keyfobdemo 01 | 0.837 |
+| CC2541SensorTag | 0.699 |
+| keyfobdemo 02 | 0.530 |
+
+4 auxiliary per-unit TARGET_VS_BACKGROUND detectors (not the closed-set result above)
+were also run — real per-unit `delta_dependence` ranges from -0.046 to +0.070, all
+substantially smaller than the closed-set effect above (target-vs-background is an
+easier task with more redundant evidence per window; the multiclass task is where
+acquisition dependence actually shows up).
+
+**RQ3** — sample size frozen (`rq3_sample_size` scientist decision,
+`PROSPECTIVE_BALANCED_WITHIN_DEVICE_CROSSOVER`): 10 RESET + 10 CONTROL pairs per unit,
+80 pairs / 160 captures total across the 4 units. 0 real pairs captured yet — unchanged
+from the row above; no nominal statistical power is declared, since no real RQ3 variance
+estimate exists yet.
+
+**RQ4** — real eligibility check completed for every enrolled unit:
+`RQ4 = DATA_NOT_AVAILABLE: CONTROLLED_VARIANT_NOT_AVAILABLE` (0/4 eligible; no enrolled
+unit has documented, independently-verified control over its own packet content — full
+per-unit reasons in [`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md)).
+
+These results, plus the per-unit auxiliary runs, RQ3's live campaign progress, and RQ4's
+per-unit eligibility, are also readable live (not a snapshot) from the platform itself:
+BLE Scientific Results Studio → **Evidence Dashboard** tab, `GET
+/api/ble-scientific-results/evidence-dashboard` — every number there is read straight off
+the same real, persisted artifacts summarized above, refreshable on demand.
 
 ---
 
@@ -344,7 +410,12 @@ eligibility/diagnostics split, protocol-deviation classification, and real
 time-based decision windows. Its **Guided Validation** tab is a real, wired
 capture-first wizard for non-experts (Live Timing Diagnostic, Reinforced
 Target-Absence Control) -- real runs so far are consistent with the 0 STRONG
-associations already stated above. No dedicated UI screenshot yet; detail:
+associations already stated above. Its **Evidence Dashboard** tab is a live,
+refreshable, in-platform view of the real closed-set/per-unit RQ1-RQ2
+results, RQ3 sample-size decision and campaign progress, and RQ4 per-unit
+eligibility summarized under "Real closed-set benchmark result" above --
+reads the same persisted artifacts live, never a snapshot. No dedicated UI
+screenshot yet; detail:
 [`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md).
 
 ### RF Intelligence -- `/rf-intelligence`

@@ -25,12 +25,15 @@ from ..api.scientific_results_repository import ScientificResultsRepository
 from ..calibration import (
     NoThresholdSatisfiesCriteriaError,
     calibration_event_from_ledger_row,
+    evaluate_capture_admission_v2,
     evaluate_capture_eligibility,
+    evaluate_target_specific_off_control,
     false_strong_counts_by_threshold,
     find_enrolled_devices_in_native_scan,
     is_ambiguous_event,
     is_valid_strong_event,
     select_association_policy,
+    summarize_unit_admission,
 )
 from ..contracts import CalibrationEventRecord
 from ..records.iq_resolution import resolve_replay_dir
@@ -479,6 +482,146 @@ class GuidedBleScientificValidationService:
             "candidates_checked": len(candidates), "valid_reinforced_controls": valid,
             "has_valid_control": len(valid) > 0, "invalid_reasons_by_capture": invalid_reasons,
         }
+
+    # ------------------------------------------------------------------
+    # SOURCE ADMISSION V2 -- admits reference-source PDUs from session-level
+    # corroboration (see calibration/source_admission_v2.py for the 8
+    # conditions and why packet-level native<->SDR timing is no longer a
+    # prerequisite). The OLD packet-level mechanism (_attempt_policy /
+    # select_association_threshold below) is untouched and keeps running --
+    # it is now reported as TEMPORAL_ASSOCIATION_DIAGNOSTIC, a separate,
+    # still-valid characterization of native-scanner<->SDR timing, not a
+    # gate on admission.
+    # ------------------------------------------------------------------
+
+    def _experimenter_off_attestations(self) -> list[dict]:
+        attestations_dir = self.ble_root / "registry" / "experimenter_attestations"
+        if not attestations_dir.is_dir():
+            return []
+        return [_read_json(path) for path in sorted(attestations_dir.glob("*.json"))]
+
+    def _negative_session_capture_ids_for_unit(self, physical_unit_id: str) -> list[str]:
+        """Standard BACKGROUND_TARGET_OFF captures declared for exactly this
+        unit, PLUS captures covered by an experimenter attestation that
+        marks this unit OFF (registry/experimenter_attestations/*.json -- a
+        supplementary provenance layer that never rewrites the original
+        capture/session manifest)."""
+        capture_ids: set[str] = set()
+        captures_dir = self.ble_root / "captures"
+        if captures_dir.is_dir():
+            for path in captures_dir.glob("*.json"):
+                data = _read_json(path)
+                if data.get("capture_purpose") == "BACKGROUND_TARGET_OFF" and data.get("target_reference_id") == physical_unit_id:
+                    capture_ids.add(data.get("capture_id") or path.stem)
+        for attestation in self._experimenter_off_attestations():
+            if attestation.get("attestation_type") != "EXPERIMENTER_ATTESTED_PHYSICAL_STATE":
+                continue
+            if (attestation.get("attested_physical_state") or {}).get(physical_unit_id) == "OFF":
+                capture_ids.update(attestation.get("applies_to_capture_ids") or [])
+        return sorted(capture_ids)
+
+    def _native_rows_for_capture(self, studio_capture: dict) -> list[dict]:
+        session_id = studio_capture.get("session_id") or studio_capture.get("execution_id")
+        return _read_jsonl(self.native_scan_root / str(session_id) / "advertisements.jsonl") if session_id else []
+
+    def _ledger_rows_for_capture(self, capture_id: str) -> list[dict]:
+        replay_dir = resolve_replay_dir(self.legacy_capture_root, capture_id)
+        return _read_jsonl((replay_dir / "packet_association_ledger.jsonl") if replay_dir else None)
+
+    def run_source_admission_v2(self) -> dict[str, Any]:
+        device_ids = self._discover_enrolled_devices()
+        device_addresses = self._device_addresses()
+        captures_dir = self.ble_root / "captures"
+
+        units_payload: dict[str, Any] = {}
+        total_admitted_pdus = 0
+
+        for device_id in device_ids:
+            bound_address = device_addresses.get(device_id)
+
+            negative_capture_ids = self._negative_session_capture_ids_for_unit(device_id)
+            negative_native_rows: list[list[dict]] = []
+            negative_ledger_rows: list[list[dict]] = []
+            for capture_id in negative_capture_ids:
+                studio_capture = _read_json(captures_dir / f"{capture_id}.json")
+                negative_native_rows.append(self._native_rows_for_capture(studio_capture))
+                negative_ledger_rows.append(self._ledger_rows_for_capture(capture_id))
+
+            off_result = evaluate_target_specific_off_control(
+                physical_unit_id=device_id, bound_address=bound_address,
+                negative_session_native_rows=negative_native_rows, negative_session_ledger_rows=negative_ledger_rows,
+            )
+
+            capture_results = []
+            if captures_dir.is_dir():
+                for path in sorted(captures_dir.glob("*.json")):
+                    studio_capture = _read_json(path)
+                    if studio_capture.get("capture_purpose") != "TARGET_DEVICE_ON" or studio_capture.get("target_reference_id") != device_id:
+                        continue
+                    capture_id = studio_capture.get("capture_id") or path.stem
+                    native_rows = self._native_rows_for_capture(studio_capture)
+                    native_target_count = sum(
+                        1 for row in native_rows
+                        if bound_address and str(row.get("address", "")).upper() == bound_address.upper()
+                    )
+                    result = evaluate_capture_admission_v2(
+                        capture_id=capture_id, physical_unit_id=device_id,
+                        capture_purpose=studio_capture.get("capture_purpose"),
+                        target_reference_id=studio_capture.get("target_reference_id"),
+                        data_origin=studio_capture.get("data_origin"), acquisition_quality=studio_capture.get("acquisition_quality"),
+                        bound_address=bound_address, native_target_observation_count=native_target_count,
+                        off_control_passed=off_result.passed, ledger_rows=self._ledger_rows_for_capture(capture_id),
+                    )
+                    capture_results.append(result)
+
+            summary = summarize_unit_admission(device_id, capture_results, off_result.passed)
+            total_admitted_pdus += summary.admitted_direct_pdus
+            units_payload[device_id] = {
+                "eligible_captures": summary.eligible_captures, "admitted_captures": summary.admitted_captures,
+                "admitted_direct_pdus": summary.admitted_direct_pdus, "readiness": summary.readiness,
+                "off_control": {
+                    "passed": off_result.passed, "negative_sessions": off_result.negative_sessions,
+                    "target_native_observations": off_result.target_native_observations,
+                    "target_sdr_compatible_pdus": off_result.target_sdr_compatible_pdus,
+                    "false_target_attributions": off_result.false_target_attributions,
+                },
+                "excluded_captures": [
+                    {
+                        "capture_id": result.capture_id, "direct_target_pdu_count": result.direct_target_pdu_count,
+                        "native_target_observation_count": result.native_target_observation_count,
+                        "failed_conditions": list(result.failed_conditions),
+                    }
+                    for result in summary.excluded_captures
+                ],
+            }
+
+        if not units_payload:
+            overall_readiness = "BLOCKED"
+        elif all(unit["readiness"] == "READY" for unit in units_payload.values()):
+            overall_readiness = "READY"
+        elif any(unit["readiness"] == "READY" for unit in units_payload.values()):
+            overall_readiness = "PARTIAL"
+        else:
+            overall_readiness = "BLOCKED"
+
+        result_payload = {
+            "schema_version": "ble-source-admission-v2-audit-v1",
+            "generated_at": utc_now(),
+            # Provenance separation (per the source-admission-v2 request):
+            # this basis label identifies HOW the enrollment reference label
+            # was established (logical/experimental fields), which must
+            # never be silently read as "the classifier identified this
+            # physical radio" -- that is a separate, later questioned-source
+            # decision the RFFI model itself makes from waveform features
+            # only, never from this admission basis.
+            "label_admission_basis": "CONTROLLED_DIRECT_SDR_V2",
+            "units": units_payload,
+            "total_admitted_direct_pdus": total_admitted_pdus,
+            "reference_source_admission_readiness": overall_readiness,
+            "temporal_association": "DIAGNOSTIC_ONLY_NOT_PRIMARY_ADMISSION",
+        }
+        atomic_json(self.output_root / "source_admission_v2_latest.json", result_payload)
+        return result_payload
 
     # ------------------------------------------------------------------
     # Association policy attempt

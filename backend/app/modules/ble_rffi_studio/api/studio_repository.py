@@ -1090,6 +1090,7 @@ class StudioRepository:
 
     def combine_datasets_for_identification(
         self, dataset_keys: list[tuple[str, str]], background_dataset_key: tuple[str, str] | None = None,
+        include_background: bool = True,
     ) -> DatasetManifest:
         """Merges 2+ ALREADY-frozen, single-device datasets into one new
         dataset spanning every one of their physical_units, for
@@ -1120,9 +1121,19 @@ class StudioRepository:
 
         Examples are otherwise reused exactly as already selected by each
         source dataset (select_examples() eligibility was already decided
-        when each one was built) -- never re-derived, never re-filtered."""
+        when each one was built) -- never re-derived, never re-filtered.
+
+        include_background=False (2026-08-15, closed-set 4-unit paper
+        realignment): drop every physical_unit_id=None example from every
+        source dataset, from ALL of them, not just relabel them -- for a
+        pure N-way closed-set comparison where BACKGROUND must never become
+        an implicit 5th class. Mutually exclusive with background_dataset_key
+        (which exists to ADD one shared background pool, the opposite of
+        this)."""
         if len(dataset_keys) < 2:
             raise ValueError("COMBINE_REQUIRES_AT_LEAST_TWO_DATASETS")
+        if not include_background and background_dataset_key is not None:
+            raise ValueError("BACKGROUND_DATASET_KEY_REQUIRES_INCLUDE_BACKGROUND")
         datasets = []
         for dataset_id, dataset_version in dataset_keys:
             dataset = self._require_dataset(dataset_id, dataset_version)
@@ -1134,7 +1145,12 @@ class StudioRepository:
             raise ValueError(f"CANNOT_COMBINE_MIXED_DATA_ORIGINS:{sorted(origins)}")
 
         all_examples: dict[str, ExampleRecord] = {}
-        if background_dataset is not None:
+        if not include_background:
+            for dataset in datasets:
+                for example in self._dataset_examples(dataset):
+                    if example.physical_unit_id is not None:
+                        all_examples[example.example_id] = example
+        elif background_dataset is not None:
             for example in self._dataset_examples(background_dataset):
                 if example.physical_unit_id is None:
                     all_examples[example.example_id] = example

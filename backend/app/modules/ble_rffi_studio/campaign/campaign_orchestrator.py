@@ -487,7 +487,19 @@ class CampaignOrchestrator:
             if replay_state.get("state") != "completed":
                 raise CampaignSessionError(f"OFFLINE_REPLAY_{str(replay_state.get('state', 'unknown')).upper()}:{replay_state.get('error')}")
             exit_status = (replay_state.get("result") or {}).get("exit_status")
-            if exit_status == "FULLY_PROCESSED":
+            # Real-hardware bug fix (2026-08-13): COMPLETED_WITH_FAILED_SEGMENTS
+            # is a real, documented terminal execution_status (see
+            # ble_offline_replay.py / capture.py's own ReplayStatus / this
+            # package's README) -- every segment was attempted (no
+            # pending_segments), some individually failed decode/timeout,
+            # which is an expected, normal outcome for real RF, never a
+            # reason to abort the whole session. It was previously treated
+            # as OFFLINE_REPLAY_UNEXPECTED_EXIT_STATUS, meaning any real
+            # capture with even one failed segment could never reach
+            # evidence-building at all. Dataset eligibility for the affected
+            # segments is still correctly gated downstream by
+            # scientific_completion_status/pending_segments, untouched here.
+            if exit_status in ("FULLY_PROCESSED", "COMPLETED_WITH_FAILED_SEGMENTS"):
                 break
             if exit_status != "PARTIAL":
                 raise CampaignSessionError(f"OFFLINE_REPLAY_UNEXPECTED_EXIT_STATUS:{exit_status}")

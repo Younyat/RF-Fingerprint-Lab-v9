@@ -4,6 +4,7 @@ import AssociationTab from './AssociationTab';
 import CampaignTab from './CampaignTab';
 import ChannelTransportTab from './ChannelTransportTab';
 import CoverageTab from './CoverageTab';
+import EvidenceDashboardTab from './EvidenceDashboardTab';
 import EvidenceQualityTab from './EvidenceQualityTab';
 import ExperimentHealthTab from './ExperimentHealthTab';
 import GuidedValidationTab from './GuidedValidationTab';
@@ -69,6 +70,7 @@ const SECTIONS: DashboardSection[] = [
     id: 'results', label: 'C. Scientific Results',
     hint: 'RQ1-4, coverage/risk-coverage, inspeccion estadistica comun, sensibilidad (nunca mezclada con el resultado confirmatorio principal), S1 (bounded channel transport) y S2 (online/offline equivalence).',
     tabs: [
+      { id: 'evidence-dashboard', label: 'Evidence Dashboard', enabled: true },
       { id: 'rq1', label: 'RQ1', enabled: true },
       { id: 'rq2', label: 'RQ2', enabled: true },
       { id: 'rq3', label: 'RQ3', enabled: true },
@@ -178,6 +180,7 @@ export default function BleScientificResultsPage() {
       {activeTab === 'campaign' && <CampaignTab />}
       {activeTab === 'integrity' && <IntegrityLeakageTab />}
       {activeTab === 'quality' && <AcquisitionQualityTab />}
+      {activeTab === 'evidence-dashboard' && <EvidenceDashboardTab />}
       {activeTab === 'rq1' && <Rq1Tab />}
       {activeTab === 'rq2' && <Rq2Tab />}
       {activeTab === 'rq3' && <Rq3Tab />}

@@ -1096,6 +1096,90 @@ export interface Rq2RepresentationComparisonReport extends Record<string, unknow
   generated_at: string;
 }
 
+// Real, in-platform paper-support dashboard (2026-08-16) -- every field here
+// is a pass-through of an already-persisted artifact (get_evidence_dashboard_
+// summary() computes no new science); see backend/.../get_evidence_dashboard_
+// summary docstring for the exact provenance of each section.
+export interface Rq1AcquisitionDependenceReport extends Record<string, unknown> {
+  schema_version: string;
+  protocol_id?: string | null;
+  protocol_version?: number | null;
+  contract_sha256?: string | null;
+  git_sha?: string | null;
+  model_bundle_id?: string | null;
+  ba_window: number | null;
+  ba_window_n_comparable?: number | null;
+  ba_capture: number | null;
+  ba_capture_n_comparable?: number | null;
+  ba_future: number | null;
+  ba_future_status: string;
+  delta_dependence: number | null;
+  confusion_matrix_capture: Record<string, Record<string, number>> | null;
+  generated_at: string;
+}
+
+export interface EvidenceDashboardTestEvaluation {
+  accuracy?: number | null;
+  balanced_accuracy?: number | null;
+  macro_f1?: number | null;
+  recall_per_class?: Record<string, number> | null;
+  confusion_matrix?: Record<string, Record<string, number>> | null;
+  n_examples?: number | null;
+}
+
+export interface EvidenceDashboardClosedSet {
+  paper_run_id: string;
+  dataset_id: string;
+  dataset_version: string;
+  rq1: Rq1AcquisitionDependenceReport | null;
+  rq2: Rq2RepresentationComparisonReport | null;
+  primary_branch: string | null;
+  primary_training_run_id: string | null;
+  primary_test: EvidenceDashboardTestEvaluation | null;
+}
+
+export interface EvidenceDashboardPerUnitRun {
+  paper_run_id: string;
+  dataset_id: string;
+  dataset_version: string;
+  rq1: Rq1AcquisitionDependenceReport | null;
+  rq2: Rq2RepresentationComparisonReport | null;
+}
+
+export interface EvidenceDashboardScientistDecision {
+  field_id: string;
+  selected_value: Record<string, unknown>;
+  rationale: string;
+  evidence_used: string;
+  decided_by: string | null;
+  decided_at: string;
+}
+
+export interface EvidenceDashboardRq3Progress {
+  total_captures: number;
+  captures_with_rq3_metadata: number;
+  declared_by_unit: Record<string, { RESET: number; CONTROL: number }>;
+}
+
+export interface EvidenceDashboardRq4Unit {
+  physical_unit_id: string;
+  rq4_eligibility: 'ELIGIBLE' | 'NOT_ELIGIBLE';
+  rq4_eligibility_reason: string | null;
+}
+
+export interface EvidenceDashboardSummary {
+  schema_version: string;
+  generated_at: string;
+  git_sha: string | null;
+  protocol_id: string | null;
+  protocol_version: number | null;
+  contract_sha256: string | null;
+  closed_set: EvidenceDashboardClosedSet | null;
+  per_unit_auxiliary: EvidenceDashboardPerUnitRun[];
+  rq3: { sample_size_decision: EvidenceDashboardScientistDecision | null; campaign_progress: EvidenceDashboardRq3Progress };
+  rq4: { physical_units: EvidenceDashboardRq4Unit[]; status: 'DATA_NOT_AVAILABLE' | 'ELIGIBLE_UNITS_PRESENT' };
+}
+
 export class BleScientificResultsApiService {
   constructor(private readonly baseURL = 'http://localhost:8000') {}
   private get root() { return `${this.baseURL}/api/ble-scientific-results`; }
@@ -1208,6 +1292,9 @@ export class BleScientificResultsApiService {
   }
   async rq2RepresentationComparison(paperRunId: string) {
     return (await axios.get<Rq2RepresentationComparisonReport | NoDataResponse>(`${this.root}/runs/${encodeURIComponent(paperRunId)}/rq2-representation-comparison`)).data;
+  }
+  async evidenceDashboardSummary() {
+    return (await axios.get<EvidenceDashboardSummary>(`${this.root}/evidence-dashboard`)).data;
   }
   async runPaperExport() { return (await axios.post<PaperExportManifest>(`${this.root}/paper-exports`)).data; }
   async getPaperExportManifest() { return (await axios.get<PaperExportManifest | NoDataResponse>(`${this.root}/paper-exports`)).data; }

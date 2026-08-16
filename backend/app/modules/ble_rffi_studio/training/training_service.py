@@ -98,10 +98,15 @@ class TrainingService:
             return np.zeros((0, len(FEATURE_NAMES)))
         return np.stack([feature_vector_representation(self._window_for(e), float(e.sample_rate_sps)) for e in examples])
 
-    def run_baseline(self, *, training_run: TrainingRun, split: SplitManifest, examples_by_id: dict[str, ExampleRecord]) -> TrainingArtifacts:
+    def run_baseline(
+        self, *, training_run: TrainingRun, split: SplitManifest, examples_by_id: dict[str, ExampleRecord],
+        allow_intentional_diagnostic_leakage: bool = False,
+    ) -> TrainingArtifacts:
         if split.split_status != "READY":
             raise ValueError(f"CANNOT_TRAIN_ON_A_SPLIT_THAT_IS_NOT_READY:{split.split_status}")
-        if split.leakage_check.status != "PASSED":
+        if split.leakage_check.status != "PASSED" and not (
+            allow_intentional_diagnostic_leakage and split.split_purpose == "RQ1_ACQUISITION_DEPENDENCE_DIAGNOSTIC"
+        ):
             raise ValueError(f"CANNOT_TRAIN_WHEN_LEAKAGE_CHECK_DID_NOT_PASS:{split.leakage_check.status}")
         if training_run.model_type not in ("logistic_regression", "svm_rbf", "random_forest"):
             raise ValueError(f"run_baseline only supports classical baseline model_types, got {training_run.model_type}")
@@ -191,7 +196,10 @@ class TrainingService:
             for e in examples
         ])
 
-    def run_frozen_reference_baseline(self, *, training_run: TrainingRun, split: SplitManifest, examples_by_id: dict[str, ExampleRecord]) -> TrainingArtifacts:
+    def run_frozen_reference_baseline(
+        self, *, training_run: TrainingRun, split: SplitManifest, examples_by_id: dict[str, ExampleRecord],
+        allow_intentional_diagnostic_leakage: bool = False,
+    ) -> TrainingArtifacts:
         """RQ2's 4th branch: a simple, frozen (no iterative optimization)
         morphological/coarse time-frequency nearest-centroid reference --
         see frozen_reference_baseline.py. Structurally parallel to
@@ -203,7 +211,9 @@ class TrainingService:
         shape vectors nearest-centroid distance relies on)."""
         if split.split_status != "READY":
             raise ValueError(f"CANNOT_TRAIN_ON_A_SPLIT_THAT_IS_NOT_READY:{split.split_status}")
-        if split.leakage_check.status != "PASSED":
+        if split.leakage_check.status != "PASSED" and not (
+            allow_intentional_diagnostic_leakage and split.split_purpose == "RQ1_ACQUISITION_DEPENDENCE_DIAGNOSTIC"
+        ):
             raise ValueError(f"CANNOT_TRAIN_WHEN_LEAKAGE_CHECK_DID_NOT_PASS:{split.leakage_check.status}")
         if training_run.model_type != "frozen_morphological_baseline":
             raise ValueError(f"run_frozen_reference_baseline only supports frozen_morphological_baseline, got {training_run.model_type}")
@@ -264,10 +274,15 @@ class TrainingService:
             return raw_iq_representation(window, DEFAULT_RAW_IQ_LENGTH)
         return spectrogram_representation(window, float(example.sample_rate_sps), n_fft=DEFAULT_SPECTROGRAM_N_FFT, target_frames=DEFAULT_SPECTROGRAM_FRAMES)
 
-    def run_cnn(self, *, training_run: TrainingRun, split: SplitManifest, examples_by_id: dict[str, ExampleRecord], epochs: int = 30) -> TrainingArtifacts:
+    def run_cnn(
+        self, *, training_run: TrainingRun, split: SplitManifest, examples_by_id: dict[str, ExampleRecord], epochs: int = 30,
+        allow_intentional_diagnostic_leakage: bool = False,
+    ) -> TrainingArtifacts:
         if split.split_status != "READY":
             raise ValueError(f"CANNOT_TRAIN_ON_A_SPLIT_THAT_IS_NOT_READY:{split.split_status}")
-        if split.leakage_check.status != "PASSED":
+        if split.leakage_check.status != "PASSED" and not (
+            allow_intentional_diagnostic_leakage and split.split_purpose == "RQ1_ACQUISITION_DEPENDENCE_DIAGNOSTIC"
+        ):
             raise ValueError(f"CANNOT_TRAIN_WHEN_LEAKAGE_CHECK_DID_NOT_PASS:{split.leakage_check.status}")
         if training_run.model_type not in ("cnn1d", "cnn2d"):
             raise ValueError(f"run_cnn only supports cnn1d/cnn2d, got {training_run.model_type}")

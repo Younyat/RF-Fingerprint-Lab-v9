@@ -636,7 +636,7 @@ class ScientificResultsRepository:
 
     _SCIENTIST_DECISION_FIELD_IDS: tuple[str, ...] = (
         "rq2_primary_branch", "rq3_primary_analysis", "rq4_primary_analysis", "sensitivity_analyses",
-        "preprocessing_profile", "rq3_reset_control_definition", "non_inferiority_margin",
+        "preprocessing_profile", "rq3_reset_control_definition", "rq3_sample_size", "non_inferiority_margin",
         "non_inferiority_direction", "alpha", "confirmatory_hypotheses", "holm_family",
     )
 
@@ -1397,6 +1397,45 @@ class ScientificResultsRepository:
             return []
         return [CaptureRecord.model_validate(json.loads(path.read_text(encoding="utf-8"))) for path in sorted(captures_dir.glob("*.json"))]
 
+    def _load_training_run_evaluation(self, training_run_id: str) -> dict[str, Any] | None:
+        """RQ2's persisted representation-comparison report only carries
+        VALIDATION-domain branch metrics (model selection is VALIDATION-only
+        by design) -- the PRIMARY branch's real TEST confusion matrix lives
+        on the training run itself, already computed and persisted by
+        StudioRepository.evaluate_training_run(include_test=True). Read-only,
+        same convention as the loaders above."""
+        path = self.ble_root / "training_runs" / training_run_id / "evaluation_report.json"
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _rq3_campaign_progress(self) -> dict[str, Any]:
+        """Real count of how many captures on disk today actually carry the
+        RQ3 metadata build_pre_post_pairs() requires (day_id/pre_or_post/
+        intervention_arm), broken down per physical unit and arm -- no
+        existing function computes this; every other RQ3 real number
+        (build_pre_post_pairs, the crossover assignment) operates only once
+        that metadata already exists. Unit identity follows
+        pre_post_pairing.py's own _unit_id convention (target_reference_id,
+        falling back to isolation_declared_physical_unit_id) -- never the
+        address-resolved physical_unit_id, which CaptureRecord does not
+        carry (see pre_post_pairing.py)."""
+        captures = self._load_all_captures()
+        declared_by_unit: dict[str, dict[str, int]] = {}
+        declared_total = 0
+        for capture in captures:
+            if not (capture.day_id and capture.pre_or_post and capture.intervention_arm):
+                continue
+            declared_total += 1
+            unit_id = capture.target_reference_id or capture.isolation_declared_physical_unit_id or "UNKNOWN"
+            bucket = declared_by_unit.setdefault(unit_id, {"RESET": 0, "CONTROL": 0})
+            if capture.intervention_arm in bucket:
+                bucket[capture.intervention_arm] += 1
+        return {
+            "total_captures": len(captures), "captures_with_rq3_metadata": declared_total,
+            "declared_by_unit": declared_by_unit,
+        }
+
     def _load_examples(self, capture_id: str) -> list[ExampleRecord]:
         path = self.ble_root / "evidence" / capture_id / "examples.jsonl"
         if not path.is_file():
@@ -1980,6 +2019,82 @@ class ScientificResultsRepository:
         if not path.is_file():
             return None
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def get_evidence_dashboard_summary(self) -> dict[str, Any]:
+        """Real, in-platform paper-support dashboard: assembles ALREADY
+        PERSISTED RQ1/RQ2 reports (closed-set MULTI_DEVICE_CLASSIFICATION
+        run + the per-unit TARGET_VS_BACKGROUND auxiliary runs, discriminated
+        via PaperRunRecord.scientific_task from list_runs() -- never a
+        hardcoded paper_run_id), the frozen rq3_sample_size scientist
+        decision plus real, live RQ3 campaign progress, RQ4 per-unit
+        eligibility from PhysicalDeviceRegistry, and study-level provenance
+        (protocol_id/contract_sha256/git_sha) from get_study_status().
+        Computes NO new science and NO new statistic -- every number here
+        already exists as a real, independently-generated artifact; this
+        method only cross-references them, exactly like
+        get_experiment_health_summary() does for Level A. Every section
+        keeps its own source's real generated_at/git_sha/dataset_id so the
+        caller can show provenance without any new tracking."""
+        study_status = self.get_study_status()
+        runs = self.list_runs()
+        closed_set_run = next((r for r in runs if r.scientific_task == "MULTI_DEVICE_CLASSIFICATION"), None)
+        per_unit_runs = [r for r in runs if r.scientific_task == "TARGET_VS_BACKGROUND"]
+
+        closed_set: dict[str, Any] | None = None
+        if closed_set_run is not None:
+            rq1 = self.get_rq1_acquisition_dependence_report(closed_set_run.paper_run_id)
+            rq2 = self.get_rq2_representation_comparison_report(closed_set_run.paper_run_id)
+            primary = next((b for b in (rq2 or {}).get("branches", []) if b.get("analysis_role") == "PRIMARY"), None)
+            primary_evaluation = self._load_training_run_evaluation(primary["training_run_id"]) if primary else None
+            closed_set = {
+                "paper_run_id": closed_set_run.paper_run_id, "dataset_id": closed_set_run.dataset_id,
+                "dataset_version": closed_set_run.dataset_version, "rq1": rq1, "rq2": rq2,
+                "primary_branch": primary.get("branch") if primary else None,
+                "primary_training_run_id": primary.get("training_run_id") if primary else None,
+                "primary_test": (primary_evaluation or {}).get("TEST"),
+            }
+
+        per_unit_auxiliary = []
+        for run in per_unit_runs:
+            rq1_report = self.get_rq1_acquisition_dependence_report(run.paper_run_id)
+            rq2_report = self.get_rq2_representation_comparison_report(run.paper_run_id)
+            # Many historical/exploratory TARGET_VS_BACKGROUND paper_runs
+            # exist on disk with neither report ever computed -- excluded
+            # here, not hidden: a run with zero real results contributes
+            # nothing this paper's dashboard needs, and listing 20+ empty
+            # rows next to the 4 real ones would bury them, not support them.
+            if rq1_report is None and rq2_report is None:
+                continue
+            per_unit_auxiliary.append({
+                "paper_run_id": run.paper_run_id, "dataset_id": run.dataset_id, "dataset_version": run.dataset_version,
+                "rq1": rq1_report, "rq2": rq2_report,
+            })
+
+        decisions = self.get_latest_scientist_decisions()
+        registry = PhysicalDeviceRegistry(self.ble_root / "registry")
+        physical_units = [
+            {
+                "physical_unit_id": unit.physical_unit_id, "rq4_eligibility": unit.rq4_eligibility,
+                "rq4_eligibility_reason": unit.rq4_eligibility_reason,
+            }
+            for unit in registry.list_physical_units()
+        ]
+
+        return {
+            "schema_version": "ble-scientific-results-evidence-dashboard-v1",
+            "generated_at": utc_now(), "git_sha": study_status.get("git_sha"),
+            "protocol_id": study_status.get("protocol_id"), "protocol_version": study_status.get("protocol_version"),
+            "contract_sha256": study_status.get("contract_sha256"),
+            "closed_set": closed_set, "per_unit_auxiliary": per_unit_auxiliary,
+            "rq3": {
+                "sample_size_decision": decisions.get("rq3_sample_size"),
+                "campaign_progress": self._rq3_campaign_progress(),
+            },
+            "rq4": {
+                "physical_units": physical_units,
+                "status": "ELIGIBLE_UNITS_PRESENT" if any(u["rq4_eligibility"] == "ELIGIBLE" for u in physical_units) else "DATA_NOT_AVAILABLE",
+            },
+        }
 
     def run_paper_export(self) -> dict[str, Any]:
         """Real production caller for paper_export.py -- writes

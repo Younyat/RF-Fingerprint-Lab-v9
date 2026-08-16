@@ -186,6 +186,15 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
     def experiment_health():
         return call(lambda: repository.get_experiment_health_summary())
 
+    # Real, in-platform paper-support dashboard (2026-08-16): cross-
+    # references already-persisted RQ1/RQ2 reports (closed-set + per-unit
+    # auxiliary runs), the frozen rq3_sample_size decision + live RQ3
+    # campaign progress, and RQ4 per-unit eligibility -- same
+    # zero-new-science convention as /experiment-health.
+    @router.get("/evidence-dashboard")
+    def evidence_dashboard():
+        return call(lambda: repository.get_evidence_dashboard_summary())
+
     @router.get("/runs/{paper_run_id}/evidence-quality-summary")
     def evidence_quality_summary(paper_run_id: str):
         def resolve():
@@ -263,6 +272,16 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
     @router.get("/guided-validation/{job_id}")
     def get_guided_validation(job_id: str):
         return call(lambda: job_manager.get_job(job_id))
+
+    # ------------------------------------------------------------------
+    # SOURCE ADMISSION V2 -- read-only, synchronous (real data on disk,
+    # seconds not minutes; no hardware involved). See guided_validation/
+    # service.py::run_source_admission_v2 for the 8 admission conditions.
+    # ------------------------------------------------------------------
+
+    @router.get("/source-admission-v2")
+    def source_admission_v2():
+        return call(lambda: job_manager.run_source_admission_v2())
 
     # ------------------------------------------------------------------
     # Guided Validation hardware actions -- real, short, supervised
@@ -478,6 +497,19 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
         return call(lambda: job_manager.start_rq2_benchmark_job(
             paper_run_id=body["paper_run_id"], dataset_id=body["dataset_id"], dataset_version=body["dataset_version"],
             scientific_task=body.get("scientific_task", "TARGET_VS_BACKGROUND"), model_types=body.get("model_types"),
+        ))
+
+    # RQ1 acquisition-dependence -- minimal orchestration runner (see
+    # ../rq1_runner.py): the calculation already existed
+    # (build_rq1_dependence_diagnostic / evaluate_rq1_acquisition_dependence
+    # / persist_rq1_acquisition_dependence_report), this route is the
+    # missing real caller wiring them together.
+    @router.post("/rq1-acquisition-dependence", status_code=202)
+    def start_rq1_acquisition_dependence(body: dict):
+        return call(lambda: job_manager.start_rq1_acquisition_dependence_job(
+            paper_run_id=body["paper_run_id"], dataset_id=body["dataset_id"], dataset_version=body["dataset_version"],
+            recommended_training_run_id=body["recommended_training_run_id"],
+            scientific_task=body.get("scientific_task", "TARGET_VS_BACKGROUND"),
         ))
 
     # Scientific Dashboard Closure audit finding (2026-08-11): RQ3's real

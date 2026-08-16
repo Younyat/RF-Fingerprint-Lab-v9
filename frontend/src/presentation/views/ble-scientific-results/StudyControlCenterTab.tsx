@@ -1384,7 +1384,12 @@ function PhysicalUnitQualificationLauncher({ onCompleted }: { onCompleted: () =>
 function HardwareQualificationLauncher({ onCompleted }: { onCompleted: () => void }) {
   const [physicalUnitId, setPhysicalUnitId] = useState('');
   const [channel, setChannel] = useState(37);
-  const [durationSeconds, setDurationSeconds] = useState(180);
+  // Bug fix (2026-08-13): the real HybridBleCaptureManager.start() hard-validates
+  // 1<=duration_seconds<=60 (ble_hybrid_campaign_manager.py) -- the previous
+  // default of 180 here always failed with INVALID_HYBRID_CONFIGURATION before
+  // the B200 was even queried, for every operator. 30 matches the manager's own
+  // internal default.
+  const [durationSeconds, setDurationSeconds] = useState(30);
   const [job, setJob] = useState<HardwareQualificationJob | null>(null);
   const [busy, setBusy] = useState(false);
 

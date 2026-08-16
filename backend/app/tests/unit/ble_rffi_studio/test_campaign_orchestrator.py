@@ -184,6 +184,21 @@ def test_run_session_succeeds_end_to_end_on_a_single_fully_processed_chunk():
     assert fakes["arbiter"].acquired and fakes["arbiter"].released  # always released
 
 
+def test_run_session_succeeds_when_replay_completes_with_failed_segments():
+    """Real-hardware bug fix (2026-08-13): COMPLETED_WITH_FAILED_SEGMENTS is
+    a real, documented terminal execution_status -- every segment was
+    attempted, some individually failed decode/timeout (normal for real RF,
+    e.g. one B200 qualification capture with a few CRC/timeout failures).
+    Previously this raised OFFLINE_REPLAY_UNEXPECTED_EXIT_STATUS and evidence
+    was never built, blocking every real capture with any failed segment."""
+    capture_manager = FakeCaptureManager([{"state": "completed", "result": {"exit_status": "COMPLETED_WITH_FAILED_SEGMENTS"}}])
+    orchestrator, fakes = _orchestrator(capture_manager=capture_manager)
+    result = _run(orchestrator)
+
+    assert result["capture_id"] == "BLE-IQ-fake"
+    assert fakes["repository"].evidence_calls  # evidence was still built
+
+
 def test_run_session_resumes_a_partial_replay_until_fully_processed():
     capture_manager = FakeCaptureManager([
         {"state": "completed", "result": {"exit_status": "PARTIAL"}},
