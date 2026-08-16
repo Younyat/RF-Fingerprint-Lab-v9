@@ -2096,6 +2096,45 @@ class ScientificResultsRepository:
             },
         }
 
+    def regenerate_evidence_figures(self) -> dict[str, Any]:
+        """UI-triggered equivalent of running, from a terminal:
+            docs/ble/generate_evidence_figures.py
+            docs/ble/build_evidence_notebook.py
+        Loads and calls those two scripts' own real main() functions by file
+        path (importlib, never a subprocess, never a second implementation
+        of their plotting logic) -- the button and the documented CLI path
+        run the exact same code. Writes real PNG/ipynb files into the repo
+        working tree (readme_img/evidence_*.png, docs/ble/
+        evidence_figures.ipynb), deliberately outside the usual storage
+        root, since these files are meant to be reviewed and committed by
+        the operator -- this method never runs git itself."""
+        import importlib.util
+
+        repo_root = Path(__file__).resolve().parents[5]
+        figures_path = repo_root / "docs" / "ble" / "generate_evidence_figures.py"
+        notebook_path = repo_root / "docs" / "ble" / "build_evidence_notebook.py"
+        if not figures_path.is_file() or not notebook_path.is_file():
+            raise FileNotFoundError(f"EVIDENCE_FIGURE_SCRIPTS_NOT_FOUND:{figures_path}:{notebook_path}")
+
+        def _load_and_run(path: Path, module_name: str) -> None:
+            spec = importlib.util.spec_from_file_location(module_name, path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)  # type: ignore[union-attr]
+            module.main()
+
+        started_at = utc_now()
+        _load_and_run(figures_path, "_evidence_figures_regen")
+        _load_and_run(notebook_path, "_evidence_notebook_regen")
+
+        png_dir = repo_root / "readme_img"
+        written = sorted(p.name for p in png_dir.glob("evidence_*.png"))
+        notebook_written = (repo_root / "docs" / "ble" / "evidence_figures.ipynb").is_file()
+        return {
+            "started_at": started_at, "finished_at": utc_now(),
+            "png_files": written, "notebook_written": notebook_written,
+            "note": "Files written to the repo working tree -- review and commit/push separately; this action never runs git.",
+        }
+
     def run_paper_export(self) -> dict[str, Any]:
         """Real production caller for paper_export.py -- writes
         `paper_exports/` for real (study_status.json/paper_readiness.json)

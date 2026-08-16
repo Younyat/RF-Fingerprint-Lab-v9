@@ -4,6 +4,7 @@ import {
   EvidenceDashboardClosedSet,
   EvidenceDashboardPerUnitRun,
   EvidenceDashboardSummary,
+  EvidenceFigureRegenerationResult,
   Rq2BranchResult,
 } from '../../../app/services/bleScientificResultsApi';
 import BarWithCiChart, { BarWithCiDatum } from './charts/BarWithCiChart';
@@ -287,6 +288,10 @@ export default function EvidenceDashboardTab() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenResult, setRegenResult] = useState<EvidenceFigureRegenerationResult | null>(null);
+  const [regenError, setRegenError] = useState<string | null>(null);
+
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
@@ -298,6 +303,16 @@ export default function EvidenceDashboardTab() {
 
   useEffect(() => { load(); }, [load]);
 
+  const regenerateFigures = useCallback(() => {
+    setRegenerating(true);
+    setRegenError(null);
+    setRegenResult(null);
+    sciApi.regenerateEvidenceFigures()
+      .then(setRegenResult)
+      .catch(() => setRegenError('No se pudieron regenerar las imagenes/notebook. Revisa que el backend tenga acceso al repositorio (docs/ble/).'))
+      .finally(() => setRegenerating(false));
+  }, []);
+
   return (
     <div className="space-y-6 p-4">
       <div className="flex items-start justify-between gap-4">
@@ -308,15 +323,34 @@ export default function EvidenceDashboardTab() {
             Cada seccion lee directamente su artefacto persistido -- nada se recalcula aqui.
           </div>
         </div>
-        <button
-          type="button" onClick={load} disabled={loading}
-          className="shrink-0 rounded border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-50"
-        >
-          {loading ? 'Actualizando…' : 'Refrescar'}
-        </button>
+        <div className="flex shrink-0 gap-2">
+          <button
+            type="button" onClick={load} disabled={loading}
+            className="rounded border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+          >
+            {loading ? 'Actualizando…' : 'Refrescar'}
+          </button>
+          <button
+            type="button" onClick={regenerateFigures} disabled={regenerating}
+            title="Regenera los PNG de readme_img/ y docs/ble/evidence_figures.ipynb a partir del estado real actual -- exactamente lo mismo que ejecutar generate_evidence_figures.py + build_evidence_notebook.py desde una terminal. No hace commit ni push."
+            className="rounded border border-amber-800 bg-amber-950/40 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-900/40 disabled:opacity-50"
+          >
+            {regenerating ? 'Generando imagenes…' : 'Generar imagenes nuevas (README + notebook)'}
+          </button>
+        </div>
       </div>
 
       {error && <NoDataNotice reason={error} />}
+      {regenError && <NoDataNotice reason={regenError} />}
+      {regenResult && (
+        <div className="rounded border border-amber-800 bg-amber-950/20 px-4 py-3 text-[11px] text-amber-200">
+          <div className="font-semibold">
+            {regenResult.png_files.length} PNG regenerados{regenResult.notebook_written ? ' + notebook actualizado' : ''} en readme_img/ y docs/ble/evidence_figures.ipynb.
+          </div>
+          <div className="mt-1 font-mono text-amber-300/80">{regenResult.png_files.join(', ')}</div>
+          <div className="mt-2 text-amber-300/70">{regenResult.note} (`git add -A &amp;&amp; git commit &amp;&amp; git push` desde una terminal).</div>
+        </div>
+      )}
 
       {data && (
         <>

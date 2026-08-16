@@ -1188,6 +1188,14 @@ export interface EvidenceDashboardSummary {
   rq4: { physical_units: EvidenceDashboardRq4Unit[]; status: 'DATA_NOT_AVAILABLE' | 'ELIGIBLE_UNITS_PRESENT' };
 }
 
+export interface EvidenceFigureRegenerationResult {
+  started_at: string;
+  finished_at: string;
+  png_files: string[];
+  notebook_written: boolean;
+  note: string;
+}
+
 export class BleScientificResultsApiService {
   constructor(private readonly baseURL = 'http://localhost:8000') {}
   private get root() { return `${this.baseURL}/api/ble-scientific-results`; }
@@ -1303,6 +1311,12 @@ export class BleScientificResultsApiService {
   }
   async evidenceDashboardSummary() {
     return (await axios.get<EvidenceDashboardSummary>(`${this.root}/evidence-dashboard`)).data;
+  }
+  // UI-triggered equivalent of running docs/ble/generate_evidence_figures.py
+  // + docs/ble/build_evidence_notebook.py from a terminal -- same real code,
+  // writes real PNG/ipynb files into the repo working tree. Never runs git.
+  async regenerateEvidenceFigures() {
+    return (await axios.post<EvidenceFigureRegenerationResult>(`${this.root}/evidence-dashboard/regenerate-figures`)).data;
   }
   async runPaperExport() { return (await axios.post<PaperExportManifest>(`${this.root}/paper-exports`)).data; }
   async getPaperExportManifest() { return (await axios.get<PaperExportManifest | NoDataResponse>(`${this.root}/paper-exports`)).data; }

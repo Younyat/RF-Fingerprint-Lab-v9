@@ -195,6 +195,13 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
     def evidence_dashboard():
         return call(lambda: repository.get_evidence_dashboard_summary())
 
+    # UI-triggered equivalent of running generate_evidence_figures.py +
+    # build_evidence_notebook.py from a terminal -- writes real PNG/ipynb
+    # files into the repo working tree, never runs git itself.
+    @router.post("/evidence-dashboard/regenerate-figures")
+    def regenerate_evidence_figures():
+        return call(lambda: repository.regenerate_evidence_figures())
+
     @router.get("/runs/{paper_run_id}/evidence-quality-summary")
     def evidence_quality_summary(paper_run_id: str):
         def resolve():

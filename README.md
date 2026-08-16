@@ -347,6 +347,19 @@ notebook: [`docs/ble/evidence_figures.ipynb`](docs/ble/evidence_figures.ipynb) (
 via [`docs/ble/build_evidence_notebook.py`](docs/ble/build_evidence_notebook.py) after
 running the figure script).
 
+**Regenerating these figures — two equivalent paths, same real code:**
+
+1. **From the platform itself** — BLE Scientific Results Studio → **Evidence Dashboard** tab
+   → **"Generar imagenes nuevas (README + notebook)"** button. Calls
+   `POST /api/ble-scientific-results/evidence-dashboard/regenerate-figures`, which loads and
+   runs the exact same `generate_evidence_figures.py` / `build_evidence_notebook.py` `main()`
+   functions listed above (never a second implementation) and reports back which files were
+   written.
+2. **From a terminal**, manually, running the same two scripts directly (commands above).
+
+Either path only writes real PNG/`.ipynb` files into the repo working tree — neither commits
+nor pushes anything; review the diff and `git add / commit / push` yourself afterward.
+
 These same results, plus the per-unit auxiliary runs, RQ3's live campaign progress, and
 RQ4's per-unit eligibility, are also readable live (not a snapshot) from the platform
 itself: BLE Scientific Results Studio → **Evidence Dashboard** tab, `GET
