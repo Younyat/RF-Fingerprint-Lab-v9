@@ -265,6 +265,8 @@ of exactly the optimism RQ1 is designed to detect: a single-recording evaluation
 have overstated closed-set discrimination by roughly 22 balanced-accuracy points relative
 to genuinely disjoint captures.
 
+![RQ1 closed-set acquisition dependence](readme_img/evidence_rq1_domains.png)
+
 RQ2 branch comparison (VALIDATION, same admitted groups):
 
 | Branch | Balanced accuracy | Macro-F1 |
@@ -278,9 +280,17 @@ RQ2 branch comparison (VALIDATION, same admitted groups):
 VALIDATION only) was selected PRIMARY in this run and independently in all 4 per-unit
 auxiliary runs below — a real, repeated finding, not a single cherry-picked outcome.
 
-Per-unit TEST recall (PRIMARY branch), reported individually because the aggregate
-balanced-accuracy number hides real, large per-source spread on this naturally imbalanced
-split (TEST alone ranges from 166 to 1,857 examples per unit):
+![RQ2 closed-set branch comparison](readme_img/evidence_rq2_branches.png)
+
+Confusion matrices, capture-disjoint VALIDATION vs. held-out TEST (PRIMARY branch) —
+CC2650-UNIT-01 is perfectly separated (recall 1.0) in both:
+
+![Confusion matrix, VALIDATION capture-disjoint](readme_img/evidence_confusion_validation.png)
+![Confusion matrix, TEST](readme_img/evidence_confusion_test.png)
+
+Per-unit TEST precision/recall/F1 (PRIMARY branch), reported individually because the
+aggregate balanced-accuracy number hides real, large per-source spread on this naturally
+imbalanced split (TEST alone ranges from 166 to 1,857 examples per unit):
 
 | Unit | Recall (TEST) |
 |---|---:|
@@ -289,11 +299,33 @@ split (TEST alone ranges from 166 to 1,857 examples per unit):
 | CC2541SensorTag | 0.699 |
 | keyfobdemo 02 | 0.530 |
 
+![Per-unit precision/recall/F1](readme_img/evidence_per_unit_metrics.png)
+
+**Risk-coverage curve** (TEST, PRIMARY branch) — the exact selective-prediction curve
+(El-Yaniv & Wiener, 2010) the manuscript's abstention mechanism is built on, one point per
+achievable confidence threshold on the real closed-set TEST split:
+
+![Risk-coverage curve](readme_img/evidence_risk_coverage.png)
+
+**Seed variability** — the PRIMARY branch re-trained under the platform's two other frozen
+seeds (`137`, `2024`, VALIDATION-only), a real reproducibility check:
+
+![Seed variability](readme_img/evidence_seed_variability.png)
+
+**Computational cost** — real inference latency and serialized model size per RQ2 branch,
+supporting the manuscript's stated computational-cost comparison (`engineered_rf`, a
+Random Forest here, is real evidence that the lowest-macro-F1 branch is not automatically
+the cheapest one either — heavier than both CNN branches in this run):
+
+![Computational cost by branch](readme_img/evidence_computational_cost.png)
+
 4 auxiliary per-unit TARGET_VS_BACKGROUND detectors (not the closed-set result above)
 were also run — real per-unit `delta_dependence` ranges from -0.046 to +0.070, all
 substantially smaller than the closed-set effect above (target-vs-background is an
 easier task with more redundant evidence per window; the multiclass task is where
-acquisition dependence actually shows up).
+acquisition dependence actually shows up):
+
+![Per-unit auxiliary RQ1](readme_img/evidence_per_unit_auxiliary_rq1.png)
 
 **RQ3** — sample size frozen (`rq3_sample_size` scientist decision,
 `PROSPECTIVE_BALANCED_WITHIN_DEVICE_CROSSOVER`): 10 RESET + 10 CONTROL pairs per unit,
@@ -306,25 +338,19 @@ estimate exists yet.
 unit has documented, independently-verified control over its own packet content — full
 per-unit reasons in [`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md)).
 
-These results, plus the per-unit auxiliary runs, RQ3's live campaign progress, and RQ4's
-per-unit eligibility, are also readable live (not a snapshot) from the platform itself:
-BLE Scientific Results Studio → **Evidence Dashboard** tab, `GET
-/api/ble-scientific-results/evidence-dashboard` — every number there is read straight off
-the same real, persisted artifacts summarized above, refreshable on demand.
+All figures above are generated straight from the platform's own real, persisted evidence
+by [`docs/ble/generate_evidence_figures.py`](docs/ble/generate_evidence_figures.py) —
+never hand-drawn, never from a spreadsheet copy. Re-run it after any new real RQ1/RQ2/RQ3
+result to regenerate every PNG in this section from current state. The same real data,
+with the same plotting functions, is also available as a runnable, GitHub-renderable
+notebook: [`docs/ble/evidence_figures.ipynb`](docs/ble/evidence_figures.ipynb) (regenerate
+via [`docs/ble/build_evidence_notebook.py`](docs/ble/build_evidence_notebook.py) after
+running the figure script).
 
-The Evidence Dashboard additionally surfaces real curves already computed and persisted
-by the platform, not yet listed above, that directly support the manuscript's own stated
-methodology:
-
-- **Risk-coverage curve** (PRIMARY branch, held-out TEST) — the exact selective-prediction
-  curve (El-Yaniv & Wiener, 2010) the manuscript's abstention mechanism is built on, one
-  point per achievable confidence threshold on the real closed-set TEST split.
-- **Seed variability** — the PRIMARY branch (`engineered_rf`) re-trained under the two
-  other frozen seeds (`137`, `2024`, VALIDATION-only), a real reproducibility check.
-- **Computational cost** — real inference latency (ms) and serialized model size (bytes)
-  per RQ2 branch, supporting the manuscript's stated computational-cost comparison.
-- **Precision / F1 per unit** (TEST, PRIMARY branch) — alongside the recall-per-unit figures
-  already listed above, from the same real, persisted evaluation.
+These same results, plus the per-unit auxiliary runs, RQ3's live campaign progress, and
+RQ4's per-unit eligibility, are also readable live (not a snapshot) from the platform
+itself: BLE Scientific Results Studio → **Evidence Dashboard** tab, `GET
+/api/ble-scientific-results/evidence-dashboard`.
 
 ---
 
