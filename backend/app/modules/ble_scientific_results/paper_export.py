@@ -158,7 +158,11 @@ def partition_composition_rows(table: dict[str, Any]) -> list[dict[str, Any]]:
     rows = []
     for domain in ("TRAIN", "VALIDATION", "TEST"):
         counts = table.get("domains", {}).get(domain, {})
-        rows.append({"domain": domain, "n_windows": counts.get("n_windows"), "n_captures": counts.get("n_captures"), "n_sessions": counts.get("n_sessions")})
+        # n_examples (renamed 2026-08-17, was n_windows): real ExampleRecord
+        # count from SplitManifest.assignments -- NOT a 10-second decision-
+        # window count (see coverage_analysis_report.json's
+        # domain_resolution_diagnostic for that, a separate real number).
+        rows.append({"domain": domain, "n_examples": counts.get("n_examples"), "n_captures": counts.get("n_captures"), "n_sessions": counts.get("n_sessions")})
     return rows
 
 
@@ -388,11 +392,13 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
                 values.append(rq1_report["ba_future"])
                 ci_low.append(None)
                 ci_high.append(None)
-            # n_windows: RQ1's OWN real per-domain comparable-example counts
-            # (never re-derived from the split -- avoids two independent
-            # counting paths that could silently disagree). n_captures:
-            # distinct real acquisition groups from the closed-set VALIDATION/
-            # TEST split (RQ1's own report carries no capture-level count).
+            # n (examples, NOT decision windows -- see evaluation_unit on the
+            # persisted RQ1 report): RQ1's OWN real per-domain comparable-
+            # example counts (never re-derived from the split -- avoids two
+            # independent counting paths that could silently disagree).
+            # n_captures: distinct real acquisition groups from the
+            # closed-set VALIDATION/TEST split (RQ1's own report carries no
+            # capture-level count).
             if rq1_report.get("ba_window_n_comparable") is not None:
                 footnote_parts.append(f"BA_window n={rq1_report['ba_window_n_comparable']}")
             if rq1_report.get("ba_capture_n_comparable") is not None:

@@ -81,13 +81,13 @@ function PartitionCompositionSection({ table, datasetId, datasetVersion, scienti
           <div className="overflow-x-auto rounded border border-slate-800">
             <table className="min-w-full text-xs">
               <thead className="bg-slate-950 text-[10.5px] uppercase tracking-wide text-slate-500">
-                <tr><th className="px-3 py-2 text-left">domain</th><th className="px-3 py-2 text-right">n_windows</th><th className="px-3 py-2 text-right">n_captures (acquisition groups)</th><th className="px-3 py-2 text-right">n_sessions</th></tr>
+                <tr><th className="px-3 py-2 text-left">domain</th><th className="px-3 py-2 text-right">n_examples</th><th className="px-3 py-2 text-right">n_captures (acquisition groups)</th><th className="px-3 py-2 text-right">n_sessions</th></tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
                 {(['TRAIN', 'VALIDATION', 'TEST'] as const).map((domain) => (
                   <tr key={domain}>
                     <td className="px-3 py-2 font-mono text-slate-300">{domain}</td>
-                    <td className="px-3 py-2 text-right font-mono text-slate-300">{table.domains[domain].n_windows}</td>
+                    <td className="px-3 py-2 text-right font-mono text-slate-300">{table.domains[domain].n_examples}</td>
                     <td className="px-3 py-2 text-right font-mono text-slate-300">{table.domains[domain].n_captures}</td>
                     <td className="px-3 py-2 text-right font-mono text-slate-300">{table.domains[domain].n_sessions}</td>
                   </tr>

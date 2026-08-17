@@ -88,9 +88,9 @@ function ClosedSetSection({ closedSet, partitionComposition }: { closedSet: Evid
         )}
         {domains && (
           <div className="mt-1 text-[11px] text-slate-500">
-            tamano efectivo (VALIDATION) = <span className="font-mono text-slate-300">{domains.VALIDATION.n_windows}</span> decision windows
+            tamano efectivo (VALIDATION) = <span className="font-mono text-slate-300">{domains.VALIDATION.n_examples}</span> examples (ExampleRecord, RQ1's real evaluation unit)
             {' / '}<span className="font-mono text-slate-300">{domains.VALIDATION.n_captures}</span> capturas independientes
-            {' · '}(TEST) = <span className="font-mono text-slate-300">{domains.TEST.n_windows}</span> windows / <span className="font-mono text-slate-300">{domains.TEST.n_captures}</span> capturas
+            {' · '}(TEST) = <span className="font-mono text-slate-300">{domains.TEST.n_examples}</span> examples / <span className="font-mono text-slate-300">{domains.TEST.n_captures}</span> capturas
           </div>
         )}
       </div>

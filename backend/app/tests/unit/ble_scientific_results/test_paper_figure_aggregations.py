@@ -30,12 +30,12 @@ def test_domain_group_counts_counts_distinct_captures_and_sessions_not_just_wind
         _Assignment(capture_id="CAP-3", session_id="S1", split="TRAIN"),  # different domain -- excluded
     ])
     counts = domain_group_counts(split, "VALIDATION")
-    assert counts == {"n_windows": 3, "n_captures": 2, "n_sessions": 2}
+    assert counts == {"n_examples": 3, "n_captures": 2, "n_sessions": 2}
 
 
 def test_domain_group_counts_is_all_zero_for_a_domain_with_no_assignments():
     split = _Split(assignments=[_Assignment(capture_id="CAP-1", session_id="S1", split="TRAIN")])
-    assert domain_group_counts(split, "TEST") == {"n_windows": 0, "n_captures": 0, "n_sessions": 0}
+    assert domain_group_counts(split, "TEST") == {"n_examples": 0, "n_captures": 0, "n_sessions": 0}
 
 
 def test_normalize_confusion_matrix_row_normalizes_and_keeps_n():

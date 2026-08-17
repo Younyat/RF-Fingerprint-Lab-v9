@@ -1649,6 +1649,52 @@ class StudioRepository:
             return None
         return {"split": split, **dataclasses.asdict(result)}
 
+    def _load_predictions_for_bootstrap(self, training_run_id: str, split: str) -> tuple[list[dict[str, Any]], list[str], dict[str, str]] | None:
+        """Shared file-read step behind bootstrap_balanced_accuracy_ci() and
+        bootstrap_balanced_accuracy_delta_ci() -- real predictions.json/
+        label_classes.json/session_id join, never a second read path."""
+        run_dir = self.training_dir / training_run_id
+        predictions_path = run_dir / "predictions.json"
+        label_classes_path = run_dir / "label_classes.json"
+        run_path = run_dir / "training_run.json"
+        if not (predictions_path.is_file() and run_path.is_file()):
+            raise FileNotFoundError(f"TRAINING_RUN_HAS_NO_PREDICTIONS_YET:{training_run_id}")
+        predictions_by_split = read_json(predictions_path)
+        if split not in predictions_by_split:
+            return None
+        label_classes = read_json(label_classes_path)["classes"]
+        training_run = TrainingRun.model_validate(read_json(run_path))
+        dataset = self._require_dataset(training_run.dataset_id, training_run.dataset_version)
+        session_id_by_example_id = {e.example_id: e.session_id for e in self._dataset_examples(dataset)}
+        return predictions_by_split[split], label_classes, session_id_by_example_id
+
+    def bootstrap_balanced_accuracy_delta_ci(
+        self, training_run_id_a: str, training_run_id_b: str, *, split_a: str = "VALIDATION", split_b: str = "VALIDATION",
+        n_resamples: int = 2000, confidence_level: float = 0.95,
+    ) -> dict[str, Any] | None:
+        """RQ1's real delta_dependence CI (2026-08-17 completion pass): joint
+        bootstrap over BA_window's own diagnostic-run predictions (a) and
+        BA_capture's confirmatory-run predictions (b) -- two independent,
+        session-disjoint populations by RQ1's own design. `label_classes`
+        must agree between the two runs (same closed-set task); raises if
+        they genuinely differ rather than silently picking one."""
+        loaded_a = self._load_predictions_for_bootstrap(training_run_id_a, split_a)
+        loaded_b = self._load_predictions_for_bootstrap(training_run_id_b, split_b)
+        if loaded_a is None or loaded_b is None:
+            return None
+        predictions_a, label_classes_a, session_ids_a = loaded_a
+        predictions_b, label_classes_b, session_ids_b = loaded_b
+        if sorted(label_classes_a) != sorted(label_classes_b):
+            raise ValueError(f"LABEL_CLASSES_MISMATCH_BETWEEN_RUNS:{training_run_id_a}={label_classes_a}:{training_run_id_b}={label_classes_b}")
+
+        result = self.evaluator.bootstrap_balanced_accuracy_delta_ci(
+            predictions_a, predictions_b, label_classes_a, session_ids_a, session_ids_b,
+            n_resamples=n_resamples, confidence_level=confidence_level,
+        )
+        if result is None:
+            return None
+        return {"split_a": split_a, "split_b": split_b, **dataclasses.asdict(result)}
+
     def train_seed_variability_analysis(self, *, training_run_id: str, seeds: tuple[int, ...] | None = None, progress=None) -> list[dict[str, Any]]:
         """Fixed seed-set correction (2026-08-08): how much a candidate's
         VALIDATION performance moves across independent training runs of the

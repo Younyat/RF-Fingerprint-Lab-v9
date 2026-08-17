@@ -137,3 +137,55 @@ def test_bootstrap_balanced_accuracy_ci_wired_end_to_end_against_a_real_training
     assert result["split"] == "VALIDATION"
     assert 0.0 <= result["point_estimate"] <= 1.0
     assert result["ci_low"] <= result["point_estimate"] <= result["ci_high"]
+
+
+def test_bootstrap_balanced_accuracy_delta_ci_point_estimate_is_the_real_difference():
+    # RQ1's real delta_dependence CI (2026-08-17 completion pass) -- proves
+    # the point estimate is the exact difference of the two populations'
+    # own balanced accuracies, computed over disjoint session pools.
+    evaluator = Evaluator()
+    predictions_a = [{"example_id": f"a-{i}", "true_label": "A", "predicted_label": "A"} for i in range(4)]  # BA=1.0
+    predictions_b = [{"example_id": f"b-{i}", "true_label": "A", "predicted_label": "A" if i < 2 else "B"} for i in range(4)] + [
+        {"example_id": "b-extra", "true_label": "B", "predicted_label": "B"}
+    ]
+    session_ids_a = {f"a-{i}": f"SESSION-A-{i}" for i in range(4)}
+    session_ids_b = {f"b-{i}": f"SESSION-B-{i}" for i in range(4)} | {"b-extra": "SESSION-B-extra"}
+    result = evaluator.bootstrap_balanced_accuracy_delta_ci(predictions_a, predictions_b, ["A", "B"], session_ids_a, session_ids_b, n_resamples=300)
+    assert result is not None
+    assert result.ci_low <= result.point_estimate <= result.ci_high
+
+
+def test_bootstrap_balanced_accuracy_delta_ci_is_none_when_either_side_has_no_comparable_predictions():
+    evaluator = Evaluator()
+    predictions_a = [{"example_id": "a-1", "true_label": "A", "predicted_label": "A"}]
+    result = evaluator.bootstrap_balanced_accuracy_delta_ci(predictions_a, [], ["A", "B"], {"a-1": "S1"}, {})
+    assert result is None
+
+
+def test_studio_repository_bootstrap_balanced_accuracy_delta_ci_wired_end_to_end(studio_repository_with_trained_run):
+    # Same real training run compared against itself -- point_estimate must
+    # be exactly 0.0 (identical predictions minus themselves), proving the
+    # real file-read/clustering/joint-resample plumbing works end to end.
+    repository, training_run_id = studio_repository_with_trained_run
+    result = repository.bootstrap_balanced_accuracy_delta_ci(training_run_id, training_run_id, split_a="VALIDATION", split_b="VALIDATION", n_resamples=200)
+    assert result is not None
+    assert result["split_a"] == "VALIDATION"
+    assert result["split_b"] == "VALIDATION"
+    assert result["point_estimate"] == pytest.approx(0.0)
+    assert result["ci_low"] <= 0.0 <= result["ci_high"]
+
+
+def test_studio_repository_bootstrap_balanced_accuracy_delta_ci_raises_on_label_class_mismatch(studio_repository_with_trained_run, tmp_path, monkeypatch):
+    repository, training_run_id = studio_repository_with_trained_run
+    # A second "run" whose label_classes.json genuinely disagrees -- must
+    # fail loudly, never silently pick one run's classes.
+    other_run_id = "OTHER-RUN"
+    other_dir = repository.training_dir / other_run_id
+    other_dir.mkdir(parents=True)
+    (other_dir / "predictions.json").write_text('{"VALIDATION": []}', encoding="utf-8")
+    (other_dir / "label_classes.json").write_text('{"classes": ["ONLY-ONE-CLASS"]}', encoding="utf-8")
+    real_run_dir = repository.training_dir / training_run_id
+    import shutil
+    shutil.copy(real_run_dir / "training_run.json", other_dir / "training_run.json")
+    with pytest.raises(ValueError, match="LABEL_CLASSES_MISMATCH_BETWEEN_RUNS"):
+        repository.bootstrap_balanced_accuracy_delta_ci(training_run_id, other_run_id)

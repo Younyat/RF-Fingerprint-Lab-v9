@@ -596,7 +596,14 @@ export interface WindowLevelDomainEvaluation {
   macro_f1: number | null;
   confusion_matrix: Record<string, Record<string, number>>;
   n_comparable: number;
+  distinct_physical_units: string[];
   risk_coverage: WindowLevelRiskCoveragePoint[] | null;
+  // PAPER_READY gate (2026-08-17): false whenever n_comparable<10 or the
+  // domain's real decision windows all belong to a single physical unit --
+  // the curve above is kept as real, functional evidence regardless, just
+  // never presented as citable without this being true.
+  paper_ready: boolean;
+  paper_ready_reason: string | null;
 }
 
 // Real per-window record (2026-08-17) -- one row per real 10-second decision
@@ -618,12 +625,27 @@ export interface DecisionWindowRecord {
 export interface WindowLevelBranchEvaluation {
   by_evaluation_domain: Record<string, WindowLevelDomainEvaluation>;
   decision_windows: DecisionWindowRecord[];
-  // The real, VALIDATION-calibrated UNKNOWN-rejection threshold from this
-  // branch's own bundle (Evaluator.calibrate_unknown_threshold) -- distinct
-  // from the native<->SDR AssociationPolicy.threshold_ms. null only when
-  // the bundle genuinely has none frozen yet (never fabricated as frozen).
-  acceptance_threshold: number | null;
-  acceptance_threshold_calibrated_on: string | null;
+  // Two DIFFERENT real thresholds, unambiguously named (2026-08-17):
+  // classifier_acceptance_threshold is this bundle's own real,
+  // VALIDATION-only UNKNOWN-rejection threshold (Evaluator.
+  // calibrate_unknown_threshold). association_time_threshold_ms is the
+  // SEPARATE native<->SDR AssociationPolicy.threshold_ms -- real null while
+  // association calibration stays fail-closed (never loosened to force a
+  // value).
+  classifier_acceptance_threshold: number | null;
+  classifier_acceptance_threshold_calibrated_on: string | null;
+  association_time_threshold_ms: number | null;
+}
+
+// Domain-resolution diagnostic (2026-08-17 investigation): why a real
+// decision window's evaluation_domain came back unresolved.
+export interface DomainResolutionDiagnostic {
+  total_windows: number;
+  assigned_train: number;
+  assigned_validation: number;
+  assigned_test: number;
+  unresolved: number;
+  unresolved_by_reason: Record<string, number>;
 }
 
 export interface CoverageAnalysisReport {
@@ -639,6 +661,7 @@ export interface CoverageAnalysisReport {
   by_physical_unit: Record<string, CoverageBucket>;
   abstention_reason_counts: Record<string, number> | 'NOT_AVAILABLE';
   window_level_evaluation?: Record<string, WindowLevelBranchEvaluation>;
+  domain_resolution_diagnostic?: DomainResolutionDiagnostic;
 }
 
 export interface StartCoverageAnalysisRequest {
@@ -1196,10 +1219,27 @@ export interface Rq1AcquisitionDependenceReport extends Record<string, unknown> 
   ba_future_status: string;
   delta_dependence: number | null;
   confusion_matrix_capture: Record<string, Record<string, number>> | null;
-  // Cluster-bootstrap CI on ba_capture only -- never computed for ba_window,
-  // which is intentionally capture-dependent (leakage-violating) by design,
-  // so a CI on it would misleadingly suggest it is a valid estimator.
-  uncertainty_ci?: { ba_capture_ci?: BootstrapCiResult | null } | null;
+  // RQ1 uncertainty completion (2026-08-17): ba_window now also gets its own
+  // real CI (a deliberately leakage-optimistic diagnostic still has real,
+  // reportable resampling uncertainty). delta_dependence_ci comes from a
+  // JOINT/paired resample over both populations, never from subtracting the
+  // two marginal CIs' bounds.
+  uncertainty_ci?: {
+    ba_capture_ci?: BootstrapCiResult | null;
+    ba_window_ci?: BootstrapCiResult | null;
+    delta_dependence_ci?: (BootstrapCiResult & { method: string }) | null;
+  } | null;
+  // Investigation finding (2026-08-17): RQ1's real evaluation unit is the
+  // ExampleRecord (per-burst classification) -- "window" in BA_window is
+  // RQ1's own pre-existing acquisition-provenance term, unrelated to the
+  // 10-second decision-window aggregation coverage_analysis.py uses.
+  evaluation_unit?: string;
+  decision_window_cross_reference?: {
+    source_artifact: string;
+    window_duration_s: number | null;
+    note: string;
+    by_evaluation_domain: Record<string, { n_decision_windows: number | null }>;
+  } | null;
   generated_at: string;
 }
 
@@ -1300,8 +1340,12 @@ export interface TxCompositionRow {
   day_range: { first: string; last: string } | null;
 }
 
+// n_examples (renamed 2026-08-17, was n_windows): real ExampleRecord
+// (burst/packet-level) count from SplitManifest.assignments -- NOT a
+// 10-second decision-window count. See CoverageAnalysisReport.
+// domain_resolution_diagnostic for the real decision-window count.
 export interface PartitionDomainCounts {
-  n_windows: number;
+  n_examples: number;
   n_captures: number;
   n_sessions: number;
 }

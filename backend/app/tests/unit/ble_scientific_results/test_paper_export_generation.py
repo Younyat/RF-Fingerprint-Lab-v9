@@ -148,7 +148,7 @@ def test_closed_set_exports_generated_from_a_real_multi_device_classification_ru
     assert _entry(manifest, "closed_set_partition_composition.csv")["status"] == "GENERATED"
     partition_rows = list(csv.DictReader((repo.root / "paper_exports" / "closed_set_partition_composition.csv").open(encoding="utf-8")))
     validation_row = next(r for r in partition_rows if r["domain"] == "VALIDATION")
-    assert validation_row["n_windows"] == "1"
+    assert validation_row["n_examples"] == "1"
     assert validation_row["n_captures"] == "1"
 
     per_tx_entry = _entry(manifest, "closed_set_per_transmitter.csv")

@@ -14,18 +14,25 @@ from typing import Any
 
 
 def domain_group_counts(split: Any, domain: str) -> dict[str, int]:
-    """How many decision windows/examples AND how many independent
-    acquisition groups (distinct real captures, distinct real sessions)
-    support a given split domain (TRAIN/VALIDATION/TEST). Nothing in the
-    codebase counted distinct captures/sessions per domain before this --
-    `SplitManifest.assignments` already carries real `capture_id`/
-    `session_id`/`split` per example (contracts/split.py), this only
-    aggregates them. Matters because `n_examples`/`n_comparable_to_known_
-    classes` alone can overstate independent evidence: many windows can come
-    from very few real acquisitions."""
+    """How many real ExampleRecords (burst/packet-level rows of
+    SplitManifest.assignments) AND how many independent acquisition groups
+    (distinct real captures, distinct real sessions) support a given split
+    domain (TRAIN/VALIDATION/TEST). Nothing in the codebase counted distinct
+    captures/sessions per domain before this -- `SplitManifest.assignments`
+    already carries real `capture_id`/`session_id`/`split` per example
+    (contracts/split.py), this only aggregates them. Matters because
+    `n_examples` alone can overstate independent evidence: many examples can
+    come from very few real acquisitions.
+
+    Naming correction (2026-08-17 investigation): this field was previously
+    called `n_windows`, which invited confusion with the UNRELATED
+    10-second decision-window aggregation coverage_analysis.py computes
+    (see rq1_acquisition_dependence_report.json's own `evaluation_unit`
+    field) -- these ARE ExampleRecord counts, renamed to say so
+    unambiguously."""
     assignments = [a for a in split.assignments if a.split == domain]
     return {
-        "n_windows": len(assignments),
+        "n_examples": len(assignments),
         "n_captures": len({a.capture_id for a in assignments}),
         "n_sessions": len({a.session_id for a in assignments}),
     }

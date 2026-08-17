@@ -263,12 +263,19 @@ class BootstrapCiResult:
 def hierarchical_cluster_bootstrap(
     cluster_values: Sequence[Sequence[float]], *, statistic: Callable[[Sequence[float]], float] = lambda values: sum(values) / len(values),
     n_resamples: int = 5000, confidence_level: float = 0.95, rng: np.random.Generator | None = None,
-) -> BootstrapCiResult:
+    return_samples: bool = False,
+) -> BootstrapCiResult | tuple[BootstrapCiResult, np.ndarray]:
     """Resamples WHOLE clusters (e.g. physical units, each holding its own
     list of per-capture/per-window scores) with replacement -- never
     resamples individual observations across cluster boundaries, so the
     percentile CI this returns correctly reflects between-cluster
-    variability instead of pretending every observation is independent."""
+    variability instead of pretending every observation is independent.
+
+    `return_samples` (2026-08-17, RQ1 paired-delta CI): when True, also
+    returns the raw per-resample statistic array so a caller can combine it
+    with another independent bootstrap's samples (see
+    paired_cluster_bootstrap_delta_ci below) -- every existing call site
+    keeps its original single-return behavior unchanged."""
     n_clusters = len(cluster_values)
     if n_clusters == 0:
         raise ValueError("NEED_AT_LEAST_ONE_CLUSTER")
@@ -287,6 +294,38 @@ def hierarchical_cluster_bootstrap(
 
     alpha = 1.0 - confidence_level
     ci_low, ci_high = np.quantile(resample_statistics, [alpha / 2, 1 - alpha / 2])
+    result = BootstrapCiResult(point_estimate=point_estimate, ci_low=float(ci_low), ci_high=float(ci_high), n_resamples=n_resamples, confidence_level=confidence_level)
+    return (result, resample_statistics) if return_samples else result
+
+
+def paired_cluster_bootstrap_delta_ci(
+    cluster_values_a: Sequence[Sequence[float]], cluster_values_b: Sequence[Sequence[float]], *,
+    statistic: Callable[[Sequence[float]], float] = lambda values: sum(values) / len(values),
+    n_resamples: int = 5000, confidence_level: float = 0.95, rng: np.random.Generator | None = None,
+) -> BootstrapCiResult:
+    """Real joint bootstrap CI for a DIFFERENCE between two statistics
+    computed over two INDEPENDENT cluster populations (RQ1's BA_window and
+    BA_capture are evaluated on disjoint session pools by construction --
+    build_rq1_dependence_diagnostic's held-out examples come from the SAME
+    sessions as TRAIN, confirmatory VALIDATION comes from session-disjoint
+    ones). Resamples each population independently B times (reusing
+    hierarchical_cluster_bootstrap's own resampling loop, never a second
+    implementation of it), pairs resample i of A with resample i of B into
+    delta_i = statistic(A_i) - statistic(B_i), and returns the percentile CI
+    of that delta distribution. NEVER combine two separately-computed
+    marginal CIs by subtracting their bounds -- that discards the shape of
+    the actual resampling distribution and is not a valid CI for a
+    difference, even when (as here) the two populations are independent."""
+    result_a, samples_a = hierarchical_cluster_bootstrap(
+        cluster_values_a, statistic=statistic, n_resamples=n_resamples, confidence_level=confidence_level, rng=rng, return_samples=True,
+    )
+    result_b, samples_b = hierarchical_cluster_bootstrap(
+        cluster_values_b, statistic=statistic, n_resamples=n_resamples, confidence_level=confidence_level, rng=rng, return_samples=True,
+    )
+    delta_samples = samples_a - samples_b
+    point_estimate = result_a.point_estimate - result_b.point_estimate
+    alpha = 1.0 - confidence_level
+    ci_low, ci_high = np.quantile(delta_samples, [alpha / 2, 1 - alpha / 2])
     return BootstrapCiResult(point_estimate=point_estimate, ci_low=float(ci_low), ci_high=float(ci_high), n_resamples=n_resamples, confidence_level=confidence_level)
 
 

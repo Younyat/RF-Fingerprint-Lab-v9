@@ -1805,8 +1805,10 @@ class ScientificResultsRepository:
         try:
             split = self._load_split(run.dataset_id, run.dataset_version, run.scientific_task)
             domain_by_example_id = {a.example_id: a.split for a in split.assignments}
+            split_physical_units = {a.physical_unit_id for a in split.assignments if a.physical_unit_id}
         except FileNotFoundError:
             domain_by_example_id = {}
+            split_physical_units = set()
 
         rows: list[CoverageRow] = []
         # Real per-window record (2026-08-17, RQ1/per-TX/calibration/decision-
@@ -1816,6 +1818,15 @@ class ScientificResultsRepository:
         # abstention/burst_count were always real and already computed, just
         # never persisted as an inspectable table before this.
         decision_window_records: list[dict[str, Any]] = []
+        # Domain-resolution diagnostic (2026-08-17 investigation): WHY a
+        # window's evaluation_domain came back None, classified from data
+        # already in hand -- never a second aggregation pass, just real-time
+        # bookkeeping alongside the existing loop. Deduped by
+        # decision_window_id since the same physical window recurs once per
+        # branch with an identical domain-resolution outcome (domain
+        # resolution depends only on burst_example_ids/the split, never on
+        # which branch scored the window).
+        domain_resolution_by_window_id: dict[str, dict[str, Any]] = {}
         for branch, bundle_id in sorted(bundle_ids.items()):
             for capture in captures:
                 examples = examples_by_capture_id[capture.capture_id]
@@ -1841,6 +1852,17 @@ class ScientificResultsRepository:
                             "class_probability": window.get("class_probability"), "final_decision": window.get("final_decision"),
                             "abstention_reason": window.get("abstention_reason"),
                         })
+                        window_id = window.get("decision_window_id")
+                        if window_id is not None and window_id not in domain_resolution_by_window_id:
+                            if domain is not None:
+                                reason = None
+                            elif len(burst_domains - {None}) > 1:
+                                reason = "MIXED_SPLIT_ASSIGNMENT_WITHIN_WINDOW"
+                            elif window.get("physical_unit_id") not in split_physical_units:
+                                reason = "PHYSICAL_UNIT_NOT_IN_CLOSED_SET_SPLIT"
+                            else:
+                                reason = "EXAMPLE_ID_NOT_IN_SPLIT_ASSIGNMENTS"
+                            domain_resolution_by_window_id[window_id] = {"resolved_domain": domain, "reason": reason}
 
         summary = compute_coverage_summary(rows)
         as_dict = {
@@ -1849,6 +1871,21 @@ class ScientificResultsRepository:
             "window_duration_s": window_duration_s, "minimum_eligible_bursts": minimum_eligible_bursts,
             **summary,
         }
+
+        if evaluate_window_level and domain_resolution_by_window_id:
+            resolved = [w for w in domain_resolution_by_window_id.values() if w["resolved_domain"] is not None]
+            unresolved = [w for w in domain_resolution_by_window_id.values() if w["resolved_domain"] is None]
+            unresolved_by_reason: dict[str, int] = {}
+            for w in unresolved:
+                unresolved_by_reason[w["reason"]] = unresolved_by_reason.get(w["reason"], 0) + 1
+            as_dict["domain_resolution_diagnostic"] = {
+                "total_windows": len(domain_resolution_by_window_id),
+                "assigned_train": sum(1 for w in resolved if w["resolved_domain"] == "TRAIN"),
+                "assigned_validation": sum(1 for w in resolved if w["resolved_domain"] == "VALIDATION"),
+                "assigned_test": sum(1 for w in resolved if w["resolved_domain"] == "TEST"),
+                "unresolved": len(unresolved),
+                "unresolved_by_reason": unresolved_by_reason,
+            }
 
         if evaluate_window_level:
             from app.modules.ble_rffi_studio.evaluation import Evaluator
@@ -1879,22 +1916,48 @@ class ScientificResultsRepository:
                         {**point, "n_decided": round(point["coverage"] * n_total), "n_abstained": n_total - round(point["coverage"] * n_total)}
                         for point in (report.risk_coverage or [])
                     ] if report.risk_coverage else report.risk_coverage
+                    # PAPER_READY gate (2026-08-17): the risk-coverage curve above
+                    # is kept as real, functional evidence regardless, but is
+                    # never marked paper-ready when the real sample is too small
+                    # or too homogeneous to support a citable claim -- both real,
+                    # already-available facts about domain_rows, never a new
+                    # metric.
+                    distinct_units = {r.physical_unit_id for r in domain_rows if r.physical_unit_id is not None}
+                    not_ready_reasons = []
+                    if n_total < 10:
+                        not_ready_reasons.append(f"only {n_total} decision windows (n<10)")
+                    if len(distinct_units) < 2:
+                        not_ready_reasons.append(f"all decision windows belong to a single physical unit ({next(iter(distinct_units), 'NONE')})")
                     by_domain[domain] = {
                         "evidence_maturity": "CURRENT_TEST",  # real, current TRAIN/VALIDATION/TEST -- never PROTECTED_FUTURE
                         "balanced_accuracy": report.balanced_accuracy, "macro_f1": report.macro_f1,
                         "confusion_matrix": report.confusion_matrix, "n_comparable": n_total,
+                        "distinct_physical_units": sorted(distinct_units),
                         # `risk` in each point below IS the selective_error (error
                         # rate among decided instances at that threshold) -- same
                         # El-Yaniv & Wiener (2010) definition used everywhere else
                         # in this codebase, not renamed to avoid a second field
                         # meaning the same thing.
                         "risk_coverage": risk_coverage_with_counts,
+                        "paper_ready": len(not_ready_reasons) == 0,
+                        "paper_ready_reason": "; ".join(not_ready_reasons) if not_ready_reasons else None,
                     }
                 if by_domain:
+                    frozen_policy = self.find_frozen_association_policy()
                     window_level_evaluation[branch] = {
                         "by_evaluation_domain": by_domain,
-                        "acceptance_threshold": thresholds.get("acceptance_threshold"),
-                        "acceptance_threshold_calibrated_on": thresholds.get("calibrated_on"),
+                        # Two DIFFERENT real thresholds, unambiguously named
+                        # (2026-08-17) so they are never conflated again:
+                        # classifier_acceptance_threshold is this bundle's own
+                        # VALIDATION-only UNKNOWN-rejection threshold
+                        # (Evaluator.calibrate_unknown_threshold);
+                        # association_time_threshold_ms is the SEPARATE
+                        # native<->SDR AssociationPolicy.threshold_ms, real null
+                        # while association calibration stays fail-closed (never
+                        # loosened here to force a value).
+                        "classifier_acceptance_threshold": thresholds.get("acceptance_threshold"),
+                        "classifier_acceptance_threshold_calibrated_on": thresholds.get("calibrated_on"),
+                        "association_time_threshold_ms": frozen_policy.threshold_ms if frozen_policy else None,
                         # Real per-window record -- true TX/predicted TX/score/
                         # decision-abstention/burst_count, one row per real
                         # decision window (decided AND abstained), this branch only.
@@ -2061,6 +2124,8 @@ class ScientificResultsRepository:
         confusion_matrix_capture: dict[str, dict[str, int]] | None = None,
         confusion_matrix_future: dict[str, dict[str, int]] | None = None,
         per_unit_recall: dict[str, dict[str, float]] | None = None,
+        evaluation_unit: str = "EXAMPLE_RECORD",
+        decision_window_cross_reference: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Protocol-freeze close-out, point 4 (2026-08-10): the canonical,
         persisted RQ1 artifact -- evaluate_rq1_acquisition_dependence()
@@ -2083,6 +2148,17 @@ class ScientificResultsRepository:
             "confirmatory_split_manifest_id": confirmatory_split_manifest_id, "confirmatory_split_manifest_sha256": confirmatory_split_manifest_sha256,
             "diagnostic_split_manifest_id": diagnostic_split_manifest_id, "diagnostic_split_manifest_sha256": diagnostic_split_manifest_sha256,
             "source_evaluation_domains": source_evaluation_domains,
+            # Investigation finding (2026-08-17): RQ1's real evaluation unit
+            # is the ExampleRecord (one burst/packet-level classification per
+            # row of predictions.json, via Evaluator.evaluate_split()) --
+            # "window" in BA_window/BA_capture is RQ1's own pre-existing
+            # acquisition-provenance term (build_rq1_dependence_diagnostic:
+            # "the SAME session as TRAIN" vs. capture-disjoint), unrelated to
+            # the 10-second decision-window aggregation coverage_analysis.py
+            # uses. This field makes that unambiguous, machine-readable, so
+            # it is never conflated with a decision-window count again.
+            "evaluation_unit": evaluation_unit,
+            "decision_window_cross_reference": decision_window_cross_reference,
             "ba_window": rq1_report.ba_window, "ba_window_n_comparable": rq1_report.ba_window_n_comparable,
             "ba_capture": rq1_report.ba_capture, "ba_capture_n_comparable": rq1_report.ba_capture_n_comparable,
             "ba_future": rq1_report.ba_future, "ba_future_status": rq1_report.ba_future_status, "ba_future_n_comparable": rq1_report.ba_future_n_comparable,

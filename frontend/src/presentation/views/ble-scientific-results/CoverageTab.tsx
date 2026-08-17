@@ -129,6 +129,30 @@ function CoverageAnalysisReportView({ report }: { report: CoverageAnalysisReport
           </div>
         )}
       </div>
+      {report.domain_resolution_diagnostic && (
+        <div>
+          <div className="mb-1 text-xs font-semibold text-slate-400">
+            Diagnostico de resolucion de dominio (por que una decision window real no cae en TRAIN/VALIDATION/TEST)
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-5">
+            <div className="rounded border border-slate-800 bg-slate-950 p-2"><div className="text-slate-500">total_windows</div><div className="font-mono text-slate-200">{report.domain_resolution_diagnostic.total_windows}</div></div>
+            <div className="rounded border border-slate-800 bg-slate-950 p-2"><div className="text-slate-500">assigned_train</div><div className="font-mono text-slate-200">{report.domain_resolution_diagnostic.assigned_train}</div></div>
+            <div className="rounded border border-slate-800 bg-slate-950 p-2"><div className="text-slate-500">assigned_validation</div><div className="font-mono text-slate-200">{report.domain_resolution_diagnostic.assigned_validation}</div></div>
+            <div className="rounded border border-slate-800 bg-slate-950 p-2"><div className="text-slate-500">assigned_test</div><div className="font-mono text-slate-200">{report.domain_resolution_diagnostic.assigned_test}</div></div>
+            <div className="rounded border border-slate-800 bg-slate-950 p-2"><div className="text-slate-500">unresolved</div><div className="font-mono text-slate-200">{report.domain_resolution_diagnostic.unresolved}</div></div>
+          </div>
+          {Object.keys(report.domain_resolution_diagnostic.unresolved_by_reason).length > 0 && (
+            <div className="mt-2 grid grid-cols-1 gap-2 text-[11px] sm:grid-cols-3">
+              {Object.entries(report.domain_resolution_diagnostic.unresolved_by_reason).map(([reason, count]) => (
+                <div key={reason} className="rounded border border-slate-800 bg-slate-950 p-2">
+                  <div className="text-slate-500">{reason}</div>
+                  <div className="font-mono text-slate-200">{count}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {report.window_level_evaluation && (
         <div className="space-y-4">
           <h3 className="text-xs font-bold uppercase tracking-wide text-slate-400">
@@ -138,15 +162,18 @@ function CoverageAnalysisReportView({ report }: { report: CoverageAnalysisReport
             <div key={branch} className="space-y-3 rounded border border-slate-800 p-3">
               <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
                 <span className="font-mono text-slate-300">{branch}</span>
-                {branchEval.acceptance_threshold !== null ? (
+                {branchEval.classifier_acceptance_threshold !== null ? (
                   <span className="rounded border border-emerald-800 bg-emerald-950/30 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-300">
-                    OPERATING POINT = {branchEval.acceptance_threshold} (calibrated_on={branchEval.acceptance_threshold_calibrated_on})
+                    OPERATING POINT = {branchEval.classifier_acceptance_threshold} (calibrated_on={branchEval.classifier_acceptance_threshold_calibrated_on})
                   </span>
                 ) : (
                   <span className="rounded border border-amber-800 bg-amber-950/30 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-300">
                     OPERATING POINT NOT FROZEN
                   </span>
                 )}
+                <span className="rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 text-[10px] font-mono text-slate-500">
+                  association_time_threshold_ms = {branchEval.association_time_threshold_ms ?? 'null (fail-closed)'}
+                </span>
               </div>
               {Object.entries(branchEval.by_evaluation_domain).map(([domain, domainEval]) => (
                 <div key={domain} className="space-y-2 border-t border-slate-800 pt-2">
@@ -157,7 +184,13 @@ function CoverageAnalysisReportView({ report }: { report: CoverageAnalysisReport
                     </span>
                     <span>BA = <span className="font-mono text-slate-300">{domainEval.balanced_accuracy?.toFixed(4) ?? '—'}</span></span>
                     <span>n = <span className="font-mono text-slate-300">{domainEval.n_comparable}</span></span>
+                    <span className={`rounded border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${domainEval.paper_ready ? 'border-emerald-800 bg-emerald-950/30 text-emerald-300' : 'border-red-800 bg-red-950/30 text-red-300'}`}>
+                      {domainEval.paper_ready ? 'PAPER_READY' : 'NOT PAPER_READY'}
+                    </span>
                   </div>
+                  {!domainEval.paper_ready && domainEval.paper_ready_reason && (
+                    <div className="text-[10.5px] text-red-300/80">{domainEval.paper_ready_reason} -- prueba funcional real, no citable todavia.</div>
+                  )}
                   <div className="grid gap-3 md:grid-cols-2">
                     <ConfusionMatrixHeatmap matrix={domainEval.confusion_matrix} noDataReason="Sin matriz de confusion real para este dominio." />
                     <RiskCoverageChart points={domainEval.risk_coverage ?? null} noDataReason="Sin risk_coverage real para este dominio (probabilidades agregadas no disponibles)." />

@@ -157,9 +157,49 @@ def run_rq1_acquisition_dependence(
     # for ba_window: that domain is intentionally capture-leaking by design
     # (see build_rq1_dependence_diagnostic's own docstring), so a CI on it
     # would describe uncertainty of a deliberately non-confirmatory number.
-    report("UNCERTAINTY", 0.9, "Computing a bootstrap confidence interval on ba_capture")
+    report("UNCERTAINTY", 0.9, "Computing bootstrap confidence intervals on ba_capture, ba_window, and delta_dependence")
     ba_capture_ci = studio_repository.bootstrap_balanced_accuracy_ci(recommended_training_run_id, split="VALIDATION")
-    uncertainty_ci = {"ba_capture_ci": {"ci_low": ba_capture_ci["ci_low"], "ci_high": ba_capture_ci["ci_high"]}} if ba_capture_ci else None
+    # RQ1 completion pass (2026-08-17): ba_window now ALSO gets its own real
+    # CI -- ba_window is a deliberately leakage-optimistic diagnostic, not a
+    # confirmatory estimator, but its own resampling uncertainty is still a
+    # real, reportable quantity (never fabricated, never omitted just
+    # because the point estimate itself is intentionally optimistic).
+    ba_window_ci = studio_repository.bootstrap_balanced_accuracy_ci(diag_run_id, split="VALIDATION")
+    # delta_dependence's CI comes from a JOINT resample over both populations
+    # (see Evaluator.bootstrap_balanced_accuracy_delta_ci's own docstring for
+    # why subtracting the two marginal CIs above would be invalid) -- never a
+    # second bootstrap engine, reuses hierarchical_cluster_bootstrap.
+    delta_dependence_ci = studio_repository.bootstrap_balanced_accuracy_delta_ci(
+        diag_run_id, recommended_training_run_id, split_a="VALIDATION", split_b="VALIDATION",
+    )
+    uncertainty_ci = {
+        "ba_capture_ci": {"ci_low": ba_capture_ci["ci_low"], "ci_high": ba_capture_ci["ci_high"]} if ba_capture_ci else None,
+        "ba_window_ci": {"ci_low": ba_window_ci["ci_low"], "ci_high": ba_window_ci["ci_high"]} if ba_window_ci else None,
+        "delta_dependence_ci": {
+            "ci_low": delta_dependence_ci["ci_low"], "ci_high": delta_dependence_ci["ci_high"],
+            "method": "paired_cluster_bootstrap_delta_ci (joint resample, session-clustered, NOT ci_window - ci_capture)",
+        } if delta_dependence_ci else None,
+    } if (ba_capture_ci or ba_window_ci or delta_dependence_ci) else None
+
+    # Real cross-reference against the SAME already-computed decision-window
+    # counts coverage_analysis_report.json carries (2026-08-17 investigation
+    # finding) -- reused verbatim, never a second aggregation. None when
+    # Coverage Analysis has not been run yet for this paper_run_id.
+    coverage_report = sci_repository.get_coverage_analysis_report(paper_run_id)
+    decision_window_cross_reference = None
+    if coverage_report:
+        window_level_by_branch = coverage_report.get("window_level_evaluation") or {}
+        # PRIMARY branch's own decision-window evaluation when present, else
+        # whichever real branch was evaluated -- never assumes a fixed
+        # branch name.
+        branch_evaluation = window_level_by_branch.get("engineered_rf") or next(iter(window_level_by_branch.values()), {})
+        by_domain = branch_evaluation.get("by_evaluation_domain") or {}
+        if by_domain:
+            decision_window_cross_reference = {
+                "source_artifact": "06_statistics/coverage_analysis_report.json", "window_duration_s": coverage_report.get("window_duration_s"),
+                "note": "RQ1's own ba_window/ba_capture are ExampleRecord-level (see evaluation_unit above) -- these decision-window counts are a SEPARATE, real cross-reference, not RQ1's evaluation unit.",
+                "by_evaluation_domain": {domain: {"n_decision_windows": data.get("n_comparable")} for domain, data in by_domain.items()},
+            }
 
     report("PERSIST", 0.95, "persist_rq1_acquisition_dependence_report()")
     study_status = sci_repository.get_study_status()
@@ -181,5 +221,6 @@ def run_rq1_acquisition_dependence(
         },
         uncertainty_ci=uncertainty_ci,
         coverage=None, confusion_matrix_capture=capture_report.confusion_matrix, confusion_matrix_future=None, per_unit_recall=None,
+        evaluation_unit="EXAMPLE_RECORD", decision_window_cross_reference=decision_window_cross_reference,
     )
     return {"rq1_report": persisted, "diagnostic_training_run_id": diag_run_id}

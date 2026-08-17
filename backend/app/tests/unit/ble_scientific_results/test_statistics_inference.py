@@ -12,6 +12,7 @@ from app.modules.ble_scientific_results.statistics.inference import (
     holm_correction,
     non_inferiority_test,
     paired_contrast,
+    paired_cluster_bootstrap_delta_ci,
     risk_coverage_curve,
     stratified_crossover_permutation_test,
 )
@@ -70,6 +71,57 @@ def test_hierarchical_bootstrap_ignores_within_cluster_ordering_only_resamples_c
     result = hierarchical_cluster_bootstrap(clusters, n_resamples=200)
     assert result.ci_low == pytest.approx(result.ci_high)
     assert result.ci_low == pytest.approx(2.0)
+
+
+def test_hierarchical_bootstrap_return_samples_gives_the_real_raw_resample_array():
+    import numpy as np
+    clusters = [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]
+    result, samples = hierarchical_cluster_bootstrap(clusters, n_resamples=400, rng=np.random.default_rng(3), return_samples=True)
+    assert isinstance(samples, np.ndarray)
+    assert samples.shape == (400,)
+    # The returned CI must be the real percentile CI of these exact samples.
+    assert result.ci_low == pytest.approx(np.quantile(samples, 0.025))
+    assert result.ci_high == pytest.approx(np.quantile(samples, 0.975))
+
+
+def test_hierarchical_bootstrap_default_return_is_unchanged_without_return_samples():
+    clusters = [[1.0, 2.0], [3.0, 4.0]]
+    result = hierarchical_cluster_bootstrap(clusters, n_resamples=100)
+    assert not isinstance(result, tuple)
+
+
+def test_paired_cluster_bootstrap_delta_ci_point_estimate_is_the_real_difference_of_pooled_means():
+    # RQ1's real delta_dependence = BA_window - BA_capture over two
+    # INDEPENDENT populations -- point estimate must be the exact difference
+    # of the two pooled means, never re-derived some other way.
+    import numpy as np
+    cluster_values_a = [[0.9, 0.95], [0.85, 0.9]]  # pooled mean = 0.9
+    cluster_values_b = [[0.7, 0.75], [0.65, 0.7]]  # pooled mean = 0.7
+    result = paired_cluster_bootstrap_delta_ci(cluster_values_a, cluster_values_b, n_resamples=500, rng=np.random.default_rng(1))
+    assert result.point_estimate == pytest.approx(0.2)
+    assert result.ci_low <= result.point_estimate <= result.ci_high
+
+
+def test_paired_cluster_bootstrap_delta_ci_is_never_the_same_as_subtracting_marginal_ci_bounds():
+    # A real, important distinction: naively combining ci_low(a)-ci_high(b)
+    # and ci_high(a)-ci_low(b) (the range subtracting the two marginal CIs'
+    # bounds would imply) is WIDER than the real joint resampling
+    # distribution of the difference -- this proves the joint CI is the
+    # narrower, statistically correct one, not the naive combination.
+    # Real between-cluster variability requires clusters with genuinely
+    # different PER-CLUSTER means (not just within-cluster noise) --
+    # otherwise both marginal CIs collapse to ~zero width and the
+    # distinction cannot be observed at all.
+    import numpy as np
+    cluster_values_a = [[0.5, 0.55], [0.9, 0.95], [0.3, 0.35], [0.8, 0.85]]
+    cluster_values_b = [[0.3, 0.35], [0.7, 0.75], [0.1, 0.15], [0.6, 0.65]]
+    rng = np.random.default_rng(42)
+    result_a = hierarchical_cluster_bootstrap(cluster_values_a, n_resamples=2000, rng=np.random.default_rng(42))
+    result_b = hierarchical_cluster_bootstrap(cluster_values_b, n_resamples=2000, rng=np.random.default_rng(43))
+    naive_width = (result_a.ci_high - result_b.ci_low) - (result_a.ci_low - result_b.ci_high)
+    joint = paired_cluster_bootstrap_delta_ci(cluster_values_a, cluster_values_b, n_resamples=2000, rng=rng)
+    joint_width = joint.ci_high - joint.ci_low
+    assert joint_width < naive_width
 
 
 def test_exact_two_sample_permutation_hand_computed():

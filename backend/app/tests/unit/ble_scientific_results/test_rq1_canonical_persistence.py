@@ -89,3 +89,34 @@ def test_uncertainty_and_coverage_stay_none_when_not_supplied_never_fabricated(t
     )
     assert artifact["uncertainty_ci"] is None
     assert artifact["coverage"] is None
+
+
+def test_evaluation_unit_defaults_to_example_record_and_cross_reference_is_pass_through(tmp_path):
+    # Investigation finding (2026-08-17): RQ1's real evaluation unit is the
+    # ExampleRecord, never a 10-second decision window -- this field makes
+    # that explicit and machine-readable on every persisted artifact.
+    repo = _repo(tmp_path)
+    rq1_report = _real_rq1_report()
+    artifact = repo.persist_rq1_acquisition_dependence_report(
+        paper_run_id="RUN-RQ1-4", protocol_id="PROTO-1", protocol_version=1, contract_sha256="real-contract-hash",
+        rq1_report=rq1_report, model_bundle_id="BUNDLE-1", model_bundle_sha256="bundle-hash",
+        confirmatory_split_manifest_id="SPLIT-CONF-1", confirmatory_split_manifest_sha256="split-conf-hash",
+        diagnostic_split_manifest_id="SPLIT-DIAG-1", diagnostic_split_manifest_sha256="split-diag-hash",
+        source_evaluation_domains={},
+    )
+    assert artifact["evaluation_unit"] == "EXAMPLE_RECORD"
+    assert artifact["decision_window_cross_reference"] is None  # never fabricated when the caller has none real
+
+    cross_reference = {
+        "source_artifact": "06_statistics/coverage_analysis_report.json", "window_duration_s": 10.0,
+        "note": "real cross-reference, not RQ1's evaluation unit",
+        "by_evaluation_domain": {"TEST": {"n_decision_windows": 5}, "VALIDATION": {"n_decision_windows": 5}, "TRAIN": {"n_decision_windows": 2}},
+    }
+    artifact_with_ref = repo.persist_rq1_acquisition_dependence_report(
+        paper_run_id="RUN-RQ1-5", protocol_id="PROTO-1", protocol_version=1, contract_sha256="real-contract-hash",
+        rq1_report=rq1_report, model_bundle_id="BUNDLE-1", model_bundle_sha256="bundle-hash",
+        confirmatory_split_manifest_id="SPLIT-CONF-1", confirmatory_split_manifest_sha256="split-conf-hash",
+        diagnostic_split_manifest_id="SPLIT-DIAG-1", diagnostic_split_manifest_sha256="split-diag-hash",
+        source_evaluation_domains={}, decision_window_cross_reference=cross_reference,
+    )
+    assert artifact_with_ref["decision_window_cross_reference"] == cross_reference

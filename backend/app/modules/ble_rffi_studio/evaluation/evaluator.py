@@ -26,7 +26,7 @@ from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
 # safe here, unlike the ScientificResultsRepository coupling in
 # studio_repository.py (which needs a deferred import to avoid a real
 # circular-import risk that does not exist for these).
-from app.modules.ble_scientific_results.statistics.inference import BootstrapCiResult, hierarchical_cluster_bootstrap, risk_coverage_curve
+from app.modules.ble_scientific_results.statistics.inference import BootstrapCiResult, hierarchical_cluster_bootstrap, paired_cluster_bootstrap_delta_ci, risk_coverage_curve
 
 FinalDecision = Literal["IDENTIFIED", "UNKNOWN", "INSUFFICIENT_EVIDENCE"]
 
@@ -68,6 +68,43 @@ class SplitEvaluationReport:
     # None under the same conditions accuracy is None (nothing comparable,
     # or no probabilities recorded) -- never a fabricated empty curve.
     risk_coverage: list[dict[str, float]] | None = None
+
+
+def _session_clustered_label_pairs(
+    predictions: list[dict[str, Any]], known_classes: list[str], session_id_by_example_id: dict[str, str],
+) -> list[list[tuple[str, str]]] | None:
+    """Shared clustering step behind bootstrap_balanced_accuracy_ci() and
+    bootstrap_balanced_accuracy_delta_ci() -- groups (true_label,
+    predicted_label) pairs by real session_id, the same indivisible
+    resampling unit split_builder.py's own leakage check treats a session
+    as. None when nothing is comparable, matching evaluate_split()'s own
+    None convention."""
+    comparable = [p for p in predictions if p["true_label"] in known_classes]
+    if len(known_classes) < 2 or not comparable:
+        return None
+    by_session: dict[str, list[tuple[str, str]]] = {}
+    for prediction in comparable:
+        session_id = session_id_by_example_id.get(prediction["example_id"])
+        if session_id is None:
+            continue
+        by_session.setdefault(session_id, []).append((prediction["true_label"], prediction["predicted_label"]))
+    if not by_session:
+        return None
+    return list(by_session.values())
+
+
+def _balanced_accuracy_statistic(pairs: Sequence[tuple[str, str]], known_classes: list[str]) -> float:
+    """Mean-per-class recall over pooled (true_label, predicted_label)
+    pairs -- the same balanced_accuracy definition SplitEvaluationReport
+    uses (evaluate_split() below), never a second definition."""
+    per_class_recall = []
+    for known_class in known_classes:
+        class_pairs = [p for p in pairs if p[0] == known_class]
+        if not class_pairs:
+            continue
+        correct = sum(1 for true_label, predicted_label in class_pairs if predicted_label == true_label)
+        per_class_recall.append(correct / len(class_pairs))
+    return sum(per_class_recall) / len(per_class_recall) if per_class_recall else 0.0
 
 
 class Evaluator:
@@ -166,31 +203,35 @@ class Evaluator:
         as their primary metric specifically because raw accuracy hides
         per-class imbalance -- a CI computed on raw accuracy would not
         actually describe the uncertainty of the number being reported."""
-        comparable = [p for p in predictions if p["true_label"] in known_classes]
-        if len(known_classes) < 2 or not comparable:
+        cluster_values = _session_clustered_label_pairs(predictions, known_classes, session_id_by_example_id)
+        if cluster_values is None:
             return None
-        by_session: dict[str, list[tuple[str, str]]] = {}
-        for prediction in comparable:
-            session_id = session_id_by_example_id.get(prediction["example_id"])
-            if session_id is None:
-                continue
-            by_session.setdefault(session_id, []).append((prediction["true_label"], prediction["predicted_label"]))
-        if not by_session:
-            return None
-        cluster_values = list(by_session.values())
-
-        def _balanced_accuracy(pairs: Sequence[tuple[str, str]]) -> float:
-            per_class_recall = []
-            for known_class in known_classes:
-                class_pairs = [p for p in pairs if p[0] == known_class]
-                if not class_pairs:
-                    continue
-                correct = sum(1 for true_label, predicted_label in class_pairs if predicted_label == true_label)
-                per_class_recall.append(correct / len(class_pairs))
-            return sum(per_class_recall) / len(per_class_recall) if per_class_recall else 0.0
-
         return hierarchical_cluster_bootstrap(
-            cluster_values, statistic=_balanced_accuracy,
+            cluster_values, statistic=lambda pairs: _balanced_accuracy_statistic(pairs, known_classes),
+            n_resamples=n_resamples, confidence_level=confidence_level,
+        )
+
+    def bootstrap_balanced_accuracy_delta_ci(
+        self, predictions_a: list[dict[str, Any]], predictions_b: list[dict[str, Any]], known_classes: list[str],
+        session_id_by_example_id_a: dict[str, str], session_id_by_example_id_b: dict[str, str],
+        n_resamples: int = 2000, confidence_level: float = 0.95,
+    ) -> BootstrapCiResult | None:
+        """RQ1's real delta_dependence = BA_window - BA_capture CI (2026-08-17
+        completion pass): a joint bootstrap over the SAME two independent,
+        session-clustered populations bootstrap_balanced_accuracy_ci already
+        clusters (predictions_a=RQ1 diagnostic-split VALIDATION, predictions_b
+        =confirmatory VALIDATION -- disjoint session pools by construction,
+        see build_rq1_dependence_diagnostic). Never subtracts two
+        independently-computed CIs' bounds -- see
+        paired_cluster_bootstrap_delta_ci's own docstring for why that would
+        be invalid. None when either side has nothing comparable to
+        bootstrap over."""
+        cluster_values_a = _session_clustered_label_pairs(predictions_a, known_classes, session_id_by_example_id_a)
+        cluster_values_b = _session_clustered_label_pairs(predictions_b, known_classes, session_id_by_example_id_b)
+        if cluster_values_a is None or cluster_values_b is None:
+            return None
+        return paired_cluster_bootstrap_delta_ci(
+            cluster_values_a, cluster_values_b, statistic=lambda pairs: _balanced_accuracy_statistic(pairs, known_classes),
             n_resamples=n_resamples, confidence_level=confidence_level,
         )
 

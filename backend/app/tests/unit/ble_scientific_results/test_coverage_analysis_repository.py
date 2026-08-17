@@ -176,19 +176,36 @@ def test_run_coverage_analysis_with_evaluate_window_level_adds_real_ba_confusion
     as_dict = repo.run_coverage_analysis(paper_run_id="RUN-1", offline_inference_service=service, bundle_ids={"raw_iq": "BUNDLE-RAW-IQ"}, evaluate_window_level=True)
 
     wle = as_dict["window_level_evaluation"]["raw_iq"]
-    assert wle["acceptance_threshold"] == 0.66
-    assert wle["acceptance_threshold_calibrated_on"] == "VALIDATION"
+    # Two DIFFERENT real thresholds, unambiguously named (2026-08-17
+    # investigation): classifier_acceptance_threshold is real (0.66,
+    # VALIDATION-calibrated); association_time_threshold_ms stays null since
+    # no AssociationPolicy was frozen in this fixture (fail-closed, real).
+    assert wle["classifier_acceptance_threshold"] == 0.66
+    assert wle["classifier_acceptance_threshold_calibrated_on"] == "VALIDATION"
+    assert wle["association_time_threshold_ms"] is None
     test_domain = wle["by_evaluation_domain"]["TEST"]
     assert test_domain["evidence_maturity"] == "CURRENT_TEST"
     assert test_domain["confusion_matrix"]["UNIT-A"]["UNIT-A"] == 1
     assert test_domain["confusion_matrix"]["UNIT-B"]["UNIT-A"] == 1
     assert test_domain["balanced_accuracy"] == pytest.approx(0.5)
     assert test_domain["risk_coverage"]
+    # PAPER_READY gate (2026-08-17): n_comparable=2 < 10 AND both real true
+    # units (UNIT-A, UNIT-B) ARE distinct here -- still not ready on the
+    # n<10 criterion alone.
+    assert test_domain["distinct_physical_units"] == ["UNIT-A", "UNIT-B"]
+    assert test_domain["paper_ready"] is False
+    assert "n<10" in test_domain["paper_ready_reason"]
     # n_decided/n_abstained (2026-08-17): exact integer counts derived from
     # the same coverage ratio, real for every point on the curve.
     for point in test_domain["risk_coverage"]:
         assert point["n_decided"] + point["n_abstained"] == test_domain["n_comparable"]
         assert point["n_decided"] == pytest.approx(point["coverage"] * test_domain["n_comparable"], abs=1e-9)
+
+    # Domain-resolution diagnostic (2026-08-17): both real windows resolved
+    # to TEST here (real split above), so unresolved stays 0 -- see the
+    # dedicated unresolved-reason tests below for the 3 failure classes.
+    diagnostic = as_dict["domain_resolution_diagnostic"]
+    assert diagnostic == {"total_windows": 2, "assigned_train": 0, "assigned_validation": 0, "assigned_test": 2, "unresolved": 0, "unresolved_by_reason": {}}
 
     # Real per-window record -- true TX/predicted TX/score/decision, one row
     # per real decision window, never only an aggregated confusion matrix.
@@ -201,6 +218,77 @@ def test_run_coverage_analysis_with_evaluate_window_level_adds_real_ba_confusion
 
     reloaded = repo.get_coverage_analysis_report("RUN-1")
     assert reloaded == as_dict
+
+
+def test_domain_resolution_diagnostic_classifies_all_three_real_unresolved_reasons(tmp_path):
+    # Investigation finding (2026-08-17): only 12/138 real decision windows
+    # in the real closed-set corpus resolved to a TRAIN/VALIDATION/TEST
+    # domain. This test proves each of the 3 real reasons a window can stay
+    # unresolved is classified correctly, from data already in hand -- never
+    # a second aggregation pass.
+    repo = _repo(tmp_path)
+    ble_root = tmp_path / "ble_rffi_studio"
+    captures_dir = ble_root / "captures"
+    captures_dir.mkdir(parents=True)
+
+    cap_resolved = _make_capture("CAP-RESOLVED", target_reference_id="UNIT-A")
+    cap_outside = _make_capture("CAP-OUTSIDE", target_reference_id="UNIT-OUTSIDE")
+    cap_missing = _make_capture("CAP-MISSING", target_reference_id="UNIT-A")
+    cap_mixed = _make_capture("CAP-MIXED", target_reference_id="UNIT-A")
+    for cap in (cap_resolved, cap_outside, cap_missing, cap_mixed):
+        (captures_dir / f"{cap.capture_id}.json").write_text(json.dumps(cap.model_dump(mode="json")), encoding="utf-8")
+
+    ex_resolved = make_example(capture=cap_resolved, index=0, physical_unit_id="UNIT-A")
+    ex_outside = make_example(capture=cap_outside, index=0, physical_unit_id="UNIT-OUTSIDE")
+    ex_missing = make_example(capture=cap_missing, index=0, physical_unit_id="UNIT-A")  # real example, but NOT in the split's assignments below
+    ex_mixed_1 = make_example(capture=cap_mixed, index=0, physical_unit_id="UNIT-A")
+    ex_mixed_2 = make_example(capture=cap_mixed, index=1, physical_unit_id="UNIT-A")
+    write_examples(ble_root, cap_resolved, [ex_resolved])
+    write_examples(ble_root, cap_outside, [ex_outside])
+    write_examples(ble_root, cap_missing, [ex_missing])
+    write_examples(ble_root, cap_mixed, [ex_mixed_1, ex_mixed_2])
+    _write_run_and_rq2_report(tmp_path)
+
+    (ble_root / "splits").mkdir(parents=True, exist_ok=True)
+    (ble_root / "splits" / "DS1__1.0.0__SAME_MODEL_UNIT_IDENTIFICATION.json").write_text(json.dumps({
+        "schema_version": "ble-rffi-studio-split-v1", "dataset_id": "DS1", "dataset_version": "1.0.0",
+        "scientific_task": "SAME_MODEL_UNIT_IDENTIFICATION", "policy": "test", "split_status": "READY",
+        "assignments": [
+            {"example_id": ex_resolved.example_id, "physical_unit_id": "UNIT-A", "capture_id": "CAP-RESOLVED", "session_id": "S1", "split": "TEST", "split_reason": "t"},
+            # ex_missing deliberately absent -- UNIT-A IS a real closed-set
+            # unit (present via ex_resolved above), but THIS example was
+            # never split-assigned (e.g. excluded post-freeze).
+            {"example_id": ex_mixed_1.example_id, "physical_unit_id": "UNIT-A", "capture_id": "CAP-MIXED", "session_id": "S2", "split": "TRAIN", "split_reason": "t"},
+            {"example_id": ex_mixed_2.example_id, "physical_unit_id": "UNIT-A", "capture_id": "CAP-MIXED", "session_id": "S2", "split": "VALIDATION", "split_reason": "t"},
+        ],
+        "leakage_check": {"status": "PASSED"}, "created_at": "2026-08-01T00:00:00Z", "split_manifest_sha256": "hash",
+    }), encoding="utf-8")
+
+    bundle_root = tmp_path / "bundles"
+    (bundle_root / "BUNDLE-RAW-IQ").mkdir(parents=True)
+    (bundle_root / "BUNDLE-RAW-IQ" / "model_manifest.json").write_text(json.dumps({"label_classes": ["UNIT-A", "UNIT-OUTSIDE"]}), encoding="utf-8")
+    (bundle_root / "BUNDLE-RAW-IQ" / "thresholds.json").write_text(json.dumps({"acceptance_threshold": 0.5, "calibrated_on": "VALIDATION"}), encoding="utf-8")
+
+    service = _StubOfflineInferenceService({
+        ("BUNDLE-RAW-IQ", "CAP-RESOLVED"): [_window("w-resolved", final_decision="IDENTIFIED", predicted_class="UNIT-A", physical_unit_id="UNIT-A", burst_example_ids=[ex_resolved.example_id])],
+        ("BUNDLE-RAW-IQ", "CAP-OUTSIDE"): [_window("w-outside", final_decision="IDENTIFIED", predicted_class="UNIT-OUTSIDE", physical_unit_id="UNIT-OUTSIDE", burst_example_ids=[ex_outside.example_id])],
+        ("BUNDLE-RAW-IQ", "CAP-MISSING"): [_window("w-missing", final_decision="IDENTIFIED", predicted_class="UNIT-A", physical_unit_id="UNIT-A", burst_example_ids=[ex_missing.example_id])],
+        ("BUNDLE-RAW-IQ", "CAP-MIXED"): [_window("w-mixed", final_decision="IDENTIFIED", predicted_class="UNIT-A", physical_unit_id="UNIT-A", burst_example_ids=[ex_mixed_1.example_id, ex_mixed_2.example_id])],
+    }, bundle_root=bundle_root)
+
+    as_dict = repo.run_coverage_analysis(paper_run_id="RUN-1", offline_inference_service=service, bundle_ids={"raw_iq": "BUNDLE-RAW-IQ"}, evaluate_window_level=True)
+
+    diagnostic = as_dict["domain_resolution_diagnostic"]
+    assert diagnostic["total_windows"] == 4
+    assert diagnostic["assigned_test"] == 1  # w-resolved only
+    assert diagnostic["assigned_train"] == 0
+    assert diagnostic["assigned_validation"] == 0
+    assert diagnostic["unresolved"] == 3
+    assert diagnostic["unresolved_by_reason"] == {
+        "PHYSICAL_UNIT_NOT_IN_CLOSED_SET_SPLIT": 1,
+        "EXAMPLE_ID_NOT_IN_SPLIT_ASSIGNMENTS": 1,
+        "MIXED_SPLIT_ASSIGNMENT_WITHIN_WINDOW": 1,
+    }
 
 
 def test_run_coverage_analysis_without_evaluate_window_level_never_adds_the_new_key(tmp_path):

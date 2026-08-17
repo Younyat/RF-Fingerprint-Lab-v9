@@ -61,9 +61,9 @@ def test_build_partition_composition_table_counts_windows_captures_sessions_per_
     table = repo.build_partition_composition_table("DS-1", "v1", "TARGET_VS_BACKGROUND")
     assert table["split_status"] == "READY"
     assert table["leakage_check_status"] == "PASSED"
-    assert table["domains"]["TRAIN"] == {"n_windows": 2, "n_captures": 1, "n_sessions": 1}
-    assert table["domains"]["VALIDATION"] == {"n_windows": 1, "n_captures": 1, "n_sessions": 1}
-    assert table["domains"]["TEST"] == {"n_windows": 0, "n_captures": 0, "n_sessions": 0}
+    assert table["domains"]["TRAIN"] == {"n_examples": 2, "n_captures": 1, "n_sessions": 1}
+    assert table["domains"]["VALIDATION"] == {"n_examples": 1, "n_captures": 1, "n_sessions": 1}
+    assert table["domains"]["TEST"] == {"n_examples": 0, "n_captures": 0, "n_sessions": 0}
 
 
 def test_build_receiver_epoch_table_groups_real_captures_by_epoch(tmp_path):
