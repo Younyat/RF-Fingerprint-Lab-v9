@@ -117,6 +117,31 @@ def test_closed_set_exports_generated_from_a_real_multi_device_classification_ru
             "confusion_matrix": {"UNIT-A": {"UNIT-A": 9, "UNIT-B": 1}, "UNIT-B": {"UNIT-A": 1, "UNIT-B": 1}},
         },
     })
+    _write_json(repo.root / "CLOSED-RUN" / "06_statistics" / "coverage_analysis_report.json", {
+        "schema_version": "ble-scientific-results-coverage-analysis-v1", "generated_at": "2026-08-17T00:00:00Z",
+        "paper_run_id": "CLOSED-RUN", "bundle_ids": {"engineered_rf": "BUNDLE-1"}, "window_duration_s": 10.0, "minimum_eligible_bursts": 1,
+        "overall": None, "by_evaluation_domain": {}, "by_branch": {}, "by_physical_unit": {}, "abstention_reason_counts": "NOT_AVAILABLE",
+        "window_level_evaluation": {
+            "engineered_rf": {
+                "acceptance_threshold": 0.66, "acceptance_threshold_calibrated_on": "VALIDATION",
+                "by_evaluation_domain": {
+                    "TEST": {
+                        "evidence_maturity": "CURRENT_TEST", "balanced_accuracy": 0.5, "macro_f1": 0.5,
+                        "confusion_matrix": {"UNIT-A": {"UNIT-A": 1, "UNIT-B": 0}, "UNIT-B": {"UNIT-A": 1, "UNIT-B": 0}}, "n_comparable": 2,
+                        "risk_coverage": [{"coverage": 1.0, "risk": 0.5, "threshold": 0.7, "n_decided": 2, "n_abstained": 0}],
+                    },
+                },
+                "decision_windows": [
+                    {"branch": "engineered_rf", "evaluation_domain": "TEST", "decision_window_id": "w1", "capture_id": "CAP-1", "window_duration_s": 10.0,
+                     "burst_count": 3, "true_physical_unit_id": "UNIT-A", "predicted_class": "UNIT-A", "class_probability": 0.9,
+                     "final_decision": "IDENTIFIED", "abstention_reason": None},
+                    {"branch": "engineered_rf", "evaluation_domain": "TEST", "decision_window_id": "w2", "capture_id": "CAP-2", "window_duration_s": 10.0,
+                     "burst_count": 2, "true_physical_unit_id": "UNIT-B", "predicted_class": "UNIT-A", "class_probability": 0.6,
+                     "final_decision": "IDENTIFIED", "abstention_reason": None},
+                ],
+            },
+        },
+    })
 
     manifest = generate_paper_exports(repo)
 
@@ -143,6 +168,49 @@ def test_closed_set_exports_generated_from_a_real_multi_device_classification_ru
     # No bundle was ever exported for TRAIN-1 in this fixture -- forensic
     # lineage must still generate, honestly stating "not exported yet".
     assert _entry(manifest, "figures/forensic_lineage.pdf")["status"] == "GENERATED"
+
+    # Closed-set 10-second decision windows + window-level risk-coverage --
+    # same real coverage_analysis_report.json the Coverage tab reads.
+    assert _entry(manifest, "closed_set_decision_windows.csv")["status"] == "GENERATED"
+    dw_rows = list(csv.DictReader((repo.root / "paper_exports" / "closed_set_decision_windows.csv").open(encoding="utf-8")))
+    assert {(r["decision_window_id"], r["true_physical_unit_id"], r["predicted_class"]) for r in dw_rows} == {("w1", "UNIT-A", "UNIT-A"), ("w2", "UNIT-B", "UNIT-A")}
+
+    assert _entry(manifest, "closed_set_risk_coverage_window_level.csv")["status"] == "GENERATED"
+    rc_rows = list(csv.DictReader((repo.root / "paper_exports" / "closed_set_risk_coverage_window_level.csv").open(encoding="utf-8")))
+    assert rc_rows[0]["evaluation_domain"] == "TEST"
+    assert rc_rows[0]["n_decided"] == "2"
+    assert rc_rows[0]["n_abstained"] == "0"
+    assert rc_rows[0]["selective_error"] == "0.5"
+
+
+def test_closed_set_decision_window_exports_skipped_when_no_coverage_report_exists(tmp_path):
+    # Same closed-set fixture as above, minus coverage_analysis_report.json
+    # -- must be honestly SKIPPED_NO_DATA, never a fabricated empty table.
+    repo = _repo(tmp_path)
+    _write_json(repo.root / "CLOSED-RUN" / "run.json", {
+        "paper_run_id": "CLOSED-RUN", "campaign_id": "C1", "protocol_id": "P1", "protocol_version": 1,
+        "dataset_id": "IDENTITY-DS", "dataset_version": "v1", "scientific_task": "MULTI_DEVICE_CLASSIFICATION",
+        "analysis_code_commit": "deadbeef", "analysis_environment_hash": "envhash",
+        "storage_path": str(repo.root / "CLOSED-RUN"), "created_at": "2026-08-17T00:00:00Z",
+    })
+    _write_json(repo.root / "CLOSED-RUN" / "06_statistics" / "rq2_representation_comparison_report.json", {
+        "schema_version": "ble-scientific-results-rq2-representation-comparison-v1",
+        "branches": [{
+            "branch": "engineered_rf", "analysis_role": "PRIMARY", "evaluation_domain": "VALIDATION",
+            "model_type": "random_forest", "training_run_id": "TRAIN-1", "balanced_accuracy": 0.7, "macro_f1": 0.65,
+        }],
+        "generated_at": "2026-08-17T00:00:00Z",
+    })
+    _write_json(repo.ble_root / "splits" / "IDENTITY-DS__v1__MULTI_DEVICE_CLASSIFICATION.json", {
+        "schema_version": "ble-rffi-studio-split-v1", "dataset_id": "IDENTITY-DS", "dataset_version": "v1",
+        "scientific_task": "MULTI_DEVICE_CLASSIFICATION", "policy": "test", "split_status": "READY",
+        "assignments": [{"example_id": "e1", "physical_unit_id": "UNIT-A", "capture_id": "CAP-1", "session_id": "S1", "split": "VALIDATION", "split_reason": "t"}],
+        "leakage_check": {"status": "PASSED"}, "created_at": "2026-08-17T00:00:00Z", "split_manifest_sha256": "hash",
+    })
+
+    manifest = generate_paper_exports(repo)
+    assert _entry(manifest, "closed_set_decision_windows.csv")["status"] == "SKIPPED_NO_DATA"
+    assert _entry(manifest, "closed_set_risk_coverage_window_level.csv")["status"] == "SKIPPED_NO_DATA"
 
 
 def test_rq1_results_and_figures_generated_when_rq1_report_exists(tmp_path):

@@ -162,8 +162,69 @@ function CoverageAnalysisReportView({ report }: { report: CoverageAnalysisReport
                     <ConfusionMatrixHeatmap matrix={domainEval.confusion_matrix} noDataReason="Sin matriz de confusion real para este dominio." />
                     <RiskCoverageChart points={domainEval.risk_coverage ?? null} noDataReason="Sin risk_coverage real para este dominio (probabilidades agregadas no disponibles)." />
                   </div>
+                  {domainEval.risk_coverage && domainEval.risk_coverage.length > 0 && (
+                    <div className="overflow-x-auto rounded border border-slate-800">
+                      <table className="min-w-full text-[10.5px]">
+                        <thead className="bg-slate-950 uppercase tracking-wide text-slate-500">
+                          <tr>
+                            <th className="px-2 py-1 text-right">threshold</th>
+                            <th className="px-2 py-1 text-right">coverage</th>
+                            <th className="px-2 py-1 text-right">selective_error</th>
+                            <th className="px-2 py-1 text-right">n_decided</th>
+                            <th className="px-2 py-1 text-right">n_abstained</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800">
+                          {domainEval.risk_coverage.map((point, idx) => (
+                            <tr key={idx}>
+                              <td className="px-2 py-1 text-right font-mono text-slate-300">{point.threshold.toFixed(4)}</td>
+                              <td className="px-2 py-1 text-right font-mono text-slate-300">{point.coverage.toFixed(4)}</td>
+                              <td className="px-2 py-1 text-right font-mono text-slate-300">{point.risk.toFixed(4)}</td>
+                              <td className="px-2 py-1 text-right font-mono text-slate-300">{point.n_decided}</td>
+                              <td className="px-2 py-1 text-right font-mono text-slate-300">{point.n_abstained}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               ))}
+              {branchEval.decision_windows.length > 0 && (
+                <div className="border-t border-slate-800 pt-2">
+                  <div className="mb-1 text-[11px] font-semibold text-slate-400">
+                    Decision windows reales (10s) -- true TX / predicted TX / score / decision
+                  </div>
+                  <div className="max-h-64 overflow-auto rounded border border-slate-800">
+                    <table className="min-w-full text-[10.5px]">
+                      <thead className="sticky top-0 bg-slate-950 uppercase tracking-wide text-slate-500">
+                        <tr>
+                          <th className="px-2 py-1 text-left">decision_window_id</th>
+                          <th className="px-2 py-1 text-left">domain</th>
+                          <th className="px-2 py-1 text-right">burst_count</th>
+                          <th className="px-2 py-1 text-left">true TX</th>
+                          <th className="px-2 py-1 text-left">predicted TX</th>
+                          <th className="px-2 py-1 text-right">score</th>
+                          <th className="px-2 py-1 text-left">decision</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800">
+                        {branchEval.decision_windows.map((row) => (
+                          <tr key={row.decision_window_id ?? `${row.capture_id}-${row.evaluation_domain}`}>
+                            <td className="px-2 py-1 font-mono text-slate-300">{row.decision_window_id ?? '—'}</td>
+                            <td className="px-2 py-1 font-mono text-slate-400">{row.evaluation_domain ?? '—'}</td>
+                            <td className="px-2 py-1 text-right font-mono text-slate-300">{row.burst_count ?? '—'}</td>
+                            <td className="px-2 py-1 font-mono text-slate-300">{row.true_physical_unit_id ?? '—'}</td>
+                            <td className="px-2 py-1 font-mono text-slate-300">{row.predicted_class ?? '—'}</td>
+                            <td className="px-2 py-1 text-right font-mono text-slate-300">{row.class_probability?.toFixed(4) ?? '—'}</td>
+                            <td className="px-2 py-1 font-mono text-slate-300">{row.final_decision ?? '—'}{row.abstention_reason ? ` (${row.abstention_reason})` : ''}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
           ))}
         </div>

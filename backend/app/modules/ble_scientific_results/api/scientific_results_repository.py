@@ -1809,6 +1809,13 @@ class ScientificResultsRepository:
             domain_by_example_id = {}
 
         rows: list[CoverageRow] = []
+        # Real per-window record (2026-08-17, RQ1/per-TX/calibration/decision-
+        # window demonstration pass): the SAME real run_decision_windows()
+        # output already computed above, kept as one row per window when
+        # evaluate_window_level=True -- true TX/predicted TX/score/decision-
+        # abstention/burst_count were always real and already computed, just
+        # never persisted as an inspectable table before this.
+        decision_window_records: list[dict[str, Any]] = []
         for branch, bundle_id in sorted(bundle_ids.items()):
             for capture in captures:
                 examples = examples_by_capture_id[capture.capture_id]
@@ -1825,6 +1832,15 @@ class ScientificResultsRepository:
                     burst_domains = {domain_by_example_id.get(eid) for eid in window.get("burst_example_ids", [])}
                     domain = next(iter(burst_domains)) if len(burst_domains) == 1 and None not in burst_domains else None
                     rows.append(coverage_row_from_decision_window(window, evaluation_domain=domain, branch=branch))
+                    if evaluate_window_level:
+                        decision_window_records.append({
+                            "branch": branch, "evaluation_domain": domain,
+                            "decision_window_id": window.get("decision_window_id"), "capture_id": window.get("capture_id"),
+                            "window_duration_s": window.get("window_duration_s"), "burst_count": window.get("burst_count"),
+                            "true_physical_unit_id": window.get("physical_unit_id"), "predicted_class": window.get("predicted_class"),
+                            "class_probability": window.get("class_probability"), "final_decision": window.get("final_decision"),
+                            "abstention_reason": window.get("abstention_reason"),
+                        })
 
         summary = compute_coverage_summary(rows)
         as_dict = {
@@ -1853,17 +1869,36 @@ class ScientificResultsRepository:
                     report = _evaluate_window_level(domain_rows, evaluator=evaluator, known_classes=known_classes, domain_label=domain)
                     if report is None:
                         continue
+                    n_total = report.n_comparable_to_known_classes
+                    # n_decided/n_abstained (2026-08-17): exact integer derivation
+                    # from the SAME coverage ratio risk_coverage_curve() already
+                    # computed (coverage = n_decided_at_threshold / n_total) --
+                    # never a second selective-prediction implementation, just
+                    # exposing the real counts behind the ratio already returned.
+                    risk_coverage_with_counts = [
+                        {**point, "n_decided": round(point["coverage"] * n_total), "n_abstained": n_total - round(point["coverage"] * n_total)}
+                        for point in (report.risk_coverage or [])
+                    ] if report.risk_coverage else report.risk_coverage
                     by_domain[domain] = {
                         "evidence_maturity": "CURRENT_TEST",  # real, current TRAIN/VALIDATION/TEST -- never PROTECTED_FUTURE
                         "balanced_accuracy": report.balanced_accuracy, "macro_f1": report.macro_f1,
-                        "confusion_matrix": report.confusion_matrix, "n_comparable": report.n_comparable_to_known_classes,
-                        "risk_coverage": report.risk_coverage,
+                        "confusion_matrix": report.confusion_matrix, "n_comparable": n_total,
+                        # `risk` in each point below IS the selective_error (error
+                        # rate among decided instances at that threshold) -- same
+                        # El-Yaniv & Wiener (2010) definition used everywhere else
+                        # in this codebase, not renamed to avoid a second field
+                        # meaning the same thing.
+                        "risk_coverage": risk_coverage_with_counts,
                     }
                 if by_domain:
                     window_level_evaluation[branch] = {
                         "by_evaluation_domain": by_domain,
                         "acceptance_threshold": thresholds.get("acceptance_threshold"),
                         "acceptance_threshold_calibrated_on": thresholds.get("calibrated_on"),
+                        # Real per-window record -- true TX/predicted TX/score/
+                        # decision-abstention/burst_count, one row per real
+                        # decision window (decided AND abstained), this branch only.
+                        "decision_windows": [r for r in decision_window_records if r["branch"] == branch],
                     }
             if window_level_evaluation:
                 as_dict["window_level_evaluation"] = window_level_evaluation

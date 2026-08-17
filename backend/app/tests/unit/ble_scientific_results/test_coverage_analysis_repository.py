@@ -184,6 +184,20 @@ def test_run_coverage_analysis_with_evaluate_window_level_adds_real_ba_confusion
     assert test_domain["confusion_matrix"]["UNIT-B"]["UNIT-A"] == 1
     assert test_domain["balanced_accuracy"] == pytest.approx(0.5)
     assert test_domain["risk_coverage"]
+    # n_decided/n_abstained (2026-08-17): exact integer counts derived from
+    # the same coverage ratio, real for every point on the curve.
+    for point in test_domain["risk_coverage"]:
+        assert point["n_decided"] + point["n_abstained"] == test_domain["n_comparable"]
+        assert point["n_decided"] == pytest.approx(point["coverage"] * test_domain["n_comparable"], abs=1e-9)
+
+    # Real per-window record -- true TX/predicted TX/score/decision, one row
+    # per real decision window, never only an aggregated confusion matrix.
+    decision_windows = wle["decision_windows"]
+    assert {(r["decision_window_id"], r["true_physical_unit_id"], r["predicted_class"], r["final_decision"]) for r in decision_windows} == {
+        ("w1", "UNIT-A", "UNIT-A", "IDENTIFIED"),
+        ("w2", "UNIT-B", "UNIT-A", "IDENTIFIED"),
+    }
+    assert all(r["evaluation_domain"] == "TEST" for r in decision_windows)
 
     reloaded = repo.get_coverage_analysis_report("RUN-1")
     assert reloaded == as_dict

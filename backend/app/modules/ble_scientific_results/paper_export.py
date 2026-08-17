@@ -198,6 +198,35 @@ def per_transmitter_rows(
     ]
 
 
+def decision_window_rows(coverage_report: dict[str, Any], branch: str) -> list[dict[str, Any]]:
+    """One row per real 10-second decision window (decided AND abstained) --
+    true TX/predicted TX/score/decision-abstention/burst_count, read
+    verbatim from `06_statistics/coverage_analysis_report.json`'s own
+    `window_level_evaluation[branch].decision_windows` (produced by
+    run_coverage_analysis(evaluate_window_level=True)) -- never
+    recomputed here."""
+    branch_eval = (coverage_report.get("window_level_evaluation") or {}).get(branch) or {}
+    return list(branch_eval.get("decision_windows") or [])
+
+
+def window_level_risk_coverage_rows(coverage_report: dict[str, Any], branch: str) -> list[dict[str, Any]]:
+    """One row per real point on the decision-window-level risk-coverage
+    curve, across every real evaluation domain -- `risk` is the real
+    selective_error (El-Yaniv & Wiener, 2010), `n_decided`/`n_abstained` are
+    the real integer counts behind the coverage ratio. Read verbatim from
+    the same coverage_analysis_report.json, never recomputed."""
+    branch_eval = (coverage_report.get("window_level_evaluation") or {}).get(branch) or {}
+    rows: list[dict[str, Any]] = []
+    for domain, domain_eval in sorted((branch_eval.get("by_evaluation_domain") or {}).items()):
+        for point in domain_eval.get("risk_coverage") or []:
+            rows.append({
+                "evaluation_domain": domain, "evidence_maturity": domain_eval.get("evidence_maturity"),
+                "coverage": point.get("coverage"), "selective_error": point.get("risk"), "threshold": point.get("threshold"),
+                "n_decided": point.get("n_decided"), "n_abstained": point.get("n_abstained"),
+            })
+    return rows
+
+
 def render_latex_tables(sections: dict[str, list[dict[str, Any]]]) -> str:
     """Minimal, dependency-free LaTeX table templating -- one `table`
     environment per non-empty section. Never called with a section whose
@@ -554,8 +583,30 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
             emit("figures/closed_set_confusion_matrix_normalized.pdf", ExportOutcome("GENERATED", "real, row-normalized from the same TEST confusion matrix already exported"), classification="PAPER_PRIMARY", provenance=closed_set_provenance)
         else:
             emit("figures/closed_set_confusion_matrix_normalized.pdf", ExportOutcome("SKIPPED_NO_DATA", "no real TEST confusion matrix for the PRIMARY branch yet", "06_statistics/rq2_representation_comparison_report.json"))
+
+        # Closed-set 10-second decision windows + window-level risk-coverage
+        # (2026-08-17) -- same real coverage_analysis_report.json the
+        # Coverage tab's window_level_evaluation section reads (GET
+        # /runs/{id}/coverage-analysis), never a second computation. Needs
+        # run_coverage_analysis(evaluate_window_level=True) to have been run
+        # at least once for this closed-set paper_run_id.
+        coverage_report = repository.get_coverage_analysis_report(closed_set["paper_run_id"])
+        primary_branch = closed_set.get("primary_branch")
+        decision_windows = decision_window_rows(coverage_report, primary_branch) if coverage_report and primary_branch else []
+        if decision_windows:
+            _write_csv(exports_dir / "closed_set_decision_windows.csv", decision_windows)
+            emit("closed_set_decision_windows.csv", ExportOutcome("GENERATED", f"real, from 06_statistics/coverage_analysis_report.json window_level_evaluation[{primary_branch}]"), classification="PAPER_PRIMARY", provenance=closed_set_provenance)
+        else:
+            emit("closed_set_decision_windows.csv", ExportOutcome("SKIPPED_NO_DATA", "no coverage_analysis_report.json with window_level_evaluation for the PRIMARY branch yet -- run Coverage Analysis with evaluate_window_level=true", "06_statistics/coverage_analysis_report.json"))
+
+        window_risk_coverage = window_level_risk_coverage_rows(coverage_report, primary_branch) if coverage_report and primary_branch else []
+        if window_risk_coverage:
+            _write_csv(exports_dir / "closed_set_risk_coverage_window_level.csv", window_risk_coverage)
+            emit("closed_set_risk_coverage_window_level.csv", ExportOutcome("GENERATED", f"real, from 06_statistics/coverage_analysis_report.json window_level_evaluation[{primary_branch}]"), classification="PAPER_PRIMARY", provenance=closed_set_provenance)
+        else:
+            emit("closed_set_risk_coverage_window_level.csv", ExportOutcome("SKIPPED_NO_DATA", "no window-level risk_coverage for the PRIMARY branch yet", "06_statistics/coverage_analysis_report.json"))
     else:
-        for name in ("closed_set_partition_composition.csv", "closed_set_per_transmitter.csv", "figures/closed_set_confusion_matrix_normalized.pdf"):
+        for name in ("closed_set_partition_composition.csv", "closed_set_per_transmitter.csv", "figures/closed_set_confusion_matrix_normalized.pdf", "closed_set_decision_windows.csv", "closed_set_risk_coverage_window_level.csv"):
             emit(name, ExportOutcome("SKIPPED_NO_DATA", "no paper_run with scientific_task=MULTI_DEVICE_CLASSIFICATION exists yet", "list_runs()"))
 
     # Campaign/partition timeline -- makes visible, as a figure, that

@@ -579,17 +579,45 @@ export interface CoverageBucket {
 // predictions, kept separate per branch (never pooled across branches like
 // by_evaluation_domain is). evidence_maturity is always CURRENT_TEST here --
 // this block only ever covers TRAIN/VALIDATION/TEST, never protected FUTURE.
+// n_decided/n_abstained (2026-08-17): exact integer counts derived from the
+// same coverage ratio (coverage = n_decided/n_comparable) -- `risk` here IS
+// the selective_error (El-Yaniv & Wiener, 2010), same field, not renamed.
+export interface WindowLevelRiskCoveragePoint {
+  coverage: number;
+  risk: number;
+  threshold: number;
+  n_decided: number;
+  n_abstained: number;
+}
+
 export interface WindowLevelDomainEvaluation {
   evidence_maturity: 'CURRENT_TEST';
   balanced_accuracy: number | null;
   macro_f1: number | null;
   confusion_matrix: Record<string, Record<string, number>>;
   n_comparable: number;
-  risk_coverage: { coverage: number; risk: number; threshold: number }[] | null;
+  risk_coverage: WindowLevelRiskCoveragePoint[] | null;
+}
+
+// Real per-window record (2026-08-17) -- one row per real 10-second decision
+// window (decided AND abstained), read verbatim from run_decision_windows().
+export interface DecisionWindowRecord {
+  branch: string;
+  evaluation_domain: string | null;
+  decision_window_id: string | null;
+  capture_id: string | null;
+  window_duration_s: number | null;
+  burst_count: number | null;
+  true_physical_unit_id: string | null;
+  predicted_class: string | null;
+  class_probability: number | null;
+  final_decision: string | null;
+  abstention_reason: string | null;
 }
 
 export interface WindowLevelBranchEvaluation {
   by_evaluation_domain: Record<string, WindowLevelDomainEvaluation>;
+  decision_windows: DecisionWindowRecord[];
   // The real, VALIDATION-calibrated UNKNOWN-rejection threshold from this
   // branch's own bundle (Evaluator.calibrate_unknown_threshold) -- distinct
   // from the native<->SDR AssociationPolicy.threshold_ms. null only when
