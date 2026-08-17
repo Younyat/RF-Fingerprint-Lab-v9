@@ -21,7 +21,18 @@ LeakageCheckStatus = Literal["NOT_EXECUTED", "RUNNING", "PASSED", "FAILED", "INC
 # non-confirmatory split -- never the default and never reachable from
 # SplitBuilder.build(). Any split_purpose other than CONFIRMATORY must never
 # be used to select a model, calibrate a threshold, or report a paper result.
-SplitPurpose = Literal["CONFIRMATORY", "RQ1_ACQUISITION_DEPENDENCE_DIAGNOSTIC"]
+#
+# RQ1_WINDOW_LEVEL_ACQUISITION_DEPENDENCE_DIAGNOSTIC (2026-08-18 correction):
+# RQ1_ACQUISITION_DEPENDENCE_DIAGNOSTIC splits by ExampleRecord hash-order,
+# which can place TRAIN-role and held-out-role bursts inside the exact SAME
+# real 10-second decision window -- scientifically defensible at the
+# ExampleRecord unit RQ1 was originally built for, but not a valid
+# "capture-dependent" diagnostic at 10-second decision-window granularity.
+# This purpose is for SplitBuilder.build_rq1_window_level_dependence_diagnostic():
+# same capture=YES, same real decision window=NO, shared bursts=NO -- whole,
+# non-overlapping real decision windows reserved deterministically for
+# fitting vs. diagnostic roles, never by result.
+SplitPurpose = Literal["CONFIRMATORY", "RQ1_ACQUISITION_DEPENDENCE_DIAGNOSTIC", "RQ1_WINDOW_LEVEL_ACQUISITION_DEPENDENCE_DIAGNOSTIC"]
 
 
 class SplitAssignment(StudioContract):

@@ -1818,51 +1818,58 @@ class ScientificResultsRepository:
         # abstention/burst_count were always real and already computed, just
         # never persisted as an inspectable table before this.
         decision_window_records: list[dict[str, Any]] = []
-        # Domain-resolution diagnostic (2026-08-17 investigation): WHY a
-        # window's evaluation_domain came back None, classified from data
-        # already in hand -- never a second aggregation pass, just real-time
-        # bookkeeping alongside the existing loop. Deduped by
-        # decision_window_id since the same physical window recurs once per
-        # branch with an identical domain-resolution outcome (domain
-        # resolution depends only on burst_example_ids/the split, never on
-        # which branch scored the window).
-        domain_resolution_by_window_id: dict[str, dict[str, Any]] = {}
+        # Domain-resolution diagnostic. Deduped by (decision_window_id,
+        # domain) -- NOT decision_window_id alone: after the scoping fix
+        # below, the SAME real (capture_id, window_index) key can legitimately
+        # produce two separate window dicts (one per real admitted-example
+        # subset, e.g. this split's real TRAIN bursts and this capture's
+        # real non-admitted bursts) -- deduping on the bare id would silently
+        # drop one of them.
+        domain_resolution_by_key: dict[tuple[str, object], dict[str, Any]] = {}
         for branch, bundle_id in sorted(bundle_ids.items()):
             for capture in captures:
                 examples = examples_by_capture_id[capture.capture_id]
                 if not examples:
                     continue
-                windows = offline_inference_service.run_decision_windows(
-                    bundle_id=bundle_id, examples=examples, window_duration_s=window_duration_s, minimum_eligible_bursts=minimum_eligible_bursts,
-                )
-                for window in windows:
-                    # A window's evaluation_domain is real only when every
-                    # constituent burst example resolves to the SAME real
-                    # split assignment -- never guessed for a window whose
-                    # bursts disagree or were never split-assigned.
-                    burst_domains = {domain_by_example_id.get(eid) for eid in window.get("burst_example_ids", [])}
-                    domain = next(iter(burst_domains)) if len(burst_domains) == 1 and None not in burst_domains else None
-                    rows.append(coverage_row_from_decision_window(window, evaluation_domain=domain, branch=branch))
-                    if evaluate_window_level:
-                        decision_window_records.append({
-                            "branch": branch, "evaluation_domain": domain,
-                            "decision_window_id": window.get("decision_window_id"), "capture_id": window.get("capture_id"),
-                            "window_duration_s": window.get("window_duration_s"), "burst_count": window.get("burst_count"),
-                            "true_physical_unit_id": window.get("physical_unit_id"), "predicted_class": window.get("predicted_class"),
-                            "class_probability": window.get("class_probability"), "final_decision": window.get("final_decision"),
-                            "abstention_reason": window.get("abstention_reason"),
-                        })
-                        window_id = window.get("decision_window_id")
-                        if window_id is not None and window_id not in domain_resolution_by_window_id:
-                            if domain is not None:
-                                reason = None
-                            elif len(burst_domains - {None}) > 1:
-                                reason = "MIXED_SPLIT_ASSIGNMENT_WITHIN_WINDOW"
-                            elif window.get("physical_unit_id") not in split_physical_units:
-                                reason = "PHYSICAL_UNIT_NOT_IN_CLOSED_SET_SPLIT"
-                            else:
-                                reason = "EXAMPLE_ID_NOT_IN_SPLIT_ASSIGNMENTS"
-                            domain_resolution_by_window_id[window_id] = {"resolved_domain": domain, "reason": reason}
+                # Scoping fix (2026-08-18): partition this capture's REAL
+                # examples by their real split domain BEFORE grouping into
+                # decision windows -- a window must never be invalidated just
+                # because some OTHER burst of the same real capture was never
+                # admitted to this split (or belongs to a different real
+                # domain). Each admitted subset (and the non-admitted
+                # leftover, domain_key=None) is windowed independently, via
+                # the exact same run_decision_windows() call as before --
+                # never a second windowing formula. This also makes the
+                # MIXED_SPLIT_ASSIGNMENT_WITHIN_WINDOW failure mode
+                # structurally impossible: a single run_decision_windows()
+                # call now only ever sees examples from one real domain.
+                examples_by_domain: dict[str | None, list] = {}
+                for example in examples:
+                    examples_by_domain.setdefault(domain_by_example_id.get(example.example_id), []).append(example)
+                for domain_key, domain_examples in examples_by_domain.items():
+                    windows = offline_inference_service.run_decision_windows(
+                        bundle_id=bundle_id, examples=domain_examples, window_duration_s=window_duration_s, minimum_eligible_bursts=minimum_eligible_bursts,
+                    )
+                    for window in windows:
+                        if domain_key is not None:
+                            resolved_domain, reason = domain_key, None
+                        else:
+                            resolved_domain = None
+                            reason = "PHYSICAL_UNIT_NOT_IN_CLOSED_SET_SPLIT" if window.get("physical_unit_id") not in split_physical_units else "EXAMPLE_ID_NOT_IN_SPLIT_ASSIGNMENTS"
+                        rows.append(coverage_row_from_decision_window(window, evaluation_domain=resolved_domain, branch=branch))
+                        if evaluate_window_level:
+                            decision_window_records.append({
+                                "branch": branch, "evaluation_domain": resolved_domain,
+                                "decision_window_id": window.get("decision_window_id"), "capture_id": window.get("capture_id"),
+                                "window_duration_s": window.get("window_duration_s"), "burst_count": window.get("burst_count"),
+                                "true_physical_unit_id": window.get("physical_unit_id"), "predicted_class": window.get("predicted_class"),
+                                "class_probability": window.get("class_probability"), "final_decision": window.get("final_decision"),
+                                "abstention_reason": window.get("abstention_reason"),
+                            })
+                            window_id = window.get("decision_window_id")
+                            dedup_key = (window_id, domain_key)
+                            if window_id is not None and dedup_key not in domain_resolution_by_key:
+                                domain_resolution_by_key[dedup_key] = {"resolved_domain": resolved_domain, "reason": reason}
 
         summary = compute_coverage_summary(rows)
         as_dict = {
@@ -1872,14 +1879,14 @@ class ScientificResultsRepository:
             **summary,
         }
 
-        if evaluate_window_level and domain_resolution_by_window_id:
-            resolved = [w for w in domain_resolution_by_window_id.values() if w["resolved_domain"] is not None]
-            unresolved = [w for w in domain_resolution_by_window_id.values() if w["resolved_domain"] is None]
+        if evaluate_window_level and domain_resolution_by_key:
+            resolved = [w for w in domain_resolution_by_key.values() if w["resolved_domain"] is not None]
+            unresolved = [w for w in domain_resolution_by_key.values() if w["resolved_domain"] is None]
             unresolved_by_reason: dict[str, int] = {}
             for w in unresolved:
                 unresolved_by_reason[w["reason"]] = unresolved_by_reason.get(w["reason"], 0) + 1
             as_dict["domain_resolution_diagnostic"] = {
-                "total_windows": len(domain_resolution_by_window_id),
+                "total_windows": len(domain_resolution_by_key),
                 "assigned_train": sum(1 for w in resolved if w["resolved_domain"] == "TRAIN"),
                 "assigned_validation": sum(1 for w in resolved if w["resolved_domain"] == "VALIDATION"),
                 "assigned_test": sum(1 for w in resolved if w["resolved_domain"] == "TEST"),

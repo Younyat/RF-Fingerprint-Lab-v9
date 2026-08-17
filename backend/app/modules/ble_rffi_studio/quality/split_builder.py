@@ -186,6 +186,104 @@ class SplitBuilder:
             enforce_leakage_gate=False, split_purpose="RQ1_ACQUISITION_DEPENDENCE_DIAGNOSTIC",
         )
 
+    def build_rq1_window_level_dependence_diagnostic(
+        self, *, dataset: DatasetManifest, examples: list[ExampleRecord], scientific_task: str,
+        confirmatory_split: SplitManifest, created_at: str,
+        window_duration_s: float | None = None, minimum_eligible_bursts: int | None = None,
+    ) -> SplitManifest:
+        """RQ1's window-level acquisition-dependence diagnostic (2026-08-18
+        correction, split_purpose=RQ1_WINDOW_LEVEL_ACQUISITION_DEPENDENCE_
+        DIAGNOSTIC): unlike build_rq1_dependence_diagnostic() above (which
+        splits by ExampleRecord hash-order and can place fitting-role and
+        diagnostic-role bursts inside the exact SAME real 10-second decision
+        window -- confirmed a real problem, not scientifically valid at
+        decision-window granularity), this reserves WHOLE, non-overlapping
+        real decision windows:
+
+            same capture             = YES (the whole point of the diagnostic)
+            same real decision window = NO
+            shared bursts             = NO
+
+        For each real capture with >=2 real decision windows (computed via
+        the SAME group_examples_into_windows() run_decision_windows() itself
+        uses -- never a second windowing formula), the FIRST half of its
+        window indexes (deterministic, ascending order -- never chosen by
+        any result) is reserved for fitting (split="TRAIN"), the SECOND half
+        for the diagnostic role (split="VALIDATION"). A capture contributing to
+        one role always contributes to the other too (grouped and split
+        per-capture, never per-session), so capture_ids_train ==
+        capture_ids_diagnostic holds by construction, and the two window-id
+        sets are disjoint by construction.
+
+        Today's real closed-set corpus captures are short enough that every
+        one produces at most 1 complete window -- this NEVER fabricates a
+        result for that case: split_status becomes NOT_FEASIBLE with
+        infeasibility_reason starting 'NOT_AVAILABLE_FOR_WINDOW_LEVEL_
+        DEPENDENT_DIAGNOSTIC' when no real capture has 2 real windows. The
+        definitive campaign's real 120-second/12-window captures are exactly
+        what this is built for -- no new window duration or decision unit is
+        introduced, reuses the study's own already-frozen 10-second rule."""
+        # Imported lazily (not at module level) to avoid a circular import:
+        # ..inference imports ..training, which imports this module.
+        from ..inference.decision_windows import (
+            DEFAULT_MINIMUM_ELIGIBLE_BURSTS,
+            DEFAULT_WINDOW_DURATION_S,
+            group_examples_into_windows,
+        )
+        if window_duration_s is None:
+            window_duration_s = DEFAULT_WINDOW_DURATION_S
+        if minimum_eligible_bursts is None:
+            minimum_eligible_bursts = DEFAULT_MINIMUM_ELIGIBLE_BURSTS
+        by_id = {e.example_id: e for e in examples}
+        train_example_ids = {a.example_id for a in confirmatory_split.assignments if a.split == "TRAIN"}
+        by_capture: dict[str, list[ExampleRecord]] = {}
+        for example_id in train_example_ids:
+            example = by_id.get(example_id)
+            if example is not None:
+                by_capture.setdefault(example.capture_id, []).append(example)
+
+        policy = "rq1_window_level_diagnostic:same_capture_disjoint_windows"
+        assignments: list[SplitAssignment] = []
+        for capture_id, capture_examples in by_capture.items():
+            windows = group_examples_into_windows(capture_examples, window_duration_s)
+            eligible = {key: exs for key, exs in windows.items() if len(exs) >= minimum_eligible_bursts}
+            if len(eligible) < 2:
+                continue  # this real capture cannot support BOTH roles without overlap -- skipped, never forced
+            # Deterministic, real, never result-dependent: ascending window_index order.
+            ordered_keys = sorted(eligible.keys(), key=lambda key: key[1])
+            midpoint = len(ordered_keys) // 2
+            for key in ordered_keys[:midpoint]:
+                window_id = f"{key[0]}-decision-win-{key[1]:05d}"
+                for example in eligible[key]:
+                    assignments.append(SplitAssignment(
+                        example_id=example.example_id, physical_unit_id=example.physical_unit_id, capture_id=example.capture_id,
+                        session_id=example.session_id, split="TRAIN", split_reason=f"{policy}:window={window_id}:fitting",
+                    ))
+            for key in ordered_keys[midpoint:]:
+                window_id = f"{key[0]}-decision-win-{key[1]:05d}"
+                for example in eligible[key]:
+                    assignments.append(SplitAssignment(
+                        example_id=example.example_id, physical_unit_id=example.physical_unit_id, capture_id=example.capture_id,
+                        session_id=example.session_id, split="VALIDATION", split_reason=f"{policy}:window={window_id}:diagnostic",
+                    ))
+
+        if not assignments:
+            reason = (
+                "NOT_AVAILABLE_FOR_WINDOW_LEVEL_DEPENDENT_DIAGNOSTIC: no real capture in the CONFIRMATORY-TRAIN "
+                f"population has >=2 real, non-overlapping {window_duration_s:.0f}-second decision windows "
+                f"(>={minimum_eligible_bursts} eligible burst(s) each) to reserve separately for fitting and "
+                "diagnostic roles without overlap or shared bursts -- every real capture in the current corpus "
+                "produces at most 1 complete decision window. Requires the definitive campaign's longer real "
+                "captures (e.g. 120s/12 real 10s windows); never fabricated from the current short captures."
+            )
+            return self._not_feasible(dataset, scientific_task, policy, reason, created_at, [], split_purpose="RQ1_WINDOW_LEVEL_ACQUISITION_DEPENDENCE_DIAGNOSTIC")
+
+        leakage = self._compute_leakage(assignments, by_id)
+        return self._finalize(
+            dataset, scientific_task, policy, assignments, leakage, created_at, by_id, [],
+            enforce_leakage_gate=False, split_purpose="RQ1_WINDOW_LEVEL_ACQUISITION_DEPENDENCE_DIAGNOSTIC",
+        )
+
     # ------------------------------------------------------------------
 
     def _sessions_by_unit(self, examples: list[ExampleRecord]) -> dict[str, dict[str, list[ExampleRecord]]]:

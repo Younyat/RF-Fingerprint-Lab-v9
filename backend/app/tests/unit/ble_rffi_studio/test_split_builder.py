@@ -340,6 +340,106 @@ def test_build_rq1_dependence_diagnostic_not_feasible_with_single_example_sessio
     assert diagnostic.split_purpose == "RQ1_ACQUISITION_DEPENDENCE_DIAGNOSTIC"
 
 
+def _synthetic_confirmatory_split(dataset, examples, *, scientific_task="MULTI_DEVICE_CLASSIFICATION") -> "SplitManifest":
+    """A minimal, directly-constructed CONFIRMATORY split with every real
+    example assigned TRAIN -- build_rq1_window_level_dependence_diagnostic()
+    only ever reads TRAIN assignments, so this is enough without running the
+    full closed-set split-building machinery."""
+    from app.modules.ble_rffi_studio.contracts import LeakageCheckResult, SplitAssignment, SplitManifest
+    assignments = [
+        SplitAssignment(example_id=e.example_id, physical_unit_id=e.physical_unit_id, capture_id=e.capture_id, session_id=e.session_id, split="TRAIN", split_reason="synthetic")
+        for e in examples
+    ]
+    return SplitManifest(
+        dataset_id=dataset.dataset_id, dataset_version=dataset.dataset_version, scientific_task=scientific_task, policy="synthetic",
+        split_status="READY", assignments=assignments, leakage_check=LeakageCheckResult(status="PASSED"), created_at="2026-08-18T00:00:00Z",
+    )
+
+
+def _windowed_capture_examples(*, unit_id: str, capture_id: str, n_windows: int, bursts_per_window: int = 2) -> list[ExampleRecord]:
+    """Real 10-second-window-spanning examples for ONE capture -- window
+    boundaries follow the EXACT SAME formula group_examples_into_windows()
+    uses (iq_start_sample // (window_duration_s * sample_rate_sps)), at
+    sample_rate_sps=4_000_000 (make_example's fixed value)."""
+    window_samples = int(10.0 * 4_000_000)
+    session_id = f"SESSION-{capture_id}"
+    examples = []
+    counter = 0
+    for window_index in range(n_windows):
+        for burst_index in range(bursts_per_window):
+            start = window_index * window_samples + burst_index * 1000
+            examples.append(make_example(
+                example_index=counter, physical_unit_id=unit_id, session_id=session_id, capture_id=capture_id,
+                source_iq_sha256=f"synthetic-sha-{capture_id}", iq_start_sample=start, iq_end_sample=start + 500,
+            ))
+            counter += 1
+    return examples
+
+
+def test_build_rq1_window_level_dependence_diagnostic_reserves_disjoint_windows_same_capture(split_builder, tmp_path):
+    # Future protocol rule (2026-08-18): same capture=YES, same real
+    # decision window=NO, shared bursts=NO. Models the definitive campaign's
+    # real 120s/12-window captures at a smaller scale (4 real 10s windows
+    # per capture, 2 units) -- proves the two disjointness invariants the
+    # protocol requires, re-derived independently via
+    # group_examples_into_windows() (never trusting split_reason text alone).
+    from app.modules.ble_rffi_studio.inference.decision_windows import group_examples_into_windows
+
+    examples_unit_a = _windowed_capture_examples(unit_id="UNIT-A", capture_id="CAP-A", n_windows=4)
+    examples_unit_b = _windowed_capture_examples(unit_id="UNIT-B", capture_id="CAP-B", n_windows=4)
+    examples = examples_unit_a + examples_unit_b
+    dataset = _frozen_dataset(tmp_path, examples, dataset_id="DS-WINDOW-LEVEL")
+    confirmatory = _synthetic_confirmatory_split(dataset, examples)
+
+    diagnostic = split_builder.build_rq1_window_level_dependence_diagnostic(
+        dataset=dataset, examples=examples, scientific_task="MULTI_DEVICE_CLASSIFICATION",
+        confirmatory_split=confirmatory, created_at="2026-08-18T00:00:00Z",
+    )
+    assert diagnostic.split_status == "READY"
+    assert diagnostic.split_purpose == "RQ1_WINDOW_LEVEL_ACQUISITION_DEPENDENCE_DIAGNOSTIC"
+    assert diagnostic.non_confirmatory is True
+    # Deliberately capture-dependent by design -- leakage check must report
+    # this honestly (capture_id/session_id real overlap), never hidden.
+    assert diagnostic.leakage_check.status == "FAILED"
+    assert "capture_id" in diagnostic.leakage_check.overlapping_keys
+    # Shared bursts=NO: no individual burst identity fields should overlap
+    # between the two roles (each real burst belongs to exactly one window,
+    # each window to exactly one role).
+    assert "candidate_id" not in diagnostic.leakage_check.overlapping_keys
+    assert "packet_id" not in diagnostic.leakage_check.overlapping_keys
+
+    fitting_examples = [e for e in examples if e.example_id in {a.example_id for a in diagnostic.assignments if a.split == "TRAIN"}]
+    diagnostic_examples = [e for e in examples if e.example_id in {a.example_id for a in diagnostic.assignments if a.split == "VALIDATION"}]
+    assert fitting_examples and diagnostic_examples  # both roles real and non-empty
+
+    train_window_ids = set(group_examples_into_windows(fitting_examples, 10.0).keys())
+    diagnostic_window_ids = set(group_examples_into_windows(diagnostic_examples, 10.0).keys())
+
+    # The two required invariants, verified independently:
+    assert train_window_ids.isdisjoint(diagnostic_window_ids)  # train_window_ids ∩ diagnostic_window_ids = ∅
+    capture_ids_train = {a.capture_id for a in diagnostic.assignments if a.split == "TRAIN"}
+    capture_ids_diagnostic = {a.capture_id for a in diagnostic.assignments if a.split == "VALIDATION"}
+    assert capture_ids_train == capture_ids_diagnostic == {"CAP-A", "CAP-B"}
+
+
+def test_build_rq1_window_level_dependence_diagnostic_not_available_with_single_window_captures(split_builder, tmp_path):
+    # Today's real closed-set captures -- at most 1 complete real 10s window
+    # each. Must NEVER be fabricated into a fake dependent diagnostic.
+    examples = _windowed_capture_examples(unit_id="UNIT-A", capture_id="CAP-SHORT", n_windows=1) + \
+        _windowed_capture_examples(unit_id="UNIT-B", capture_id="CAP-SHORT-2", n_windows=1)
+    dataset = _frozen_dataset(tmp_path, examples, dataset_id="DS-SHORT")
+    confirmatory = _synthetic_confirmatory_split(dataset, examples)
+
+    diagnostic = split_builder.build_rq1_window_level_dependence_diagnostic(
+        dataset=dataset, examples=examples, scientific_task="MULTI_DEVICE_CLASSIFICATION",
+        confirmatory_split=confirmatory, created_at="2026-08-18T00:00:00Z",
+    )
+    assert diagnostic.split_status == "NOT_FEASIBLE"
+    assert diagnostic.split_purpose == "RQ1_WINDOW_LEVEL_ACQUISITION_DEPENDENCE_DIAGNOSTIC"
+    assert diagnostic.infeasibility_reason.startswith("NOT_AVAILABLE_FOR_WINDOW_LEVEL_DEPENDENT_DIAGNOSTIC")
+    assert diagnostic.assignments == []
+
+
 def test_split_manifest_round_trips_through_canonical_json(split_builder, tmp_path):
     import json
 

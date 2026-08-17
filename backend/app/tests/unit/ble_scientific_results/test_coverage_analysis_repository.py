@@ -43,7 +43,25 @@ class _StubOfflineInferenceService:
         if not examples:
             return []
         capture_id = examples[0].capture_id
-        return self.windows_by_bundle_and_capture.get((bundle_id, capture_id), [])
+        registered = self.windows_by_bundle_and_capture.get((bundle_id, capture_id), [])
+        # Real scoping fix (2026-08-18) calls this once per real split-domain
+        # subset of a capture's examples -- so this stub must intersect a
+        # registered window's burst_example_ids with the examples ACTUALLY
+        # passed this call, exactly like the real run_decision_windows()
+        # would only ever score the bursts it was given. A window with no
+        # burst_example_ids declared (older, burst-set-agnostic fixtures)
+        # passes through unfiltered.
+        passed_ids = {e.example_id for e in examples}
+        filtered = []
+        for window in registered:
+            burst_ids = window.get("burst_example_ids") or []
+            if not burst_ids:
+                filtered.append(window)
+                continue
+            surviving = [bid for bid in burst_ids if bid in passed_ids]
+            if surviving:
+                filtered.append({**window, "burst_example_ids": surviving, "burst_count": len(surviving)})
+        return filtered
 
 
 def _window(window_id: str, *, final_decision: str, predicted_class: str | None, physical_unit_id: str | None, abstention_reason: str | None = None, burst_example_ids: list[str] | None = None) -> dict:
@@ -220,12 +238,18 @@ def test_run_coverage_analysis_with_evaluate_window_level_adds_real_ba_confusion
     assert reloaded == as_dict
 
 
-def test_domain_resolution_diagnostic_classifies_all_three_real_unresolved_reasons(tmp_path):
-    # Investigation finding (2026-08-17): only 12/138 real decision windows
-    # in the real closed-set corpus resolved to a TRAIN/VALIDATION/TEST
-    # domain. This test proves each of the 3 real reasons a window can stay
-    # unresolved is classified correctly, from data already in hand -- never
-    # a second aggregation pass.
+def test_domain_resolution_diagnostic_classifies_the_two_real_unresolved_reasons(tmp_path):
+    # Investigation finding (2026-08-17) + scoping fix (2026-08-18): only
+    # 12/138 real decision windows in the real closed-set corpus resolved to
+    # a TRAIN/VALIDATION/TEST domain, mostly because run_decision_windows()
+    # used to be called on a capture's FULL raw burst set, so one
+    # non-admitted or cross-domain burst poisoned the whole window. Now that
+    # examples are partitioned by real split-domain BEFORE windowing,
+    # MIXED_SPLIT_ASSIGNMENT_WITHIN_WINDOW is structurally impossible -- a
+    # capture whose bursts really do belong to two different real domains
+    # (CAP-MIXED below) now correctly resolves as TWO separate, correctly-
+    # domained windows, not one poisoned, unresolved one. Only two real
+    # reasons remain for a genuinely unresolved window.
     repo = _repo(tmp_path)
     ble_root = tmp_path / "ble_rffi_studio"
     captures_dir = ble_root / "captures"
@@ -279,15 +303,18 @@ def test_domain_resolution_diagnostic_classifies_all_three_real_unresolved_reaso
     as_dict = repo.run_coverage_analysis(paper_run_id="RUN-1", offline_inference_service=service, bundle_ids={"raw_iq": "BUNDLE-RAW-IQ"}, evaluate_window_level=True)
 
     diagnostic = as_dict["domain_resolution_diagnostic"]
-    assert diagnostic["total_windows"] == 4
-    assert diagnostic["assigned_test"] == 1  # w-resolved only
-    assert diagnostic["assigned_train"] == 0
-    assert diagnostic["assigned_validation"] == 0
-    assert diagnostic["unresolved"] == 3
+    # 5 total: w-resolved (TEST) + w-outside (unresolved) + w-missing
+    # (unresolved) + CAP-MIXED's two bursts, now cleanly split into their
+    # OWN real TRAIN window and real VALIDATION window (the fix) instead of
+    # one poisoned, unresolved MIXED window (the old, wrong behavior).
+    assert diagnostic["total_windows"] == 5
+    assert diagnostic["assigned_test"] == 1  # w-resolved
+    assert diagnostic["assigned_train"] == 1  # CAP-MIXED's real TRAIN-admitted burst, now resolved
+    assert diagnostic["assigned_validation"] == 1  # CAP-MIXED's real VALIDATION-admitted burst, now resolved
+    assert diagnostic["unresolved"] == 2
     assert diagnostic["unresolved_by_reason"] == {
         "PHYSICAL_UNIT_NOT_IN_CLOSED_SET_SPLIT": 1,
         "EXAMPLE_ID_NOT_IN_SPLIT_ASSIGNMENTS": 1,
-        "MIXED_SPLIT_ASSIGNMENT_WITHIN_WINDOW": 1,
     }
 
 

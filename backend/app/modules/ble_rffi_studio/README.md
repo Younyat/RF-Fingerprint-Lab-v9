@@ -9,6 +9,51 @@ This README is part of the project audit trail. Any meaningful change to this
 module must update this file in the same work item: what changed, why it
 changed, what scientific/UX assumption it protects, and how it was verified.
 
+## 2026-08-18 update: RQ1 window-level dependence diagnostic + coverage_analysis scoping fix
+
+RQ1's own naming was ambiguous: `build_rq1_dependence_diagnostic()` (unchanged,
+`quality/split_builder.py`) splits by `ExampleRecord` hash-order, which can
+place fitting-role and diagnostic-role bursts inside the exact same real 10s
+decision window (`inference/decision_windows.py`) -- confirmed a real problem
+for a window-level BA claim, not a naming quibble. New method
+`SplitBuilder.build_rq1_window_level_dependence_diagnostic()` fixes this
+properly: for each real capture with >=2 real decision windows (grouped via
+the SAME `group_examples_into_windows()` the platform already uses for
+RQ3/RQ4/coverage -- never a second windowing formula), the first half of its
+window indexes (deterministic ascending order, never result-dependent) is
+reserved for fitting, the second half for the diagnostic role. Grouped and
+split **per capture** (not per session, unlike the original method), so
+`capture_ids_train == capture_ids_diagnostic` and the two window-id sets are
+disjoint by construction -- `same capture=YES, same decision window=NO,
+shared bursts=NO`. New `split_purpose`:
+`RQ1_WINDOW_LEVEL_ACQUISITION_DEPENDENCE_DIAGNOSTIC` (`contracts/split.py`).
+Today's real closed-set captures are short enough that every one yields at
+most 1 complete window -- this never fabricates a result for that case:
+`split_status=NOT_FEASIBLE`, `infeasibility_reason` starting
+`NOT_AVAILABLE_FOR_WINDOW_LEVEL_DEPENDENT_DIAGNOSTIC`, verified against real
+data, not just unit-tested. Not yet frozen into any manifest or wired to a
+runner -- ready for the definitive 120s/12-window campaign. IMPLEMENTED AND
+TESTED (`test_split_builder.py`).
+
+The import of `..inference.decision_windows` needed by the new method is
+lazy (inside the method body, not module-level): `..inference/__init__.py`
+imports `offline_inference` -> `..training.training_service`, which imports
+`train_label_for` back from this same `quality/split_builder.py` -- a
+module-level import created a circular-import crash on any import of
+`ble_rffi_studio.quality` (caught by the test suite, not manually).
+
+`ble_scientific_results.api.scientific_results_repository.run_coverage_
+analysis` had a real scoping bug (not fixed here, but exercised by the new
+method's design): it rebuilt each capture's decision windows from ALL its
+raw bursts, then required every burst in a window to agree on one split
+domain -- one stray non-admitted burst poisoned an otherwise-valid window as
+`MIXED_SPLIT_ASSIGNMENT_WITHIN_WINDOW`. Fixed by partitioning a capture's
+examples by split domain *before* windowing, so each domain-subset only ever
+sees its own examples -- that reason code is now structurally impossible.
+Real effect on the existing closed-set data: VALIDATION/TEST window counts
+went from an artificially deflated 5/5 to the real 12/12 (all 4 units
+represented in both), TRAIN from 2 to 34.
+
 ## 2026-08-09 update (2): campaign runner, origin metadata, and decoder burst variables
 
 Documents a round of work that predates the block below chronologically but
