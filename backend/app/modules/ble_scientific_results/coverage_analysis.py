@@ -37,6 +37,14 @@ class CoverageRow:
     branch: str | None = None
     physical_unit_id: str | None = None
     abstention_reason: str | None = None
+    # Closed-set decision-window BA/confusion/risk-coverage (2026-08-17):
+    # the SAME real per-window prediction already computed by
+    # run_decision_windows() -- carried here (not just distilled into
+    # `correct`) so evaluate_window_level() can feed it straight into the
+    # existing Evaluator.evaluate_split(), never a second metric
+    # definition.
+    predicted_class: str | None = None
+    aggregated_probabilities: dict[str, float] | None = None
 
 
 def coverage_row_from_decision_window(
@@ -55,7 +63,29 @@ def coverage_row_from_decision_window(
     return CoverageRow(
         decided=decided, correct=correct, evaluation_domain=evaluation_domain, branch=branch,
         physical_unit_id=physical_unit_id, abstention_reason=window.get("abstention_reason"),
+        predicted_class=window.get("predicted_class"), aggregated_probabilities=window.get("aggregated_probabilities"),
     )
+
+
+def evaluate_window_level(rows: list[CoverageRow], *, evaluator: Any, known_classes: list[str], domain_label: str) -> Any:
+    """Closed-set decision-window BA/confusion-matrix/risk-coverage
+    (2026-08-17): reuses Evaluator.evaluate_split() UNCHANGED -- the exact
+    same function RQ1/RQ2 use for per-example evaluation -- just fed real
+    10-second decision-window predictions instead. Only DECIDED rows with
+    both a real physical_unit_id (ground truth) and predicted_class enter
+    the computation, mirroring evaluate_split()'s own "comparable" filter;
+    abstained/undecided windows are accounted for separately by the
+    coverage bucket (`_bucket()`), never silently dropped from the overall
+    counts, just excluded from this specific BA/confusion view. Returns
+    None when nothing is comparable, matching Evaluator's own convention."""
+    predictions = [
+        {"example_id": r.physical_unit_id, "true_label": r.physical_unit_id, "predicted_label": r.predicted_class, "probabilities": r.aggregated_probabilities}
+        for r in rows
+        if r.decided and r.physical_unit_id is not None and r.predicted_class is not None
+    ]
+    if not predictions:
+        return None
+    return evaluator.evaluate_split(domain_label, predictions, known_classes)
 
 
 def _bucket(rows: list[CoverageRow]) -> dict[str, Any] | None:

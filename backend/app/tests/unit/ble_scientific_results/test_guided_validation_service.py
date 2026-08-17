@@ -129,6 +129,22 @@ def test_guided_validation_end_to_end_with_no_matched_target_and_a_valid_negativ
     # fabricate a policy from zero-coverage data.
     assert summary.association_policy_summary["status"] == "NO_THRESHOLD_SATISFIES_CRITERIA"
 
+    # Paper-representation pass (2026-08-17): the real per-threshold sweep
+    # must be structured, not only inside `detail`'s free text -- this is
+    # the actual source-association calibration summary the paper needs.
+    assert summary.association_policy_summary["evaluated_at"]
+    assert summary.association_policy_summary["threshold_grid"]
+    assert summary.association_policy_summary["coverage_by_threshold_ms"]
+    assert summary.association_policy_summary["acceptance_criterion"]
+
+    # And it must be real, persisted-to-disk, and readable back via the
+    # repository's own latest-attempt getter -- not just an in-memory
+    # return value.
+    latest = repository.get_latest_association_calibration_summary()
+    assert latest is not None
+    assert latest["status"] == "NO_THRESHOLD_SATISFIES_CRITERIA"
+    assert latest["coverage_by_threshold_ms"] == summary.association_policy_summary["coverage_by_threshold_ms"]
+
     stage_by_id = {stage.stage_id: stage for stage in summary.stages}
     assert stage_by_id["source_association"].status == "BLOCKED"
     assert stage_by_id["negative_control"].status == "PASSED"

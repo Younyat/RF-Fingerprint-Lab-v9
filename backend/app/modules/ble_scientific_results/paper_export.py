@@ -70,6 +70,14 @@ def association_summary_rows(calibration_attempts: list[dict[str, Any]]) -> list
             "status": attempt.get("status"), "threshold_ms": (attempt.get("policy") or {}).get("threshold_ms"),
             "calibration_campaign_id": (attempt.get("policy") or {}).get("calibration_campaign_id"),
             "detail": attempt.get("detail"),
+            # Paper-representation pass (2026-08-17): the real per-threshold
+            # sweep, structured (json-encoded per cell since a CSV cell is
+            # scalar) -- present on every attempt persisted after this pass,
+            # regardless of whether a policy was ever frozen.
+            "acceptance_criterion": attempt.get("acceptance_criterion"),
+            "coverage_by_threshold_ms": json.dumps(attempt["coverage_by_threshold_ms"]) if attempt.get("coverage_by_threshold_ms") is not None else None,
+            "false_strong_by_threshold_ms": json.dumps(attempt["false_strong_by_threshold_ms"]) if attempt.get("false_strong_by_threshold_ms") is not None else None,
+            "ambiguous_by_threshold_ms": json.dumps(attempt["ambiguous_by_threshold_ms"]) if attempt.get("ambiguous_by_threshold_ms") is not None else None,
         })
     return rows
 
@@ -170,12 +178,24 @@ def scientific_completeness_rows(report: dict[str, Any]) -> list[dict[str, Any]]
     ]
 
 
-def per_transmitter_rows(recall: dict[str, float] | None, precision: dict[str, float] | None, f1: dict[str, float] | None) -> list[dict[str, Any]]:
+def per_transmitter_rows(
+    recall: dict[str, float] | None, precision: dict[str, float] | None, f1: dict[str, float] | None,
+    confusion_matrix: dict[str, dict[str, int]] | None = None,
+) -> list[dict[str, Any]]:
     """One row per real transmitter -- never a single pooled BA hiding
     per-source spread. Any of the three may be None/absent for a unit
-    (never a fabricated 0)."""
+    (never a fabricated 0). `n` (2026-08-17): the unit's real true-class row
+    total from the SAME confusion matrix already exported alongside this
+    table -- never a second count, never a bootstrap (per-unit CI is not
+    computed yet; deliberately left absent rather than a fabricated one)."""
     units = sorted(set((recall or {}).keys()) | set((precision or {}).keys()) | set((f1 or {}).keys()))
-    return [{"physical_unit_id": u, "recall": (recall or {}).get(u), "precision": (precision or {}).get(u), "f1": (f1 or {}).get(u)} for u in units]
+    return [
+        {
+            "physical_unit_id": u, "recall": (recall or {}).get(u), "precision": (precision or {}).get(u), "f1": (f1 or {}).get(u),
+            "n": sum((confusion_matrix or {}).get(u, {}).values()) if confusion_matrix and u in confusion_matrix else None,
+        }
+        for u in units
+    ]
 
 
 def render_latex_tables(sections: dict[str, list[dict[str, Any]]]) -> str:
@@ -277,6 +297,22 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
 
     # dataset/exclusions summaries need a real paper run's canonical records.
     run_dir = _most_recent_run_dir(repository)
+    # Reuses get_evidence_dashboard_summary() (already real, already tested,
+    # discriminates the closed-set MULTI_DEVICE_CLASSIFICATION run from the
+    # per-unit TARGET_VS_BACKGROUND auxiliary runs via list_runs()) as the
+    # SINGLE data source for every new table/figure below -- never a second
+    # run-selection logic, never a second independent computation. Computed
+    # here (moved up from its previous, later position) so the RQ1 figure
+    # block below can use it too, once `run_dir` above happens to be the
+    # SAME real run (checked explicitly, never assumed).
+    dashboard = repository.get_evidence_dashboard_summary()
+    closed_set = dashboard.get("closed_set")
+    base_provenance = {"protocol_id": dashboard.get("protocol_id"), "protocol_version": dashboard.get("protocol_version"),
+                        "contract_sha256": dashboard.get("contract_sha256"), "git_sha": dashboard.get("git_sha")}
+    # None unless `run_dir` (whatever paper run is most recent) IS the real
+    # closed-set run `dashboard` resolved -- guards every RQ1-figure
+    # enhancement below from mixing two different runs' data.
+    closed_set_for_run_dir = closed_set if (closed_set and run_dir and closed_set.get("paper_run_id") == run_dir.name) else None
     canonical_dir = (run_dir / "01_inputs" / "canonical_records") if run_dir else None
     captures_payload = _read_json(canonical_dir / "capture_records.json") if canonical_dir else None
     if captures_payload:
@@ -300,14 +336,51 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
         _write_csv(exports_dir / "rq1_results.csv", rq1_result_rows(rq1_report))
         emit("rq1_results.csv", ExportOutcome("GENERATED", f"real, from {run_dir.name}/06_statistics/rq1_acquisition_dependence_report.json"))
         if rq1_report.get("ba_window") is not None and rq1_report.get("ba_capture") is not None:
-            domains = ["capture-dependent", "capture-disjoint"]
+            # capture-dependent -> capture-disjoint -> Held-out TEST -> protected
+            # FUTURE (only once it exists -- never mislabeled as FUTURE before
+            # then, per the user's explicit rule). ci_low/ci_high are None for
+            # every category except BA_capture, which is the only one with a
+            # real cluster-bootstrap CI persisted (rq1_runner.py never computes
+            # one for BA_window -- it is intentionally leakage-violating, not a
+            # valid estimator to put a CI on).
+            domains = ["capture-dependent\n(BA_window)", "capture-disjoint\n(BA_capture)"]
             values = [rq1_report["ba_window"], rq1_report["ba_capture"]]
+            ba_capture_ci = (rq1_report.get("uncertainty_ci") or {}).get("ba_capture_ci") or {}
+            ci_low: list[float | None] = [None, ba_capture_ci.get("ci_low")]
+            ci_high: list[float | None] = [None, ba_capture_ci.get("ci_high")]
+            footnote_parts = []
+            if closed_set_for_run_dir and closed_set_for_run_dir.get("primary_test", {}).get("balanced_accuracy") is not None:
+                domains.append("Held-out TEST\n(PRIMARY branch)")
+                values.append(closed_set_for_run_dir["primary_test"]["balanced_accuracy"])
+                ci_low.append(None)
+                ci_high.append(None)
             if rq1_report.get("ba_future") is not None:
-                domains.append("future")
+                domains.append(f"protected FUTURE\n({rq1_report.get('ba_future_status')})")
                 values.append(rq1_report["ba_future"])
+                ci_low.append(None)
+                ci_high.append(None)
+            # n_windows: RQ1's OWN real per-domain comparable-example counts
+            # (never re-derived from the split -- avoids two independent
+            # counting paths that could silently disagree). n_captures:
+            # distinct real acquisition groups from the closed-set VALIDATION/
+            # TEST split (RQ1's own report carries no capture-level count).
+            if rq1_report.get("ba_window_n_comparable") is not None:
+                footnote_parts.append(f"BA_window n={rq1_report['ba_window_n_comparable']}")
+            if rq1_report.get("ba_capture_n_comparable") is not None:
+                footnote_parts.append(f"BA_capture n={rq1_report['ba_capture_n_comparable']}")
+            if closed_set_for_run_dir:
+                partition_table = repository.build_partition_composition_table(
+                    closed_set_for_run_dir["dataset_id"], closed_set_for_run_dir["dataset_version"], "MULTI_DEVICE_CLASSIFICATION",
+                )
+                domains_counts = partition_table["domains"]
+                footnote_parts.append(
+                    f"VALIDATION: {domains_counts['VALIDATION']['n_captures']} captures"
+                    f"  ·  TEST: {domains_counts['TEST']['n_captures']} captures"
+                )
             paper_figures.bar_with_ci_figure(
-                categories=domains, values=values, ci_low=None, ci_high=None, ylabel="Balanced accuracy",
+                categories=domains, values=values, ci_low=ci_low, ci_high=ci_high, ylabel="Balanced accuracy",
                 title="RQ1 -- BA by evaluation domain", out_path=figures_dir / "rq1_acquisition_dependence.pdf",
+                footnote=" | ".join(footnote_parts) or None,
             )
             emit("figures/rq1_acquisition_dependence.pdf", ExportOutcome("GENERATED", "real"))
         else:
@@ -432,16 +505,6 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
         emit("figures/risk_coverage.pdf", ExportOutcome("SKIPPED_NO_DATA", "no EXECUTED risk_coverage in confirmatory_future_analysis_report.json", "06_statistics/confirmatory_future_analysis_report.json"))
 
     # --- Paper-representation pass (2026-08-17): closed-set-aware exports ---
-    # Reuses get_evidence_dashboard_summary() (already real, already tested,
-    # discriminates the closed-set MULTI_DEVICE_CLASSIFICATION run from the
-    # per-unit TARGET_VS_BACKGROUND auxiliary runs via list_runs()) as the
-    # SINGLE data source for every new table/figure below -- never a second
-    # run-selection logic, never a second independent computation.
-    dashboard = repository.get_evidence_dashboard_summary()
-    closed_set = dashboard.get("closed_set")
-    base_provenance = {"protocol_id": dashboard.get("protocol_id"), "protocol_version": dashboard.get("protocol_version"),
-                        "contract_sha256": dashboard.get("contract_sha256"), "git_sha": dashboard.get("git_sha")}
-
     tx_rows = tx_composition_rows(repository.build_tx_composition_table())
     if tx_rows:
         _write_csv(exports_dir / "tx_composition.csv", tx_rows)
@@ -468,7 +531,10 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
         emit("closed_set_partition_composition.csv", ExportOutcome("GENERATED", "real, from build_partition_composition_table()"), classification="PAPER_PRIMARY", provenance=closed_set_provenance)
 
         primary_test = closed_set.get("primary_test") or {}
-        per_transmitter = per_transmitter_rows(primary_test.get("recall_per_class"), primary_test.get("precision_per_class"), primary_test.get("f1_per_class"))
+        per_transmitter = per_transmitter_rows(
+            primary_test.get("recall_per_class"), primary_test.get("precision_per_class"), primary_test.get("f1_per_class"),
+            primary_test.get("confusion_matrix"),
+        )
         if per_transmitter:
             _write_csv(exports_dir / "closed_set_per_transmitter.csv", per_transmitter)
             emit("closed_set_per_transmitter.csv", ExportOutcome("GENERATED", "real, from the PRIMARY branch's real TEST evaluation"), classification="PAPER_PRIMARY", provenance=closed_set_provenance)

@@ -641,16 +641,33 @@ class GuidedBleScientificValidationService:
                 minimum_coverage=0.95,
             )
         except NoThresholdSatisfiesCriteriaError as error:
-            return {"status": "NO_THRESHOLD_SATISFIES_CRITERIA", "detail": str(error), "policy_scope": None}
+            # Paper-representation pass (2026-08-17): the real per-threshold
+            # sweep the selection rule already computed internally, kept
+            # structured (never only inside `detail`'s free text) so it can
+            # be tabulated/plotted even though no policy was ever frozen --
+            # this IS the real source-association calibration summary, not a
+            # placeholder for one.
+            return {
+                "status": "NO_THRESHOLD_SATISFIES_CRITERIA", "detail": str(error), "policy_scope": None,
+                "evaluated_at": utc_now(), "threshold_grid": error.threshold_grid, "minimum_coverage": error.minimum_coverage,
+                "acceptance_criterion": (
+                    f"Smallest value in the frozen grid for which calibration coverage >= {error.minimum_coverage:.0%} "
+                    "AND zero false-strong associations occur in the reinforced target-absence control."
+                ),
+                "coverage_by_threshold_ms": {str(k): v for k, v in error.coverage_by_threshold_ms.items()},
+                "false_strong_by_threshold_ms": {str(k): v for k, v in error.false_strong_by_threshold_ms.items()},
+                "ambiguous_by_threshold_ms": {str(k): v for k, v in error.ambiguous_by_threshold_ms.items()},
+                "n_calibration_events": len(calibration_events), "n_target_absence_events": len(absence_events),
+            }
 
         if not isinstance(result, dict):
-            return {"status": "FROZEN", "policy_scope": "GLOBAL_POLICY", "policy": result.model_dump(mode="json")}
+            return {"status": "FROZEN", "policy_scope": "GLOBAL_POLICY", "policy": result.model_dump(mode="json"), "evaluated_at": utc_now()}
 
         policies = {}
         for family, policy in result.items():
             scope = "DEVICE_SPECIFIC_POLICY" if len(policy.devices_used) <= 1 else "VERIFIED_FAMILY_POLICY"
             policies[family] = {"policy_scope": scope, "policy": policy.model_dump(mode="json")}
-        return {"status": "FROZEN_STRATIFIED", "policy_scope": "STRATIFIED", "policies_by_family": policies}
+        return {"status": "FROZEN_STRATIFIED", "policy_scope": "STRATIFIED", "policies_by_family": policies, "evaluated_at": utc_now()}
 
     # ------------------------------------------------------------------
     # Stages / conclusion / capability flags

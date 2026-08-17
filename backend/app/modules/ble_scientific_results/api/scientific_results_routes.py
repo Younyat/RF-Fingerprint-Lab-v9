@@ -365,6 +365,17 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
             return {"status": "FROZEN", "policy": dump(policy)}
         return call(_read)
 
+    # Paper-representation pass (2026-08-17): the most recent real
+    # calibration attempt's full structured sweep, regardless of outcome --
+    # shown on Results Dashboard even when no threshold has ever been
+    # accepted, so the real diagnostic is visible, not just "NONE".
+    @router.get("/association-calibration-summary")
+    def association_calibration_summary():
+        def resolve():
+            summary = repository.get_latest_association_calibration_summary()
+            return summary if summary is not None else {"status": "NO_DATA"}
+        return call(resolve)
+
     @router.get("/protocol-freeze-status")
     def protocol_freeze_status(protocol_id: str | None = None):
         def _read():
@@ -550,7 +561,10 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
     # carry everything coverage needs -- this is the missing aggregation.
     @router.post("/coverage-analysis", status_code=202)
     def start_coverage_analysis(body: dict):
-        return call(lambda: job_manager.start_coverage_analysis_job(paper_run_id=body["paper_run_id"], bundle_ids=body.get("bundle_ids")))
+        return call(lambda: job_manager.start_coverage_analysis_job(
+            paper_run_id=body["paper_run_id"], bundle_ids=body.get("bundle_ids"),
+            evaluate_window_level=bool(body.get("evaluate_window_level", False)),
+        ))
 
     @router.get("/runs/{paper_run_id}/coverage-analysis")
     def get_coverage_analysis(paper_run_id: str):

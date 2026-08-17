@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
-import { BleScientificResultsApiService, CoverageAnalysisReport, CoverageBucket, NoDataResponse } from '../../../app/services/bleScientificResultsApi';
+import { useCallback, useEffect, useState } from 'react';
+import { BleScientificResultsApiService, CoverageAnalysisJob, CoverageAnalysisReport, CoverageBucket, NoDataResponse } from '../../../app/services/bleScientificResultsApi';
 import BarWithCiChart, { BarWithCiDatum } from './charts/BarWithCiChart';
+import ConfusionMatrixHeatmap from './charts/ConfusionMatrixHeatmap';
 import RiskCoverageChart, { RiskCoveragePoint } from './charts/RiskCoverageChart';
 import NoDataNotice from './NoDataNotice';
 import RunScopedJsonReport from './RunScopedJsonReport';
@@ -34,15 +35,59 @@ function bucketsToBars(buckets: Record<string, CoverageBucket>): BarWithCiDatum[
  * branch/physical_unit -- nothing computed in the frontend. */
 function CoverageAnalysisSection({ paperRunId }: { paperRunId: string }) {
   const [report, setReport] = useState<CoverageAnalysisReport | NoDataResponse | null>(null);
-  useEffect(() => {
+  const [running, setRunning] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
+  const [evaluateWindowLevel, setEvaluateWindowLevel] = useState(false);
+
+  const load = useCallback(() => {
     sciApi.getCoverageAnalysis(paperRunId).then(setReport).catch(() => setReport({ status: 'NO_DATA' }));
   }, [paperRunId]);
+  useEffect(() => { setReport(null); load(); }, [load]);
 
-  if (!report) return <div className="text-xs text-slate-500">Cargando coverage_analysis_report...</div>;
-  if (isNoData(report)) {
-    return <NoDataNotice reason="coverage_analysis_report.json no existe todavia para este run -- ejecuta Coverage Analysis (Study Control Center) primero." />;
-  }
+  const runAnalysis = useCallback(() => {
+    setRunning(true);
+    setRunError(null);
+    sciApi.startCoverageAnalysis({ paper_run_id: paperRunId, evaluate_window_level: evaluateWindowLevel })
+      .then((job) => {
+        const poll = (): void => {
+          sciApi.getCoverageAnalysisJob(job.job_id).then((current: CoverageAnalysisJob) => {
+            if (current.state === 'completed') { setRunning(false); load(); return; }
+            if (current.state === 'failed' || current.state === 'cancelled') { setRunning(false); setRunError(current.error ?? 'El job fallo.'); return; }
+            setTimeout(poll, 3000);
+          }).catch(() => { setRunning(false); setRunError('No se pudo consultar el estado del job.'); });
+        };
+        poll();
+      })
+      .catch(() => { setRunning(false); setRunError('No se pudo lanzar Coverage Analysis (revisa que exista una rama RQ2 con model_bundle_id).'); });
+  }, [paperRunId, evaluateWindowLevel, load]);
 
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-3 rounded border border-slate-800 bg-slate-950 px-3 py-2">
+        <label className="flex items-center gap-1.5 text-[11px] text-slate-400">
+          <input type="checkbox" checked={evaluateWindowLevel} onChange={(e) => setEvaluateWindowLevel(e.target.checked)} />
+          incluir BA/matriz de confusion/risk-coverage a nivel de decision-window (10s)
+        </label>
+        <button
+          type="button" onClick={runAnalysis} disabled={running}
+          className="rounded border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+        >
+          {running ? 'Corriendo…' : 'Correr Coverage Analysis'}
+        </button>
+      </div>
+      {runError && <NoDataNotice reason={runError} />}
+      {!report ? (
+        <div className="text-xs text-slate-500">Cargando coverage_analysis_report...</div>
+      ) : isNoData(report) ? (
+        <NoDataNotice reason="coverage_analysis_report.json no existe todavia para este run -- corre Coverage Analysis arriba." />
+      ) : (
+        <CoverageAnalysisReportView report={report} />
+      )}
+    </div>
+  );
+}
+
+function CoverageAnalysisReportView({ report }: { report: CoverageAnalysisReport }) {
   const overall = report.overall;
   return (
     <>
@@ -84,6 +129,45 @@ function CoverageAnalysisSection({ paperRunId }: { paperRunId: string }) {
           </div>
         )}
       </div>
+      {report.window_level_evaluation && (
+        <div className="space-y-4">
+          <h3 className="text-xs font-bold uppercase tracking-wide text-slate-400">
+            Closed-set -- BA / matriz de confusion / risk-coverage a nivel de decision-window (10s)
+          </h3>
+          {Object.entries(report.window_level_evaluation).map(([branch, branchEval]) => (
+            <div key={branch} className="space-y-3 rounded border border-slate-800 p-3">
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                <span className="font-mono text-slate-300">{branch}</span>
+                {branchEval.acceptance_threshold !== null ? (
+                  <span className="rounded border border-emerald-800 bg-emerald-950/30 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-300">
+                    OPERATING POINT = {branchEval.acceptance_threshold} (calibrated_on={branchEval.acceptance_threshold_calibrated_on})
+                  </span>
+                ) : (
+                  <span className="rounded border border-amber-800 bg-amber-950/30 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-300">
+                    OPERATING POINT NOT FROZEN
+                  </span>
+                )}
+              </div>
+              {Object.entries(branchEval.by_evaluation_domain).map(([domain, domainEval]) => (
+                <div key={domain} className="space-y-2 border-t border-slate-800 pt-2">
+                  <div className="flex items-center gap-2 text-[11px] text-slate-500">
+                    <span className="font-mono text-slate-300">{domain}</span>
+                    <span className="rounded border border-amber-800 bg-amber-950/30 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-300">
+                      {domainEval.evidence_maturity}
+                    </span>
+                    <span>BA = <span className="font-mono text-slate-300">{domainEval.balanced_accuracy?.toFixed(4) ?? '—'}</span></span>
+                    <span>n = <span className="font-mono text-slate-300">{domainEval.n_comparable}</span></span>
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <ConfusionMatrixHeatmap matrix={domainEval.confusion_matrix} noDataReason="Sin matriz de confusion real para este dominio." />
+                    <RiskCoverageChart points={domainEval.risk_coverage ?? null} noDataReason="Sin risk_coverage real para este dominio (probabilidades agregadas no disponibles)." />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
     </>
   );
 }

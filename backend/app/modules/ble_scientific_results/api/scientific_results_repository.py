@@ -1754,6 +1754,7 @@ class ScientificResultsRepository:
     def run_coverage_analysis(
         self, *, paper_run_id: str, offline_inference_service: Any, bundle_ids: dict[str, str] | None = None,
         window_duration_s: float | None = None, minimum_eligible_bursts: int | None = None,
+        evaluate_window_level: bool = False,
     ) -> dict[str, Any]:
         """Coverage audit finding (2026-08-12): the real decision records
         (offline_inference_service.run_decision_windows(), the SAME frozen
@@ -1767,9 +1768,26 @@ class ScientificResultsRepository:
         primary-branch scope) -- raises if none are recorded yet, never
         guesses. Real evaluation_domain comes from a real SplitManifest
         join (VALIDATION/TRAIN/TEST) when one exists for this run's
-        dataset/scientific_task, else None (never guessed)."""
+        dataset/scientific_task, else None (never guessed).
+
+        `evaluate_window_level` (2026-08-17): when True, additionally
+        computes real balanced-accuracy/confusion-matrix/risk-coverage per
+        (branch, domain) by feeding the SAME real decision-window
+        predictions into Evaluator.evaluate_split() -- never a second
+        metric definition, never pooled across branches (kept in its own
+        `window_level_evaluation[branch][domain]`, never merged into
+        `by_evaluation_domain`, which pools every branch's rows together
+        and would silently mix two different classifiers' predictions if
+        this were written into the same bucket). Labeled `CURRENT_TEST`
+        evidence_maturity -- never `PROTECTED_FUTURE`, since this always
+        runs against TRAIN/VALIDATION/TEST, the study's current, non-FUTURE
+        domains. `acceptance_threshold`/`calibrated_on` are read verbatim
+        from the SAME bundle's real thresholds.json -- None only when the
+        bundle genuinely has none (never fabricated as 'not frozen' when a
+        real VALIDATION-calibrated one exists)."""
         from app.modules.ble_rffi_studio.inference.decision_windows import DEFAULT_MINIMUM_ELIGIBLE_BURSTS, DEFAULT_WINDOW_DURATION_S
         from ..coverage_analysis import CoverageRow, compute_coverage_summary, coverage_row_from_decision_window
+        from ..coverage_analysis import evaluate_window_level as _evaluate_window_level
 
         window_duration_s = window_duration_s if window_duration_s is not None else DEFAULT_WINDOW_DURATION_S
         minimum_eligible_bursts = minimum_eligible_bursts if minimum_eligible_bursts is not None else DEFAULT_MINIMUM_ELIGIBLE_BURSTS
@@ -1815,6 +1833,41 @@ class ScientificResultsRepository:
             "window_duration_s": window_duration_s, "minimum_eligible_bursts": minimum_eligible_bursts,
             **summary,
         }
+
+        if evaluate_window_level:
+            from app.modules.ble_rffi_studio.evaluation import Evaluator
+            evaluator = Evaluator()
+            window_level_evaluation: dict[str, Any] = {}
+            for branch, bundle_id in sorted(bundle_ids.items()):
+                bundle_dir = offline_inference_service.bundle_root / bundle_id
+                model_manifest_path = bundle_dir / "model_manifest.json"
+                thresholds_path = bundle_dir / "thresholds.json"
+                if not model_manifest_path.is_file():
+                    continue
+                known_classes = json.loads(model_manifest_path.read_text(encoding="utf-8"))["label_classes"]
+                thresholds = json.loads(thresholds_path.read_text(encoding="utf-8")) if thresholds_path.is_file() else {}
+                branch_rows = [r for r in rows if r.branch == branch]
+                by_domain: dict[str, Any] = {}
+                for domain in sorted({r.evaluation_domain for r in branch_rows if r.evaluation_domain is not None}):
+                    domain_rows = [r for r in branch_rows if r.evaluation_domain == domain]
+                    report = _evaluate_window_level(domain_rows, evaluator=evaluator, known_classes=known_classes, domain_label=domain)
+                    if report is None:
+                        continue
+                    by_domain[domain] = {
+                        "evidence_maturity": "CURRENT_TEST",  # real, current TRAIN/VALIDATION/TEST -- never PROTECTED_FUTURE
+                        "balanced_accuracy": report.balanced_accuracy, "macro_f1": report.macro_f1,
+                        "confusion_matrix": report.confusion_matrix, "n_comparable": report.n_comparable_to_known_classes,
+                        "risk_coverage": report.risk_coverage,
+                    }
+                if by_domain:
+                    window_level_evaluation[branch] = {
+                        "by_evaluation_domain": by_domain,
+                        "acceptance_threshold": thresholds.get("acceptance_threshold"),
+                        "acceptance_threshold_calibrated_on": thresholds.get("calibrated_on"),
+                    }
+            if window_level_evaluation:
+                as_dict["window_level_evaluation"] = window_level_evaluation
+
         atomic_json(self._run_dir(paper_run_id) / "06_statistics" / "coverage_analysis_report.json", as_dict)
         self.logger.info("coverage analysis persisted paper_run_id=%s branches=%s rows=%s", paper_run_id, list(bundle_ids), len(rows))
         return as_dict
@@ -2519,6 +2572,31 @@ class ScientificResultsRepository:
         if not candidates:
             return None
         return max(candidates, key=lambda policy: policy.frozen_at)
+
+    def get_latest_association_calibration_summary(self) -> dict[str, Any] | None:
+        """Paper-representation pass (2026-08-17): the most recent real
+        calibration attempt of ANY outcome -- FROZEN, FROZEN_STRATIFIED, or
+        NO_THRESHOLD_SATISFIES_CRITERIA (today's real, current status) --
+        for the Results Dashboard, so the real per-threshold sweep is
+        visible even while every real attempt keeps failing to freeze a
+        policy. Same real scan as find_frozen_association_policy(), just
+        without its FROZEN-only filter. None only when no calibration has
+        ever been attempted at all."""
+        guided_validation_root = self.root / "guided_validation"
+        if not guided_validation_root.is_dir():
+            return None
+        candidates: list[dict[str, Any]] = []
+        for policy_path in guided_validation_root.glob("*/association_policy.json"):
+            try:
+                data = json.loads(policy_path.read_text(encoding="utf-8-sig"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            candidates.append(data)
+        if not candidates:
+            return None
+        # evaluated_at is real on every attempt persisted after this pass;
+        # older attempts (pre-2026-08-17) sort first, never crash the max().
+        return max(candidates, key=lambda c: c.get("evaluated_at") or "")
 
     def build_records(self, paper_run_id: str, *, schedule_id: str | None = None, association_policy: AssociationPolicy | None = None, progress=None) -> RecordBuildResult:
         """`schedule_id`, when the campaign this run covers was executed

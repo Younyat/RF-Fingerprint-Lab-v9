@@ -131,6 +131,34 @@ def test_select_association_policy_fails_closed_when_a_family_also_fails():
         )
 
 
+def test_no_threshold_satisfies_criteria_error_carries_the_real_sweep_structurally():
+    # Paper-representation pass (2026-08-17): the per-threshold sweep must be
+    # readable as real attributes, not only recoverable by parsing the
+    # message string.
+    calibration_events = [_event(30.0), _event(30.0), _event(9999.0), _event(9999.0)]
+    with pytest.raises(NoThresholdSatisfiesCriteriaError) as excinfo:
+        select_association_threshold(calibration_events=calibration_events, target_absence_events=[], minimum_coverage=0.95, **_policy_kwargs())
+    error = excinfo.value
+    assert error.threshold_grid == [50, 100, 150, 200, 250, 300, 400, 500]
+    assert error.minimum_coverage == 0.95
+    assert set(error.coverage_by_threshold_ms.keys()) == set(error.threshold_grid)
+    assert all(v == 0 for v in error.false_strong_by_threshold_ms.values())  # no control events supplied
+    assert error.coverage_by_threshold_ms[500] == 0.5  # 2 of 4 events within even the largest grid value
+
+
+def test_select_association_policy_re_raises_the_real_global_sweep_when_no_family_info_exists():
+    # No device_family_by_unit entries at all -- previously raised a bare
+    # message with zero structured data; now re-raises the real global
+    # attempt's own sweep instead.
+    calibration_events = [_event(20.0, unit="unit-A"), _event(9999.0, unit="unit-A")]
+    with pytest.raises(NoThresholdSatisfiesCriteriaError) as excinfo:
+        select_association_policy(
+            calibration_events=calibration_events, target_absence_events=[], device_family_by_unit={},
+            minimum_coverage=0.95, **_policy_kwargs(),
+        )
+    assert excinfo.value.coverage_by_threshold_ms  # real, non-empty sweep, not a bare message
+
+
 def test_policy_hash_changes_when_selected_threshold_changes():
     control_events = [_event(300.0, absence=True)]
     policy_a = select_association_threshold(calibration_events=[_event(40.0), _event(60.0), _event(90.0)], target_absence_events=control_events, minimum_coverage=0.95, **_policy_kwargs())

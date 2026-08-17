@@ -18,7 +18,27 @@ class NoThresholdSatisfiesCriteriaError(Exception):
     """Raised when NO value in the frozen grid meets both criteria at every
     tested threshold -- fails closed. Never silently falls back to "the
     least-bad" threshold; the caller must re-run calibration with a wider
-    grid, more captures, or investigate the association pipeline itself."""
+    grid, more captures, or investigate the association pipeline itself.
+
+    Paper-representation pass (2026-08-17): carries the real per-threshold
+    sweep as structured attributes (never only inside the message string)
+    so a caller can persist/display the diagnostic sweep even though no
+    policy could be frozen -- this is exactly the real data the selection
+    rule already computed internally; only its previous presentation (a
+    stringified dict embedded in free text) made it unusable for anything
+    but a log line."""
+
+    def __init__(
+        self, message: str, *, threshold_grid: list[float], minimum_coverage: float,
+        coverage_by_threshold_ms: dict[float, float], false_strong_by_threshold_ms: dict[float, int],
+        ambiguous_by_threshold_ms: dict[float, int],
+    ) -> None:
+        super().__init__(message)
+        self.threshold_grid = threshold_grid
+        self.minimum_coverage = minimum_coverage
+        self.coverage_by_threshold_ms = coverage_by_threshold_ms
+        self.false_strong_by_threshold_ms = false_strong_by_threshold_ms
+        self.ambiguous_by_threshold_ms = ambiguous_by_threshold_ms
 
 
 def utc_now() -> str:
@@ -93,7 +113,10 @@ def select_association_threshold(
     if selected_threshold is None:
         raise NoThresholdSatisfiesCriteriaError(
             f"NO_THRESHOLD_IN_GRID_SATISFIES_CRITERIA:grid={sorted_grid}:"
-            f"coverage_by_threshold={coverage_by_threshold}:false_strong_by_threshold={false_strong_by_threshold}"
+            f"coverage_by_threshold={coverage_by_threshold}:false_strong_by_threshold={false_strong_by_threshold}",
+            threshold_grid=sorted_grid, minimum_coverage=minimum_coverage,
+            coverage_by_threshold_ms=coverage_by_threshold, false_strong_by_threshold_ms=false_strong_by_threshold,
+            ambiguous_by_threshold_ms=ambiguous_by_threshold,
         )
 
     selection_rule = (
@@ -140,6 +163,7 @@ def select_association_policy(
     one family fails, the whole selection fails closed (propagates
     NoThresholdSatisfiesCriteriaError), since a partially-frozen stratified
     policy would leave some real devices with no valid rule at all."""
+    global_attempt_error: NoThresholdSatisfiesCriteriaError | None = None
     try:
         return select_association_threshold(
             calibration_events=calibration_events, target_absence_events=target_absence_events, threshold_grid=threshold_grid,
@@ -147,12 +171,17 @@ def select_association_policy(
             callback_batching_policy=callback_batching_policy, duplicate_policy=duplicate_policy,
             field_match_policy=field_match_policy, minimum_coverage=minimum_coverage,
         )
-    except NoThresholdSatisfiesCriteriaError:
-        pass
+    except NoThresholdSatisfiesCriteriaError as error:
+        # `error` (the `except...as` binding) is auto-deleted by Python at
+        # the end of this block -- must be copied to a name declared outside
+        # it to survive for the re-raise below.
+        global_attempt_error = error
 
     families = sorted({device_family_by_unit[event.physical_unit_id] for event in calibration_events if event.physical_unit_id in device_family_by_unit})
     if not families:
-        raise NoThresholdSatisfiesCriteriaError("NO_GLOBAL_THRESHOLD_AND_NO_DEVICE_FAMILY_INFORMATION_TO_STRATIFY_BY")
+        # Re-raises the real global-attempt sweep (still the most informative
+        # real data available here) rather than a bare message with none.
+        raise global_attempt_error
 
     policies: dict[str, AssociationPolicy] = {}
     for family in families:

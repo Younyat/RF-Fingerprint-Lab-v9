@@ -503,7 +503,7 @@ class ScientificResultsJobManager:
         try:
             if self._studio_repository is None:
                 raise ValueError("NO_STUDIO_REPOSITORY_CONFIGURED:RQ3 FRR analysis needs a real StudioRepository to load bundles/IQ")
-            from ..inference.offline_inference import OfflineInferenceService  # deferred: ble_rffi_studio import from this package
+            from app.modules.ble_rffi_studio.inference.offline_inference import OfflineInferenceService  # deferred: ble_rffi_studio import from this package (fixed 2026-08-17: `..inference` was resolving inside ble_scientific_results, a package with no inference/ subpackage -- this import had never actually succeeded)
 
             self._write(job_dir, "running", job_type="RQ3_FRR_ANALYSIS", paper_run_id=paper_run_id, stage="resolving_bundle_and_iq", overall_progress=0.2, message="Resolving frozen bundle and real capture IQ paths")
             all_captures = self.repository._load_all_captures()
@@ -526,7 +526,7 @@ class ScientificResultsJobManager:
     # as RQ3_FRR_ANALYSIS, just driven over EVERY frozen RQ2 branch.
     # ------------------------------------------------------------------
 
-    def start_coverage_analysis_job(self, *, paper_run_id: str, bundle_ids: dict[str, str] | None = None) -> dict[str, Any]:
+    def start_coverage_analysis_job(self, *, paper_run_id: str, bundle_ids: dict[str, str] | None = None, evaluate_window_level: bool = False) -> dict[str, Any]:
         job_id = self._new_job_id()
         job_dir = self._job_dir(job_id)
         job_dir.mkdir(parents=True, exist_ok=False)
@@ -535,16 +535,16 @@ class ScientificResultsJobManager:
             "paper_run_id": paper_run_id, "state": "queued", "stage": None, "overall_progress": 0.0, "message": None,
             "warnings": [], "started_at": utc_now(), "updated_at": utc_now(),
         })
-        threading.Thread(target=self._run_coverage_analysis_job, args=(job_id, paper_run_id, bundle_ids), daemon=True).start()
+        threading.Thread(target=self._run_coverage_analysis_job, args=(job_id, paper_run_id, bundle_ids, evaluate_window_level), daemon=True).start()
         return self.get_job(job_id)
 
-    def _run_coverage_analysis_job(self, job_id: str, paper_run_id: str, bundle_ids: dict[str, str] | None) -> None:
+    def _run_coverage_analysis_job(self, job_id: str, paper_run_id: str, bundle_ids: dict[str, str] | None, evaluate_window_level: bool = False) -> None:
         job_dir = self._job_dir(job_id)
         self._write(job_dir, "running", job_type="COVERAGE_ANALYSIS", paper_run_id=paper_run_id, stage="starting", overall_progress=0.0, message="Starting coverage analysis")
         try:
             if self._studio_repository is None:
                 raise ValueError("NO_STUDIO_REPOSITORY_CONFIGURED:Coverage analysis needs a real StudioRepository to load bundles/IQ")
-            from ..inference.offline_inference import OfflineInferenceService  # deferred: ble_rffi_studio import from this package
+            from app.modules.ble_rffi_studio.inference.offline_inference import OfflineInferenceService  # deferred: ble_rffi_studio import from this package (fixed 2026-08-17: `..inference` was resolving inside ble_scientific_results, a package with no inference/ subpackage -- this import had never actually succeeded)
 
             self._write(job_dir, "running", job_type="COVERAGE_ANALYSIS", paper_run_id=paper_run_id, stage="resolving_bundles_and_iq", overall_progress=0.2, message="Resolving frozen RQ2 branch bundles and real capture IQ paths")
             all_captures = self.repository._load_all_captures()
@@ -552,7 +552,10 @@ class ScientificResultsJobManager:
             offline_inference_service = OfflineInferenceService(self._studio_repository.bundle_builder.root, capture_iq_paths)
 
             self._write(job_dir, "running", job_type="COVERAGE_ANALYSIS", paper_run_id=paper_run_id, stage="scoring_windows", overall_progress=0.5, message="Scoring decision windows per branch")
-            result = self.repository.run_coverage_analysis(paper_run_id=paper_run_id, offline_inference_service=offline_inference_service, bundle_ids=bundle_ids)
+            result = self.repository.run_coverage_analysis(
+                paper_run_id=paper_run_id, offline_inference_service=offline_inference_service, bundle_ids=bundle_ids,
+                evaluate_window_level=evaluate_window_level,
+            )
             overall = result.get("overall") or {}
             message = f"coverage={overall.get('coverage')} across {len(result.get('bundle_ids', {}))} branch(es)"
             self._write(job_dir, "completed", job_type="COVERAGE_ANALYSIS", paper_run_id=paper_run_id, stage="done", overall_progress=1.0, message=message, result=result)
@@ -622,7 +625,7 @@ class ScientificResultsJobManager:
         try:
             if self._studio_repository is None:
                 raise ValueError("NO_STUDIO_REPOSITORY_CONFIGURED:RQ4 region analysis needs a real StudioRepository to fit ADVA_EXCLUDED/PRE_PDU variants and load bundles/IQ")
-            from ..inference.offline_inference import OfflineInferenceService  # deferred: ble_rffi_studio import from this package
+            from app.modules.ble_rffi_studio.inference.offline_inference import OfflineInferenceService  # deferred: ble_rffi_studio import from this package (fixed 2026-08-17: `..inference` was resolving inside ble_scientific_results, a package with no inference/ subpackage -- this import had never actually succeeded)
 
             self._write(job_dir, "running", job_type="RQ4_REGION_ANALYSIS", paper_run_id=paper_run_id, stage="resolving_full_burst_bundle_and_iq", overall_progress=0.1, message="Resolving FULL_BURST bundle and real capture IQ paths")
             all_captures = self.repository._load_all_captures()
@@ -666,7 +669,7 @@ class ScientificResultsJobManager:
         try:
             if self._studio_repository is None:
                 raise ValueError("NO_STUDIO_REPOSITORY_CONFIGURED:S1 channel transport analysis needs a real StudioRepository to load bundles/IQ")
-            from ..inference.offline_inference import OfflineInferenceService  # deferred: ble_rffi_studio import from this package
+            from app.modules.ble_rffi_studio.inference.offline_inference import OfflineInferenceService  # deferred: ble_rffi_studio import from this package (fixed 2026-08-17: `..inference` was resolving inside ble_scientific_results, a package with no inference/ subpackage -- this import had never actually succeeded)
 
             self._write(job_dir, "running", job_type="CHANNEL_TRANSPORT_ANALYSIS", paper_run_id=paper_run_id, stage="resolving_bundle_and_iq", overall_progress=0.2, message="Resolving frozen PRIMARY bundle and real capture IQ paths")
             all_captures = self.repository._load_all_captures()

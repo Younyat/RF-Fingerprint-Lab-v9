@@ -107,22 +107,45 @@ def fig_rq1_domains(summary: dict) -> Path | None:
     primary_test = (summary.get("closed_set") or {}).get("primary_test")
     if not rq1:
         return None
-    labels, values, colors = [], [], []
+    labels, values, colors, yerr_lower, yerr_upper = [], [], [], [], []
     if rq1.get("ba_window") is not None:
         labels.append("BA_window\n(intra-session)"); values.append(rq1["ba_window"]); colors.append(COLORS["window"])
+        yerr_lower.append(0.0); yerr_upper.append(0.0)  # no CI on BA_window -- intentionally leakage-violating, not a valid estimator
     if rq1.get("ba_capture") is not None:
         labels.append("BA_capture\n(capture-disjoint)"); values.append(rq1["ba_capture"]); colors.append(COLORS["capture"])
+        ci = (rq1.get("uncertainty_ci") or {}).get("ba_capture_ci") or {}
+        ci_low, ci_high = ci.get("ci_low"), ci.get("ci_high")
+        yerr_lower.append(max(0.0, rq1["ba_capture"] - ci_low) if ci_low is not None else 0.0)
+        yerr_upper.append(max(0.0, ci_high - rq1["ba_capture"]) if ci_high is not None else 0.0)
     if primary_test and primary_test.get("balanced_accuracy") is not None:
+        # Held-out TEST -- explicitly NOT "protected FUTURE": FUTURE has not
+        # been executed for this study yet (see the separate bar below,
+        # which only appears once ba_future is a real number).
         labels.append("Held-out TEST\n(PRIMARY branch)"); values.append(primary_test["balanced_accuracy"]); colors.append(COLORS["test"])
+        yerr_lower.append(0.0); yerr_upper.append(0.0)
+    if rq1.get("ba_future") is not None:
+        labels.append(f"protected FUTURE\n({rq1.get('ba_future_status')})"); values.append(rq1["ba_future"]); colors.append("#5b3d8f")
+        yerr_lower.append(0.0); yerr_upper.append(0.0)
     fig, ax = plt.subplots(figsize=(5.5, 4))
     bars = ax.bar(labels, values, color=colors)
+    ax.errorbar(range(len(labels)), values, yerr=[yerr_lower, yerr_upper], fmt="none", ecolor="#222222", capsize=4)
     ax.bar_label(bars, fmt="%.3f", padding=3)
     ax.set_ylim(0, 1.05)
     ax.set_ylabel("Balanced accuracy")
     ax.set_title("RQ1 -- closed-set acquisition dependence")
     delta = rq1.get("delta_dependence")
+    caption_lines = []
     if delta is not None:
-        ax.text(0.5, -0.22, f"delta_dependence = {delta:+.4f}", transform=ax.transAxes, ha="center", fontsize=9.5, color="#555555")
+        caption_lines.append(f"delta_dependence = {delta:+.4f}")
+    n_parts = []
+    if rq1.get("ba_window_n_comparable") is not None:
+        n_parts.append(f"BA_window n={rq1['ba_window_n_comparable']}")
+    if rq1.get("ba_capture_n_comparable") is not None:
+        n_parts.append(f"BA_capture n={rq1['ba_capture_n_comparable']}")
+    if n_parts:
+        caption_lines.append("  ·  ".join(n_parts))
+    if caption_lines:
+        ax.text(0.5, -0.24, "\n".join(caption_lines), transform=ax.transAxes, ha="center", fontsize=9, color="#555555")
     return _save(fig, "evidence_rq1_domains.png")
 
 
@@ -227,6 +250,15 @@ def fig_computational_cost(summary: dict) -> Path | None:
     ax1.bar(names, latency, color="#2f6fb3"); ax1.set_ylabel("ms"); ax1.set_title("Inference latency"); ax1.tick_params(axis="x", rotation=20)
     ax2.bar(names, size_kb, color="#b9822c"); ax2.set_ylabel("KB"); ax2.set_title("Serialized model size"); ax2.tick_params(axis="x", rotation=20)
     fig.suptitle("Computational cost by RQ2 branch")
+    # Real methodology (training_service.py::_measure_latency_ms): wall-clock
+    # time.perf_counter() around a single-sample predict_proba call, mean of
+    # 10 repeats, measured on VALIDATION data for every branch of the SAME
+    # training run -- so the 4 branches are comparable to each other, but the
+    # specific host/machine identity was never captured at measurement time
+    # (real gap, not fabricated here) and is not the same as any embedded
+    # deployment target.
+    fig.text(0.5, -0.03, "latency = mean of 10 repeats, single-sample predict_proba, wall-clock (host not captured at measurement time)",
+              ha="center", va="top", fontsize=7.5, color="#4a5568")
     return _save(fig, "evidence_computational_cost.png")
 
 

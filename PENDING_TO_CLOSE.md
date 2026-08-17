@@ -26,6 +26,83 @@ very file's own state machine in-platform, in the vocabulary AVAILABLE /
 PENDING_REAL_ACQUISITION / BLOCKED / NOT_ELIGIBLE / PROTECTED — useful as a
 live cross-check against this document, not a replacement for it.
 
+**Update 2026-08-17, second pass (same day) -- "exploit what already exists,
+no new captures"**: implemented 6 scoped improvements over already-real
+mechanisms, no new science, no new hardware:
+
+- RQ1 figure (`evidence_rq1_domains.png` + `rq1_acquisition_dependence.pdf`)
+  now plots the real cluster-bootstrap CI on `BA_capture` and a real
+  n-per-domain caption; the third bar stays explicitly "Held-out TEST",
+  never mislabeled FUTURE; a fourth "protected FUTURE" bar renders
+  automatically once `ba_future` is real.
+- Per-transmitter table (`closed_set_per_transmitter.csv`) now includes a
+  real `n` per unit (derived from the same confusion matrix already
+  exported, never a second count). Per-unit CI intentionally NOT added --
+  no per-unit bootstrap exists yet.
+- **Source-association calibration is now a real, structured artifact.**
+  Previously the real per-threshold sweep (`coverage_by_threshold`,
+  `false_strong_by_threshold`, `ambiguous_by_threshold`) was computed
+  internally by `select_association_threshold` but only ever survived as a
+  stringified blob inside an exception message -- now
+  `NoThresholdSatisfiesCriteriaError` carries it as real attributes,
+  `guided_validation/service.py::_attempt_policy` persists it structurally
+  into `association_policy.json` (still `NO_THRESHOLD_SATISFIES_CRITERIA`,
+  same real status as before -- 0 STRONG associations remains 0), and it is
+  now visible via `GET /association-calibration-summary` and the
+  Association tab's new sweep table, even with no accepted threshold.
+- **Closed-set 10-second decision-window BA/confusion/risk-coverage now
+  exists as real evidence** (`run_coverage_analysis(...,
+  evaluate_window_level=True)`, reusing `Evaluator.evaluate_split()`
+  unchanged, fed real decision-window predictions instead of per-example
+  ones). Ran it for real against the closed-set PRIMARY branch (after
+  exporting its previously-never-exported bundle,
+  `CLOSED-SET-4DEVICES-random_forest-bundle` -- no new capture, just
+  packaging an already-trained/already-evaluated run). **Real, honest
+  finding, worth flagging explicitly**: at 10-second-window granularity the
+  closed-set collapses to only 2/5/5 real windows in TRAIN/VALIDATION/TEST
+  (vs. thousands of per-packet examples), and the PRIMARY model predicts
+  `keyfobdemo 01` for every one of them (BA=0.25, chance level for 4
+  classes) -- window-level aggregation empties out almost all real evidence
+  because the underlying sessions are short. This is real CURRENT_TEST
+  evidence, not a bug; it argues for either longer real capture sessions or
+  a shorter window duration before this becomes a citable paper figure.
+  Labeled `CURRENT_TEST` everywhere (never `PROTECTED_FUTURE`) in the new
+  `window_level_evaluation` block of `coverage_analysis_report.json` /
+  Coverage tab.
+- **Window-level risk-coverage**: same real block above also carries a
+  window-level risk-coverage curve per domain (reuses
+  `Evaluator._risk_coverage()`, no second implementation). The "operating
+  point" badge is computed from the branch's OWN real, VALIDATION-only
+  `acceptance_threshold` (`Evaluator.calibrate_unknown_threshold`, 0.66 for
+  the closed-set PRIMARY bundle) -- **this already exists and is frozen**,
+  a genuinely different mechanism from the still-blocked native<->SDR
+  `AssociationPolicy.threshold_ms` (§4 below); no threshold was selected
+  using TEST anywhere in this pipeline.
+- Computational-cost figure now captions its real methodology (mean of 10
+  repeats, single-sample wall-clock `predict_proba`) and explicitly notes
+  the measurement host was never captured historically (real gap, not
+  fabricated).
+- **Real, pre-existing bug found and fixed, unrelated to any of the above**:
+  `scientific_results_job_manager.py` imported `OfflineInferenceService` via
+  `from ..inference.offline_inference import ...` in 4 places (RQ3, RQ4,
+  Coverage, one more) -- `..` resolves inside `ble_scientific_results`,
+  which has no `inference` subpackage; the real one lives under
+  `ble_rffi_studio`. Every one of those 4 background jobs has been failing
+  immediately with `ModuleNotFoundError` whenever triggered over HTTP. Fixed
+  to an absolute import. Whatever real RQ3/RQ4 data already exists in this
+  document predates this exact code path or was produced differently; going
+  forward, the "Run" buttons for RQ3/RQ4/Coverage now actually work.
+- **RQ4 answer, investigated on request, no code touched**: checked
+  `docs/ble/physical_device_inventory.json` for all 7 enrolled units --
+  `configurable_payload`/`configurable_address` are `NOT_DOCUMENTED` for
+  every single one (0 real captures anywhere declaring
+  `packet_condition=CONTROLLED_VARIANT`). No current firmware/hardware
+  capability exists on any enrolled unit to produce the FULL_BURST /
+  ADVA_EXCLUDED / PRE_PDU packet-content variants RQ4 needs -- would require
+  either a flashable/documented-firmware device or a verified third-party
+  tool to alter advertising payload/address, neither of which exists in the
+  current inventory.
+
 **One-paragraph summary**: the closed-set RQ1/RQ2 result (the paper's
 headline finding) is real and done. RQ4 is real and closed as an honest
 negative result. Everything else — RQ3's actual campaign, the *confirmatory*
@@ -149,6 +226,17 @@ calibration campaign produces an accepted policy. This may simply remain a
 real, stated negative result for the paper's Discussion/Limitations section
 (same posture the README already takes) rather than something to force —
 worth a deliberate decision either way, not silent inaction.
+
+**Update 2026-08-17**: the real per-threshold sweep behind this negative
+result (`coverage_by_threshold_ms`/`false_strong_by_threshold_ms`/
+`ambiguous_by_threshold_ms` for every grid value) is now a real, structured,
+inspectable artifact — `GET /association-calibration-summary`, Association
+tab. Still `NO_THRESHOLD_SATISFIES_CRITERIA`; nothing about the underlying
+0-STRONG-association finding changed, only its visibility. Do not confuse
+this with the model's own per-bundle `acceptance_threshold` (UNKNOWN-
+rejection calibration, `Evaluator.calibrate_unknown_threshold`) — that one
+IS real and VALIDATION-frozen already (0.66 for the closed-set PRIMARY
+bundle) and has nothing to do with this native&lt;-&gt;SDR association gate.
 
 ---
 

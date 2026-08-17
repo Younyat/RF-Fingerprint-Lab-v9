@@ -57,11 +57,14 @@ def _save_figure(fig, base_path: Path, formats: Sequence[str] = ("pdf", "svg", "
 
 def bar_with_ci_figure(
     *, categories: Sequence[str], values: Sequence[float], ci_low: Sequence[float] | None,
-    ci_high: Sequence[float] | None, ylabel: str, title: str, out_path: Path,
+    ci_high: Sequence[float] | None, ylabel: str, title: str, out_path: Path, footnote: str | None = None,
 ) -> str:
     """RQ1 BA-by-domain, RQ2 BA/macro-F1/coverage-by-branch. `ci_low`/
     `ci_high` are absolute bounds (not offsets) -- None skips error bars for
-    a category whose CI is not available, never fabricated as 0-width."""
+    a category whose CI is not available, never fabricated as 0-width.
+    `footnote` (added 2026-08-17): one line of real, already-computed text
+    (e.g. real sample sizes) rendered below the axes -- never a second
+    computation, purely a caller-supplied caption."""
     fig, ax = plt.subplots(figsize=FIGSIZE)
     x = np.arange(len(categories))
     ax.bar(x, values, color="#2b6cb0")
@@ -73,6 +76,8 @@ def bar_with_ci_figure(
     ax.set_xticklabels(categories, rotation=20, ha="right")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
+    if footnote:
+        fig.text(0.5, -0.02, footnote, ha="center", va="top", fontsize=8, color="#4a5568")
     return _save_pdf(fig, out_path)
 
 

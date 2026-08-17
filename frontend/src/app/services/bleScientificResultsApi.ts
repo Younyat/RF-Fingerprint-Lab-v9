@@ -488,6 +488,28 @@ export interface PaperExportManifest {
   entries: PaperExportManifestEntry[];
 }
 
+// Source-association calibration summary (2026-08-17) -- the real
+// per-threshold sweep from the most recent real calibration attempt of ANY
+// outcome, structured (never only inside a stringified `detail`). Status
+// stays real even when nothing was ever frozen -- this IS the honest
+// current state, shown on Results Dashboard regardless.
+export interface AssociationCalibrationSummary {
+  status: 'FROZEN' | 'FROZEN_STRATIFIED' | 'NO_THRESHOLD_SATISFIES_CRITERIA';
+  policy_scope: string | null;
+  evaluated_at?: string;
+  detail?: string;
+  policy?: Record<string, unknown>;
+  policies_by_family?: Record<string, unknown>;
+  threshold_grid?: number[];
+  minimum_coverage?: number;
+  acceptance_criterion?: string;
+  coverage_by_threshold_ms?: Record<string, number>;
+  false_strong_by_threshold_ms?: Record<string, number>;
+  ambiguous_by_threshold_ms?: Record<string, number>;
+  n_calibration_events?: number;
+  n_target_absence_events?: number;
+}
+
 // Provenance reconstruction + S1/S2 engineering reports (2026-08-11) --
 // read-only, mirroring provenance.py / engineering_reports.py exactly.
 
@@ -552,6 +574,30 @@ export interface CoverageBucket {
   risk_among_decided: number | null;
 }
 
+// Closed-set decision-window BA/confusion/risk-coverage (2026-08-17) --
+// real Evaluator.evaluate_split() output fed real 10-second decision-window
+// predictions, kept separate per branch (never pooled across branches like
+// by_evaluation_domain is). evidence_maturity is always CURRENT_TEST here --
+// this block only ever covers TRAIN/VALIDATION/TEST, never protected FUTURE.
+export interface WindowLevelDomainEvaluation {
+  evidence_maturity: 'CURRENT_TEST';
+  balanced_accuracy: number | null;
+  macro_f1: number | null;
+  confusion_matrix: Record<string, Record<string, number>>;
+  n_comparable: number;
+  risk_coverage: { coverage: number; risk: number; threshold: number }[] | null;
+}
+
+export interface WindowLevelBranchEvaluation {
+  by_evaluation_domain: Record<string, WindowLevelDomainEvaluation>;
+  // The real, VALIDATION-calibrated UNKNOWN-rejection threshold from this
+  // branch's own bundle (Evaluator.calibrate_unknown_threshold) -- distinct
+  // from the native<->SDR AssociationPolicy.threshold_ms. null only when
+  // the bundle genuinely has none frozen yet (never fabricated as frozen).
+  acceptance_threshold: number | null;
+  acceptance_threshold_calibrated_on: string | null;
+}
+
 export interface CoverageAnalysisReport {
   schema_version: string;
   generated_at: string;
@@ -564,10 +610,12 @@ export interface CoverageAnalysisReport {
   by_branch: Record<string, CoverageBucket>;
   by_physical_unit: Record<string, CoverageBucket>;
   abstention_reason_counts: Record<string, number> | 'NOT_AVAILABLE';
+  window_level_evaluation?: Record<string, WindowLevelBranchEvaluation>;
 }
 
 export interface StartCoverageAnalysisRequest {
   paper_run_id: string;
+  evaluate_window_level?: boolean;
   bundle_ids?: Record<string, string>;
 }
 
@@ -1353,6 +1401,11 @@ export class BleScientificResultsApiService {
     return (await axios.get<Record<string, unknown> | NoDataResponse>(`${this.root}/campaign-qualification-preflight/latest`)).data;
   }
   async associationPolicyStatus() { return (await axios.get<AssociationPolicyStatusResponse>(`${this.root}/association-policy-status`)).data; }
+  // Paper-representation pass (2026-08-17) -- the real per-threshold sweep
+  // from the latest calibration attempt, regardless of outcome.
+  async associationCalibrationSummary() {
+    return (await axios.get<AssociationCalibrationSummary | NoDataResponse>(`${this.root}/association-calibration-summary`)).data;
+  }
   async protocolFreezeStatus(protocolId?: string) {
     return (await axios.get<ProtocolFreezeStatusResponse>(`${this.root}/protocol-freeze-status`, { params: protocolId ? { protocol_id: protocolId } : {} })).data;
   }
