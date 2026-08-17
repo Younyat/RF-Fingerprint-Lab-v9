@@ -150,18 +150,36 @@ def run_rq1_acquisition_dependence(
         scientific_task=scientific_task, window_report=window_report, capture_report=capture_report, future_report=None,
     )
 
+    # Real, session-clustered bootstrap CI on ba_capture -- the confirmatory
+    # (capture-disjoint) number, computed against the recommended model's
+    # ALREADY-PERSISTED VALIDATION predictions (no retraining, same
+    # zero-new-computation rule this whole module follows). Never computed
+    # for ba_window: that domain is intentionally capture-leaking by design
+    # (see build_rq1_dependence_diagnostic's own docstring), so a CI on it
+    # would describe uncertainty of a deliberately non-confirmatory number.
+    report("UNCERTAINTY", 0.9, "Computing a bootstrap confidence interval on ba_capture")
+    ba_capture_ci = studio_repository.bootstrap_balanced_accuracy_ci(recommended_training_run_id, split="VALIDATION")
+    uncertainty_ci = {"ba_capture_ci": {"ci_low": ba_capture_ci["ci_low"], "ci_high": ba_capture_ci["ci_high"]}} if ba_capture_ci else None
+
     report("PERSIST", 0.95, "persist_rq1_acquisition_dependence_report()")
     study_status = sci_repository.get_study_status()
+    # Real bundle lookup -- model_bundle_sha256 must be the exported model
+    # bundle's own hash, never the dataset's hash (a real mislabeling bug
+    # found and fixed here 2026-08-17); None, honestly, when no bundle was
+    # ever exported for this training run rather than a wrong value.
+    bundle_info = sci_repository._find_bundle_for_training_run(recommended_training_run_id)
     persisted = sci_repository.persist_rq1_acquisition_dependence_report(
         paper_run_id=paper_run_id, protocol_id=study_status.get("protocol_id"), protocol_version=study_status.get("protocol_version"),
         contract_sha256=study_status.get("contract_sha256"), rq1_report=rq1_result,
-        model_bundle_id=recommended_training_run_id, model_bundle_sha256=recommended_run.get("dataset_manifest_sha256") or "",
+        model_bundle_id=(bundle_info or {}).get("bundle_id"), model_bundle_sha256=(bundle_info or {}).get("bundle_sha256"),
+        dataset_manifest_sha256=recommended_run.get("dataset_manifest_sha256"),
         confirmatory_split_manifest_id=f"{dataset_id}__{dataset_version}__{scientific_task}",
         confirmatory_split_manifest_sha256=confirmatory_split.split_manifest_sha256 or "",
         diagnostic_split_manifest_id=diag_run_id, diagnostic_split_manifest_sha256=diagnostic_split.split_manifest_sha256 or "",
         source_evaluation_domains={
             "window": "RQ1_ACQUISITION_DEPENDENCE_DIAGNOSTIC:VALIDATION", "capture": f"{scientific_task}:VALIDATION",
         },
+        uncertainty_ci=uncertainty_ci,
         coverage=None, confusion_matrix_capture=capture_report.confusion_matrix, confusion_matrix_future=None, per_unit_recall=None,
     )
     return {"rq1_report": persisted, "diagnostic_training_run_id": diag_run_id}

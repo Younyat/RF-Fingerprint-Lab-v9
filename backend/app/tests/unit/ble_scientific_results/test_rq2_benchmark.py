@@ -57,6 +57,9 @@ class _StubStudioRepository:
         self.seed_variability_calls.append(training_run_id)
         return self._seed_variability
 
+    def bootstrap_balanced_accuracy_ci(self, training_run_id: str, *, split: str = "VALIDATION", n_resamples: int = 2000, confidence_level: float = 0.95):
+        return {"split": split, "point_estimate": 0.8, "ci_low": 0.7, "ci_high": 0.9, "n_resamples": n_resamples, "confidence_level": confidence_level}
+
 
 def test_map_training_result_picks_the_best_model_per_branch_and_primary_by_composite_score():
     training_result = {"trained_models": [
@@ -66,7 +69,7 @@ def test_map_training_result_picks_the_best_model_per_branch_and_primary_by_comp
         _trained_model("cnn1d", composite_score=0.9, balanced_accuracy=0.95, run_suffix="CNN1D"),  # highest overall -> PRIMARY
         _trained_model("cnn2d", composite_score=0.4, balanced_accuracy=0.6, run_suffix="CNN2D"),
     ]}
-    branches = map_training_result_to_rq2_branches(training_result)
+    branches, selection_rule = map_training_result_to_rq2_branches(training_result)
     by_branch = {b["branch"]: b for b in branches}
 
     assert by_branch["engineered_rf"]["model_type"] == "svm_rbf"  # highest composite among the 3 engineered_rf candidates
@@ -75,10 +78,11 @@ def test_map_training_result_picks_the_best_model_per_branch_and_primary_by_comp
     assert by_branch["raw_iq"]["balanced_accuracy"] == 0.95
     assert by_branch["stft"]["analysis_role"] == "UNSELECTED"
     assert "coarse_morphology" not in by_branch  # no frozen_morphological_baseline was trained -- honestly absent
+    assert selection_rule  # real descriptive string, not empty/None when a branch was selected
 
 
 def test_map_training_result_is_empty_when_no_recognized_branch_trained():
-    assert map_training_result_to_rq2_branches({"trained_models": []}) == []
+    assert map_training_result_to_rq2_branches({"trained_models": []}) == ([], None)
 
 
 def test_run_rq2_benchmark_persists_a_real_canonical_report(tmp_path):

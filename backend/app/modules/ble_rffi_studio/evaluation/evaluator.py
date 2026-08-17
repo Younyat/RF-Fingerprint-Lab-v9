@@ -14,7 +14,7 @@ probability-based calibration, not silently omitted.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 
 import numpy as np
 from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
@@ -147,6 +147,50 @@ class Evaluator:
         cluster_values = list(by_session.values())
         return hierarchical_cluster_bootstrap(
             cluster_values, statistic=lambda values: sum(values) / len(values),
+            n_resamples=n_resamples, confidence_level=confidence_level,
+        )
+
+    def bootstrap_balanced_accuracy_ci(
+        self, predictions: list[dict[str, Any]], known_classes: list[str], session_id_by_example_id: dict[str, str],
+        n_resamples: int = 2000, confidence_level: float = 0.95,
+    ) -> BootstrapCiResult | None:
+        """Same real session-clustered resampling engine as
+        bootstrap_accuracy_ci() (hierarchical_cluster_bootstrap, untouched)
+        -- the only difference is the statistic being resampled. Balanced
+        accuracy needs per-class recall, which a single correct/incorrect
+        scalar cannot reconstruct, so each cluster holds
+        (true_label, predicted_label) pairs instead of a 0/1 correctness
+        value; the statistic recomputes mean-per-class-recall (this
+        report's own balanced_accuracy definition, evaluate_split() above)
+        over the pooled, resampled pairs. RQ1/RQ2 report Balanced Accuracy
+        as their primary metric specifically because raw accuracy hides
+        per-class imbalance -- a CI computed on raw accuracy would not
+        actually describe the uncertainty of the number being reported."""
+        comparable = [p for p in predictions if p["true_label"] in known_classes]
+        if len(known_classes) < 2 or not comparable:
+            return None
+        by_session: dict[str, list[tuple[str, str]]] = {}
+        for prediction in comparable:
+            session_id = session_id_by_example_id.get(prediction["example_id"])
+            if session_id is None:
+                continue
+            by_session.setdefault(session_id, []).append((prediction["true_label"], prediction["predicted_label"]))
+        if not by_session:
+            return None
+        cluster_values = list(by_session.values())
+
+        def _balanced_accuracy(pairs: Sequence[tuple[str, str]]) -> float:
+            per_class_recall = []
+            for known_class in known_classes:
+                class_pairs = [p for p in pairs if p[0] == known_class]
+                if not class_pairs:
+                    continue
+                correct = sum(1 for true_label, predicted_label in class_pairs if predicted_label == true_label)
+                per_class_recall.append(correct / len(class_pairs))
+            return sum(per_class_recall) / len(per_class_recall) if per_class_recall else 0.0
+
+        return hierarchical_cluster_bootstrap(
+            cluster_values, statistic=_balanced_accuracy,
             n_resamples=n_resamples, confidence_level=confidence_level,
         )
 

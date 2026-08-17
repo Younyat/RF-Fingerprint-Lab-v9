@@ -22,6 +22,7 @@ from typing import Sequence
 import matplotlib
 
 matplotlib.use("Agg")
+import matplotlib.patches
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -34,6 +35,24 @@ def _save_pdf(fig, out_path: Path) -> str:
     fig.savefig(out_path, dpi=DPI, bbox_inches="tight")
     plt.close(fig)
     return str(out_path)
+
+
+def _save_figure(fig, base_path: Path, formats: Sequence[str] = ("pdf", "svg", "png")) -> dict[str, str]:
+    """Paper-representation pass (2026-08-17): saves the SAME figure object
+    in every requested format before closing it -- PDF/SVG for the
+    manuscript (vector, no resampling artifacts), PNG for the README/
+    Evidence Dashboard/notebook. `base_path` has no extension; each format
+    is appended. One rendering call, multiple real outputs -- never a
+    second independent plot for the PNG variant (the exact duplication this
+    pass exists to remove)."""
+    base_path.parent.mkdir(parents=True, exist_ok=True)
+    written: dict[str, str] = {}
+    for fmt in formats:
+        out_path = base_path.with_suffix(f".{fmt}")
+        fig.savefig(out_path, dpi=DPI, bbox_inches="tight")
+        written[fmt] = str(out_path)
+    plt.close(fig)
+    return written
 
 
 def bar_with_ci_figure(
@@ -152,3 +171,76 @@ def histogram_figure(*, values: Sequence[float], bins: int, xlabel: str, title: 
     ax.set_ylabel("count")
     ax.set_title(title)
     return _save_pdf(fig, out_path)
+
+
+def normalized_confusion_matrix_figure(
+    *, labels: Sequence[str], matrix_pct: Sequence[Sequence[float]], matrix_n: Sequence[Sequence[int]], title: str, out_path: Path,
+) -> dict[str, str]:
+    """Paper-representation pass (2026-08-17): row-normalized companion to
+    confusion_matrix_figure() -- cell color/primary label is the real
+    per-true-class percentage (never distorted by a majority transmitter's
+    much larger raw count); real `n` is kept as a secondary annotation per
+    cell, never dropped. Pure renderer over paper_figure_aggregations.
+    normalize_confusion_matrix()'s already-real output -- computes nothing."""
+    fig, ax = plt.subplots(figsize=(max(FIGSIZE[0], 1.3 * len(labels)), max(FIGSIZE[1], 1.3 * len(labels))))
+    pct_array = np.array(matrix_pct, dtype=float)
+    im = ax.imshow(pct_array, cmap="Blues", vmin=0, vmax=100)
+    ax.set_xticks(range(len(labels)))
+    ax.set_yticks(range(len(labels)))
+    ax.set_xticklabels(labels, rotation=45, ha="right")
+    ax.set_yticklabels(labels)
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("True")
+    ax.set_title(title)
+    for i in range(len(labels)):
+        for j in range(len(labels)):
+            color = "white" if pct_array[i, j] > 50 else "#1a202c"
+            ax.text(j, i, f"{pct_array[i, j]:.1f}%\n(n={matrix_n[i][j]})", ha="center", va="center", color=color, fontsize=8)
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="% of true class")
+    return _save_figure(fig, out_path)
+
+
+def campaign_timeline_figure(*, phases: Sequence[dict], title: str, out_path: Path) -> dict[str, str]:
+    """Paper-representation pass (2026-08-17): a horizontal phase timeline
+    over the real 17-phase Study Control Center status
+    (get_study_control_center_status()) -- makes visible, as a figure, what
+    the paper's own Methods section states in prose: protected FUTURE stays
+    gated behind protocol freeze. Each `phases` entry is
+    {label, execution_state} exactly as that real function already returns;
+    this renders their real state, never invents a phase or a status."""
+    color_by_state = {"COMPLETE": "#2f855a", "IN_PROGRESS": "#b7791f", "PRELIMINARY": "#b7791f", "BLOCKED": "#a0aec0", "NOT_RUN": "#4a5568"}
+    fig, ax = plt.subplots(figsize=(FIGSIZE[0], max(FIGSIZE[1], 0.35 * len(phases))))
+    y = np.arange(len(phases))
+    colors = [color_by_state.get(p["execution_state"], "#a0aec0") for p in phases]
+    ax.barh(y, [1] * len(phases), color=colors)
+    ax.set_yticks(y)
+    ax.set_yticklabels([p["label"] for p in phases], fontsize=8)
+    ax.set_xticks([])
+    ax.invert_yaxis()
+    ax.set_title(title)
+    handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in color_by_state.values()]
+    ax.legend(handles, color_by_state.keys(), loc="upper center", bbox_to_anchor=(0.5, 0), ncol=len(color_by_state), fontsize=7, frameon=False)
+    return _save_figure(fig, out_path)
+
+
+def forensic_lineage_diagram_figure(*, nodes: Sequence[dict], title: str, out_path: Path) -> dict[str, str]:
+    """Paper-representation pass (2026-08-17): a box-and-arrow diagram of
+    the real evidence chain for ONE traced example -- source I/Q -> burst ->
+    PDU -> admitted example -> dataset -> split -> preprocessing -> model ->
+    window decision -- each `nodes` entry is {label, detail} with real
+    IDs/hashes from an actual traced example (never placeholder text). Pure
+    matplotlib box/arrow primitives, no new plotting dependency."""
+    fig, ax = plt.subplots(figsize=(FIGSIZE[0], 0.9 * len(nodes)))
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, len(nodes))
+    ax.axis("off")
+    ax.set_title(title)
+    for i, node in enumerate(nodes):
+        y = len(nodes) - i - 1
+        box = matplotlib.patches.FancyBboxPatch((0.5, y + 0.15), 9, 0.7, boxstyle="round,pad=0.05", facecolor="#ebf4ff", edgecolor="#2b6cb0")
+        ax.add_patch(box)
+        ax.text(1.0, y + 0.5, node["label"], fontsize=9, fontweight="bold", va="center")
+        ax.text(1.0, y + 0.25, node.get("detail", ""), fontsize=7, va="center", color="#4a5568")
+        if i < len(nodes) - 1:
+            ax.annotate("", xy=(5, y - 0.02), xytext=(5, y + 0.15), arrowprops={"arrowstyle": "->", "color": "#4a5568"})
+    return _save_figure(fig, out_path)

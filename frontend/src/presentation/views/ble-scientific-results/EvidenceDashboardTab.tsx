@@ -5,6 +5,7 @@ import {
   EvidenceDashboardPerUnitRun,
   EvidenceDashboardSummary,
   EvidenceFigureRegenerationResult,
+  PartitionCompositionTable,
   Rq2BranchResult,
 } from '../../../app/services/bleScientificResultsApi';
 import BarWithCiChart, { BarWithCiDatum } from './charts/BarWithCiChart';
@@ -18,8 +19,16 @@ function domainBars(rq1: EvidenceDashboardClosedSet['rq1']): BarWithCiDatum[] {
   if (!rq1) return [];
   const bars: BarWithCiDatum[] = [];
   if (typeof rq1.ba_window === 'number') bars.push({ category: 'BA_window (intra-session)', value: rq1.ba_window });
-  if (typeof rq1.ba_capture === 'number') bars.push({ category: 'BA_capture (capture-disjoint)', value: rq1.ba_capture });
-  if (typeof rq1.ba_future === 'number') bars.push({ category: 'BA_future', value: rq1.ba_future });
+  if (typeof rq1.ba_capture === 'number') {
+    // ba_window intentionally has no CI here -- it's the leakage-violating
+    // diagnostic, never a valid estimator; only ba_capture (capture-disjoint,
+    // confirmatory) gets a real cluster-bootstrap CI.
+    const ci = rq1.uncertainty_ci?.ba_capture_ci;
+    bars.push({ category: 'BA_capture (capture-disjoint)', value: rq1.ba_capture, ciLow: ci?.ci_low, ciHigh: ci?.ci_high });
+  }
+  // The current TEST result is NOT protected FUTURE -- FUTURE has not been
+  // executed yet (protected_future_test_status stays UNTOUCHED until then).
+  if (typeof rq1.ba_future === 'number') bars.push({ category: 'BA_future (protected FUTURE, if executed)', value: rq1.ba_future });
   return bars;
 }
 
@@ -58,11 +67,12 @@ function Provenance({ items }: { items: (string | null | undefined)[] }) {
   return <div className="mt-1 font-mono text-[10.5px] text-slate-500">{parts.join(' · ')}</div>;
 }
 
-function ClosedSetSection({ closedSet }: { closedSet: EvidenceDashboardClosedSet | null }) {
+function ClosedSetSection({ closedSet, partitionComposition }: { closedSet: EvidenceDashboardClosedSet | null; partitionComposition: PartitionCompositionTable | null }) {
   if (!closedSet) {
     return <NoDataNotice reason="Ningun paper_run con scientific_task=MULTI_DEVICE_CLASSIFICATION existe todavia." />;
   }
   const primaryTest = closedSet.primary_test;
+  const domains = partitionComposition?.domains;
   return (
     <div className="space-y-4">
       <Provenance items={[`paper_run_id=${closedSet.paper_run_id}`, `dataset_id=${closedSet.dataset_id}`, `dataset_version=${closedSet.dataset_version}`]} />
@@ -74,6 +84,13 @@ function ClosedSetSection({ closedSet }: { closedSet: EvidenceDashboardClosedSet
           <div className="mt-1 text-[11px] text-slate-500">
             delta_dependence = <span className="font-mono text-slate-300">{closedSet.rq1.delta_dependence.toFixed(4)}</span>
             {' · '}ba_future_status = <span className="font-mono text-slate-300">{closedSet.rq1.ba_future_status}</span>
+          </div>
+        )}
+        {domains && (
+          <div className="mt-1 text-[11px] text-slate-500">
+            tamano efectivo (VALIDATION) = <span className="font-mono text-slate-300">{domains.VALIDATION.n_windows}</span> decision windows
+            {' / '}<span className="font-mono text-slate-300">{domains.VALIDATION.n_captures}</span> capturas independientes
+            {' · '}(TEST) = <span className="font-mono text-slate-300">{domains.TEST.n_windows}</span> windows / <span className="font-mono text-slate-300">{domains.TEST.n_captures}</span> capturas
           </div>
         )}
       </div>
@@ -88,6 +105,13 @@ function ClosedSetSection({ closedSet }: { closedSet: EvidenceDashboardClosedSet
           <BarWithCiChart data={branchBars(closedSet.rq2, 'macro_f1')} yLabel="Macro-F1" noDataReason="rq2_representation_comparison_report.json no existe todavia para este run." />
         </div>
       </div>
+
+      {closedSet.rq2?.selection_rule && (
+        <div className="rounded border border-cyan-800 bg-cyan-950/20 px-3 py-2 text-[11px] text-cyan-200">
+          PRIMARY seleccionado solo con datos de <span className="font-mono">{closedSet.rq2.selection_domain}</span>: {closedSet.rq2.selection_rule}
+          {' · '}FUTURE (cuando exista) es evaluacion, nunca puede cambiar esta seleccion.
+        </div>
+      )}
 
       {closedSet.primary_branch && (
         <div className="text-[11px] text-slate-500">
@@ -145,7 +169,15 @@ function ClosedSetSection({ closedSet }: { closedSet: EvidenceDashboardClosedSet
       </div>
 
       <div>
-        <div className="mb-1 text-xs font-semibold text-slate-400">Risk-coverage (TEST, branch primaria) -- El-Yaniv &amp; Wiener (2010)</div>
+        <div className="mb-1 flex items-center gap-2 text-xs font-semibold text-slate-400">
+          Risk-coverage (TEST, branch primaria) -- El-Yaniv &amp; Wiener (2010)
+          <span className="rounded border border-amber-800 bg-amber-950/30 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-300">
+            CURRENT TEST EVIDENCE
+          </span>
+        </div>
+        <div className="mb-1 text-[10.5px] text-slate-500">
+          Ventanas del TEST actual, no de la campana confirmatoria final -- la version DEFINITIVE se regenerara con decision windows de la campana protegida FUTURE cuando exista.
+        </div>
         <RiskCoverageChart points={primaryTest?.risk_coverage ?? null} noDataReason="risk_coverage no esta presente en la evaluacion TEST." />
       </div>
 
@@ -287,6 +319,7 @@ export default function EvidenceDashboardTab() {
   const [data, setData] = useState<EvidenceDashboardSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [partitionComposition, setPartitionComposition] = useState<PartitionCompositionTable | null>(null);
 
   const [regenerating, setRegenerating] = useState(false);
   const [regenResult, setRegenResult] = useState<EvidenceFigureRegenerationResult | null>(null);
@@ -295,8 +328,17 @@ export default function EvidenceDashboardTab() {
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
+    setPartitionComposition(null);
     sciApi.evidenceDashboardSummary()
-      .then(setData)
+      .then((summary) => {
+        setData(summary);
+        const closedSet = summary.closed_set;
+        if (closedSet) {
+          sciApi.partitionComposition(closedSet.dataset_id, closedSet.dataset_version, 'MULTI_DEVICE_CLASSIFICATION')
+            .then(setPartitionComposition)
+            .catch(() => setPartitionComposition(null));
+        }
+      })
       .catch(() => setError('No se pudo cargar el dashboard de evidencia.'))
       .finally(() => setLoading(false));
   }, []);
@@ -358,7 +400,7 @@ export default function EvidenceDashboardTab() {
 
           <section>
             <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">RQ1 / RQ2 -- Closed-set (4-unit, MULTI_DEVICE_CLASSIFICATION)</h3>
-            <ClosedSetSection closedSet={data.closed_set} />
+            <ClosedSetSection closedSet={data.closed_set} partitionComposition={partitionComposition} />
           </section>
 
           <section>

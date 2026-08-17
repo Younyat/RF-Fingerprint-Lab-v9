@@ -64,6 +64,55 @@ def test_phase_01_blocked_when_qualification_report_is_not_ready(tmp_path):
     assert _phase(status, "01")["state"] == "BLOCKED"
 
 
+def _write_run(repo, *, paper_run_id: str, dataset_id: str, dataset_version: str, scientific_task: str, created_at: str) -> None:
+    run_dir = repo.root / paper_run_id
+    (run_dir / "06_statistics").mkdir(parents=True, exist_ok=True)
+    (run_dir / "run.json").write_text(json.dumps({
+        "schema_version": "ble-scientific-results-paper-run-v1", "paper_run_id": paper_run_id,
+        "campaign_id": "TEST-CAMPAIGN", "protocol_id": "PROTO-1", "protocol_version": 1,
+        "dataset_id": dataset_id, "dataset_version": dataset_version, "scientific_task": scientific_task,
+        "analysis_code_commit": "deadbeef", "analysis_environment_hash": "envhash",
+        "storage_path": str(run_dir), "created_at": created_at,
+    }), encoding="utf-8")
+
+
+def _write_split_ready(repo, *, dataset_id: str, dataset_version: str, scientific_task: str) -> None:
+    path = repo.ble_root / "splits" / f"{dataset_id}__{dataset_version}__{scientific_task}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema_version": "ble-rffi-studio-split-v1", "dataset_id": dataset_id, "dataset_version": dataset_version,
+        "scientific_task": scientific_task, "policy": "test-policy", "split_status": "READY", "assignments": [],
+        "leakage_check": {"status": "PASSED"}, "created_at": "2026-08-17T00:00:00Z", "split_manifest_sha256": "real-hash",
+    }), encoding="utf-8")
+
+
+def test_phase_06_completes_when_the_latest_runs_split_is_ready(tmp_path):
+    repo = _repo(tmp_path)
+    _write_run(repo, paper_run_id="RUN-1", dataset_id="DS-1", dataset_version="v1", scientific_task="TARGET_VS_BACKGROUND", created_at="2026-08-17T00:00:00Z")
+    status = repo.get_study_control_center_status()
+    assert _phase(status, "06")["execution_state"] != "COMPLETE"  # split not built yet -- real, honest non-complete state
+
+    _write_split_ready(repo, dataset_id="DS-1", dataset_version="v1", scientific_task="TARGET_VS_BACKGROUND")
+    status = repo.get_study_control_center_status()
+    phase06 = _phase(status, "06")
+    assert phase06["execution_state"] == "COMPLETE"
+    assert phase06["artifacts"]
+
+
+def test_phase_07_completes_when_a_real_rq1_or_rq2_report_exists_for_the_latest_run(tmp_path):
+    repo = _repo(tmp_path)
+    _write_run(repo, paper_run_id="RUN-1", dataset_id="DS-1", dataset_version="v1", scientific_task="TARGET_VS_BACKGROUND", created_at="2026-08-17T00:00:00Z")
+    _write_split_ready(repo, dataset_id="DS-1", dataset_version="v1", scientific_task="TARGET_VS_BACKGROUND")
+    status = repo.get_study_control_center_status()
+    assert _phase(status, "07")["execution_state"] != "COMPLETE"  # split ready, but no evaluation yet
+
+    (repo.root / "RUN-1" / "06_statistics" / "rq1_acquisition_dependence_report.json").write_text(
+        json.dumps({"ba_window": 0.9, "ba_capture": 0.8}), encoding="utf-8",
+    )
+    status = repo.get_study_control_center_status()
+    assert _phase(status, "07")["execution_state"] == "COMPLETE"
+
+
 def test_every_phase_reports_git_sha_and_protocol_version(tmp_path):
     repo = _repo(tmp_path)
     status = repo.get_study_control_center_status()

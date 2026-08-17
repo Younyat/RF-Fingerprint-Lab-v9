@@ -12,9 +12,22 @@ Regenerate whenever the underlying real results change (new RQ1/RQ2 runs,
 RQ3 campaign progress, RQ4 eligibility) -- this script is the single source
 both readme_img/evidence_*.png and docs/ble/evidence_figures.ipynb are built
 from, so the two never drift apart.
+
+Paper-representation pass (2026-08-17): the campaign timeline, the closed-set
+normalized confusion matrix, and the forensic lineage diagram are NOT
+re-plotted here -- they are rendered once by the paper-export pipeline
+(`ScientificResultsRepository.run_paper_export()` -> `paper_export.py` ->
+`figures/paper_figures.py`, the same real renderer the manuscript's PDF/SVG
+exports use) and this script only copies the PNG variant it already wrote
+into `readme_img/`. Two renderers for these three figures would be exactly
+the duplication this pass exists to remove; the other figures below predate
+that pipeline and still compute their own matplotlib calls directly from
+`get_evidence_dashboard_summary()` -- no independent computation either way,
+only a difference in which renderer is called.
 """
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -32,6 +45,14 @@ from app.modules.ble_scientific_results.api.scientific_results_repository import
 OUT_DIR = REPO_ROOT / "readme_img"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
+# (paper_exports/figures PNG name, readme_img PNG name) -- copied verbatim
+# after run_paper_export(), never re-rendered.
+CONSOLIDATED_FIGURES = [
+    ("campaign_timeline.png", "evidence_campaign_timeline.png"),
+    ("closed_set_confusion_matrix_normalized.png", "evidence_confusion_normalized.png"),
+    ("forensic_lineage.png", "evidence_forensic_lineage.png"),
+]
+
 # Matches the platform's own dark research-console palette (BleScientific
 # ResultsPage.tsx is Tailwind slate/cyan) -- kept legible against GitHub's
 # light background instead of mimicking it verbatim.
@@ -46,10 +67,30 @@ plt.rcParams.update({
 })
 
 
-def load_summary() -> dict:
+def load_repository() -> ScientificResultsRepository:
     root = settings.storage.storage_root
-    repo = ScientificResultsRepository(root / "scientific_reports" / "ble", ble_rffi_studio_root=root / "ble_rffi_studio")
-    return repo.get_evidence_dashboard_summary()
+    return ScientificResultsRepository(root / "scientific_reports" / "ble", ble_rffi_studio_root=root / "ble_rffi_studio")
+
+
+def load_summary() -> dict:
+    return load_repository().get_evidence_dashboard_summary()
+
+
+def sync_consolidated_figures(repo: ScientificResultsRepository) -> list[Path]:
+    """Runs the real paper-export pipeline and copies the PNG variant of the
+    figures it already rendered into readme_img/ -- see module docstring."""
+    repo.run_paper_export()
+    figures_dir = repo.root / "paper_exports" / "figures"
+    written: list[Path] = []
+    for source_name, dest_name in CONSOLIDATED_FIGURES:
+        source_path = figures_dir / source_name
+        if not source_path.is_file():
+            continue
+        dest_path = OUT_DIR / dest_name
+        shutil.copyfile(source_path, dest_path)
+        print("wrote", dest_path, "(copied from paper_exports/figures, not re-rendered)")
+        written.append(dest_path)
+    return written
 
 
 def _save(fig, name: str) -> Path:
@@ -220,13 +261,15 @@ FIGURES = [
 
 
 def main() -> None:
-    summary = load_summary()
+    repo = load_repository()
+    summary = repo.get_evidence_dashboard_summary()
     fig_confusion((summary.get("closed_set") or {}).get("rq1", {}).get("confusion_matrix_capture"),
                   "Confusion matrix -- VALIDATION (capture-disjoint)", "evidence_confusion_validation.png")
     fig_confusion((summary.get("closed_set") or {}).get("primary_test", {}).get("confusion_matrix"),
                   "Confusion matrix -- TEST (PRIMARY branch)", "evidence_confusion_test.png")
     for _title, fn in FIGURES:
         fn(summary)
+    sync_consolidated_figures(repo)
 
 
 if __name__ == "__main__":

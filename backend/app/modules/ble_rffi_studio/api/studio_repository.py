@@ -1622,6 +1622,33 @@ class StudioRepository:
             return None
         return {"split": split, **dataclasses.asdict(result)}
 
+    def bootstrap_balanced_accuracy_ci(self, training_run_id: str, *, split: str = "VALIDATION", n_resamples: int = 2000, confidence_level: float = 0.95) -> dict[str, Any] | None:
+        """Same real, already-persisted-predictions read path as
+        bootstrap_accuracy_ci() above, wired to Evaluator.
+        bootstrap_balanced_accuracy_ci() instead -- a CI on the SAME metric
+        (balanced accuracy) RQ1/RQ2 report as their headline number, not on
+        raw accuracy."""
+        run_dir = self.training_dir / training_run_id
+        predictions_path = run_dir / "predictions.json"
+        label_classes_path = run_dir / "label_classes.json"
+        run_path = run_dir / "training_run.json"
+        if not (predictions_path.is_file() and run_path.is_file()):
+            raise FileNotFoundError(f"TRAINING_RUN_HAS_NO_PREDICTIONS_YET:{training_run_id}")
+        predictions_by_split = read_json(predictions_path)
+        if split not in predictions_by_split:
+            return None
+        label_classes = read_json(label_classes_path)["classes"]
+        training_run = TrainingRun.model_validate(read_json(run_path))
+        dataset = self._require_dataset(training_run.dataset_id, training_run.dataset_version)
+        session_id_by_example_id = {e.example_id: e.session_id for e in self._dataset_examples(dataset)}
+
+        result = self.evaluator.bootstrap_balanced_accuracy_ci(
+            predictions_by_split[split], label_classes, session_id_by_example_id, n_resamples=n_resamples, confidence_level=confidence_level,
+        )
+        if result is None:
+            return None
+        return {"split": split, **dataclasses.asdict(result)}
+
     def train_seed_variability_analysis(self, *, training_run_id: str, seeds: tuple[int, ...] | None = None, progress=None) -> list[dict[str, Any]]:
         """Fixed seed-set correction (2026-08-08): how much a candidate's
         VALIDATION performance moves across independent training runs of the

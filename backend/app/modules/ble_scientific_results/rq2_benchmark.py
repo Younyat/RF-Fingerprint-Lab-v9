@@ -29,7 +29,7 @@ class Rq2BenchmarkError(Exception):
     pass
 
 
-def map_training_result_to_rq2_branches(training_result: dict[str, Any]) -> list[dict[str, Any]]:
+def map_training_result_to_rq2_branches(training_result: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
     """Pure transform: `training_result` is the real dict
     `train_selected_models()`/`prepare_and_train()` return (with the FULL,
     un-stripped `trained_models[i]` entries -- `evaluation`/`score`, not the
@@ -39,7 +39,14 @@ def map_training_result_to_rq2_branches(training_result: dict[str, Any]) -> list
     with the highest real VALIDATION composite_score represents that branch
     -- a real, deterministic, disclosed tie-break, never an average or a
     guess. Every optional metric a model's evaluation genuinely lacks stays
-    absent, never a fabricated 0."""
+    absent, never a fabricated 0.
+
+    Returns (branch_results, selection_rule) -- selection_rule is the real
+    descriptive string select_primary_rq2_branch_from_validation() already
+    computes (why the PRIMARY branch was chosen, VALIDATION-only), so the
+    persisted report can state its own selection provenance instead of that
+    text living only in code/docstrings. None when no branch trained at all
+    (no primary to explain)."""
     trained = training_result.get("trained_models") or []
     best_by_branch: dict[str, dict[str, Any]] = {}
     for entry in trained:
@@ -52,10 +59,10 @@ def map_training_result_to_rq2_branches(training_result: dict[str, Any]) -> list
             best_by_branch[branch] = entry
 
     if not best_by_branch:
-        return []
+        return [], None
 
     composite_scores = {entry["model_type"]: entry["score"]["composite_score"] for entry in best_by_branch.values()}
-    primary_branch, _rule = select_primary_rq2_branch_from_validation(composite_scores)
+    primary_branch, rule = select_primary_rq2_branch_from_validation(composite_scores)
 
     branch_results: list[dict[str, Any]] = []
     for branch, entry in sorted(best_by_branch.items()):
@@ -69,7 +76,7 @@ def map_training_result_to_rq2_branches(training_result: dict[str, Any]) -> list
             "serialized_model_size_bytes": entry["score"].get("model_size_bytes"),
             "inference_latency_ms": entry["score"].get("latency_ms"),
         })
-    return branch_results
+    return branch_results, rule
 
 
 def run_rq2_benchmark(
@@ -88,7 +95,7 @@ def run_rq2_benchmark(
         # results when training itself did not produce real ones.
         return {"stopped_at": training_result["stopped_at"], "stopped_reason": training_result.get("stopped_reason"), "rq2_report": None}
 
-    branch_results = map_training_result_to_rq2_branches(training_result)
+    branch_results, selection_rule = map_training_result_to_rq2_branches(training_result)
     if not branch_results:
         return {"stopped_at": "no_recognized_rq2_branch", "stopped_reason": "None of the trained model_types map to a known RQ2 branch", "rq2_report": None}
 
@@ -106,12 +113,25 @@ def run_rq2_benchmark(
             if seed_results:
                 entry["seed_variability"] = seed_results
 
+    # Paper-representation pass (2026-08-17): a real, session-clustered
+    # bootstrap CI on the SAME balanced_accuracy each branch already
+    # reports -- cheap (pure resampling over already-persisted predictions,
+    # no retraining) so computed for every branch, not only PRIMARY (unlike
+    # seed_variability above, which retrains and stays PRIMARY-only for
+    # cost reasons).
+    if progress:
+        progress("BOOTSTRAP_CI", 0.95, "Computing balanced-accuracy confidence intervals")
+    for entry in branch_results:
+        ci = studio_repository.bootstrap_balanced_accuracy_ci(entry["training_run_id"], split="VALIDATION")
+        if ci:
+            entry["balanced_accuracy_ci"] = {"ci_low": ci["ci_low"], "ci_high": ci["ci_high"]}
+
     split = sci_repository._load_split(dataset_id, dataset_version, scientific_task)
     study_status = sci_repository.get_study_status()
     rq2_report = sci_repository.persist_rq2_representation_comparison_report(
         paper_run_id=paper_run_id, protocol_id=study_status.get("protocol_id"), protocol_version=study_status.get("protocol_version"),
         contract_sha256=study_status.get("contract_sha256"), dataset_id=dataset_id, dataset_version=dataset_version,
         split_manifest_id=f"{dataset_id}__{dataset_version}__{scientific_task}", split_manifest_sha256=split.split_manifest_sha256 or "",
-        branch_results=branch_results,
+        branch_results=branch_results, selection_rule=selection_rule, selection_domain="VALIDATION",
     )
     return {"stopped_at": None, "stopped_reason": None, "rq2_report": rq2_report, "skipped_models": training_result.get("skipped_models") or []}

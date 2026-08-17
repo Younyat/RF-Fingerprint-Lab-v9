@@ -47,15 +47,21 @@ def _entry(manifest, filename):
     return next(e for e in manifest["entries"] if e["file"] == filename)
 
 
-def test_empty_repository_generates_only_study_status_and_paper_readiness(tmp_path):
+def test_empty_repository_generates_only_study_status_paper_readiness_and_completeness(tmp_path):
     repo = _repo(tmp_path)
     manifest = generate_paper_exports(repo)
     assert _entry(manifest, "study_status.json")["status"] == "GENERATED"
     assert _entry(manifest, "paper_readiness.json")["status"] == "GENERATED"
-    for filename in ("rq1_results.csv", "rq3_results.csv", "rq4_results.csv", "channel_transport_results.csv", "offline_nearlive_results.csv", "paper_tables.tex"):
+    for filename in ("rq1_results.csv", "rq3_results.csv", "rq4_results.csv", "channel_transport_results.csv", "offline_nearlive_results.csv"):
         entry = _entry(manifest, filename)
         assert entry["status"] == "SKIPPED_NO_DATA"
         assert entry["detail"]
+    # scientific_completeness.csv is the one export that ALWAYS has real
+    # data to report (its whole purpose is stating "not available yet" with
+    # a real reason) -- so paper_tables.tex now has at least this one real
+    # section even on an otherwise-empty repository.
+    assert _entry(manifest, "scientific_completeness.csv")["status"] == "GENERATED"
+    assert _entry(manifest, "paper_tables.tex")["status"] == "GENERATED"
     assert (tmp_path / "sci_results" / "paper_exports" / "study_status.json").is_file()
 
 
@@ -67,6 +73,76 @@ def test_qualification_summary_generated_when_preflight_report_exists(tmp_path):
     assert entry["status"] == "GENERATED"
     rows = list(csv.DictReader((repo.root / "paper_exports" / "qualification_summary.csv").open(encoding="utf-8")))
     assert rows == [{"gate": "b200_detected", "status": "READY", "detail": "ok"}]
+
+
+def test_scientific_completeness_and_tx_composition_are_generated_regardless_of_closed_set_state(tmp_path):
+    """These two exports must be real and present even with zero registered
+    units / zero paper runs -- scientific_completeness's whole purpose is
+    reporting real absence, and tx_composition legitimately lists 0 rows."""
+    repo = _repo(tmp_path)
+    manifest = generate_paper_exports(repo)
+    assert _entry(manifest, "scientific_completeness.csv")["status"] == "GENERATED"
+    rows = list(csv.DictReader((repo.root / "paper_exports" / "scientific_completeness.csv").open(encoding="utf-8")))
+    assert any(r["item"] == "strong_native_sdr_association" and r["status"] == "BLOCKED" for r in rows)
+    # tx_composition has nothing to report on an empty registry -- honest SKIPPED, not a fabricated empty CSV.
+    assert _entry(manifest, "tx_composition.csv")["status"] == "SKIPPED_NO_DATA"
+
+
+def test_closed_set_exports_generated_from_a_real_multi_device_classification_run(tmp_path):
+    repo = _repo(tmp_path)
+    _write_json(repo.root / "CLOSED-RUN" / "run.json", {
+        "paper_run_id": "CLOSED-RUN", "campaign_id": "C1", "protocol_id": "P1", "protocol_version": 1,
+        "dataset_id": "IDENTITY-DS", "dataset_version": "v1", "scientific_task": "MULTI_DEVICE_CLASSIFICATION",
+        "analysis_code_commit": "deadbeef", "analysis_environment_hash": "envhash",
+        "storage_path": str(repo.root / "CLOSED-RUN"), "created_at": "2026-08-17T00:00:00Z",
+    })
+    _write_json(repo.root / "CLOSED-RUN" / "06_statistics" / "rq2_representation_comparison_report.json", {
+        "schema_version": "ble-scientific-results-rq2-representation-comparison-v1",
+        "branches": [{
+            "branch": "engineered_rf", "analysis_role": "PRIMARY", "evaluation_domain": "VALIDATION",
+            "model_type": "random_forest", "training_run_id": "TRAIN-1", "balanced_accuracy": 0.7, "macro_f1": 0.65,
+        }],
+        "generated_at": "2026-08-17T00:00:00Z",
+    })
+    _write_json(repo.ble_root / "splits" / "IDENTITY-DS__v1__MULTI_DEVICE_CLASSIFICATION.json", {
+        "schema_version": "ble-rffi-studio-split-v1", "dataset_id": "IDENTITY-DS", "dataset_version": "v1",
+        "scientific_task": "MULTI_DEVICE_CLASSIFICATION", "policy": "test", "split_status": "READY",
+        "assignments": [{"example_id": "e1", "physical_unit_id": "UNIT-A", "capture_id": "CAP-1", "session_id": "S1", "split": "VALIDATION", "split_reason": "t"}],
+        "leakage_check": {"status": "PASSED"}, "created_at": "2026-08-17T00:00:00Z", "split_manifest_sha256": "hash",
+    })
+    _write_json(repo.ble_root / "training_runs" / "TRAIN-1" / "evaluation_report.json", {
+        "TEST": {
+            "accuracy": 0.8, "balanced_accuracy": 0.75, "macro_f1": 0.7,
+            "recall_per_class": {"UNIT-A": 0.9, "UNIT-B": 0.5}, "precision_per_class": {"UNIT-A": 0.8, "UNIT-B": 0.6}, "f1_per_class": {"UNIT-A": 0.85, "UNIT-B": 0.55},
+            "confusion_matrix": {"UNIT-A": {"UNIT-A": 9, "UNIT-B": 1}, "UNIT-B": {"UNIT-A": 1, "UNIT-B": 1}},
+        },
+    })
+
+    manifest = generate_paper_exports(repo)
+
+    assert _entry(manifest, "closed_set_partition_composition.csv")["status"] == "GENERATED"
+    partition_rows = list(csv.DictReader((repo.root / "paper_exports" / "closed_set_partition_composition.csv").open(encoding="utf-8")))
+    validation_row = next(r for r in partition_rows if r["domain"] == "VALIDATION")
+    assert validation_row["n_windows"] == "1"
+    assert validation_row["n_captures"] == "1"
+
+    per_tx_entry = _entry(manifest, "closed_set_per_transmitter.csv")
+    assert per_tx_entry["status"] == "GENERATED"
+    assert per_tx_entry.get("figure_classification") == "PAPER_PRIMARY"
+    assert (repo.root / "paper_exports" / "closed_set_per_transmitter.csv.provenance.json").is_file()
+    per_tx_rows = list(csv.DictReader((repo.root / "paper_exports" / "closed_set_per_transmitter.csv").open(encoding="utf-8")))
+    assert {r["physical_unit_id"] for r in per_tx_rows} == {"UNIT-A", "UNIT-B"}
+
+    normalized_entry = _entry(manifest, "figures/closed_set_confusion_matrix_normalized.pdf")
+    assert normalized_entry["status"] == "GENERATED"
+    assert (repo.root / "paper_exports" / "figures" / "closed_set_confusion_matrix_normalized.pdf").read_bytes()[:4] == b"%PDF"
+    assert (repo.root / "paper_exports" / "figures" / "closed_set_confusion_matrix_normalized.svg").is_file()
+    assert (repo.root / "paper_exports" / "figures" / "closed_set_confusion_matrix_normalized.png").is_file()
+
+    assert _entry(manifest, "figures/campaign_timeline.pdf")["status"] == "GENERATED"
+    # No bundle was ever exported for TRAIN-1 in this fixture -- forensic
+    # lineage must still generate, honestly stating "not exported yet".
+    assert _entry(manifest, "figures/forensic_lineage.pdf")["status"] == "GENERATED"
 
 
 def test_rq1_results_and_figures_generated_when_rq1_report_exists(tmp_path):

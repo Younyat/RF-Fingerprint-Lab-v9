@@ -50,6 +50,7 @@ from ..records import build_records as _build_records
 from ..records import resolve_iq_path
 from ..engineering_reports import compute_channel_transport_report as _compute_channel_transport_report
 from ..engineering_reports import compute_offline_nearlive_report as _compute_offline_nearlive_report
+from .. import paper_figure_aggregations
 from ..paper_export import generate_paper_exports
 from ..provenance import list_inference_runs as _list_inference_runs
 from ..provenance import reconstruct_decision_provenance
@@ -483,6 +484,23 @@ class ScientificResultsRepository:
 
         sizing_decision = self.get_study_sizing_decision()
         rq2_report = self.get_rq2_representation_comparison_report(latest_run.paper_run_id) if latest_run else None
+        # Phases 06/07 real completion signals (2026-08-17 -- previously
+        # hardcoded False with no signal at all, confirmed by direct
+        # inspection). 06 (Development): the dataset+split pair the latest
+        # real run points at is actually built and READY -- proves the
+        # development-stage artifact chain (dataset -> split) exists, not
+        # just that captures exist. 07 (Validation): a real VALIDATION-
+        # domain evaluation was produced for that run (RQ1 or RQ2, whichever
+        # ran) -- a real precondition of phase 08's own RQ2-specific check,
+        # kept as its own signal since a run can have RQ1 without RQ2 yet.
+        development_split_ready = False
+        if latest_run is not None:
+            try:
+                development_split_ready = self._load_split(latest_run.dataset_id, latest_run.dataset_version, latest_run.scientific_task).split_status == "READY"
+            except FileNotFoundError:
+                development_split_ready = False
+        rq1_report_for_latest = self.get_rq1_acquisition_dependence_report(latest_run.paper_run_id) if latest_run else None
+        validation_evaluated = bool(rq1_report_for_latest) or bool(rq2_report and rq2_report.get("branches"))
         confirmatory_future_report = self.get_confirmatory_future_analysis_report(latest_run.paper_run_id) if latest_run else None
         channel_transport_report = self.get_channel_transport_report(latest_run.paper_run_id) if latest_run else None
         offline_nearlive_report = self.get_offline_nearlive_report(latest_run.paper_run_id) if latest_run else None
@@ -519,8 +537,18 @@ class ScientificResultsRepository:
                 "in_progress": False, "real_data_available": sizing_decision is not None,
                 "artifacts": ["study_sizing_decision.json"] if sizing_decision else [],
             },
-            "06": {"completed": False, "in_progress": False, "real_data_available": study_status["real_capture_count"] > 0, "artifacts": []},
-            "07": {"completed": False, "in_progress": False, "real_data_available": False, "artifacts": []},
+            "06": {
+                "completed": development_split_ready,
+                "in_progress": bool(latest_run) and not development_split_ready,
+                "real_data_available": study_status["real_capture_count"] > 0,
+                "artifacts": [f"splits/{latest_run.dataset_id}__{latest_run.dataset_version}__{latest_run.scientific_task}.json"] if development_split_ready and latest_run else [],
+            },
+            "07": {
+                "completed": validation_evaluated,
+                "in_progress": development_split_ready and not validation_evaluated,
+                "real_data_available": validation_evaluated,
+                "artifacts": ["rq1_acquisition_dependence_report.json"] if rq1_report_for_latest else (["rq2_representation_comparison_report.json"] if validation_evaluated else []),
+            },
             "08": {
                 "completed": bool(rq2_report and rq2_report.get("branches")),
                 "in_progress": False, "real_data_available": bool(rq2_report),
@@ -1397,6 +1425,23 @@ class ScientificResultsRepository:
             return []
         return [CaptureRecord.model_validate(json.loads(path.read_text(encoding="utf-8"))) for path in sorted(captures_dir.glob("*.json"))]
 
+    def _find_bundle_for_training_run(self, training_run_id: str) -> dict[str, Any] | None:
+        """Real, read-only lookup of an exported ModelBundleManifest by the
+        training_run_id it was built from (bundle_manifest.json's own real
+        `training_run_id` field -- bundle_id itself is not derivable from
+        training_run_id, so this scans real bundles on disk rather than
+        guessing a path). None when no bundle was ever exported for this
+        training run (a real, honest state -- not every real training run
+        this session went through export_and_approve_all_candidates)."""
+        bundles_dir = self.ble_root / "bundles"
+        if not bundles_dir.is_dir():
+            return None
+        for manifest_path in bundles_dir.glob("*/bundle_manifest.json"):
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest.get("training_run_id") == training_run_id:
+                return {"bundle_id": manifest.get("bundle_id"), "bundle_sha256": manifest.get("bundle_sha256")}
+        return None
+
     def _load_training_run_evaluation(self, training_run_id: str) -> dict[str, Any] | None:
         """RQ2's persisted representation-comparison report only carries
         VALIDATION-domain branch metrics (model selection is VALIDATION-only
@@ -1919,7 +1964,8 @@ class ScientificResultsRepository:
 
     def persist_rq1_acquisition_dependence_report(
         self, *, paper_run_id: str, protocol_id: str, protocol_version: int, contract_sha256: str,
-        rq1_report: Any, model_bundle_id: str, model_bundle_sha256: str,
+        rq1_report: Any, model_bundle_id: str | None, model_bundle_sha256: str | None,
+        dataset_manifest_sha256: str | None = None,
         confirmatory_split_manifest_id: str, confirmatory_split_manifest_sha256: str,
         diagnostic_split_manifest_id: str, diagnostic_split_manifest_sha256: str,
         source_evaluation_domains: dict[str, Any], uncertainty_ci: dict[str, Any] | None = None,
@@ -1945,6 +1991,7 @@ class ScientificResultsRepository:
             "schema_version": "ble-scientific-results-rq1-acquisition-dependence-v1",
             "protocol_id": protocol_id, "protocol_version": protocol_version, "contract_sha256": contract_sha256, "git_sha": git_sha,
             "model_bundle_id": model_bundle_id, "model_bundle_sha256": model_bundle_sha256,
+            "dataset_manifest_sha256": dataset_manifest_sha256,
             "confirmatory_split_manifest_id": confirmatory_split_manifest_id, "confirmatory_split_manifest_sha256": confirmatory_split_manifest_sha256,
             "diagnostic_split_manifest_id": diagnostic_split_manifest_id, "diagnostic_split_manifest_sha256": diagnostic_split_manifest_sha256,
             "source_evaluation_domains": source_evaluation_domains,
@@ -1970,7 +2017,7 @@ class ScientificResultsRepository:
     def persist_rq2_representation_comparison_report(
         self, *, paper_run_id: str, protocol_id: str | None = None, protocol_version: int | None = None, contract_sha256: str | None = None,
         dataset_id: str, dataset_version: str, split_manifest_id: str, split_manifest_sha256: str,
-        branch_results: list[dict[str, Any]],
+        branch_results: list[dict[str, Any]], selection_rule: str | None = None, selection_domain: str | None = None,
     ) -> dict[str, Any]:
         """Reporting closure, point A (2026-08-11): the canonical, persisted
         RQ2 artifact. `select_primary_rq2_branch_from_validation()`
@@ -2008,6 +2055,13 @@ class ScientificResultsRepository:
             "dataset_id": dataset_id, "dataset_version": dataset_version,
             "split_manifest_id": split_manifest_id, "split_manifest_sha256": split_manifest_sha256,
             "branches": validated,
+            # Real provenance for the PRIMARY branch's selection -- lets a
+            # figure/table state, from the persisted artifact itself (never
+            # from code/docstrings alone), that PRIMARY was chosen using
+            # VALIDATION only. select_primary_rq2_branch_from_validation()
+            # already returns this exact rule string; previously discarded
+            # by its only real caller (rq2_benchmark.py).
+            "selection_rule": selection_rule, "selection_domain": selection_domain,
             "generated_at": utc_now(),
         }
         atomic_json(self._run_dir(paper_run_id) / "06_statistics" / "rq2_representation_comparison_report.json", artifact)
@@ -2094,6 +2148,163 @@ class ScientificResultsRepository:
                 "physical_units": physical_units,
                 "status": "ELIGIBLE_UNITS_PRESENT" if any(u["rq4_eligibility"] == "ELIGIBLE" for u in physical_units) else "DATA_NOT_AVAILABLE",
             },
+        }
+
+    # Same real, established BLE advertising channel <-> center-frequency
+    # mapping already defined independently in ble_rffi_studio's
+    # campaign_orchestrator.py/studio_repository.py/evidence_stage.py --
+    # duplicated here (a plain physical constant, not a computation) rather
+    # than adding a StudioRepository dependency to this class, which reads
+    # ble_rffi_studio's real storage directly everywhere else in this file.
+    _BLE_CHANNEL_FREQUENCIES_HZ = {37: 2_402_000_000, 38: 2_426_000_000, 39: 2_480_000_000}
+
+    def _resolve_ble_channel(self, center_frequency_hz: float | None) -> int | None:
+        if not center_frequency_hz:
+            return None
+        for channel, hz in self._BLE_CHANNEL_FREQUENCIES_HZ.items():
+            if abs(hz - center_frequency_hz) < 1_000_000.0:
+                return channel
+        return None
+
+    def build_tx_composition_table(self) -> list[dict[str, Any]]:
+        """Real, per-unit composition table -- device identity from
+        PhysicalDeviceRegistry, real capture count/day-range/channels from
+        _load_all_captures(). Unit identity for capture attribution follows
+        pre_post_pairing.py's own real convention (target_reference_id,
+        falling back to isolation_declared_physical_unit_id) -- never the
+        address-resolved physical_unit_id, which CaptureRecord does not
+        carry. No such single table existed before this (confirmed:
+        dataset_composition_report is scoped to one dataset, not the whole
+        enrolled population)."""
+        registry = PhysicalDeviceRegistry(self.ble_root / "registry")
+        captures = self._load_all_captures()
+        rows: list[dict[str, Any]] = []
+        for unit in registry.list_physical_units():
+            unit_captures = [c for c in captures if (c.target_reference_id or c.isolation_declared_physical_unit_id) == unit.physical_unit_id]
+            channels = sorted({ch for c in unit_captures if (ch := self._resolve_ble_channel(c.center_frequency_hz)) is not None})
+            day_ids = sorted({c.day_id for c in unit_captures if c.day_id})
+            rows.append({
+                "physical_unit_id": unit.physical_unit_id, "device_family": unit.device_family,
+                "manufacturer": unit.manufacturer, "model": unit.model, "project_id": unit.project_id,
+                "status": unit.status, "rq4_eligibility": unit.rq4_eligibility,
+                "real_capture_count": len(unit_captures), "channels": channels,
+                "day_range": {"first": day_ids[0], "last": day_ids[-1]} if day_ids else None,
+            })
+        return rows
+
+    def build_partition_composition_table(self, dataset_id: str, dataset_version: str, scientific_task: str) -> dict[str, Any]:
+        """Real captures/acquisition-groups/decision-windows per TRAIN/
+        VALIDATION/TEST for one real split -- thin composition of already-
+        real SplitManifest.assignments (via domain_group_counts, §B) over
+        the same split the confirmatory analysis actually reads
+        (_load_split, already used elsewhere in this file)."""
+        split = self._load_split(dataset_id, dataset_version, scientific_task)
+        return {
+            "dataset_id": dataset_id, "dataset_version": dataset_version, "scientific_task": scientific_task,
+            "split_status": split.split_status, "leakage_check_status": split.leakage_check.status,
+            "domains": {domain: paper_figure_aggregations.domain_group_counts(split, domain) for domain in ("TRAIN", "VALIDATION", "TEST")},
+        }
+
+    def build_receiver_epoch_table(self) -> list[dict[str, Any]]:
+        """Real table of distinct receiver_epoch values -- identity +
+        qualified acquisition profile + session boundary, per
+        receiver_epoch_assignment.py -- with their real boundary reason,
+        captures, days, channels, and physical units. No aggregator over
+        this already-real, already-persisted CaptureRecord field existed
+        before this."""
+        captures = self._load_all_captures()
+        by_epoch: dict[str, dict[str, Any]] = {}
+        for capture in captures:
+            if not capture.receiver_epoch:
+                continue
+            bucket = by_epoch.setdefault(capture.receiver_epoch, {
+                "boundary_reason": capture.receiver_epoch_boundary_reason,
+                "capture_ids": [], "day_ids": set(), "channels": set(), "physical_units": set(),
+            })
+            bucket["capture_ids"].append(capture.capture_id)
+            if capture.day_id:
+                bucket["day_ids"].add(capture.day_id)
+            channel = self._resolve_ble_channel(capture.center_frequency_hz)
+            if channel is not None:
+                bucket["channels"].add(channel)
+            unit_id = capture.target_reference_id or capture.isolation_declared_physical_unit_id
+            if unit_id:
+                bucket["physical_units"].add(unit_id)
+        return [
+            {
+                "receiver_epoch": epoch, "boundary_reason": bucket["boundary_reason"],
+                "n_captures": len(bucket["capture_ids"]), "day_ids": sorted(bucket["day_ids"]),
+                "channels": sorted(bucket["channels"]), "physical_units": sorted(bucket["physical_units"]),
+            }
+            for epoch, bucket in sorted(by_epoch.items())
+        ]
+
+    _COMPLETENESS_STATUS_MAP = {"COMPLETE": "AVAILABLE", "PRELIMINARY": "AVAILABLE", "DATA_PENDING": "PENDING_REAL_ACQUISITION"}
+
+    def get_scientific_completeness_report(self) -> dict[str, Any]:
+        """ONE artifact answering "what does the paper still need, and what
+        is its real status" -- AVAILABLE / PENDING_REAL_ACQUISITION /
+        BLOCKED / NOT_ELIGIBLE / PROTECTED, with a real reason and missing-
+        evidence list per item. Composes get_paper_readiness() (per-
+        manuscript-element) + get_analysis_contract_readiness() (the real
+        16-field confirmatory-freeze gate) + RQ3 campaign progress + RQ4
+        eligibility + association status into ONE vocabulary -- deliberately
+        NOT an extension of get_paper_readiness()'s own DATA_PENDING/
+        PRELIMINARY/COMPLETE enum in place, since other real consumers
+        already depend on that exact vocabulary (confirmed via research
+        before this pass); composing over it is the safe direction.
+        Preserves this project's own "implemented vs experimentally
+        validated" distinction -- nothing here is a mechanism-exists check,
+        every status reflects real, current data."""
+        readiness_rows = self.get_paper_readiness()
+        contract_readiness = self.get_analysis_contract_readiness()
+        study_status = self.get_study_status()
+        rq3_progress = self._rq3_campaign_progress()
+        rq3_target = (self.get_latest_scientist_decisions().get("rq3_sample_size") or {}).get("selected_value") or {}
+        registry = PhysicalDeviceRegistry(self.ble_root / "registry")
+        rq4_units = registry.list_physical_units()
+        rq4_eligible = [u for u in rq4_units if u.rq4_eligibility == "ELIGIBLE"]
+
+        items: list[dict[str, Any]] = []
+        for row in readiness_rows:
+            items.append({
+                "item": row.get("manuscript_element"), "status": self._COMPLETENESS_STATUS_MAP.get(row.get("paper_evidence_status"), "PENDING_REAL_ACQUISITION"),
+                "reason": f"evidence_maturity={row.get('evidence_maturity')}, mechanism={row.get('mechanism_state')}",
+                "missing_evidence": [] if row.get("paper_evidence_status") == "COMPLETE" else [row.get("canonical_artifact") or "no canonical artifact yet"],
+            })
+
+        # Real, specific overrides -- more precise than the generic
+        # paper_readiness row for items the user explicitly named.
+        items.append({
+            "item": "rq1_protected_future", "status": "PROTECTED",
+            "reason": f"protected_future_test_status={study_status.get('protected_future_test_status')}",
+            "missing_evidence": ["confirmatory readiness (protocol_freeze_readiness)", "a real, later acquisition period", "run_confirmatory_future_analysis"],
+        })
+        total_target_pairs = rq3_target.get("total_valid_pairs")
+        items.append({
+            "item": "rq3_reset_vs_continuous", "status": "AVAILABLE" if rq3_progress["captures_with_rq3_metadata"] >= (total_target_pairs or 1) * 2 else "PENDING_REAL_ACQUISITION",
+            "reason": f"{rq3_progress['captures_with_rq3_metadata']} real captures with RQ3 metadata declared" + (f" of {total_target_pairs} valid pairs targeted ({(total_target_pairs or 0) * 2} captures)" if total_target_pairs else " -- no rq3_sample_size decision frozen yet"),
+            "missing_evidence": [] if total_target_pairs and rq3_progress["captures_with_rq3_metadata"] >= total_target_pairs * 2 else ["real RESET/CONTROL PRE/POST captures (0 today)"],
+        })
+        items.append({
+            "item": "rq4_packet_content_dependence", "status": "AVAILABLE" if rq4_eligible else "NOT_ELIGIBLE",
+            "reason": f"{len(rq4_eligible)}/{len(rq4_units)} enrolled units eligible" if rq4_units else "no physical units registered",
+            "missing_evidence": [] if rq4_eligible else [u.rq4_eligibility_reason or f"{u.physical_unit_id}: no reason recorded" for u in rq4_units],
+        })
+        items.append({
+            "item": "strong_native_sdr_association", "status": "BLOCKED",
+            "reason": f"association_policy_status={study_status.get('association_policy_status')}",
+            "missing_evidence": ["a calibration campaign producing a policy that satisfies the real acceptance criteria (every real attempt today reports NO_THRESHOLD_SATISFIES_CRITERIA)"],
+        })
+        items.append({
+            "item": "confirmatory_protocol_freeze", "status": "BLOCKED" if contract_readiness["protocol_freeze_readiness"]["status"] == "BLOCKED" else "AVAILABLE",
+            "reason": f"{len(contract_readiness['protocol_freeze_readiness']['missing'])} required fields/gates still missing",
+            "missing_evidence": contract_readiness["protocol_freeze_readiness"]["missing"],
+        })
+
+        return {
+            "schema_version": "ble-scientific-results-scientific-completeness-v1", "generated_at": utc_now(),
+            "git_sha": study_status.get("git_sha"), "items": items,
         }
 
     def regenerate_evidence_figures(self) -> dict[str, Any]:

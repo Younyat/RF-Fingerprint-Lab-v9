@@ -1093,6 +1093,11 @@ export interface Rq2RepresentationComparisonReport extends Record<string, unknow
   split_manifest_id: string;
   split_manifest_sha256: string;
   branches: Rq2BranchResult[];
+  // PRIMARY is selected on this domain ONLY -- FUTURE (when it exists) is
+  // evaluation, never a re-selection input. Real, persisted, never a
+  // frontend-inferred label.
+  selection_rule?: string | null;
+  selection_domain?: string | null;
   generated_at: string;
 }
 
@@ -1115,6 +1120,10 @@ export interface Rq1AcquisitionDependenceReport extends Record<string, unknown> 
   ba_future_status: string;
   delta_dependence: number | null;
   confusion_matrix_capture: Record<string, Record<string, number>> | null;
+  // Cluster-bootstrap CI on ba_capture only -- never computed for ba_window,
+  // which is intentionally capture-dependent (leakage-violating) by design,
+  // so a CI on it would misleadingly suggest it is a valid estimator.
+  uncertainty_ci?: { ba_capture_ci?: BootstrapCiResult | null } | null;
   generated_at: string;
 }
 
@@ -1194,6 +1203,65 @@ export interface EvidenceFigureRegenerationResult {
   png_files: string[];
   notebook_written: boolean;
   note: string;
+}
+
+// Paper-representation pass (2026-08-17) -- new supporting tables + the
+// scientific completeness report. Every field here mirrors the real backend
+// dict exactly (build_tx_composition_table / build_partition_composition_table /
+// build_receiver_epoch_table / get_scientific_completeness_report); no field
+// is computed client-side.
+
+export interface TxCompositionRow {
+  physical_unit_id: string;
+  device_family: string | null;
+  manufacturer: string | null;
+  model: string | null;
+  project_id: string | null;
+  status: string | null;
+  rq4_eligibility: string | null;
+  real_capture_count: number;
+  channels: number[];
+  day_range: { first: string; last: string } | null;
+}
+
+export interface PartitionDomainCounts {
+  n_windows: number;
+  n_captures: number;
+  n_sessions: number;
+}
+
+export interface PartitionCompositionTable {
+  dataset_id: string;
+  dataset_version: string;
+  scientific_task: string;
+  split_status: string;
+  leakage_check_status: string;
+  domains: { TRAIN: PartitionDomainCounts; VALIDATION: PartitionDomainCounts; TEST: PartitionDomainCounts };
+}
+
+export interface ReceiverEpochRow {
+  receiver_epoch: string;
+  boundary_reason: string | null;
+  n_captures: number;
+  day_ids: string[];
+  channels: number[];
+  physical_units: string[];
+}
+
+export type ScientificCompletenessStatus = 'AVAILABLE' | 'PENDING_REAL_ACQUISITION' | 'BLOCKED' | 'NOT_ELIGIBLE' | 'PROTECTED';
+
+export interface ScientificCompletenessItem {
+  item: string;
+  status: ScientificCompletenessStatus;
+  reason: string;
+  missing_evidence: string[];
+}
+
+export interface ScientificCompletenessReport {
+  schema_version: string;
+  generated_at: string;
+  git_sha: string | null;
+  items: ScientificCompletenessItem[];
 }
 
 export class BleScientificResultsApiService {
@@ -1438,4 +1506,16 @@ export class BleScientificResultsApiService {
   async getEvidenceQualitySummary(paperRunId: string) {
     return (await axios.get<EvidenceQualitySummary | NoDataResponse>(`${this.root}/runs/${encodeURIComponent(paperRunId)}/evidence-quality-summary`)).data;
   }
+
+  // Paper-representation pass (2026-08-17) -- supporting tables + the
+  // scientific completeness report. Zero new science: real cross-references
+  // over already-real registry/capture/split/readiness artifacts.
+  async txComposition() { return (await axios.get<TxCompositionRow[]>(`${this.root}/tx-composition`)).data; }
+  async partitionComposition(datasetId: string, datasetVersion: string, scientificTask: string) {
+    return (await axios.get<PartitionCompositionTable>(`${this.root}/partition-composition`, {
+      params: { dataset_id: datasetId, dataset_version: datasetVersion, scientific_task: scientificTask },
+    })).data;
+  }
+  async receiverEpochs() { return (await axios.get<ReceiverEpochRow[]>(`${this.root}/receiver-epochs`)).data; }
+  async scientificCompleteness() { return (await axios.get<ScientificCompletenessReport>(`${this.root}/scientific-completeness`)).data; }
 }

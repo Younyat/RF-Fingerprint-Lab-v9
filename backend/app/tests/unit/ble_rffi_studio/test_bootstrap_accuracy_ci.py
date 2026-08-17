@@ -106,3 +106,34 @@ def test_bootstrap_accuracy_ci_raises_for_an_unknown_training_run(studio_reposit
     repository, _ = studio_repository_with_trained_run
     with pytest.raises(FileNotFoundError, match="TRAINING_RUN_HAS_NO_PREDICTIONS_YET"):
         repository.bootstrap_accuracy_ci("not-a-real-run")
+
+
+def test_bootstrap_balanced_accuracy_ci_differs_from_raw_accuracy_under_class_imbalance():
+    """A majority class swamping raw accuracy must not swamp balanced
+    accuracy's bootstrap CI the same way -- proves the two are genuinely
+    different statistics, not the same resampling engine mislabeled."""
+    evaluator = Evaluator()
+    # 9 correct majority-class predictions, 1 wrong minority-class prediction.
+    predictions = [{"example_id": f"s1-{i}", "true_label": "A", "predicted_label": "A"} for i in range(9)]
+    predictions.append({"example_id": "s2-0", "true_label": "B", "predicted_label": "A"})
+    session_id_by_example_id = {f"s1-{i}": f"SESSION-1-{i}" for i in range(9)} | {"s2-0": "SESSION-2"}
+    accuracy_result = evaluator.bootstrap_accuracy_ci(predictions, ["A", "B"], session_id_by_example_id, n_resamples=200)
+    balanced_result = evaluator.bootstrap_balanced_accuracy_ci(predictions, ["A", "B"], session_id_by_example_id, n_resamples=200)
+    assert accuracy_result.point_estimate == pytest.approx(0.9)  # 9/10 correct
+    assert balanced_result.point_estimate == pytest.approx(0.5)  # mean(1.0, 0.0) per-class recall
+    assert balanced_result.ci_low <= balanced_result.point_estimate <= balanced_result.ci_high
+
+
+def test_bootstrap_balanced_accuracy_ci_is_none_with_a_single_known_class():
+    evaluator = Evaluator()
+    result = evaluator.bootstrap_balanced_accuracy_ci([{"example_id": "e1", "true_label": "A", "predicted_label": "A"}], ["A"], {"e1": "S1"})
+    assert result is None
+
+
+def test_bootstrap_balanced_accuracy_ci_wired_end_to_end_against_a_real_training_run(studio_repository_with_trained_run):
+    repository, training_run_id = studio_repository_with_trained_run
+    result = repository.bootstrap_balanced_accuracy_ci(training_run_id, split="VALIDATION", n_resamples=200)
+    assert result is not None
+    assert result["split"] == "VALIDATION"
+    assert 0.0 <= result["point_estimate"] <= 1.0
+    assert result["ci_low"] <= result["point_estimate"] <= result["ci_high"]

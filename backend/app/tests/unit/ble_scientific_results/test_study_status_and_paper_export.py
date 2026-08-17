@@ -117,11 +117,18 @@ def test_run_paper_export_writes_real_study_status_and_readiness_and_skips_the_r
     repo = _repo(tmp_path)
     manifest = repo.run_paper_export()
 
-    assert manifest["generated_count"] == 2
-    assert manifest["skipped_count"] > 20  # every planned CSV/LaTeX/figure export
     statuses = {e["file"]: e["status"] for e in manifest["entries"]}
     assert statuses["study_status.json"] == "GENERATED"
     assert statuses["paper_readiness.json"] == "GENERATED"
+    # scientific_completeness.csv and the campaign timeline always have real content to
+    # report (even "nothing available yet"), and paper_tables.tex picks up the completeness
+    # section -- these three are GENERATED even on an empty repo, unlike the RQ1-4/figure
+    # exports below which correctly stay SKIPPED_NO_DATA until real data exists.
+    assert statuses["scientific_completeness.csv"] == "GENERATED"
+    assert statuses["figures/campaign_timeline.pdf"] == "GENERATED"
+    assert statuses["paper_tables.tex"] == "GENERATED"
+    assert manifest["generated_count"] == 5
+    assert manifest["skipped_count"] > 20  # every planned CSV/LaTeX/figure export
     assert statuses["rq1_results.csv"] == "SKIPPED_NO_DATA"
     assert statuses["figures/rq1_acquisition_dependence.pdf"] == "SKIPPED_NO_DATA"
 

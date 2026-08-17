@@ -100,6 +100,33 @@ SECTIONS: list[tuple[str, str, str]] = [
         "fig_per_unit_auxiliary_rq1(summary)",
         "evidence_per_unit_auxiliary_rq1.png",
     ),
+    (
+        "## Campaign timeline (real, current status)\n\n"
+        "Every study phase -- qualification through protected FUTURE and confirmatory "
+        "analysis -- colored by its real `execution_state`. Rendered once by the paper-"
+        "export pipeline (`figures/paper_figures.py`) and copied here, not re-plotted, so "
+        "this view can never drift from the manuscript's own timeline figure.",
+        "sync_consolidated_figures(repo)",
+        "evidence_campaign_timeline.png",
+    ),
+    (
+        "## Confusion matrix, normalized by true class (TEST, PRIMARY branch)\n\n"
+        "Same real counts as the raw confusion matrix above, row-normalized to a "
+        "per-class percentage with `n` kept as secondary per-cell information -- the "
+        "canonical normalized view for the manuscript, from the same paper-export "
+        "renderer as the timeline above.",
+        "# already rendered by sync_consolidated_figures(repo) above",
+        "evidence_confusion_normalized.png",
+    ),
+    (
+        "## Forensic evidence lineage\n\n"
+        "Source I/Q -> burst -> PDU -> admitted example -> dataset -> split -> "
+        "preprocessing -> model -> window decision, traced with real IDs/hashes from the "
+        "closed-set PRIMARY branch -- not a dashboard screenshot, a diagram built from the "
+        "same real artifacts as every other figure in this notebook.",
+        "# already rendered by sync_consolidated_figures(repo) above",
+        "evidence_forensic_lineage.png",
+    ),
 ]
 
 INTRO_MD = """# RF-Fingerprint-Lab -- real closed-set evidence figures
@@ -122,12 +149,13 @@ REPO_ROOT = Path.cwd().resolve().parents[1] if Path.cwd().name == "ble" else Pat
 sys.path.insert(0, str(REPO_ROOT / "docs" / "ble"))
 
 from generate_evidence_figures import (
-    load_summary, fig_rq1_domains, fig_rq2_branches, fig_confusion,
+    load_repository, fig_rq1_domains, fig_rq2_branches, fig_confusion,
     fig_per_unit_metrics, fig_risk_coverage, fig_seed_variability,
-    fig_computational_cost, fig_per_unit_auxiliary_rq1,
+    fig_computational_cost, fig_per_unit_auxiliary_rq1, sync_consolidated_figures,
 )
 
-summary = load_summary()
+repo = load_repository()
+summary = repo.get_evidence_dashboard_summary()
 """
 
 

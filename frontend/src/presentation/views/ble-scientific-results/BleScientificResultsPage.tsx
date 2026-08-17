@@ -20,9 +20,11 @@ import Rq1Tab from './Rq1Tab';
 import Rq2Tab from './Rq2Tab';
 import Rq3Tab from './Rq3Tab';
 import Rq4Tab from './Rq4Tab';
+import ScientificCompletenessTab from './ScientificCompletenessTab';
 import SensitivityTab from './SensitivityTab';
 import StudyControlCenterTab from './StudyControlCenterTab';
 import StudyOverviewTab from './StudyOverviewTab';
+import SupportingTablesTab from './SupportingTablesTab';
 
 // Paper progress dashboard (2026-08-10): every tab below is real and reads
 // only canonical backend artifacts -- none computes science, none mutates
@@ -79,6 +81,7 @@ const SECTIONS: DashboardSection[] = [
       { id: 's1', label: 'Channel Transport (S1)', enabled: true },
       { id: 's2', label: 'Online Equivalence (S2)', enabled: true },
       { id: 'sensitivity', label: 'Sensitivity', enabled: true },
+      { id: 'supporting-tables', label: 'Supporting Tables', enabled: true },
     ],
   },
   {
@@ -87,6 +90,7 @@ const SECTIONS: DashboardSection[] = [
     tabs: [
       { id: 'provenance', label: 'Provenance', enabled: true },
       { id: 'paper-readiness', label: 'Paper Readiness', enabled: true },
+      { id: 'scientific-completeness', label: 'Scientific Completeness', enabled: true },
       { id: 'export', label: 'Paper Export', enabled: true },
       { id: 'forensics', label: 'Calibration and Forensics', enabled: false },
       { id: 'reproducibility', label: 'Reproducibility', enabled: false },
@@ -189,8 +193,10 @@ export default function BleScientificResultsPage() {
       {activeTab === 's1' && <ChannelTransportTab />}
       {activeTab === 's2' && <OnlineEquivalenceTab />}
       {activeTab === 'sensitivity' && <SensitivityTab />}
+      {activeTab === 'supporting-tables' && <SupportingTablesTab />}
       {activeTab === 'provenance' && <ProvenanceTab />}
       {activeTab === 'paper-readiness' && <PaperReadinessTab />}
+      {activeTab === 'scientific-completeness' && <ScientificCompletenessTab />}
       {activeTab === 'export' && <PaperExportTab />}
     </div>
   );

@@ -202,6 +202,25 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
     def regenerate_evidence_figures():
         return call(lambda: repository.regenerate_evidence_figures())
 
+    # Paper-representation pass (2026-08-17): real supporting tables + the
+    # scientific completeness report -- same zero-new-science convention as
+    # /evidence-dashboard and /experiment-health.
+    @router.get("/tx-composition")
+    def tx_composition():
+        return call(lambda: repository.build_tx_composition_table())
+
+    @router.get("/partition-composition")
+    def partition_composition(dataset_id: str, dataset_version: str, scientific_task: str):
+        return call(lambda: repository.build_partition_composition_table(dataset_id, dataset_version, scientific_task))
+
+    @router.get("/receiver-epochs")
+    def receiver_epochs():
+        return call(lambda: repository.build_receiver_epoch_table())
+
+    @router.get("/scientific-completeness")
+    def scientific_completeness():
+        return call(lambda: repository.get_scientific_completeness_report())
+
     @router.get("/runs/{paper_run_id}/evidence-quality-summary")
     def evidence_quality_summary(paper_run_id: str):
         def resolve():

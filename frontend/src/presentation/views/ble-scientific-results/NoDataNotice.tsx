@@ -30,6 +30,11 @@ export function StatusBadge({ status }: { status: string }) {
     NONE: 'bg-slate-800 text-slate-400 border-slate-700',
     UNTOUCHED: 'bg-emerald-900/40 text-emerald-300 border-emerald-800',
     NOT_APPLICABLE: 'bg-slate-800 text-slate-400 border-slate-700',
+    // Scientific completeness report vocabulary (2026-08-17).
+    AVAILABLE: 'bg-emerald-900/40 text-emerald-300 border-emerald-800',
+    PENDING_REAL_ACQUISITION: 'bg-amber-900/40 text-amber-300 border-amber-800',
+    NOT_ELIGIBLE: 'bg-slate-800 text-slate-400 border-slate-700',
+    PROTECTED: 'bg-cyan-900/40 text-cyan-300 border-cyan-800',
   };
   return (
     <span className={`inline-block rounded border px-2 py-0.5 text-[11px] font-mono ${tone[status] ?? 'bg-slate-800 text-slate-400 border-slate-700'}`}>

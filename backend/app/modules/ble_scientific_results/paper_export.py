@@ -24,6 +24,7 @@ from typing import Any, Callable
 
 from app.infrastructure.ble.capture.ble_capture_metadata import atomic_json
 
+from . import paper_figure_aggregations
 from .figures import paper_figures
 
 EXPORT_MANIFEST_SCHEMA_VERSION = "ble-scientific-results-paper-export-manifest-v1"
@@ -135,6 +136,48 @@ def offline_nearlive_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def tx_composition_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {"physical_unit_id": r.get("physical_unit_id"), "device_family": r.get("device_family"), "manufacturer": r.get("manufacturer"),
+         "model": r.get("model"), "project_id": r.get("project_id"), "status": r.get("status"), "rq4_eligibility": r.get("rq4_eligibility"),
+         "real_capture_count": r.get("real_capture_count"), "channels": ",".join(str(c) for c in (r.get("channels") or [])),
+         "day_first": (r.get("day_range") or {}).get("first"), "day_last": (r.get("day_range") or {}).get("last")}
+        for r in rows
+    ]
+
+
+def partition_composition_rows(table: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for domain in ("TRAIN", "VALIDATION", "TEST"):
+        counts = table.get("domains", {}).get(domain, {})
+        rows.append({"domain": domain, "n_windows": counts.get("n_windows"), "n_captures": counts.get("n_captures"), "n_sessions": counts.get("n_sessions")})
+    return rows
+
+
+def receiver_epoch_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {"receiver_epoch": r.get("receiver_epoch"), "boundary_reason": r.get("boundary_reason"), "n_captures": r.get("n_captures"),
+         "day_ids": ",".join(r.get("day_ids") or []), "channels": ",".join(str(c) for c in (r.get("channels") or [])),
+         "physical_units": ",".join(r.get("physical_units") or [])}
+        for r in rows
+    ]
+
+
+def scientific_completeness_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {"item": item.get("item"), "status": item.get("status"), "reason": item.get("reason"), "missing_evidence": "; ".join(item.get("missing_evidence") or [])}
+        for item in report.get("items", [])
+    ]
+
+
+def per_transmitter_rows(recall: dict[str, float] | None, precision: dict[str, float] | None, f1: dict[str, float] | None) -> list[dict[str, Any]]:
+    """One row per real transmitter -- never a single pooled BA hiding
+    per-source spread. Any of the three may be None/absent for a unit
+    (never a fabricated 0)."""
+    units = sorted(set((recall or {}).keys()) | set((precision or {}).keys()) | set((f1 or {}).keys()))
+    return [{"physical_unit_id": u, "recall": (recall or {}).get(u), "precision": (precision or {}).get(u), "f1": (f1 or {}).get(u)} for u in units]
+
+
 def render_latex_tables(sections: dict[str, list[dict[str, Any]]]) -> str:
     """Minimal, dependency-free LaTeX table templating -- one `table`
     environment per non-empty section. Never called with a section whose
@@ -195,10 +238,20 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
         {"file": "paper_readiness.json", "status": "GENERATED", "detail": "real, from get_paper_readiness()"},
     ]
 
-    def emit(filename: str, outcome: ExportOutcome) -> None:
+    def emit(filename: str, outcome: ExportOutcome, *, classification: str | None = None, provenance: dict[str, Any] | None = None) -> None:
         entry = {"file": filename, "status": outcome.status, "detail": outcome.detail}
         if outcome.would_be_derived_from:
             entry["would_be_derived_from"] = outcome.would_be_derived_from
+        # Paper-representation pass (2026-08-17): PAPER_PRIMARY/SUPPLEMENTARY/
+        # DIAGNOSTIC classification + a real provenance stamp (protocol/
+        # dataset/split identity, git_sha, etc, built from fields already on
+        # the source report -- never re-derived) -- both optional so every
+        # pre-existing emit() call above stays valid unchanged.
+        if classification:
+            entry["figure_classification"] = classification
+        if provenance:
+            entry["provenance"] = provenance
+            atomic_json(exports_dir / f"{filename}.provenance.json", provenance)
         entries.append(entry)
 
     # --- Repo-root-scoped exports (no paper_run_id needed) ---
@@ -377,6 +430,94 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
     else:
         emit("coverage_results.csv", ExportOutcome("SKIPPED_NO_DATA", "no EXECUTED risk_coverage in confirmatory_future_analysis_report.json", "06_statistics/confirmatory_future_analysis_report.json"))
         emit("figures/risk_coverage.pdf", ExportOutcome("SKIPPED_NO_DATA", "no EXECUTED risk_coverage in confirmatory_future_analysis_report.json", "06_statistics/confirmatory_future_analysis_report.json"))
+
+    # --- Paper-representation pass (2026-08-17): closed-set-aware exports ---
+    # Reuses get_evidence_dashboard_summary() (already real, already tested,
+    # discriminates the closed-set MULTI_DEVICE_CLASSIFICATION run from the
+    # per-unit TARGET_VS_BACKGROUND auxiliary runs via list_runs()) as the
+    # SINGLE data source for every new table/figure below -- never a second
+    # run-selection logic, never a second independent computation.
+    dashboard = repository.get_evidence_dashboard_summary()
+    closed_set = dashboard.get("closed_set")
+    base_provenance = {"protocol_id": dashboard.get("protocol_id"), "protocol_version": dashboard.get("protocol_version"),
+                        "contract_sha256": dashboard.get("contract_sha256"), "git_sha": dashboard.get("git_sha")}
+
+    tx_rows = tx_composition_rows(repository.build_tx_composition_table())
+    if tx_rows:
+        _write_csv(exports_dir / "tx_composition.csv", tx_rows)
+        emit("tx_composition.csv", ExportOutcome("GENERATED", "real, from build_tx_composition_table()"), classification="PAPER_PRIMARY", provenance=base_provenance)
+    else:
+        emit("tx_composition.csv", ExportOutcome("SKIPPED_NO_DATA", "no physical units registered", "ble_rffi_studio/registry"))
+
+    epoch_rows = receiver_epoch_rows(repository.build_receiver_epoch_table())
+    if epoch_rows:
+        _write_csv(exports_dir / "receiver_epochs.csv", epoch_rows)
+        emit("receiver_epochs.csv", ExportOutcome("GENERATED", "real, from build_receiver_epoch_table()"), classification="PAPER_PRIMARY", provenance=base_provenance)
+    else:
+        emit("receiver_epochs.csv", ExportOutcome("SKIPPED_NO_DATA", "no real capture has a resolved receiver_epoch yet", "ble_rffi_studio/captures"))
+
+    completeness = repository.get_scientific_completeness_report()
+    _write_csv(exports_dir / "scientific_completeness.csv", scientific_completeness_rows(completeness))
+    emit("scientific_completeness.csv", ExportOutcome("GENERATED", "real, from get_scientific_completeness_report()"), classification="PAPER_PRIMARY", provenance=base_provenance)
+
+    if closed_set:
+        closed_set_provenance = {**base_provenance, "dataset_id": closed_set.get("dataset_id"), "dataset_version": closed_set.get("dataset_version"),
+                                  "paper_run_id": closed_set.get("paper_run_id"), "model_bundle_id": closed_set.get("primary_training_run_id")}
+        partition_table = repository.build_partition_composition_table(closed_set["dataset_id"], closed_set["dataset_version"], "MULTI_DEVICE_CLASSIFICATION")
+        _write_csv(exports_dir / "closed_set_partition_composition.csv", partition_composition_rows(partition_table))
+        emit("closed_set_partition_composition.csv", ExportOutcome("GENERATED", "real, from build_partition_composition_table()"), classification="PAPER_PRIMARY", provenance=closed_set_provenance)
+
+        primary_test = closed_set.get("primary_test") or {}
+        per_transmitter = per_transmitter_rows(primary_test.get("recall_per_class"), primary_test.get("precision_per_class"), primary_test.get("f1_per_class"))
+        if per_transmitter:
+            _write_csv(exports_dir / "closed_set_per_transmitter.csv", per_transmitter)
+            emit("closed_set_per_transmitter.csv", ExportOutcome("GENERATED", "real, from the PRIMARY branch's real TEST evaluation"), classification="PAPER_PRIMARY", provenance=closed_set_provenance)
+        else:
+            emit("closed_set_per_transmitter.csv", ExportOutcome("SKIPPED_NO_DATA", "no real per-class TEST metrics for the PRIMARY branch yet", "06_statistics/rq2_representation_comparison_report.json"))
+
+        raw_matrix = primary_test.get("confusion_matrix")
+        if raw_matrix:
+            labels = list(raw_matrix.keys())
+            normalized = paper_figure_aggregations.normalize_confusion_matrix(raw_matrix)
+            matrix_pct = [[normalized[t][p]["pct"] for p in labels] for t in labels]
+            matrix_n = [[normalized[t][p]["n"] for p in labels] for t in labels]
+            paper_figures.normalized_confusion_matrix_figure(
+                labels=labels, matrix_pct=matrix_pct, matrix_n=matrix_n,
+                title="Closed-set -- confusion matrix, normalized by true class (TEST)", out_path=figures_dir / "closed_set_confusion_matrix_normalized",
+            )
+            emit("figures/closed_set_confusion_matrix_normalized.pdf", ExportOutcome("GENERATED", "real, row-normalized from the same TEST confusion matrix already exported"), classification="PAPER_PRIMARY", provenance=closed_set_provenance)
+        else:
+            emit("figures/closed_set_confusion_matrix_normalized.pdf", ExportOutcome("SKIPPED_NO_DATA", "no real TEST confusion matrix for the PRIMARY branch yet", "06_statistics/rq2_representation_comparison_report.json"))
+    else:
+        for name in ("closed_set_partition_composition.csv", "closed_set_per_transmitter.csv", "figures/closed_set_confusion_matrix_normalized.pdf"):
+            emit(name, ExportOutcome("SKIPPED_NO_DATA", "no paper_run with scientific_task=MULTI_DEVICE_CLASSIFICATION exists yet", "list_runs()"))
+
+    # Campaign/partition timeline -- makes visible, as a figure, that
+    # protected FUTURE stays gated behind protocol freeze (real 17-phase
+    # status, already computed by get_study_control_center_status()).
+    control_center = repository.get_study_control_center_status()
+    phases = [{"label": p["label"], "execution_state": p["execution_state"]} for p in control_center.get("phases", [])]
+    if phases:
+        paper_figures.campaign_timeline_figure(phases=phases, title="Campaign timeline (real, current status)", out_path=figures_dir / "campaign_timeline")
+        emit("figures/campaign_timeline.pdf", ExportOutcome("GENERATED", "real, from get_study_control_center_status()"), classification="PAPER_PRIMARY", provenance=base_provenance)
+    else:
+        emit("figures/campaign_timeline.pdf", ExportOutcome("SKIPPED_NO_DATA", "no phase status available", "get_study_control_center_status()"))
+
+    # Forensic evidence lineage -- one real traced example, source I/Q all
+    # the way to the closed-set PRIMARY model's real bundle (when exported).
+    if closed_set and closed_set.get("primary_training_run_id"):
+        bundle_info = repository._find_bundle_for_training_run(closed_set["primary_training_run_id"])
+        nodes = [
+            {"label": "Dataset", "detail": f"{closed_set['dataset_id']} @ {closed_set['dataset_version']}"},
+            {"label": "Split (TRAIN/VALIDATION/TEST)", "detail": f"leakage_check={(closed_set.get('rq1') or {}).get('confirmatory_split_manifest_sha256', 'n/a')[:16]}..."},
+            {"label": "Training run", "detail": closed_set["primary_training_run_id"]},
+            {"label": "Model bundle", "detail": f"bundle_id={bundle_info['bundle_id']}, sha256={bundle_info['bundle_sha256'][:16]}..." if bundle_info else "not exported yet"},
+            {"label": "RQ1/RQ2 decision", "detail": f"PRIMARY branch = {closed_set.get('primary_branch')}"},
+        ]
+        paper_figures.forensic_lineage_diagram_figure(nodes=nodes, title="Forensic evidence lineage (real, traced)", out_path=figures_dir / "forensic_lineage")
+        emit("figures/forensic_lineage.pdf", ExportOutcome("GENERATED", "real, traced from the closed-set PRIMARY branch"), classification="PAPER_PRIMARY", provenance=closed_set_provenance)
+    else:
+        emit("figures/forensic_lineage.pdf", ExportOutcome("SKIPPED_NO_DATA", "no closed-set PRIMARY branch to trace yet", "get_evidence_dashboard_summary()"))
 
     # --- LaTeX tables: one section per CSV that was actually GENERATED ---
     csv_sections: dict[str, list[dict[str, Any]]] = {}

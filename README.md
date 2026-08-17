@@ -338,14 +338,38 @@ estimate exists yet.
 unit has documented, independently-verified control over its own packet content — full
 per-unit reasons in [`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md)).
 
+**Confusion matrix, normalized by true class** (TEST, PRIMARY branch) — same real counts
+as above, row-normalized to a per-class percentage with `n` kept as secondary per-cell
+information, the canonical view for the manuscript:
+
+![Confusion matrix, normalized by true class](readme_img/evidence_confusion_normalized.png)
+
+**Campaign timeline** — every study phase, qualification through protected FUTURE and
+confirmatory analysis, colored by its real, current `execution_state` (never hand-drawn —
+rendered once by the paper-export pipeline and reused verbatim below):
+
+![Campaign timeline](readme_img/evidence_campaign_timeline.png)
+
+**Forensic evidence lineage** — source I/Q → burst → PDU → admitted example → dataset →
+split → preprocessing → model → RQ1/RQ2 decision, traced with real IDs/hashes from the
+closed-set PRIMARY branch, not a dashboard screenshot:
+
+![Forensic evidence lineage](readme_img/evidence_forensic_lineage.png)
+
 All figures above are generated straight from the platform's own real, persisted evidence
 by [`docs/ble/generate_evidence_figures.py`](docs/ble/generate_evidence_figures.py) —
 never hand-drawn, never from a spreadsheet copy. Re-run it after any new real RQ1/RQ2/RQ3
-result to regenerate every PNG in this section from current state. The same real data,
-with the same plotting functions, is also available as a runnable, GitHub-renderable
-notebook: [`docs/ble/evidence_figures.ipynb`](docs/ble/evidence_figures.ipynb) (regenerate
-via [`docs/ble/build_evidence_notebook.py`](docs/ble/build_evidence_notebook.py) after
-running the figure script).
+result to regenerate every PNG in this section from current state. The last 3 figures
+(normalized confusion matrix, campaign timeline, forensic lineage) are not re-plotted by
+that script — it calls the platform's own paper-export pipeline
+(`ScientificResultsRepository.run_paper_export()` → `paper_export.py` →
+`figures/paper_figures.py`, the same renderer the manuscript's PDF/SVG exports use) and
+copies the PNG variant it already wrote, so there is exactly one real computation behind
+each of those three, never two independent plots. The same real data, with the same
+plotting functions, is also available as a runnable, GitHub-renderable notebook:
+[`docs/ble/evidence_figures.ipynb`](docs/ble/evidence_figures.ipynb) (regenerate via
+[`docs/ble/build_evidence_notebook.py`](docs/ble/build_evidence_notebook.py) after running
+the figure script).
 
 **Regenerating these figures — two equivalent paths, same real code:**
 
@@ -467,9 +491,20 @@ associations already stated above. Its **Evidence Dashboard** tab is a live,
 refreshable, in-platform view of the real closed-set/per-unit RQ1-RQ2
 results, RQ3 sample-size decision and campaign progress, and RQ4 per-unit
 eligibility summarized under "Real closed-set benchmark result" above --
-reads the same persisted artifacts live, never a snapshot. No dedicated UI
-screenshot yet; detail:
-[`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md).
+reads the same persisted artifacts live, never a snapshot, and now also shows
+bootstrap CI error bars on `BA_capture`, a raw/normalized confusion-matrix
+toggle, real decision-window/capture counts per domain, the PRIMARY
+selection-domain badge, and a `CURRENT TEST EVIDENCE` label on risk-coverage
+(the confirmatory `DEFINITIVE` variant stays pending until the protected
+FUTURE campaign runs). Its **Supporting Tables** tab adds the composition
+tables the figures above summarize -- per-transmitter capture composition,
+per-partition windows/captures/sessions for any real split, label provenance
+(STRONG vs. declared-isolation association), and receiver-epoch composition.
+Its **Scientific Completeness** tab renders ONE real, live status per paper
+element (AVAILABLE / PENDING_REAL_ACQUISITION / BLOCKED / NOT_ELIGIBLE /
+PROTECTED, with the real missing evidence) -- the in-platform mirror of
+[`PENDING_TO_CLOSE.md`](PENDING_TO_CLOSE.md). No dedicated UI screenshot yet;
+detail: [`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md).
 
 ### RF Intelligence -- `/rf-intelligence`
 

@@ -6,6 +6,26 @@ Generated 2026-08-16, from the platform's own real, live state (`GET
 below was verified against a real endpoint response before being written
 here, not recalled from memory.
 
+**Update 2026-08-17 (paper-representation pass)**: no item below closed as a
+result of this pass — it was a representation/traceability pass, not a data
+acquisition one. What changed: (a) `rq2_representation_comparison_report.json`
+now persists `selection_rule`/`selection_domain` and per-branch
+`balanced_accuracy_ci`, and `rq1_acquisition_dependence_report.json` now
+persists a real cluster-bootstrap `uncertainty_ci.ba_capture_ci` and the
+correct `model_bundle_sha256` (previously silently held a dataset hash) —
+these populate on the **next** RQ1/RQ2 run, not retroactively on the
+already-persisted reports; (b) the RQ3/RQ4 paired-figure "generators" the
+overhaul asked for were confirmed **already implemented and correct**
+(`_emit_confirmatory_derived_exports` in `paper_export.py`), so §3/§5 below
+are unchanged in substance, just now also visible as a normalized confusion
+matrix, per-transmitter table, campaign-timeline figure, and forensic-lineage
+diagram, all regenerable via `run_paper_export()`/the Evidence Dashboard's
+existing "Generar imagenes nuevas" button; (c) a new `GET
+/scientific-completeness` endpoint (Scientific Completeness tab) mirrors this
+very file's own state machine in-platform, in the vocabulary AVAILABLE /
+PENDING_REAL_ACQUISITION / BLOCKED / NOT_ELIGIBLE / PROTECTED — useful as a
+live cross-check against this document, not a replacement for it.
+
 **One-paragraph summary**: the closed-set RQ1/RQ2 result (the paper's
 headline finding) is real and done. RQ4 is real and closed as an honest
 negative result. Everything else — RQ3's actual campaign, the *confirmatory*
