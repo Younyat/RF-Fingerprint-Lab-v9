@@ -33,12 +33,16 @@ def test_persists_a_real_canonical_artifact_with_every_required_linking_field(tm
         dataset_id="DS1", dataset_version="1.0.0", split_manifest_id="SPLIT-1", split_manifest_sha256="split-hash",
         branch_results=_real_branch_results(),
     )
-    for required_field in ("protocol_id", "protocol_version", "contract_sha256", "git_sha", "dataset_id", "dataset_version", "split_manifest_id", "split_manifest_sha256", "branches", "generated_at"):
+    for required_field in ("protocol_id", "protocol_version", "contract_sha256", "git_sha", "dataset_id", "dataset_version", "split_manifest_id", "split_manifest_sha256", "branches", "generated_at", "evaluation_unit", "evidence_status"):
         assert required_field in artifact, required_field
     assert len(artifact["branches"]) == 3
     primary = next(b for b in artifact["branches"] if b["analysis_role"] == "PRIMARY")
     assert primary["branch"] == "raw_iq"
     assert primary["balanced_accuracy"] == 0.91
+    # Figure/artifact sync closure (2026-08-18): same real field, read
+    # directly by the figure generator/figure_manifest.json.
+    assert artifact["evaluation_unit"] == "EXAMPLE_RECORD"
+    assert artifact["evidence_status"] == "DEVELOPMENT"
 
 
 def test_persisted_artifact_round_trips_from_disk(tmp_path):

@@ -7,6 +7,7 @@ written directly into an isolated tmp_path repository (never real storage).
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 
 from app.modules.ble_scientific_results.api.scientific_results_repository import ScientificResultsRepository
@@ -253,6 +254,26 @@ def test_rq1_results_and_figures_generated_when_rq1_report_exists(tmp_path):
     assert _entry(manifest, "rq1_results.csv")["status"] == "GENERATED"
     assert _entry(manifest, "figures/rq1_acquisition_dependence.pdf")["status"] == "GENERATED"
     assert (repo.root / "paper_exports" / "figures" / "rq1_acquisition_dependence.pdf").read_bytes()[:4] == b"%PDF"
+    # Multi-format output (2026-08-18): the SAME rendering also saved as PNG
+    # -- what readme_img/evidence_rq1_domains.png is a plain copy of.
+    png_path = repo.root / "paper_exports" / "figures" / "rq1_acquisition_dependence.png"
+    assert png_path.is_file()
+    assert png_path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+    # figure_manifest.json (2026-08-18): a real, verifiable artifact -> figure
+    # trace -- source_artifact_sha256 must match the REAL bytes on disk of
+    # the exact rq1_acquisition_dependence_report.json this figure was
+    # rendered from, not a fabricated or stale hash.
+    figure_manifest = json.loads((repo.root / "paper_exports" / "figure_manifest.json").read_text(encoding="utf-8"))
+    rq1_figure_entry = next(f for f in figure_manifest["figures"] if f["figure_path"] == "figures/rq1_acquisition_dependence.png")
+    assert rq1_figure_entry["source_artifact"] == "RUN-1/06_statistics/rq1_acquisition_dependence_report.json"
+    real_bytes = (run_dir / "06_statistics" / "rq1_acquisition_dependence_report.json").read_bytes()
+    assert rq1_figure_entry["source_artifact_sha256"] == hashlib.sha256(real_bytes).hexdigest()
+    assert rq1_figure_entry["paper_run_id"] == "RUN-1"
+    assert rq1_figure_entry["evaluation_unit"] == "EXAMPLE_RECORD"  # fixture predates the evidence_status/evaluation_unit fields -- defaults apply
+    assert rq1_figure_entry["evidence_status"] == "DEVELOPMENT"
+    assert rq1_figure_entry["generated_at"]
+
     assert _entry(manifest, "confusion_matrix_capture.csv")["status"] == "GENERATED"
     assert _entry(manifest, "figures/rq1_confusion_matrix_capture.pdf")["status"] == "GENERATED"
     assert (repo.root / "paper_exports" / "figures" / "rq1_confusion_matrix_capture.pdf").read_bytes()[:4] == b"%PDF"
@@ -371,10 +392,18 @@ def test_rq2_results_and_figures_generated_when_rq2_report_exists(tmp_path):
     assert _entry(manifest, "rq2_results.csv")["status"] == "GENERATED"
     assert _entry(manifest, "figures/rq2_representation_comparison.pdf")["status"] == "GENERATED"
     assert (repo.root / "paper_exports" / "figures" / "rq2_representation_comparison.pdf").read_bytes()[:4] == b"%PDF"
+    assert (repo.root / "paper_exports" / "figures" / "rq2_representation_comparison.png").is_file()
     # Only raw_iq has a real coverage value -- stft's is absent, not 0.
     assert _entry(manifest, "figures/rq2_coverage.pdf")["status"] == "GENERATED"
     rows = list(csv.DictReader((repo.root / "paper_exports" / "rq2_results.csv").open(encoding="utf-8")))
     assert len(rows) == 2
+
+    figure_manifest = json.loads((repo.root / "paper_exports" / "figure_manifest.json").read_text(encoding="utf-8"))
+    rq2_figure_entry = next(f for f in figure_manifest["figures"] if f["figure_path"] == "figures/rq2_representation_comparison.png")
+    assert rq2_figure_entry["source_artifact"] == "RUN-1/06_statistics/rq2_representation_comparison_report.json"
+    assert rq2_figure_entry["paper_run_id"] == "RUN-1"
+    assert rq2_figure_entry["evaluation_unit"] == "EXAMPLE_RECORD"
+    assert rq2_figure_entry["evidence_status"] == "DEVELOPMENT"
 
 
 def test_manifest_counts_reflect_generated_and_skipped_entries(tmp_path):

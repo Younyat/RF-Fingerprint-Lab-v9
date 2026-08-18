@@ -2132,6 +2132,7 @@ class ScientificResultsRepository:
         confusion_matrix_future: dict[str, dict[str, int]] | None = None,
         per_unit_recall: dict[str, dict[str, float]] | None = None,
         evaluation_unit: str = "EXAMPLE_RECORD",
+        evidence_status: str = "DEVELOPMENT",
         decision_window_cross_reference: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Protocol-freeze close-out, point 4 (2026-08-10): the canonical,
@@ -2165,6 +2166,16 @@ class ScientificResultsRepository:
             # uses. This field makes that unambiguous, machine-readable, so
             # it is never conflated with a decision-window count again.
             "evaluation_unit": evaluation_unit,
+            # Figure/artifact sync closure (2026-08-18): the SAME status
+            # vocabulary docs/ble/SCIENTIFIC_STATUS.md's "Status categories"
+            # defines (DEVELOPMENT / PROTECTED_FUTURE / PENDING), persisted
+            # here so the figure generator and figure_manifest.json can read
+            # it straight from the artifact instead of a caller re-deciding
+            # it. Always "DEVELOPMENT" today -- this whole report (including
+            # its ba_future arm, gated separately by ba_future_status) is
+            # DEVELOPMENT evidence until the protocol is frozen and protected
+            # FUTURE is actually executed.
+            "evidence_status": evidence_status,
             "decision_window_cross_reference": decision_window_cross_reference,
             "ba_window": rq1_report.ba_window, "ba_window_n_comparable": rq1_report.ba_window_n_comparable,
             "ba_capture": rq1_report.ba_capture, "ba_capture_n_comparable": rq1_report.ba_capture_n_comparable,
@@ -2189,6 +2200,7 @@ class ScientificResultsRepository:
         self, *, paper_run_id: str, protocol_id: str | None = None, protocol_version: int | None = None, contract_sha256: str | None = None,
         dataset_id: str, dataset_version: str, split_manifest_id: str, split_manifest_sha256: str,
         branch_results: list[dict[str, Any]], selection_rule: str | None = None, selection_domain: str | None = None,
+        evaluation_unit: str = "EXAMPLE_RECORD", evidence_status: str = "DEVELOPMENT",
     ) -> dict[str, Any]:
         """Reporting closure, point A (2026-08-11): the canonical, persisted
         RQ2 artifact. `select_primary_rq2_branch_from_validation()`
@@ -2225,6 +2237,14 @@ class ScientificResultsRepository:
             "protocol_id": protocol_id, "protocol_version": protocol_version, "contract_sha256": contract_sha256, "git_sha": git_sha,
             "dataset_id": dataset_id, "dataset_version": dataset_version,
             "split_manifest_id": split_manifest_id, "split_manifest_sha256": split_manifest_sha256,
+            # Figure/artifact sync closure (2026-08-18): a structural fact
+            # about the mechanism, not a result -- every RQ2 branch is
+            # trained/evaluated via Evaluator.evaluate_split() on
+            # ExampleRecord-level predictions, never decision-window
+            # aggregated, so this is always "EXAMPLE_RECORD" today. Same
+            # DEVELOPMENT/PROTECTED_FUTURE/PENDING vocabulary as RQ1's own
+            # evidence_status (see persist_rq1_acquisition_dependence_report).
+            "evaluation_unit": evaluation_unit, "evidence_status": evidence_status,
             "branches": validated,
             # Real provenance for the PRIMARY branch's selection -- lets a
             # figure/table state, from the persisted artifact itself (never

@@ -16,6 +16,7 @@ filesystem to decide whether real source data exists.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -326,8 +327,16 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
         {"file": "study_status.json", "status": "GENERATED", "detail": "real, from get_study_status()"},
         {"file": "paper_readiness.json", "status": "GENERATED", "detail": "real, from get_paper_readiness()"},
     ]
+    # Figure/artifact sync closure (2026-08-18): one manifest row per
+    # scientific figure, real provenance only -- see figure_manifest.json
+    # below. Built alongside `entries` (never a second pass over the
+    # filesystem to reconstruct what was just generated).
+    figure_manifest_entries: list[dict[str, Any]] = []
 
-    def emit(filename: str, outcome: ExportOutcome, *, classification: str | None = None, provenance: dict[str, Any] | None = None) -> None:
+    def emit(
+        filename: str, outcome: ExportOutcome, *, classification: str | None = None, provenance: dict[str, Any] | None = None,
+        figure_source: tuple[str, str, str] | None = None,
+    ) -> None:
         entry = {"file": filename, "status": outcome.status, "detail": outcome.detail}
         if outcome.would_be_derived_from:
             entry["would_be_derived_from"] = outcome.would_be_derived_from
@@ -341,6 +350,24 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
         if provenance:
             entry["provenance"] = provenance
             atomic_json(exports_dir / f"{filename}.provenance.json", provenance)
+        # figure_source = (source_artifact relpath under repository.root,
+        # evaluation_unit, evidence_status) -- ONLY passed by callers
+        # rendering a real scientific figure via a real canonical artifact
+        # (RQ1/RQ2 today). sha256 is computed here, once, from the real
+        # bytes on disk at generation time -- never a second hash source,
+        # never fabricated when the source file is somehow missing (raises
+        # instead, since a GENERATED figure with no readable source artifact
+        # is a real bug, not a SKIPPED_NO_DATA case).
+        if figure_source and outcome.status == "GENERATED":
+            source_artifact, evaluation_unit, evidence_status = figure_source
+            source_path = repository.root / source_artifact
+            source_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
+            figure_manifest_entries.append({
+                "figure_path": f"figures/{Path(filename).name.rsplit('.', 1)[0]}.png",
+                "source_artifact": source_artifact, "source_artifact_sha256": source_sha256,
+                "paper_run_id": run_dir.name if run_dir else None, "evaluation_unit": evaluation_unit, "evidence_status": evidence_status,
+                "generator_commit": study_status.get("git_sha"), "generated_at": _utc_now(),
+            })
         entries.append(entry)
 
     # --- Repo-root-scoped exports (no paper_run_id needed) ---
@@ -404,22 +431,32 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
     if rq1_report:
         _write_csv(exports_dir / "rq1_results.csv", rq1_result_rows(rq1_report))
         emit("rq1_results.csv", ExportOutcome("GENERATED", f"real, from {run_dir.name}/06_statistics/rq1_acquisition_dependence_report.json"))
+        rq1_source_artifact = f"{run_dir.name}/06_statistics/rq1_acquisition_dependence_report.json" if run_dir else "06_statistics/rq1_acquisition_dependence_report.json"
         if rq1_report.get("ba_window") is not None and rq1_report.get("ba_capture") is not None:
-            # capture-dependent -> capture-disjoint -> Held-out TEST -> protected
-            # FUTURE (only once it exists -- never mislabeled as FUTURE before
-            # then, per the user's explicit rule). ci_low/ci_high are None for
-            # every category except BA_capture, which is the only one with a
-            # real cluster-bootstrap CI persisted (rq1_runner.py never computes
-            # one for BA_window -- it is intentionally leakage-violating, not a
-            # valid estimator to put a CI on).
-            domains = ["capture-dependent\n(BA_window)", "capture-disjoint\n(BA_capture)"]
+            # Label fix (2026-08-18, figure/artifact sync closure): this is
+            # now the ONLY renderer for this figure -- readme_img/evidence_
+            # rq1_domains.png is a plain copy of the PNG this call writes
+            # (see docs/ble/generate_evidence_figures.py's CONSOLIDATED_
+            # FIGURES), never a second, independently-coded renderer. Labels
+            # never say "BA_window"/"BA_capture" (the raw JSON field names,
+            # which read as if they were the platform's separate 10-second
+            # decision-window unit -- they are not; evaluation_unit below is
+            # always EXAMPLE_RECORD for every bar here). capture-dependent ->
+            # capture-disjoint -> Held-out TEST -> protected FUTURE (only
+            # once it exists -- never mislabeled as FUTURE before then).
+            # ci_low/ci_high are None for every category except capture-
+            # disjoint, the only one with a real cluster-bootstrap CI
+            # persisted (rq1_runner.py never computes one for the capture-
+            # dependent diagnostic -- it is intentionally leakage-violating,
+            # not a valid estimator to put a CI on).
+            domains = ["Capture-dependent\n(same capture)", "Capture-disjoint\n(VALIDATION)"]
             values = [rq1_report["ba_window"], rq1_report["ba_capture"]]
             ba_capture_ci = (rq1_report.get("uncertainty_ci") or {}).get("ba_capture_ci") or {}
             ci_low: list[float | None] = [None, ba_capture_ci.get("ci_low")]
             ci_high: list[float | None] = [None, ba_capture_ci.get("ci_high")]
             footnote_parts = []
             if closed_set_for_run_dir and closed_set_for_run_dir.get("primary_test", {}).get("balanced_accuracy") is not None:
-                domains.append("Held-out TEST\n(PRIMARY branch)")
+                domains.append("Held-out TEST\n(not protected FUTURE)")
                 values.append(closed_set_for_run_dir["primary_test"]["balanced_accuracy"])
                 ci_low.append(None)
                 ci_high.append(None)
@@ -435,10 +472,20 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
             # n_captures: distinct real acquisition groups from the
             # closed-set VALIDATION/TEST split (RQ1's own report carries no
             # capture-level count).
+            evaluation_unit = rq1_report.get("evaluation_unit") or "EXAMPLE_RECORD"
+            footnote_parts.append(f"evaluation_unit={evaluation_unit}")
             if rq1_report.get("ba_window_n_comparable") is not None:
-                footnote_parts.append(f"BA_window n={rq1_report['ba_window_n_comparable']}")
+                footnote_parts.append(f"capture-dependent n={rq1_report['ba_window_n_comparable']}")
             if rq1_report.get("ba_capture_n_comparable") is not None:
-                footnote_parts.append(f"BA_capture n={rq1_report['ba_capture_n_comparable']}")
+                footnote_parts.append(f"capture-disjoint n={rq1_report['ba_capture_n_comparable']}")
+            delta = rq1_report.get("delta_dependence")
+            if delta is not None:
+                delta_ci = (rq1_report.get("uncertainty_ci") or {}).get("delta_dependence_ci") or {}
+                delta_ci_low, delta_ci_high = delta_ci.get("ci_low"), delta_ci.get("ci_high")
+                if delta_ci_low is not None and delta_ci_high is not None:
+                    footnote_parts.append(f"delta_dependence={delta:+.3f} 95% CI [{delta_ci_low:.3f}, {delta_ci_high:.3f}]")
+                else:
+                    footnote_parts.append(f"delta_dependence={delta:+.3f}")
             if closed_set_for_run_dir:
                 partition_table = repository.build_partition_composition_table(
                     closed_set_for_run_dir["dataset_id"], closed_set_for_run_dir["dataset_version"], "MULTI_DEVICE_CLASSIFICATION",
@@ -453,7 +500,10 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
                 title="RQ1 -- BA by evaluation domain", out_path=figures_dir / "rq1_acquisition_dependence.pdf",
                 footnote=" | ".join(footnote_parts) or None,
             )
-            emit("figures/rq1_acquisition_dependence.pdf", ExportOutcome("GENERATED", "real"))
+            emit(
+                "figures/rq1_acquisition_dependence.pdf", ExportOutcome("GENERATED", "real"),
+                figure_source=(rq1_source_artifact, evaluation_unit, rq1_report.get("evidence_status") or "DEVELOPMENT"),
+            )
         else:
             emit("figures/rq1_acquisition_dependence.pdf", ExportOutcome("SKIPPED_NO_DATA", "rq1_acquisition_dependence_report.json is missing ba_window/ba_capture", "06_statistics/rq1_acquisition_dependence_report.json"))
         if rq1_report.get("confusion_matrix_capture"):
@@ -498,7 +548,10 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
                 ci_low=None, ci_high=None, ylabel="Balanced accuracy", title="RQ2 -- representation comparison",
                 out_path=figures_dir / "rq2_representation_comparison.pdf",
             )
-            emit("figures/rq2_representation_comparison.pdf", ExportOutcome("GENERATED", "real"))
+            emit(
+                "figures/rq2_representation_comparison.pdf", ExportOutcome("GENERATED", "real"),
+                figure_source=(f"{run_dir.name}/{rq2_source}", rq2_report.get("evaluation_unit") or "EXAMPLE_RECORD", rq2_report.get("evidence_status") or "DEVELOPMENT"),
+            )
         else:
             emit("figures/rq2_representation_comparison.pdf", ExportOutcome("SKIPPED_NO_DATA", "no branch in rq2_representation_comparison_report.json has a real balanced_accuracy", rq2_source))
         covered_branches = [b for b in rq2_report["branches"] if b.get("coverage") is not None]
@@ -723,6 +776,17 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
         "entries": entries,
     }
     atomic_json(exports_dir / "export_manifest.json", manifest)
+
+    # Figure/artifact sync closure (2026-08-18): a real, verifiable
+    # artifact -> figure trace for every scientific figure this pass
+    # produced (RQ1/RQ2 today) -- see docs/ble/generate_evidence_figures.py
+    # --verify, which reads this file to confirm readme_img/'s copies were
+    # generated from the exact same source artifact this manifest names
+    # (never a second, independently-generated PNG).
+    atomic_json(exports_dir / "figure_manifest.json", {
+        "schema_version": "ble-scientific-results-figure-manifest-v1", "generated_at": _utc_now(),
+        "figures": figure_manifest_entries,
+    })
     return manifest
 
 

@@ -47,7 +47,7 @@ def test_persists_a_real_canonical_artifact_with_every_required_linking_field(tm
         "confirmatory_split_manifest_id", "confirmatory_split_manifest_sha256",
         "diagnostic_split_manifest_id", "diagnostic_split_manifest_sha256",
         "source_evaluation_domains", "ba_window", "ba_capture", "ba_future", "delta_dependence", "delta_future",
-        "uncertainty_ci", "coverage", "generated_at",
+        "uncertainty_ci", "coverage", "generated_at", "evaluation_unit", "evidence_status",
     ):
         assert required_field in artifact, required_field
 
@@ -55,6 +55,11 @@ def test_persists_a_real_canonical_artifact_with_every_required_linking_field(tm
     assert artifact["contract_sha256"] == "real-contract-hash"
     assert artifact["ba_window"] == rq1_report.ba_window
     assert artifact["delta_dependence"] == rq1_report.delta_dependence
+    # Figure/artifact sync closure (2026-08-18): evidence_status is a real,
+    # persisted field the figure generator/figure_manifest.json read
+    # directly -- never a default the caller silently overrides here.
+    assert artifact["evaluation_unit"] == "EXAMPLE_RECORD"
+    assert artifact["evidence_status"] == "DEVELOPMENT"
 
 
 def test_persisted_artifact_round_trips_from_disk(tmp_path):

@@ -50,13 +50,21 @@ def _assert_real_pdf(path_str: str) -> None:
     assert path.read_bytes()[:4] == b"%PDF"
 
 
-def test_bar_with_ci_figure_writes_a_real_pdf(tmp_path):
+def test_bar_with_ci_figure_writes_real_pdf_svg_and_png(tmp_path):
+    # Multi-format output (2026-08-18): the SAME rendering saved as PDF
+    # (manuscript), SVG, and PNG (README/dashboard) -- never a second,
+    # independently-coded PNG renderer.
     out = bar_with_ci_figure(
         categories=RQ1_BAR_SYNTHETIC_FIXTURE["categories"], values=RQ1_BAR_SYNTHETIC_FIXTURE["values"],
         ci_low=RQ1_BAR_SYNTHETIC_FIXTURE["ci_low"], ci_high=RQ1_BAR_SYNTHETIC_FIXTURE["ci_high"],
         ylabel="Balanced accuracy", title="RQ1 BA by domain", out_path=tmp_path / "rq1_domains.pdf",
     )
-    _assert_real_pdf(out)
+    assert set(out.keys()) == {"pdf", "svg", "png"}
+    _assert_real_pdf(out["pdf"])
+    assert (tmp_path / "rq1_domains.svg").is_file()
+    png_path = tmp_path / "rq1_domains.png"
+    assert png_path.is_file()
+    assert png_path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 def test_bar_with_ci_figure_handles_missing_ci_without_error(tmp_path):
@@ -64,7 +72,7 @@ def test_bar_with_ci_figure_handles_missing_ci_without_error(tmp_path):
         categories=["A", "B"], values=[0.5, 0.6], ci_low=None, ci_high=None,
         ylabel="y", title="t", out_path=tmp_path / "no_ci.pdf",
     )
-    _assert_real_pdf(out)
+    _assert_real_pdf(out["pdf"])
 
 
 def test_paired_pre_post_figure_writes_a_real_pdf(tmp_path):

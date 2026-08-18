@@ -7,26 +7,43 @@ verbatim from the same real artifacts the dashboard already serves.
 
 Run from the repo root:
     backend/.venv-validation/Scripts/python.exe docs/ble/generate_evidence_figures.py
+    backend/.venv-validation/Scripts/python.exe docs/ble/generate_evidence_figures.py --paper-run <id> --verify
 
 Regenerate whenever the underlying real results change (new RQ1/RQ2 runs,
 RQ3 campaign progress, RQ4 eligibility) -- this script is the single source
 both readme_img/evidence_*.png and docs/ble/evidence_figures.ipynb are built
 from, so the two never drift apart.
 
-Paper-representation pass (2026-08-17): the campaign timeline, the closed-set
-normalized confusion matrix, and the forensic lineage diagram are NOT
-re-plotted here -- they are rendered once by the paper-export pipeline
-(`ScientificResultsRepository.run_paper_export()` -> `paper_export.py` ->
-`figures/paper_figures.py`, the same real renderer the manuscript's PDF/SVG
-exports use) and this script only copies the PNG variant it already wrote
-into `readme_img/`. Two renderers for these three figures would be exactly
-the duplication this pass exists to remove; the other figures below predate
-that pipeline and still compute their own matplotlib calls directly from
-`get_evidence_dashboard_summary()` -- no independent computation either way,
-only a difference in which renderer is called.
+Figure/artifact sync closure (2026-08-18): artifact -> figure generator ->
+PNG/PDF is now the ONLY path for every scientific figure (RQ1/RQ2 today).
+`fig_rq1_domains`/`fig_rq2_branches`, which used to render
+readme_img/evidence_rq1_domains.png and readme_img/evidence_rq2_branches.png
+independently from `get_evidence_dashboard_summary()`, are GONE -- they were
+a second, separately-coded renderer for the exact same figure `paper_export.py`
+already renders (via `figures/paper_figures.py::bar_with_ci_figure`, now
+multi-format PDF+SVG+PNG), and that duplication is exactly what let the
+README copy silently drift out of sync (stale "BA_window" label) while the
+paper's own copy had already been fixed. Both figures are now produced ONLY
+by `ScientificResultsRepository.run_paper_export()` and copied verbatim into
+readme_img/ below, via `CONSOLIDATED_FIGURES`, same as the campaign timeline/
+confusion-matrix/forensic-lineage figures already were. The remaining
+`fig_*` functions below (per-unit metrics, risk-coverage, seed variability,
+computational cost, per-unit auxiliary RQ1) are unrelated diagnostic/
+sensitivity figures with no paper_export.py counterpart yet -- still computed
+directly from `get_evidence_dashboard_summary()`, unchanged.
+
+`--verify` (added 2026-08-18): reads `paper_exports/figure_manifest.json`
+(written by `run_paper_export()`) and cross-checks it against the REAL
+artifact bytes on disk right now -- never trusts the manifest's own claims.
+Read-only: does not regenerate anything, so it can catch "someone edited/
+regenerated the artifact but not the figure." See `verify_figures()` below
+for the exact failure conditions.
 """
 from __future__ import annotations
 
+import argparse
+import hashlib
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -46,18 +63,25 @@ OUT_DIR = REPO_ROOT / "readme_img"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # (paper_exports/figures PNG name, readme_img PNG name) -- copied verbatim
-# after run_paper_export(), never re-rendered.
+# after run_paper_export(), never re-rendered. RQ1/RQ2 joined this list
+# 2026-08-18 -- see module docstring.
 CONSOLIDATED_FIGURES = [
+    ("rq1_acquisition_dependence.png", "evidence_rq1_domains.png"),
+    ("rq2_representation_comparison.png", "evidence_rq2_branches.png"),
     ("campaign_timeline.png", "evidence_campaign_timeline.png"),
     ("closed_set_confusion_matrix_normalized.png", "evidence_confusion_normalized.png"),
     ("forensic_lineage.png", "evidence_forensic_lineage.png"),
 ]
 
+# Every figure_manifest.json entry (figure_path) that MUST exist -- see
+# verify_figures()'s MISSING_REQUIRED_SOURCE check.
+REQUIRED_FIGURE_PATHS = {"figures/rq1_acquisition_dependence.png", "figures/rq2_representation_comparison.png"}
+
 # Matches the platform's own dark research-console palette (BleScientific
 # ResultsPage.tsx is Tailwind slate/cyan) -- kept legible against GitHub's
 # light background instead of mimicking it verbatim.
 COLORS = {
-    "window": "#b9822c", "capture": "#2f6fb3", "test": "#2f8f89",
+    "window": "#b9822c", "capture": "#2f6fb3",
     "primary": "#b9822c", "unselected": "#8892a0",
     "reset": "#c1683b", "control": "#2f8f89",
 }
@@ -100,88 +124,6 @@ def _save(fig, name: str) -> Path:
     plt.close(fig)
     print("wrote", path)
     return path
-
-
-def fig_rq1_domains(summary: dict) -> Path | None:
-    # Label correction (2026-08-18, DEVELOPMENT EVIDENCE closure pass): the
-    # first bar was previously labeled "BA_window", which reads as if it were
-    # the platform's separate 10-second decision-window unit (RQ3/RQ4/
-    # coverage_analysis's group_examples_into_windows) -- it is not. This
-    # report's own evaluation_unit is EXAMPLE_RECORD (burst-level) for every
-    # bar here; the underlying JSON field name (rq1["ba_window"], a frozen
-    # contract key elsewhere in the codebase) is unchanged, only this
-    # figure's human-readable labels are. "Held-out TEST" is deliberately its
-    # own bar, distinct from "protected FUTURE" (which only renders once
-    # ba_future is a real, non-None number) -- TEST != FUTURE.
-    rq1 = (summary.get("closed_set") or {}).get("rq1")
-    primary_test = (summary.get("closed_set") or {}).get("primary_test")
-    if not rq1:
-        return None
-    labels, values, colors, yerr_lower, yerr_upper = [], [], [], [], []
-    if rq1.get("ba_window") is not None:
-        labels.append("Capture-dependent\n(same capture)"); values.append(rq1["ba_window"]); colors.append(COLORS["window"])
-        yerr_lower.append(0.0); yerr_upper.append(0.0)  # no CI on this diagnostic -- intentionally leakage-violating, not a valid estimator
-    if rq1.get("ba_capture") is not None:
-        labels.append("Capture-disjoint\n(VALIDATION)"); values.append(rq1["ba_capture"]); colors.append(COLORS["capture"])
-        ci = (rq1.get("uncertainty_ci") or {}).get("ba_capture_ci") or {}
-        ci_low, ci_high = ci.get("ci_low"), ci.get("ci_high")
-        yerr_lower.append(max(0.0, rq1["ba_capture"] - ci_low) if ci_low is not None else 0.0)
-        yerr_upper.append(max(0.0, ci_high - rq1["ba_capture"]) if ci_high is not None else 0.0)
-    if primary_test and primary_test.get("balanced_accuracy") is not None:
-        # Held-out TEST -- explicitly NOT "protected FUTURE": FUTURE has not
-        # been executed for this study yet (see the separate bar below,
-        # which only appears once ba_future is a real number).
-        labels.append("Held-out TEST\n(not protected FUTURE)"); values.append(primary_test["balanced_accuracy"]); colors.append(COLORS["test"])
-        yerr_lower.append(0.0); yerr_upper.append(0.0)
-    if rq1.get("ba_future") is not None:
-        labels.append(f"protected FUTURE\n({rq1.get('ba_future_status')})"); values.append(rq1["ba_future"]); colors.append("#5b3d8f")
-        yerr_lower.append(0.0); yerr_upper.append(0.0)
-    fig, ax = plt.subplots(figsize=(7, 4.3))
-    bars = ax.bar(labels, values, color=colors)
-    ax.errorbar(range(len(labels)), values, yerr=[yerr_lower, yerr_upper], fmt="none", ecolor="#222222", capsize=4)
-    ax.bar_label(bars, fmt="%.3f", padding=3)
-    ax.set_ylim(0, 1.05)
-    ax.set_ylabel("Balanced accuracy")
-    ax.set_title("RQ1 -- closed-set acquisition dependence")
-    delta = rq1.get("delta_dependence")
-    caption_lines = []
-    if delta is not None:
-        ci = (rq1.get("uncertainty_ci") or {}).get("delta_dependence_ci") or {}
-        ci_low, ci_high = ci.get("ci_low"), ci.get("ci_high")
-        if ci_low is not None and ci_high is not None:
-            caption_lines.append(f"delta_dependence = {delta:+.4f}  95% CI [{ci_low:.4f}, {ci_high:.4f}]")
-        else:
-            caption_lines.append(f"delta_dependence = {delta:+.4f}")
-    n_parts = []
-    if rq1.get("ba_window_n_comparable") is not None:
-        n_parts.append(f"capture-dependent n={rq1['ba_window_n_comparable']}")
-    if rq1.get("ba_capture_n_comparable") is not None:
-        n_parts.append(f"capture-disjoint n={rq1['ba_capture_n_comparable']}")
-    if n_parts:
-        caption_lines.append("  ·  ".join(n_parts))
-    caption_lines.append("EXAMPLE_RECORD (burst-level) != the platform's separate 10-s decision-window unit")
-    if caption_lines:
-        ax.text(0.5, -0.32, "\n".join(caption_lines), transform=ax.transAxes, ha="center", fontsize=8.5, color="#555555")
-    return _save(fig, "evidence_rq1_domains.png")
-
-
-def fig_rq2_branches(summary: dict) -> Path | None:
-    branches = ((summary.get("closed_set") or {}).get("rq2") or {}).get("branches") or []
-    if not branches:
-        return None
-    names = [b["branch"] for b in branches]
-    ba = [b.get("balanced_accuracy") or 0 for b in branches]
-    f1 = [b.get("macro_f1") or 0 for b in branches]
-    colors = [COLORS["primary"] if b.get("analysis_role") == "PRIMARY" else COLORS["unselected"] for b in branches]
-    x = np.arange(len(names))
-    fig, ax = plt.subplots(figsize=(6.5, 4))
-    ax.bar(x - 0.2, ba, width=0.4, label="Balanced accuracy", color=colors)
-    ax.bar(x + 0.2, f1, width=0.4, label="Macro-F1", color=colors, alpha=0.55, hatch="//")
-    ax.set_xticks(x); ax.set_xticklabels(names, rotation=15)
-    ax.set_ylim(0, 1.05)
-    ax.set_title("RQ2 -- closed-set representation comparison (VALIDATION)")
-    ax.legend(frameon=False)
-    return _save(fig, "evidence_rq2_branches.png")
 
 
 def fig_confusion(matrix: dict | None, title: str, filename: str) -> Path | None:
@@ -298,8 +240,6 @@ def fig_per_unit_auxiliary_rq1(summary: dict) -> Path | None:
 
 
 FIGURES = [
-    ("RQ1 -- closed-set acquisition dependence", fig_rq1_domains),
-    ("RQ2 -- closed-set branch comparison", fig_rq2_branches),
     ("Per-unit precision/recall/F1 (TEST)", fig_per_unit_metrics),
     ("Risk-coverage (TEST)", fig_risk_coverage),
     ("Seed variability (PRIMARY branch)", fig_seed_variability),
@@ -320,5 +260,86 @@ def main() -> None:
     sync_consolidated_figures(repo)
 
 
+def verify_figures(repo: ScientificResultsRepository, paper_run_id: str | None) -> list[str]:
+    """Read-only. Cross-checks `paper_exports/figure_manifest.json` (written
+    by `run_paper_export()`) against the REAL artifact bytes on disk right
+    now -- never trusts the manifest's own claims. Returns a list of real
+    failure reasons (empty list = pass). Does not regenerate anything, so it
+    can actually catch "the artifact changed but the figure was not
+    regenerated" instead of trivially passing right after a fresh run."""
+    exports_dir = repo.root / "paper_exports"
+    manifest_path = exports_dir / "figure_manifest.json"
+    if not manifest_path.is_file():
+        return ["paper_exports/figure_manifest.json does not exist -- run generate_evidence_figures.py without --verify first"]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    figures_by_path = {f["figure_path"]: f for f in manifest["figures"]}
+    failures: list[str] = []
+
+    for required in sorted(REQUIRED_FIGURE_PATHS):
+        if required not in figures_by_path:
+            failures.append(f"MISSING_REQUIRED_SOURCE: {required} has no figure_manifest.json entry")
+
+    for figure_path, entry in figures_by_path.items():
+        source_artifact = entry.get("source_artifact") or ""
+        source_path = repo.root / source_artifact
+        if not source_path.is_file():
+            failures.append(f"{figure_path}: source_artifact {source_artifact!r} does not exist on disk")
+            continue
+
+        real_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
+        if real_sha256 != entry.get("source_artifact_sha256"):
+            failures.append(
+                f"{figure_path}: STALE_ARTIFACT -- figure_manifest.json's source_artifact_sha256 does not match "
+                f"the real current bytes of {source_artifact} (the artifact changed since this figure was last generated -- re-run without --verify)"
+            )
+
+        source_json = json.loads(source_path.read_text(encoding="utf-8"))
+        real_evaluation_unit = source_json.get("evaluation_unit")
+        if real_evaluation_unit and real_evaluation_unit != entry.get("evaluation_unit"):
+            failures.append(f"{figure_path}: EVALUATION_UNIT_MISMATCH -- manifest says {entry.get('evaluation_unit')!r}, artifact says {real_evaluation_unit!r}")
+
+        if paper_run_id is not None:
+            if entry.get("paper_run_id") != paper_run_id:
+                failures.append(f"{figure_path}: PAPER_RUN_ID_MISMATCH -- manifest says {entry.get('paper_run_id')!r}, --paper-run asked for {paper_run_id!r}")
+            if not source_artifact.startswith(f"{paper_run_id}/"):
+                failures.append(f"{figure_path}: PAPER_RUN_ID_MISMATCH -- source_artifact {source_artifact!r} does not belong to run {paper_run_id!r}")
+
+        # RQ1-specific: a required CI must be present whenever the point
+        # estimate it belongs to is present, and capture-disjoint/TEST must
+        # never be claimed as protected FUTURE while ba_future is still None.
+        if figure_path == "figures/rq1_acquisition_dependence.png":
+            ba_capture_ci = (source_json.get("uncertainty_ci") or {}).get("ba_capture_ci") or {}
+            if source_json.get("ba_capture") is not None and (ba_capture_ci.get("ci_low") is None or ba_capture_ci.get("ci_high") is None):
+                failures.append(f"{figure_path}: MISSING_REQUIRED_CI -- ba_capture is present but uncertainty_ci.ba_capture_ci is not")
+            if source_json.get("ba_future") is None and entry.get("evidence_status") == "PROTECTED_FUTURE":
+                failures.append(f"{figure_path}: TEST_LABELED_AS_FUTURE -- ba_future is not yet available but evidence_status claims PROTECTED_FUTURE")
+
+    # readme_img/'s copy must be byte-identical to the figure paper_export.py
+    # rendered -- proves it really is a copy, not a second independent
+    # render (structurally guaranteed by sync_consolidated_figures(), but
+    # verified here rather than assumed).
+    for source_name, dest_name in CONSOLIDATED_FIGURES:
+        source_png = exports_dir / "figures" / source_name
+        dest_png = OUT_DIR / dest_name
+        if source_png.is_file() and dest_png.is_file() and source_png.read_bytes() != dest_png.read_bytes():
+            failures.append(f"readme_img/{dest_name}: DIVERGED_FROM_PAPER_EXPORT -- not byte-identical to paper_exports/figures/{source_name} (copy is stale, re-run without --verify)")
+
+    return failures
+
+
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--paper-run", dest="paper_run_id", default=None, help="paper_run_id every figure's source_artifact must belong to (only used with --verify)")
+    parser.add_argument("--verify", action="store_true", help="read-only: verify figure_manifest.json against real artifacts on disk instead of regenerating")
+    args = parser.parse_args()
+
+    if args.verify:
+        failures = verify_figures(load_repository(), args.paper_run_id)
+        if failures:
+            print("FIGURE_VERIFICATION_FAILED:")
+            for reason in failures:
+                print(" -", reason)
+            sys.exit(1)
+        print(f"OK -- figure_manifest.json verified against real artifacts on disk ({len(REQUIRED_FIGURE_PATHS)} required figure(s) present, no staleness/mismatch found).")
+    else:
+        main()

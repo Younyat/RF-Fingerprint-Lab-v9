@@ -16,6 +16,7 @@ export manifest records `SKIPPED_NO_DATA` instead of a file.
 """
 from __future__ import annotations
 
+import textwrap
 from pathlib import Path
 from typing import Sequence
 
@@ -58,13 +59,22 @@ def _save_figure(fig, base_path: Path, formats: Sequence[str] = ("pdf", "svg", "
 def bar_with_ci_figure(
     *, categories: Sequence[str], values: Sequence[float], ci_low: Sequence[float] | None,
     ci_high: Sequence[float] | None, ylabel: str, title: str, out_path: Path, footnote: str | None = None,
-) -> str:
+) -> dict[str, str]:
     """RQ1 BA-by-domain, RQ2 BA/macro-F1/coverage-by-branch. `ci_low`/
     `ci_high` are absolute bounds (not offsets) -- None skips error bars for
     a category whose CI is not available, never fabricated as 0-width.
     `footnote` (added 2026-08-17): one line of real, already-computed text
     (e.g. real sample sizes) rendered below the axes -- never a second
-    computation, purely a caller-supplied caption."""
+    computation, purely a caller-supplied caption.
+
+    Multi-format output (2026-08-18, figure/artifact sync closure): saves
+    PDF/SVG/PNG of the SAME rendering via `_save_figure`, same as
+    `normalized_confusion_matrix_figure`/`campaign_timeline_figure`/
+    `forensic_lineage_diagram_figure` already do -- this is what lets
+    readme_img/'s RQ1/RQ2 figures be a plain copy of the PNG variant
+    `paper_export.py` renders here, instead of a second, independently-coded
+    renderer (the exact duplication that let `readme_img/evidence_rq1_
+    domains.png` drift out of sync with this one)."""
     fig, ax = plt.subplots(figsize=FIGSIZE)
     x = np.arange(len(categories))
     ax.bar(x, values, color="#2b6cb0")
@@ -77,8 +87,19 @@ def bar_with_ci_figure(
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     if footnote:
-        fig.text(0.5, -0.02, footnote, ha="center", va="top", fontsize=8, color="#4a5568")
-    return _save_pdf(fig, out_path)
+        # Wrapped and placed well below the rotated (often two-line, since
+        # categories may themselves contain "\n") x-tick labels -- a fixed,
+        # un-wrapped single line here collided with those labels once
+        # footnotes grew longer (RQ1's now includes evaluation_unit/n/delta
+        # CI/capture counts). ax.transAxes (axes-fraction, not fig.text's
+        # figure-fraction) so this scales with wherever the tick-label block
+        # actually ends, instead of a fixed figure-coordinate that collided
+        # with it once that block grew taller than expected. bbox_inches=
+        # "tight" (see _save_figure/_save_pdf) still trims the final canvas
+        # to whatever this actually renders as.
+        wrapped = "\n".join(textwrap.wrap(footnote, width=100))
+        ax.text(0.5, -0.38, wrapped, transform=ax.transAxes, ha="center", va="top", fontsize=8, color="#4a5568")
+    return _save_figure(fig, out_path)
 
 
 def paired_pre_post_figure(
