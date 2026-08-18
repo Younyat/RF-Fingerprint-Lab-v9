@@ -1129,6 +1129,46 @@ different or contradicting number, and not weakened to produce a pass.
 
 ---
 
+## 18. Reproducibility map — scientific report ↔ dashboard button ↔ canonical artifact
+
+Standing rule (2026-08-18): every number that goes into the paper must be
+reproducible and auditable by anyone on the team through the
+`/ble-scientific-results` dashboard, not just something one person can pull
+via a script. Before hand-deriving a report, check this table first --
+almost everything already has a real "run" button and a real read-only view.
+If a genuine gap is found (no button, no artifact, no tab), close it the
+same way these were closed, then add a row here.
+
+`/ble-scientific-results` (`BleScientificResultsPage.tsx`) is organized in
+four sections (A–D); every tab below lives under **C. Scientific Results**
+unless noted. `RunScopedJsonReport`-based tabs are read-only viewers of an
+already-persisted `06_statistics/*.json` file; the "run" button that
+produces that file lives in the **Study Control Center** tab (section A)
+unless the tab has its own inline button (Coverage does).
+
+| Report | Regenerate | Visualize | Canonical artifact |
+|---|---|---|---|
+| RQ1 (same-capture dependent vs. capture-disjoint BA, CI, delta, confusion matrix) | Study Control Center → RQ1 Acquisition Dependence | `Rq1Tab.tsx` | `06_statistics/rq1_acquisition_dependence_report.json` |
+| RQ2 (four representations: BA, macro F1, per-class recall, model size, inference latency, seed variability) | Study Control Center → RQ2 Benchmark | `Rq2Tab.tsx` | `06_statistics/rq2_representation_comparison_report.json` |
+| Coverage / decision-window scoping (TRAIN/VALIDATION/TEST window counts, domain-resolution diagnostic) | `CoverageTab.tsx`'s own "Correr Coverage Analysis" button | `CoverageTab.tsx` | `06_statistics/coverage_analysis_report.json` |
+| VALIDATION/TEST window-level BA, confusion matrix, per-TX counts, risk-coverage (10 s decision windows) | same button, with the "incluir BA/matriz de confusion/risk-coverage a nivel de decision-window" checkbox ticked (`evaluate_window_level=true`) | `CoverageTab.tsx` → `window_level_evaluation` section (per branch, per domain: confusion matrix heatmap, risk-coverage chart+table, raw decision-window rows) | same file, `window_level_evaluation` key |
+| Sensitivity: LODO, offset-retaining preprocessing, seed variability (reused from RQ2, never recomputed) | Study Control Center → Sensitivity Analysis | `SensitivityTab.tsx` | `06_statistics/sensitivity_report.json` |
+| Association calibration sweep (fail-closed result, per-threshold coverage/false_strong/ambiguous) | none needed -- always shows the latest real attempt live | `AssociationTab.tsx` | `association_calibration_summary` (computed on read, not persisted as a run-scoped file) |
+| Channel transport (S1), offline vs. near-live (S2) | Study Control Center → respective phase button | `ChannelTransportTab.tsx`, `OnlineEquivalenceTab.tsx` | `06_statistics/channel_transport_report.json`, `06_statistics/offline_nearlive_report.json` |
+| RQ3 / RQ4 | Study Control Center → respective phase button | `Rq3Tab.tsx`, `Rq4Tab.tsx` | `confirmatory_statistical_plan_report.json` (`rq3_pairs`, `rq4_region_report`) |
+| Cross-cutting summary tables (TX composition, partition composition, receiver epochs) | none needed -- computed on read from already-real captures/splits | `SupportingTablesTab.tsx` | not persisted -- always live |
+| Scientific completeness rollup | none needed | `ScientificCompletenessTab.tsx` | not persisted -- always live |
+
+No single button regenerates all of the above at once, by design: RQ1/RQ2/
+Coverage/Sensitivity/RQ3/RQ4 are deliberately separate real analyses with
+separate preconditions (e.g. Coverage needs a frozen RQ2 PRIMARY branch
+first) -- bundling them into one mega-job would hide which precondition
+failed. `BleScientificResultsPage.tsx` already reserves a `reproducibility`
+tab id for a possible future single index view (`enabled: false` — not
+built).
+
+---
+
 ## Appendix: banned-terms self-check
 
 A search of this document confirms every use of "validated" is either the
