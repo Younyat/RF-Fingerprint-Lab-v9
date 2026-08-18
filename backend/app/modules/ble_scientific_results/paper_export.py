@@ -444,16 +444,18 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
             # always EXAMPLE_RECORD for every bar here). capture-dependent ->
             # capture-disjoint -> Held-out TEST -> protected FUTURE (only
             # once it exists -- never mislabeled as FUTURE before then).
-            # ci_low/ci_high are None for every category except capture-
-            # disjoint, the only one with a real cluster-bootstrap CI
-            # persisted (rq1_runner.py never computes one for the capture-
-            # dependent diagnostic -- it is intentionally leakage-violating,
-            # not a valid estimator to put a CI on).
-            domains = ["Capture-dependent\n(same capture)", "Capture-disjoint\n(VALIDATION)"]
+            # Both point estimates get their own real, persisted CI (rq1_
+            # runner.py's 2026-08-17 pass added ba_window_ci specifically
+            # because the capture-dependent diagnostic being intentionally
+            # leakage-optimistic does not make its own resampling
+            # uncertainty any less real or reportable -- fixed 2026-08-19,
+            # this renderer had been silently dropping it).
+            domains = ["Capture-dependent diagnostic\n(same capture)", "Capture-disjoint\n(VALIDATION)"]
             values = [rq1_report["ba_window"], rq1_report["ba_capture"]]
+            ba_window_ci = (rq1_report.get("uncertainty_ci") or {}).get("ba_window_ci") or {}
             ba_capture_ci = (rq1_report.get("uncertainty_ci") or {}).get("ba_capture_ci") or {}
-            ci_low: list[float | None] = [None, ba_capture_ci.get("ci_low")]
-            ci_high: list[float | None] = [None, ba_capture_ci.get("ci_high")]
+            ci_low: list[float | None] = [ba_window_ci.get("ci_low"), ba_capture_ci.get("ci_low")]
+            ci_high: list[float | None] = [ba_window_ci.get("ci_high"), ba_capture_ci.get("ci_high")]
             footnote_parts = []
             if closed_set_for_run_dir and closed_set_for_run_dir.get("primary_test", {}).get("balanced_accuracy") is not None:
                 domains.append("Held-out TEST\n(not protected FUTURE)")
@@ -497,7 +499,8 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
                 )
             paper_figures.bar_with_ci_figure(
                 categories=domains, values=values, ci_low=ci_low, ci_high=ci_high, ylabel="Balanced accuracy",
-                title="RQ1 -- BA by evaluation domain", out_path=figures_dir / "rq1_acquisition_dependence.pdf",
+                title="RQ1 -- BA by evaluation domain (DEVELOPMENT EVIDENCE -- not definitive, not confirmatory, not protected FUTURE)",
+                out_path=figures_dir / "rq1_acquisition_dependence.pdf",
                 footnote=" | ".join(footnote_parts) or None,
             )
             emit(
