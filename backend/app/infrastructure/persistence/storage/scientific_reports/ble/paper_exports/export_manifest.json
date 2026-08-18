@@ -168,7 +168,7 @@
       "file": "tx_composition.csv",
       "provenance": {
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
-        "git_sha": "b74c43cd34f2b727c0e490d26a5604d5d6ce2a32",
+        "git_sha": "773ff2a38c830f26926ac8dd3c4b0197e47a1dbe",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "protocol_version": 1
       },
@@ -180,7 +180,7 @@
       "file": "receiver_epochs.csv",
       "provenance": {
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
-        "git_sha": "b74c43cd34f2b727c0e490d26a5604d5d6ce2a32",
+        "git_sha": "773ff2a38c830f26926ac8dd3c4b0197e47a1dbe",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "protocol_version": 1
       },
@@ -192,7 +192,7 @@
       "file": "scientific_completeness.csv",
       "provenance": {
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
-        "git_sha": "b74c43cd34f2b727c0e490d26a5604d5d6ce2a32",
+        "git_sha": "773ff2a38c830f26926ac8dd3c4b0197e47a1dbe",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "protocol_version": 1
       },
@@ -206,7 +206,7 @@
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
         "dataset_id": "IDENTITY-c52850a953",
         "dataset_version": "20260814T224525.782975Z",
-        "git_sha": "b74c43cd34f2b727c0e490d26a5604d5d6ce2a32",
+        "git_sha": "773ff2a38c830f26926ac8dd3c4b0197e47a1dbe",
         "model_bundle_id": "TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "paper_run_id": "paper-run-2805869e6282778ad729a26d022ec9b0",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
@@ -222,7 +222,7 @@
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
         "dataset_id": "IDENTITY-c52850a953",
         "dataset_version": "20260814T224525.782975Z",
-        "git_sha": "b74c43cd34f2b727c0e490d26a5604d5d6ce2a32",
+        "git_sha": "773ff2a38c830f26926ac8dd3c4b0197e47a1dbe",
         "model_bundle_id": "TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "paper_run_id": "paper-run-2805869e6282778ad729a26d022ec9b0",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
@@ -238,7 +238,7 @@
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
         "dataset_id": "IDENTITY-c52850a953",
         "dataset_version": "20260814T224525.782975Z",
-        "git_sha": "b74c43cd34f2b727c0e490d26a5604d5d6ce2a32",
+        "git_sha": "773ff2a38c830f26926ac8dd3c4b0197e47a1dbe",
         "model_bundle_id": "TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "paper_run_id": "paper-run-2805869e6282778ad729a26d022ec9b0",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
@@ -254,7 +254,7 @@
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
         "dataset_id": "IDENTITY-c52850a953",
         "dataset_version": "20260814T224525.782975Z",
-        "git_sha": "b74c43cd34f2b727c0e490d26a5604d5d6ce2a32",
+        "git_sha": "773ff2a38c830f26926ac8dd3c4b0197e47a1dbe",
         "model_bundle_id": "TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "paper_run_id": "paper-run-2805869e6282778ad729a26d022ec9b0",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
@@ -270,7 +270,7 @@
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
         "dataset_id": "IDENTITY-c52850a953",
         "dataset_version": "20260814T224525.782975Z",
-        "git_sha": "b74c43cd34f2b727c0e490d26a5604d5d6ce2a32",
+        "git_sha": "773ff2a38c830f26926ac8dd3c4b0197e47a1dbe",
         "model_bundle_id": "TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "paper_run_id": "paper-run-2805869e6282778ad729a26d022ec9b0",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
@@ -286,7 +286,7 @@
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
         "dataset_id": "IDENTITY-c52850a953",
         "dataset_version": "20260814T224525.782975Z",
-        "git_sha": "b74c43cd34f2b727c0e490d26a5604d5d6ce2a32",
+        "git_sha": "773ff2a38c830f26926ac8dd3c4b0197e47a1dbe",
         "model_bundle_id": "TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "paper_run_id": "paper-run-2805869e6282778ad729a26d022ec9b0",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
@@ -302,7 +302,7 @@
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
         "dataset_id": "IDENTITY-c52850a953",
         "dataset_version": "20260814T224525.782975Z",
-        "git_sha": "b74c43cd34f2b727c0e490d26a5604d5d6ce2a32",
+        "git_sha": "773ff2a38c830f26926ac8dd3c4b0197e47a1dbe",
         "model_bundle_id": "TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "paper_run_id": "paper-run-2805869e6282778ad729a26d022ec9b0",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
@@ -316,7 +316,7 @@
       "file": "figures/campaign_timeline.pdf",
       "provenance": {
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
-        "git_sha": "b74c43cd34f2b727c0e490d26a5604d5d6ce2a32",
+        "git_sha": "773ff2a38c830f26926ac8dd3c4b0197e47a1dbe",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "protocol_version": 1
       },
@@ -330,7 +330,7 @@
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
         "dataset_id": "IDENTITY-c52850a953",
         "dataset_version": "20260814T224525.782975Z",
-        "git_sha": "b74c43cd34f2b727c0e490d26a5604d5d6ce2a32",
+        "git_sha": "773ff2a38c830f26926ac8dd3c4b0197e47a1dbe",
         "model_bundle_id": "TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "paper_run_id": "paper-run-2805869e6282778ad729a26d022ec9b0",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
@@ -344,7 +344,7 @@
       "status": "GENERATED"
     }
   ],
-  "generated_at": "2026-08-18T13:24:40.412029Z",
+  "generated_at": "2026-08-18T13:49:26.621459Z",
   "generated_count": 25,
   "schema_version": "ble-scientific-results-paper-export-manifest-v1",
   "skipped_count": 17

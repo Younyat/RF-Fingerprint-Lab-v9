@@ -257,6 +257,23 @@ Full current-state detail, every real number behind the table above, and
 the complete evidence-to-decision trace live in
 [`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md).
 
+### DEVELOPMENT evidence vs. PROTECTED FUTURE
+
+**DEVELOPMENT evidence** (`AVAILABLE` — real, current, non-confirmatory):
+- RQ1 `EXAMPLE_RECORD` diagnostic — capture-dependent / capture-disjoint / held-out TEST (see the table below)
+- RQ2 `VALIDATION` — four representations (see below)
+- 10-second decision-window check (`06_statistics/coverage_analysis_report.json`,
+  `paper_exports/development_decision_window_summary.csv`):
+  - `TRAIN=34`, `VALIDATION=12`, `TEST=12` real windows — **all 4/4 classes represented in every partition**
+  - `VALIDATION`: `BA=0.750`, `accuracy=0.833`
+  - `TEST`: `BA=0.875`, `accuracy=0.917`
+
+**PROTECTED FUTURE**: `NOT_YET_AVAILABLE` — not executed, fail-closed. That real
+10-second-window DEVELOPMENT evidence exists above does **not** mean the
+definitive 120-second campaign has been run — the two stay structurally
+separate everywhere in this repository (dashboard, `paper_export.py`,
+`docs/ble/SCIENTIFIC_STATUS.md`); never conflated.
+
 ### Real closed-set benchmark result (2026-08-16)
 
 First real, definitive run of the 4-unit closed-set comparison (`CC2541SensorTag`,

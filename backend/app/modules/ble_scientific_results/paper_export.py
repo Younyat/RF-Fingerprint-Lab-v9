@@ -335,7 +335,7 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
 
     def emit(
         filename: str, outcome: ExportOutcome, *, classification: str | None = None, provenance: dict[str, Any] | None = None,
-        figure_source: tuple[str, str, str] | None = None,
+        figure_source: tuple[str, str, str, str] | None = None,
     ) -> None:
         entry = {"file": filename, "status": outcome.status, "detail": outcome.detail}
         if outcome.would_be_derived_from:
@@ -351,7 +351,7 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
             entry["provenance"] = provenance
             atomic_json(exports_dir / f"{filename}.provenance.json", provenance)
         # figure_source = (source_artifact relpath under repository.root,
-        # evaluation_unit, evidence_status) -- ONLY passed by callers
+        # evaluation_unit, evidence_status, generator) -- ONLY passed by callers
         # rendering a real scientific figure via a real canonical artifact
         # (RQ1/RQ2 today). sha256 is computed here, once, from the real
         # bytes on disk at generation time -- never a second hash source,
@@ -359,14 +359,14 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
         # instead, since a GENERATED figure with no readable source artifact
         # is a real bug, not a SKIPPED_NO_DATA case).
         if figure_source and outcome.status == "GENERATED":
-            source_artifact, evaluation_unit, evidence_status = figure_source
+            source_artifact, evaluation_unit, evidence_status, generator = figure_source
             source_path = repository.root / source_artifact
             source_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
             figure_manifest_entries.append({
                 "figure_path": f"figures/{Path(filename).name.rsplit('.', 1)[0]}.png",
                 "source_artifact": source_artifact, "source_artifact_sha256": source_sha256,
                 "paper_run_id": run_dir.name if run_dir else None, "evaluation_unit": evaluation_unit, "evidence_status": evidence_status,
-                "generator_commit": study_status.get("git_sha"), "generated_at": _utc_now(),
+                "generator": generator, "generator_commit": study_status.get("git_sha"), "generated_at": _utc_now(),
             })
         entries.append(entry)
 
@@ -502,7 +502,7 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
             )
             emit(
                 "figures/rq1_acquisition_dependence.pdf", ExportOutcome("GENERATED", "real"),
-                figure_source=(rq1_source_artifact, evaluation_unit, rq1_report.get("evidence_status") or "DEVELOPMENT"),
+                figure_source=(rq1_source_artifact, evaluation_unit, rq1_report.get("evidence_status") or "DEVELOPMENT", "figures/paper_figures.py::bar_with_ci_figure"),
             )
         else:
             emit("figures/rq1_acquisition_dependence.pdf", ExportOutcome("SKIPPED_NO_DATA", "rq1_acquisition_dependence_report.json is missing ba_window/ba_capture", "06_statistics/rq1_acquisition_dependence_report.json"))
@@ -550,7 +550,7 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
             )
             emit(
                 "figures/rq2_representation_comparison.pdf", ExportOutcome("GENERATED", "real"),
-                figure_source=(f"{run_dir.name}/{rq2_source}", rq2_report.get("evaluation_unit") or "EXAMPLE_RECORD", rq2_report.get("evidence_status") or "DEVELOPMENT"),
+                figure_source=(f"{run_dir.name}/{rq2_source}", rq2_report.get("evaluation_unit") or "EXAMPLE_RECORD", rq2_report.get("evidence_status") or "DEVELOPMENT", "figures/paper_figures.py::bar_with_ci_figure"),
             )
         else:
             emit("figures/rq2_representation_comparison.pdf", ExportOutcome("SKIPPED_NO_DATA", "no branch in rq2_representation_comparison_report.json has a real balanced_accuracy", rq2_source))

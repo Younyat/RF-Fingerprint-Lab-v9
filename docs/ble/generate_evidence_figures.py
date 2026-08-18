@@ -42,8 +42,10 @@ for the exact failure conditions.
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -167,15 +169,23 @@ def fig_per_unit_metrics(summary: dict) -> Path | None:
 
 
 def fig_risk_coverage(summary: dict) -> Path | None:
+    # Classification (2026-08-18): this is the EXAMPLE_RECORD-level (burst,
+    # ~2200 comparable examples) TEST risk-coverage curve from the training
+    # run's own evaluation_report.json -- a real, larger-sample curve, but a
+    # DIFFERENT evaluation_unit from the DECISION_WINDOW-level one
+    # (12 windows/domain, DEVELOPMENT_EXPLORATORY, see coverage_analysis_
+    # report.json's window_level_evaluation -- exported as
+    # paper_exports/closed_set_risk_coverage_window_level.csv, rendered live
+    # in CoverageTab.tsx, not yet a static figure here). Never conflated.
     points = ((summary.get("closed_set") or {}).get("primary_test") or {}).get("risk_coverage") or []
     if not points:
         return None
     pts = sorted(points, key=lambda p: p["coverage"])
-    fig, ax = plt.subplots(figsize=(5.5, 4))
+    fig, ax = plt.subplots(figsize=(7, 4.3))
     ax.plot([p["coverage"] for p in pts], [p["risk"] for p in pts], color="#2f6fb3", marker="o", markersize=2.5, linewidth=1.4)
     ax.set_xlabel("coverage"); ax.set_ylabel("risk")
     ax.set_xlim(0, 1)
-    ax.set_title("Risk-coverage (TEST, PRIMARY branch) -- DEVELOPMENT / EXPLORATORY\nEl-Yaniv & Wiener (2010)")
+    ax.set_title("Risk-coverage (TEST, PRIMARY branch)\nevaluation_unit=EXAMPLE_RECORD -- DEVELOPMENT AUXILIARY\nEl-Yaniv & Wiener (2010)", fontsize=10.5)
     return _save(fig, "evidence_risk_coverage.png")
 
 
@@ -314,6 +324,35 @@ def verify_figures(repo: ScientificResultsRepository, paper_run_id: str | None) 
             if source_json.get("ba_future") is None and entry.get("evidence_status") == "PROTECTED_FUTURE":
                 failures.append(f"{figure_path}: TEST_LABELED_AS_FUTURE -- ba_future is not yet available but evidence_status claims PROTECTED_FUTURE")
 
+            # Real rendered-text checks (2026-08-18): SVG embeds every label/
+            # footnote as literal <text> content -- read the SAME sibling
+            # .svg _save_figure() wrote and search it directly, rather than
+            # trusting the manifest's own claims about what the figure says.
+            svg_path = (exports_dir / figure_path).with_suffix(".svg")
+            if not svg_path.is_file():
+                failures.append(f"{figure_path}: no sibling .svg found to verify rendered label/CI text against")
+            else:
+                svg_text = svg_path.read_text(encoding="utf-8", errors="ignore")
+                if real_evaluation_unit == "EXAMPLE_RECORD" and "BA_window" in svg_text:
+                    failures.append(f"{figure_path}: BA_WINDOW_LABEL_FOUND -- rendered SVG contains the raw 'BA_window' label while evaluation_unit=EXAMPLE_RECORD")
+                # The FUTURE bar's category label is "protected FUTURE\n({ba_future_status})"
+                # -- only ever added to the figure when ba_future is a real,
+                # non-None number (see paper_export.py). Checking for the bare
+                # substring "protected FUTURE" would also match "Held-out TEST
+                # (not protected FUTURE)"'s own label, a false positive -- the
+                # real ba_future_status VALUE (e.g. "NOT_YET_AVAILABLE") only
+                # ever gets embedded alongside a real future bar, so its
+                # presence while ba_future is None is the real, unambiguous
+                # signal of a mislabeled TEST-as-FUTURE bar.
+                future_status = source_json.get("ba_future_status")
+                if source_json.get("ba_future") is None and future_status and future_status in svg_text:
+                    failures.append(f"{figure_path}: TEST_LABELED_AS_FUTURE -- rendered SVG contains ba_future_status {future_status!r} (the protected-FUTURE bar's own label) while ba_future is not yet available")
+                delta_ci = (source_json.get("uncertainty_ci") or {}).get("delta_dependence_ci") or {}
+                if delta_ci.get("ci_low") is not None and delta_ci.get("ci_high") is not None:
+                    expected_ci_text = f"[{delta_ci['ci_low']:.3f}, {delta_ci['ci_high']:.3f}]"
+                    if expected_ci_text not in svg_text:
+                        failures.append(f"{figure_path}: CI_NOT_IN_FIGURE -- delta_dependence 95% CI {expected_ci_text} from the artifact does not appear in the rendered SVG text")
+
     # readme_img/'s copy must be byte-identical to the figure paper_export.py
     # rendered -- proves it really is a copy, not a second independent
     # render (structurally guaranteed by sync_consolidated_figures(), but
@@ -327,6 +366,105 @@ def verify_figures(repo: ScientificResultsRepository, paper_run_id: str | None) 
     return failures
 
 
+def _approx_equal(a, b, tol: float = 0.0006) -> bool:
+    return a is not None and b is not None and abs(float(a) - float(b)) < tol
+
+
+def _real_reference_values(repo: ScientificResultsRepository) -> dict:
+    """Single source for every number verify_documentation_matches_artifacts()
+    checks README.md/SCIENTIFIC_STATUS.md against -- computed once, straight
+    from the same real artifacts the figures/dashboard/paper_export.py read,
+    never re-derived a second way."""
+    dashboard = repo.get_evidence_dashboard_summary()
+    closed_set = dashboard.get("closed_set") or {}
+    rq1 = closed_set.get("rq1") or {}
+    primary_test = closed_set.get("primary_test") or {}
+    values = {
+        "rq1_ba_window": rq1.get("ba_window"), "rq1_ba_capture": rq1.get("ba_capture"),
+        "rq1_delta_dependence": rq1.get("delta_dependence"),
+        "rq1_ba_capture_ci": (rq1.get("uncertainty_ci") or {}).get("ba_capture_ci") or {},
+        "rq1_delta_ci": (rq1.get("uncertainty_ci") or {}).get("delta_dependence_ci") or {},
+        "primary_test_ba": primary_test.get("balanced_accuracy"),
+        "association_status": (repo.get_latest_association_calibration_summary() or {}).get("status"),
+    }
+    summary_csv = repo.root / "paper_exports" / "development_decision_window_summary.csv"
+    if summary_csv.is_file():
+        rows = {row["partition"]: row for row in csv.DictReader(summary_csv.open(encoding="utf-8"))}
+        for partition in ("TRAIN", "VALIDATION", "TEST"):
+            row = rows.get(partition)
+            values[f"{partition.lower()}_windows"] = int(row["n_windows"]) if row else None
+            values[f"{partition.lower()}_window_ba"] = float(row["balanced_accuracy"]) if row else None
+            values[f"{partition.lower()}_window_accuracy"] = float(row["accuracy"]) if row else None
+    return values
+
+
+def verify_documentation_matches_artifacts(repo: ScientificResultsRepository) -> list[str]:
+    """Read-only. Parses the exact real numbers README.md and docs/ble/
+    SCIENTIFIC_STATUS.md claim (regexes tied to this project's own current
+    wording -- update them alongside the prose if it changes) and compares
+    them against `_real_reference_values()`. Never edits either file --
+    only reports where they've drifted from the real artifacts."""
+    values = _real_reference_values(repo)
+    failures: list[str] = []
+
+    readme_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    status_text = (REPO_ROOT / "docs" / "ble" / "SCIENTIFIC_STATUS.md").read_text(encoding="utf-8")
+
+    readme_checks = [
+        ("README", r"Capture-dependent \(same capture,[^|]*\|\s*([\d.]+)\s*\|", "rq1_ba_window", None),
+        ("README", r"Capture-disjoint \(VALIDATION\)\s*\|\s*([\d.]+)\s*\|", "rq1_ba_capture", None),
+        ("README", r"Held-out TEST \(PRIMARY branch, not protected FUTURE\)\s*\|\s*([\d.]+)\s*\|", "primary_test_ba", None),
+        ("README", r"delta_dependence = capture-dependent [^=]*=\s*\+([\d.]+)", "rq1_delta_dependence", None),
+        ("README", r"`VALIDATION`: `BA=([\d.]+)`, `accuracy=([\d.]+)`", "validation_window_ba", "validation_window_accuracy"),
+        ("README", r"`TEST`: `BA=([\d.]+)`, `accuracy=([\d.]+)`", "test_window_ba", "test_window_accuracy"),
+    ]
+    status_checks = [
+        ("SCIENTIFIC_STATUS.md", r"RQ1 capture-dependent BA.*?\|\s*`([\d.]+)`", "rq1_ba_window", None),
+        ("SCIENTIFIC_STATUS.md", r"RQ1 capture-disjoint \(VALIDATION\) BA.*?\|\s*`([\d.]+)`", "rq1_ba_capture", None),
+        ("SCIENTIFIC_STATUS.md", r"RQ1 held-out TEST BA \(not protected FUTURE\)\s*\|\s*`([\d.]+)`", "primary_test_ba", None),
+        ("SCIENTIFIC_STATUS.md", r"RQ1 `delta_dependence` / 95% CI\s*\|\s*`([\d.]+)`", "rq1_delta_dependence", None),
+        ("SCIENTIFIC_STATUS.md", r"VALIDATION window-level BA / accuracy\s*\|\s*`([\d.]+)`\s*/\s*`([\d.]+)`", "validation_window_ba", "validation_window_accuracy"),
+        ("SCIENTIFIC_STATUS.md", r"TEST window-level BA / accuracy\s*\|\s*`([\d.]+)`\s*/\s*`([\d.]+)`", "test_window_ba", "test_window_accuracy"),
+    ]
+    for doc_name, text in (("README", readme_text), ("SCIENTIFIC_STATUS.md", status_text)):
+        for label, pattern, key_a, key_b in (readme_checks if doc_name == "README" else status_checks):
+            match = re.search(pattern, text, re.DOTALL)
+            if not match:
+                failures.append(f"{doc_name}: could not find the expected '{key_a}' claim (pattern {pattern!r} not found -- prose may have changed without updating this check)")
+                continue
+            claimed_a = float(match.group(1))
+            if not _approx_equal(claimed_a, values.get(key_a)):
+                failures.append(f"{doc_name}: {key_a} claims {claimed_a}, real artifact says {values.get(key_a)!r}")
+            if key_b:
+                claimed_b = float(match.group(2))
+                if not _approx_equal(claimed_b, values.get(key_b)):
+                    failures.append(f"{doc_name}: {key_b} claims {claimed_b}, real artifact says {values.get(key_b)!r}")
+
+    window_match = re.search(r"`TRAIN=(\d+)`,\s*`VALIDATION=(\d+)`,\s*`TEST=(\d+)`", readme_text)
+    if not window_match:
+        failures.append("README: could not find the TRAIN/VALIDATION/TEST decision-window count claim")
+    else:
+        for partition, claimed in zip(("train", "validation", "test"), window_match.groups()):
+            if int(claimed) != values.get(f"{partition}_windows"):
+                failures.append(f"README: {partition}_windows claims {claimed}, real artifact says {values.get(f'{partition}_windows')!r}")
+
+    status_window_match = re.search(r"10-second decision windows\s*\|\s*`TRAIN=(\d+)`,\s*`VALIDATION=(\d+)`,\s*`TEST=(\d+)`", status_text)
+    if not status_window_match:
+        failures.append("SCIENTIFIC_STATUS.md: could not find the TRAIN/VALIDATION/TEST decision-window count claim")
+    else:
+        for partition, claimed in zip(("train", "validation", "test"), status_window_match.groups()):
+            if int(claimed) != values.get(f"{partition}_windows"):
+                failures.append(f"SCIENTIFIC_STATUS.md: {partition}_windows claims {claimed}, real artifact says {values.get(f'{partition}_windows')!r}")
+
+    status_assoc_match = re.search(r"Association calibration\s*\|\s*`([A-Z_]+)`", status_text)
+    if not status_assoc_match:
+        failures.append("SCIENTIFIC_STATUS.md: could not find the association calibration status claim")
+    elif status_assoc_match.group(1) != values.get("association_status"):
+        failures.append(f"SCIENTIFIC_STATUS.md: association status claims {status_assoc_match.group(1)!r}, real artifact says {values.get('association_status')!r}")
+
+    return failures
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--paper-run", dest="paper_run_id", default=None, help="paper_run_id every figure's source_artifact must belong to (only used with --verify)")
@@ -334,12 +472,16 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.verify:
-        failures = verify_figures(load_repository(), args.paper_run_id)
+        repo = load_repository()
+        failures = verify_figures(repo, args.paper_run_id) + verify_documentation_matches_artifacts(repo)
         if failures:
             print("FIGURE_VERIFICATION_FAILED:")
             for reason in failures:
                 print(" -", reason)
             sys.exit(1)
-        print(f"OK -- figure_manifest.json verified against real artifacts on disk ({len(REQUIRED_FIGURE_PATHS)} required figure(s) present, no staleness/mismatch found).")
+        print(
+            f"OK -- figure_manifest.json, README.md, and SCIENTIFIC_STATUS.md all verified against real artifacts on disk "
+            f"({len(REQUIRED_FIGURE_PATHS)} required figure(s) present, no staleness/mismatch/drift found)."
+        )
     else:
         main()

@@ -272,6 +272,7 @@ def test_rq1_results_and_figures_generated_when_rq1_report_exists(tmp_path):
     assert rq1_figure_entry["paper_run_id"] == "RUN-1"
     assert rq1_figure_entry["evaluation_unit"] == "EXAMPLE_RECORD"  # fixture predates the evidence_status/evaluation_unit fields -- defaults apply
     assert rq1_figure_entry["evidence_status"] == "DEVELOPMENT"
+    assert rq1_figure_entry["generator"] == "figures/paper_figures.py::bar_with_ci_figure"
     assert rq1_figure_entry["generated_at"]
 
     assert _entry(manifest, "confusion_matrix_capture.csv")["status"] == "GENERATED"
@@ -404,6 +405,7 @@ def test_rq2_results_and_figures_generated_when_rq2_report_exists(tmp_path):
     assert rq2_figure_entry["paper_run_id"] == "RUN-1"
     assert rq2_figure_entry["evaluation_unit"] == "EXAMPLE_RECORD"
     assert rq2_figure_entry["evidence_status"] == "DEVELOPMENT"
+    assert rq2_figure_entry["generator"] == "figures/paper_figures.py::bar_with_ci_figure"
 
 
 def test_manifest_counts_reflect_generated_and_skipped_entries(tmp_path):

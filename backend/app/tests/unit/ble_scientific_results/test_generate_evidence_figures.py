@@ -50,6 +50,21 @@ def _write_manifest(repo, entries: list[dict]) -> None:
     (exports_dir / "figure_manifest.json").write_text(json.dumps({"figures": entries}), encoding="utf-8")
 
 
+def _write_rq1_svg(repo, *, include_ba_window_label=False, future_status_text=None) -> None:
+    """A minimal, real (parseable) SVG standing in for what `_save_figure()`
+    actually writes -- exercises the same rendered-text checks
+    verify_figures() runs against a real one. Default content is
+    pass-safe: real capture-dependent/capture-disjoint labels, no
+    'BA_window', no protected-FUTURE status text."""
+    figures_dir = repo.root / "paper_exports" / "figures"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    labels = ["BA_window (intra-session)" if include_ba_window_label else "Capture-dependent (same capture)", "Capture-disjoint (VALIDATION)"]
+    if future_status_text:
+        labels.append(f"protected FUTURE ({future_status_text})")
+    body = "".join(f"<text>{label}</text>" for label in labels)
+    (figures_dir / "rq1_acquisition_dependence.svg").write_text(f"<svg>{body}</svg>", encoding="utf-8")
+
+
 def _manifest_entry_for(source_path: Path, *, paper_run_id="RUN-1", evaluation_unit="EXAMPLE_RECORD", evidence_status="DEVELOPMENT", figure_path="figures/rq1_acquisition_dependence.png", source_artifact_relpath=None) -> dict:
     return {
         "figure_path": figure_path,
@@ -79,6 +94,7 @@ def test_verify_passes_when_manifest_matches_real_artifact(tmp_path, monkeypatch
     repo = _repo(tmp_path)
     monkeypatch.setattr(gef, "OUT_DIR", tmp_path / "readme_img")
     rq1_path = _write_rq1_artifact(repo)
+    _write_rq1_svg(repo)
     rq2_path = repo.root / "RUN-1" / "06_statistics" / "rq2_representation_comparison_report.json"
     rq2_path.write_text(json.dumps({"evaluation_unit": "EXAMPLE_RECORD", "evidence_status": "DEVELOPMENT"}), encoding="utf-8")
     entries = [
@@ -153,6 +169,45 @@ def test_verify_fails_when_test_labeled_as_future(tmp_path, monkeypatch):
     assert any("TEST_LABELED_AS_FUTURE" in f for f in failures)
 
 
+def test_verify_fails_when_ba_window_label_found_in_svg(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(gef, "OUT_DIR", tmp_path / "readme_img")
+    rq1_path = _write_rq1_artifact(repo)
+    _write_rq1_svg(repo, include_ba_window_label=True)
+    _write_manifest(repo, [_manifest_entry_for(rq1_path)])
+    failures = gef.verify_figures(repo, None)
+    assert any("BA_WINDOW_LABEL_FOUND" in f for f in failures)
+
+
+def test_verify_fails_when_ci_not_in_svg_text(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(gef, "OUT_DIR", tmp_path / "readme_img")
+    path = repo.root / "RUN-1" / "06_statistics" / "rq1_acquisition_dependence_report.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "evaluation_unit": "EXAMPLE_RECORD", "evidence_status": "DEVELOPMENT",
+        "ba_window": 0.968, "ba_capture": 0.749, "ba_future": None, "ba_future_status": "NOT_YET_AVAILABLE",
+        "delta_dependence": 0.219,
+        "uncertainty_ci": {"ba_capture_ci": {"ci_low": 0.544, "ci_high": 0.884}, "delta_dependence_ci": {"ci_low": 0.077, "ci_high": 0.414}},
+    }), encoding="utf-8")
+    _write_rq1_svg(repo)  # does NOT contain the real delta_dependence_ci text
+    _write_manifest(repo, [_manifest_entry_for(path)])
+    failures = gef.verify_figures(repo, None)
+    assert any("CI_NOT_IN_FIGURE" in f for f in failures)
+
+
+def test_verify_fails_when_future_status_text_rendered_while_ba_future_none(tmp_path, monkeypatch):
+    # Stronger than the entry-level TEST_LABELED_AS_FUTURE check: this reads
+    # the ACTUAL rendered SVG text, not just the manifest's own claim.
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(gef, "OUT_DIR", tmp_path / "readme_img")
+    rq1_path = _write_rq1_artifact(repo, ba_future=None)
+    _write_rq1_svg(repo, future_status_text="NOT_YET_AVAILABLE")
+    _write_manifest(repo, [_manifest_entry_for(rq1_path)])
+    failures = gef.verify_figures(repo, None)
+    assert any(f.startswith("figures/rq1_acquisition_dependence.png: TEST_LABELED_AS_FUTURE -- rendered SVG contains ba_future_status") for f in failures)
+
+
 def test_verify_fails_when_readme_copy_diverges_from_paper_export(tmp_path, monkeypatch):
     repo = _repo(tmp_path)
     out_dir = tmp_path / "readme_img"
@@ -172,3 +227,71 @@ def test_verify_fails_when_readme_copy_diverges_from_paper_export(tmp_path, monk
     (out_dir / "evidence_rq1_domains.png").write_bytes(b"DIFFERENT-bytes-someone-hand-edited-this")
     failures = gef.verify_figures(repo, None)
     assert any("DIVERGED_FROM_PAPER_EXPORT" in f for f in failures)
+
+
+# --- verify_documentation_matches_artifacts(): README/SCIENTIFIC_STATUS.md cross-checks ---
+
+def _doc_check_repo(tmp_path):
+    root = tmp_path / "sci_results"
+    exports_dir = root / "paper_exports"
+    exports_dir.mkdir(parents=True, exist_ok=True)
+    (exports_dir / "development_decision_window_summary.csv").write_text(
+        "partition,n_windows,balanced_accuracy,accuracy\n"
+        "TRAIN,34,1.0,1.0\n"
+        "VALIDATION,12,0.75,0.8333333333333334\n"
+        "TEST,12,0.875,0.9166666666666666\n",
+        encoding="utf-8",
+    )
+    dashboard = {"closed_set": {
+        "rq1": {"ba_window": 0.9682, "ba_capture": 0.7494, "delta_dependence": 0.2187, "uncertainty_ci": {}},
+        "primary_test": {"balanced_accuracy": 0.7666},
+    }}
+    return SimpleNamespace(
+        root=root,
+        get_evidence_dashboard_summary=lambda: dashboard,
+        get_latest_association_calibration_summary=lambda: {"status": "NO_THRESHOLD_SATISFIES_CRITERIA"},
+    )
+
+
+def _write_doc_fixtures(repo_root: Path, *, capture_dependent_ba="0.968") -> None:
+    """Real regex patterns verify_documentation_matches_artifacts() searches
+    for -- this fixture text intentionally mirrors the exact wording this
+    project's own README.md/SCIENTIFIC_STATUS.md use, so the test exercises
+    the SAME patterns the real files are checked against."""
+    (repo_root / "README.md").write_text(
+        "| Capture-dependent (same capture, intentionally leakage-optimistic diagnostic) "
+        f"| {capture_dependent_ba} | n/a | 1,790 |\n"
+        "| Capture-disjoint (VALIDATION) | 0.749 | [0.544, 0.884] | 2,203 |\n"
+        "| Held-out TEST (PRIMARY branch, not protected FUTURE) | 0.767 | -- | 2,464 |\n\n"
+        "delta_dependence = capture-dependent - capture-disjoint = +0.219, 95% CI [0.077, 0.414]\n\n"
+        "- `TRAIN=34`, `VALIDATION=12`, `TEST=12` real windows\n"
+        "- `VALIDATION`: `BA=0.750`, `accuracy=0.833`\n"
+        "- `TEST`: `BA=0.875`, `accuracy=0.917`\n",
+        encoding="utf-8",
+    )
+    status_dir = repo_root / "docs" / "ble"
+    status_dir.mkdir(parents=True, exist_ok=True)
+    (status_dir / "SCIENTIFIC_STATUS.md").write_text(
+        "| RQ1 capture-dependent BA / 95% CI / n | `0.968` / n/a / `1790` |\n"
+        "| RQ1 capture-disjoint (VALIDATION) BA / 95% CI / n | `0.749` / `[0.544, 0.884]` / `2203` |\n"
+        "| RQ1 `delta_dependence` / 95% CI | `0.219` / `[0.077, 0.414]` |\n"
+        "| RQ1 held-out TEST BA (not protected FUTURE) | `0.767` |\n"
+        "| 10-second decision windows | `TRAIN=34`, `VALIDATION=12`, `TEST=12` -- all 4/4 classes |\n"
+        "| VALIDATION window-level BA / accuracy | `0.750` / `0.833` |\n"
+        "| TEST window-level BA / accuracy | `0.875` / `0.917` |\n"
+        "| Association calibration | `NO_THRESHOLD_SATISFIES_CRITERIA` |\n",
+        encoding="utf-8",
+    )
+
+
+def test_verify_documentation_passes_when_readme_and_status_match_real_artifacts(tmp_path, monkeypatch):
+    monkeypatch.setattr(gef, "REPO_ROOT", tmp_path)
+    _write_doc_fixtures(tmp_path)
+    assert gef.verify_documentation_matches_artifacts(_doc_check_repo(tmp_path)) == []
+
+
+def test_verify_documentation_fails_when_readme_number_drifts_from_artifact(tmp_path, monkeypatch):
+    monkeypatch.setattr(gef, "REPO_ROOT", tmp_path)
+    _write_doc_fixtures(tmp_path, capture_dependent_ba="0.500")  # real artifact says ~0.968
+    failures = gef.verify_documentation_matches_artifacts(_doc_check_repo(tmp_path))
+    assert any(f.startswith("README: rq1_ba_window claims 0.5") for f in failures)

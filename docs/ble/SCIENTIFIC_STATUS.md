@@ -1150,6 +1150,30 @@ different or contradicting number, and not weakened to produce a pass.
 
 ## 18. Reproducibility map — scientific report ↔ dashboard button ↔ canonical artifact
 
+### 18.0 Current DEVELOPMENT evidence snapshot
+
+Real numbers, current as of this section's own last edit -- always verify
+against the canonical artifacts named below (or run `docs/ble/generate_
+evidence_figures.py --verify`) rather than trusting this snapshot frozen in
+time.
+
+| Item | Value | Source |
+|---|---|---|
+| RQ1 `evaluation_unit` | `EXAMPLE_RECORD` | `06_statistics/rq1_acquisition_dependence_report.json` |
+| RQ1 capture-dependent BA / 95% CI / n | `0.968` / n/a (not a valid estimator) / `1790` | same |
+| RQ1 capture-disjoint (VALIDATION) BA / 95% CI / n | `0.749` / `[0.544, 0.884]` / `2203` | same |
+| RQ1 `delta_dependence` / 95% CI | `0.219` / `[0.077, 0.414]` | same |
+| RQ1 held-out TEST BA (not protected FUTURE) | `0.767` | `ble_rffi_studio/training_runs/<id>/evaluation_report.json` (`TEST`) |
+| RQ2 PRIMARY branch (`engineered_rf`) BA / macro-F1 | `0.634` / `0.586` | `06_statistics/rq2_representation_comparison_report.json` |
+| 10-second decision windows | `TRAIN=34`, `VALIDATION=12`, `TEST=12` -- all 4/4 classes in every partition | `06_statistics/coverage_analysis_report.json` |
+| VALIDATION window-level BA / accuracy | `0.750` / `0.833` | `paper_exports/development_decision_window_summary.csv` |
+| TEST window-level BA / accuracy | `0.875` / `0.917` | same |
+| LODO (worst case, `CC2650-UNIT-01` omitted) | BA `0.528`, delta `-0.106` vs. full-set `0.634` | `06_statistics/sensitivity_report.json` |
+| Offset-retaining sensitivity | BA `0.634`, delta `0.000` vs. PRIMARY | same |
+| Association calibration | `NO_THRESHOLD_SATISFIES_CRITERIA` (fail-closed; coverage=0.0, false_strong=0 at every threshold) | `association_calibration_summary` |
+| Protected FUTURE | `NOT_YET_AVAILABLE` -- not executed, fail-closed | `rq1_acquisition_dependence_report.json` (`ba_future=null`) |
+| RQ3 / RQ4 / CH38-39 / near-live | `PENDING` / `NOT_AVAILABLE` -- real mechanism, no real campaign data yet | still real roadmap items, not removed from this document -- see §16-17 |
+
 Standing rule (2026-08-18): every number that goes into the paper must be
 reproducible and auditable by anyone on the team through the
 `/ble-scientific-results` dashboard, not just something one person can pull
