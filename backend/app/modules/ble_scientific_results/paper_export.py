@@ -231,6 +231,42 @@ def window_level_risk_coverage_rows(coverage_report: dict[str, Any], branch: str
     return rows
 
 
+def development_decision_window_summary_rows(coverage_report: dict[str, Any], branch: str) -> list[dict[str, Any]]:
+    """One row per real partition (TRAIN/VALIDATION/TEST) at 10-second
+    decision-window granularity -- read verbatim from the SAME
+    `06_statistics/coverage_analysis_report.json` `window_level_evaluation`
+    the Coverage tab already renders (never a second decision-window
+    evaluation). `n_per_tx`/`accuracy`/`n_decided` are pure arithmetic over
+    that domain's own already-real confusion matrix (row-sum / trace /
+    total), the exact same idiom `per_transmitter_rows` already uses --
+    never a second metric definition. `n_abstained`/`coverage` come from
+    coverage_analysis_report.json's own top-level `by_evaluation_domain`
+    (pooled across every real branch scored, not just this one -- the same
+    real number as the Coverage tab's top summary cards; with a single real
+    branch today the two scopes coincide). DEVELOPMENT evidence_status --
+    never labeled confirmatory/definitive/FUTURE here."""
+    branch_eval = (coverage_report.get("window_level_evaluation") or {}).get(branch) or {}
+    by_domain_window = branch_eval.get("by_evaluation_domain") or {}
+    by_domain_coarse = coverage_report.get("by_evaluation_domain") or {}
+    rows = []
+    for domain in ("TRAIN", "VALIDATION", "TEST"):
+        window_eval = by_domain_window.get(domain)
+        if not window_eval:
+            continue
+        matrix = window_eval.get("confusion_matrix") or {}
+        n_decided = sum(sum(row.values()) for row in matrix.values())
+        n_correct = sum(matrix.get(unit, {}).get(unit, 0) for unit in matrix)
+        n_per_tx = {unit: sum(matrix.get(unit, {}).values()) for unit in matrix}
+        coarse = by_domain_coarse.get(domain) or {}
+        rows.append({
+            "partition": domain, "n_windows": window_eval.get("n_comparable"), "n_per_tx": json.dumps(n_per_tx),
+            "balanced_accuracy": window_eval.get("balanced_accuracy"), "accuracy": (n_correct / n_decided) if n_decided else None,
+            "n_decided": n_decided, "n_abstained": coarse.get("abstained_windows"), "coverage": coarse.get("coverage"),
+            "evaluation_unit": "DECISION_WINDOW", "window_duration_s": coverage_report.get("window_duration_s"), "evidence_status": "DEVELOPMENT",
+        })
+    return rows
+
+
 def render_latex_tables(sections: dict[str, list[dict[str, Any]]]) -> str:
     """Minimal, dependency-free LaTeX table templating -- one `table`
     environment per non-empty section. Never called with a section whose
@@ -611,8 +647,33 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
             emit("closed_set_risk_coverage_window_level.csv", ExportOutcome("GENERATED", f"real, from 06_statistics/coverage_analysis_report.json window_level_evaluation[{primary_branch}]"), classification="PAPER_PRIMARY", provenance=closed_set_provenance)
         else:
             emit("closed_set_risk_coverage_window_level.csv", ExportOutcome("SKIPPED_NO_DATA", "no window-level risk_coverage for the PRIMARY branch yet", "06_statistics/coverage_analysis_report.json"))
+
+        # DEVELOPMENT EVIDENCE closure pass (2026-08-18): compact per-partition
+        # decision-window summary (TRAIN/VALIDATION/TEST: n_windows, n_per_tx,
+        # BA, accuracy, n_decided, n_abstained, coverage) + the real TEST
+        # window-level confusion matrix -- both pure transforms over the SAME
+        # coverage_analysis_report.json fetched above, never a second
+        # decision-window evaluation. evidence_status is always DEVELOPMENT
+        # here -- never confirmatory/definitive/FUTURE.
+        window_summary = development_decision_window_summary_rows(coverage_report, primary_branch) if coverage_report and primary_branch else []
+        if window_summary:
+            _write_csv(exports_dir / "development_decision_window_summary.csv", window_summary)
+            emit("development_decision_window_summary.csv", ExportOutcome("GENERATED", f"real, from 06_statistics/coverage_analysis_report.json window_level_evaluation[{primary_branch}]"), classification="PAPER_PRIMARY", provenance=closed_set_provenance)
+        else:
+            emit("development_decision_window_summary.csv", ExportOutcome("SKIPPED_NO_DATA", "no window-level evaluation for the PRIMARY branch yet", "06_statistics/coverage_analysis_report.json"))
+
+        test_window_eval = ((coverage_report.get("window_level_evaluation") or {}).get(primary_branch) or {}).get("by_evaluation_domain", {}).get("TEST") if coverage_report and primary_branch else None
+        if test_window_eval and test_window_eval.get("confusion_matrix"):
+            _write_csv(exports_dir / "development_test_window_confusion_matrix.csv", confusion_matrix_rows(test_window_eval["confusion_matrix"]))
+            emit("development_test_window_confusion_matrix.csv", ExportOutcome("GENERATED", f"real, from 06_statistics/coverage_analysis_report.json window_level_evaluation[{primary_branch}].by_evaluation_domain.TEST"), classification="PAPER_PRIMARY", provenance=closed_set_provenance)
+        else:
+            emit("development_test_window_confusion_matrix.csv", ExportOutcome("SKIPPED_NO_DATA", "no TEST window-level confusion matrix for the PRIMARY branch yet", "06_statistics/coverage_analysis_report.json"))
     else:
-        for name in ("closed_set_partition_composition.csv", "closed_set_per_transmitter.csv", "figures/closed_set_confusion_matrix_normalized.pdf", "closed_set_decision_windows.csv", "closed_set_risk_coverage_window_level.csv"):
+        for name in (
+            "closed_set_partition_composition.csv", "closed_set_per_transmitter.csv", "figures/closed_set_confusion_matrix_normalized.pdf",
+            "closed_set_decision_windows.csv", "closed_set_risk_coverage_window_level.csv",
+            "development_decision_window_summary.csv", "development_test_window_confusion_matrix.csv",
+        ):
             emit(name, ExportOutcome("SKIPPED_NO_DATA", "no paper_run with scientific_task=MULTI_DEVICE_CLASSIFICATION exists yet", "list_runs()"))
 
     # Campaign/partition timeline -- makes visible, as a figure, that

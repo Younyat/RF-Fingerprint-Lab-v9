@@ -46,6 +46,25 @@ explicit criterion and a real, cited execution back them. Anything not
 determinable from code or on-disk artifacts is marked exactly
 `NOT DOCUMENTED — requires experimental confirmation`.
 
+**Status categories (2026-08-18, used consistently across this document, the
+README, the dashboard, and `PAPER_EVIDENCE_MAP.md`)**: every scientific
+result in this repository carries exactly one of three statuses, never
+mixed:
+
+1. **DEVELOPMENT EVIDENCE** — `AVAILABLE`. Real, current, non-confirmatory
+   evidence from today's short (~10 s) captures and the existing frozen
+   `CONFIRMATORY` split (an internal manifest role name, not a claim of
+   confirmatory scientific status — see §18). Cite as DEVELOPMENT, never as
+   confirmatory/definitive/FUTURE.
+2. **DEFINITIVE / PROTECTED FUTURE** — `NOT_YET_AVAILABLE`. The frozen-protocol,
+   120 s / 12-decision-window campaign and its one-time protected evaluation.
+   Fail-closed: not executed, not readable, not generatable by accident.
+3. **RQ3 / RQ4 / CH38-39 / near-live** — `PENDING` or `NOT_AVAILABLE`. The
+   real mechanism exists and is tested; the real campaign data it needs does
+   not exist yet (RQ3: 0/80 real pairs; RQ4: 0/4 eligible units; CH38/39: no
+   real campaign data; near-live: no real prediction-collection mechanism
+   wired yet).
+
 ---
 
 ## 1. Official experiment/model taxonomy

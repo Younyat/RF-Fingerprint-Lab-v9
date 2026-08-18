@@ -214,21 +214,31 @@ full derivation and the exact distinction:
 campaign, with real evidence meeting its stated scientific criteria. The
 second never follows automatically from the first anywhere in this project.
 
+Three explicit status categories, used consistently across this README, the
+dashboard, and [`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md):
+**DEVELOPMENT EVIDENCE** (`AVAILABLE`) — real, current, non-confirmatory
+evidence from today's short captures, safe to cite as DEVELOPMENT; **DEFINITIVE
+/ PROTECTED FUTURE** (`NOT_YET_AVAILABLE`) — the frozen-protocol, 120 s/12-window
+campaign and its one-time protected evaluation, fail-closed, not executed;
+**RQ3 / RQ4 / CH38-39 / near-live** (`PENDING` or `NOT_AVAILABLE`) — real
+mechanism exists, real campaign data does not yet.
+
 | Capability | Implemented | Real evidence / validation |
 |---|---:|---|
 | Real B200 I/Q capture | Yes | Yes |
 | BLE packet recovery / CRC | Yes | Yes |
 | Dataset + capture-disjoint leakage protection | Yes | Yes |
-| TRAIN / VALIDATION / protected TEST mechanism | Yes | Mechanism tested; definitive campaign pending |
+| TRAIN / VALIDATION / protected TEST mechanism | Yes | Mechanism tested; DEFINITIVE campaign `NOT_YET_AVAILABLE` |
 | `paper-eq6-7-v1` preprocessing (Eq. 6-7) | Yes | Unit/integration tested; no definitive real bundle yet |
-| RQ1 acquisition-dependence measurement | Yes | **Executed** — real closed-set `delta_dependence = +0.2182` (see below) |
-| Four RQ2 model branches | Yes | **Executed** — real closed-set benchmark, `engineered_rf` selected PRIMARY (see below) |
-| Decision-window aggregation | Yes | Definitive campaign pending |
-| Abstention / coverage / risk-coverage | Yes | Definitive campaign pending |
-| PRE/POST RESET-CONTROL framework (RQ3) | Yes | Sample size frozen (80 pairs); 0 real pairs captured yet |
-| FULL_BURST / ADVA_EXCLUDED / PRE_PDU (RQ4) | Yes | **0/4 enrolled units eligible** — `DATA_NOT_AVAILABLE`, real evidence recorded per unit (see below) |
-| Strong native <-> SDR association | Mechanism yes | **No — 0 STRONG, no accepted calibration policy** |
-| Protected future scientific result | Mechanism yes | **Not yet executed** |
+| RQ1 acquisition-dependence measurement | Yes | **DEVELOPMENT EVIDENCE `AVAILABLE`** — real closed-set `delta_dependence = +0.219` (see below) |
+| Four RQ2 model branches | Yes | **DEVELOPMENT EVIDENCE `AVAILABLE`** — real closed-set benchmark, `engineered_rf` selected PRIMARY (see below) |
+| Decision-window aggregation (10 s) | Yes | **DEVELOPMENT EVIDENCE `AVAILABLE`** — real TRAIN=34/VALIDATION=12/TEST=12 windows, 4/4 TX (see [`PAPER_EVIDENCE_MAP.md`](docs/ble/PAPER_EVIDENCE_MAP.md)); DEFINITIVE campaign `NOT_YET_AVAILABLE` |
+| Abstention / coverage / risk-coverage | Yes | **DEVELOPMENT / EXPLORATORY** — real but small-sample (12 windows/domain); DEFINITIVE campaign `NOT_YET_AVAILABLE` |
+| PRE/POST RESET-CONTROL framework (RQ3) | Yes | `PENDING` — sample size frozen (80 pairs); 0 real pairs captured yet |
+| FULL_BURST / ADVA_EXCLUDED / PRE_PDU (RQ4) | Yes | `NOT_AVAILABLE` — **0/4 enrolled units eligible**, real evidence recorded per unit (see below) |
+| CH38/CH39, near-live inference | Yes | `NOT_AVAILABLE` — no real CH38/39 campaign data; no real near-live-prediction collection wired yet |
+| Strong native <-> SDR association | Mechanism yes | **No — 0 STRONG, no accepted calibration policy** (fail-closed, real negative result) |
+| Protected future scientific result | Mechanism yes | **`NOT_YET_AVAILABLE`** — not executed, fail-closed |
 
 A passing test suite is evidence the code does what its own tests assert —
 it is never treated as scientific validation anywhere in this project.
@@ -254,16 +264,23 @@ First real, definitive run of the 4-unit closed-set comparison (`CC2541SensorTag
 leakage check `PASSED`, 9,891 real examples across 79 real B200 captures, Shelly excluded
 as a class, no background pooled in as a fifth class):
 
-| Evaluation domain (RQ1) | Balanced accuracy | n |
-|---|---:|---:|
-| `BA_window` (intentionally capture-dependent diagnostic) | 0.9676 | 1,790 |
-| `BA_capture` (capture-disjoint, confirmatory) | 0.7494 | 2,203 |
-| Held-out TEST (PRIMARY branch) | 0.7666 | 2,464 |
+Evaluation unit for every row below is `EXAMPLE_RECORD` (burst-level) — a
+separate, real 10-second decision-window evaluation exists too (see
+[the window-level scoping fix and DEVELOPMENT decision-window table](docs/ble/PAPER_EVIDENCE_MAP.md)),
+never conflated with this one.
 
-`delta_dependence = BA_window - BA_capture = +0.2182` — a real, on-hardware measurement
-of exactly the optimism RQ1 is designed to detect: a single-recording evaluation would
-have overstated closed-set discrimination by roughly 22 balanced-accuracy points relative
-to genuinely disjoint captures.
+| Evaluation domain (RQ1) | Balanced accuracy | 95% CI | n |
+|---|---:|---:|---:|
+| Capture-dependent (same capture, intentionally leakage-optimistic diagnostic) | 0.968 | n/a — not a valid estimator, see below | 1,790 |
+| Capture-disjoint (VALIDATION) | 0.749 | [0.544, 0.884] | 2,203 |
+| Held-out TEST (PRIMARY branch, not protected FUTURE) | 0.767 | — | 2,464 |
+
+`delta_dependence = capture-dependent − capture-disjoint = +0.219`, 95% CI `[0.077, 0.414]`
+(paired cluster bootstrap, session-clustered) — a real, on-hardware measurement of exactly
+the optimism RQ1 is designed to detect: a single-recording evaluation would have overstated
+closed-set discrimination by roughly 22 balanced-accuracy points relative to genuinely
+disjoint captures. No CI is reported on the capture-dependent number itself: it is
+intentionally leakage-violating by design, not a valid estimator to attach uncertainty to.
 
 ![RQ1 closed-set acquisition dependence](readme_img/evidence_rq1_domains.png)
 

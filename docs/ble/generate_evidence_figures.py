@@ -103,16 +103,26 @@ def _save(fig, name: str) -> Path:
 
 
 def fig_rq1_domains(summary: dict) -> Path | None:
+    # Label correction (2026-08-18, DEVELOPMENT EVIDENCE closure pass): the
+    # first bar was previously labeled "BA_window", which reads as if it were
+    # the platform's separate 10-second decision-window unit (RQ3/RQ4/
+    # coverage_analysis's group_examples_into_windows) -- it is not. This
+    # report's own evaluation_unit is EXAMPLE_RECORD (burst-level) for every
+    # bar here; the underlying JSON field name (rq1["ba_window"], a frozen
+    # contract key elsewhere in the codebase) is unchanged, only this
+    # figure's human-readable labels are. "Held-out TEST" is deliberately its
+    # own bar, distinct from "protected FUTURE" (which only renders once
+    # ba_future is a real, non-None number) -- TEST != FUTURE.
     rq1 = (summary.get("closed_set") or {}).get("rq1")
     primary_test = (summary.get("closed_set") or {}).get("primary_test")
     if not rq1:
         return None
     labels, values, colors, yerr_lower, yerr_upper = [], [], [], [], []
     if rq1.get("ba_window") is not None:
-        labels.append("BA_window\n(intra-session)"); values.append(rq1["ba_window"]); colors.append(COLORS["window"])
-        yerr_lower.append(0.0); yerr_upper.append(0.0)  # no CI on BA_window -- intentionally leakage-violating, not a valid estimator
+        labels.append("Capture-dependent\n(same capture)"); values.append(rq1["ba_window"]); colors.append(COLORS["window"])
+        yerr_lower.append(0.0); yerr_upper.append(0.0)  # no CI on this diagnostic -- intentionally leakage-violating, not a valid estimator
     if rq1.get("ba_capture") is not None:
-        labels.append("BA_capture\n(capture-disjoint)"); values.append(rq1["ba_capture"]); colors.append(COLORS["capture"])
+        labels.append("Capture-disjoint\n(VALIDATION)"); values.append(rq1["ba_capture"]); colors.append(COLORS["capture"])
         ci = (rq1.get("uncertainty_ci") or {}).get("ba_capture_ci") or {}
         ci_low, ci_high = ci.get("ci_low"), ci.get("ci_high")
         yerr_lower.append(max(0.0, rq1["ba_capture"] - ci_low) if ci_low is not None else 0.0)
@@ -121,12 +131,12 @@ def fig_rq1_domains(summary: dict) -> Path | None:
         # Held-out TEST -- explicitly NOT "protected FUTURE": FUTURE has not
         # been executed for this study yet (see the separate bar below,
         # which only appears once ba_future is a real number).
-        labels.append("Held-out TEST\n(PRIMARY branch)"); values.append(primary_test["balanced_accuracy"]); colors.append(COLORS["test"])
+        labels.append("Held-out TEST\n(not protected FUTURE)"); values.append(primary_test["balanced_accuracy"]); colors.append(COLORS["test"])
         yerr_lower.append(0.0); yerr_upper.append(0.0)
     if rq1.get("ba_future") is not None:
         labels.append(f"protected FUTURE\n({rq1.get('ba_future_status')})"); values.append(rq1["ba_future"]); colors.append("#5b3d8f")
         yerr_lower.append(0.0); yerr_upper.append(0.0)
-    fig, ax = plt.subplots(figsize=(5.5, 4))
+    fig, ax = plt.subplots(figsize=(7, 4.3))
     bars = ax.bar(labels, values, color=colors)
     ax.errorbar(range(len(labels)), values, yerr=[yerr_lower, yerr_upper], fmt="none", ecolor="#222222", capsize=4)
     ax.bar_label(bars, fmt="%.3f", padding=3)
@@ -136,16 +146,22 @@ def fig_rq1_domains(summary: dict) -> Path | None:
     delta = rq1.get("delta_dependence")
     caption_lines = []
     if delta is not None:
-        caption_lines.append(f"delta_dependence = {delta:+.4f}")
+        ci = (rq1.get("uncertainty_ci") or {}).get("delta_dependence_ci") or {}
+        ci_low, ci_high = ci.get("ci_low"), ci.get("ci_high")
+        if ci_low is not None and ci_high is not None:
+            caption_lines.append(f"delta_dependence = {delta:+.4f}  95% CI [{ci_low:.4f}, {ci_high:.4f}]")
+        else:
+            caption_lines.append(f"delta_dependence = {delta:+.4f}")
     n_parts = []
     if rq1.get("ba_window_n_comparable") is not None:
-        n_parts.append(f"BA_window n={rq1['ba_window_n_comparable']}")
+        n_parts.append(f"capture-dependent n={rq1['ba_window_n_comparable']}")
     if rq1.get("ba_capture_n_comparable") is not None:
-        n_parts.append(f"BA_capture n={rq1['ba_capture_n_comparable']}")
+        n_parts.append(f"capture-disjoint n={rq1['ba_capture_n_comparable']}")
     if n_parts:
         caption_lines.append("  ·  ".join(n_parts))
+    caption_lines.append("EXAMPLE_RECORD (burst-level) != the platform's separate 10-s decision-window unit")
     if caption_lines:
-        ax.text(0.5, -0.24, "\n".join(caption_lines), transform=ax.transAxes, ha="center", fontsize=9, color="#555555")
+        ax.text(0.5, -0.32, "\n".join(caption_lines), transform=ax.transAxes, ha="center", fontsize=8.5, color="#555555")
     return _save(fig, "evidence_rq1_domains.png")
 
 
@@ -217,7 +233,7 @@ def fig_risk_coverage(summary: dict) -> Path | None:
     ax.plot([p["coverage"] for p in pts], [p["risk"] for p in pts], color="#2f6fb3", marker="o", markersize=2.5, linewidth=1.4)
     ax.set_xlabel("coverage"); ax.set_ylabel("risk")
     ax.set_xlim(0, 1)
-    ax.set_title("Risk-coverage (TEST, PRIMARY branch)\nEl-Yaniv & Wiener (2010)")
+    ax.set_title("Risk-coverage (TEST, PRIMARY branch) -- DEVELOPMENT / EXPLORATORY\nEl-Yaniv & Wiener (2010)")
     return _save(fig, "evidence_risk_coverage.png")
 
 
@@ -234,7 +250,7 @@ def fig_seed_variability(summary: dict) -> Path | None:
     ax.bar_label(bars, fmt="%.3f", padding=3)
     ax.set_ylim(0, 1.05)
     ax.set_ylabel("Balanced accuracy (VALIDATION)")
-    ax.set_title(f"Seed variability -- {primary['branch']} (PRIMARY)")
+    ax.set_title(f"Seed variability -- {primary['branch']} (PRIMARY) -- DEVELOPMENT / SENSITIVITY")
     return _save(fig, "evidence_seed_variability.png")
 
 
@@ -249,7 +265,7 @@ def fig_computational_cost(summary: dict) -> Path | None:
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8.5, 4))
     ax1.bar(names, latency, color="#2f6fb3"); ax1.set_ylabel("ms"); ax1.set_title("Inference latency"); ax1.tick_params(axis="x", rotation=20)
     ax2.bar(names, size_kb, color="#b9822c"); ax2.set_ylabel("KB"); ax2.set_title("Serialized model size"); ax2.tick_params(axis="x", rotation=20)
-    fig.suptitle("Computational cost by RQ2 branch")
+    fig.suptitle("Computational cost by RQ2 branch -- DEVELOPMENT")
     # Real methodology (training_service.py::_measure_latency_ms): wall-clock
     # time.perf_counter() around a single-sample predict_proba call, mean of
     # 10 repeats, measured on VALIDATION data for every branch of the SAME

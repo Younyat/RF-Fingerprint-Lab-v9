@@ -6,17 +6,23 @@ import RunScopedJsonReport from './RunScopedJsonReport';
 
 const sciApi = new BleScientificResultsApiService();
 
+// Label fix (2026-08-18, DEVELOPMENT EVIDENCE closure pass): the raw field
+// name ba_window reads as if it were the platform's separate 10-second
+// decision-window unit (RQ3/RQ4/coverage_analysis's group_examples_into_
+// windows) -- it is not. This report's own evaluation_unit is EXAMPLE_RECORD
+// (burst-level) for every bar here; only the display label changed, the
+// underlying report field names (report.ba_window, etc.) are untouched.
 function domainBars(report: Record<string, unknown>): BarWithCiDatum[] {
   const bars: BarWithCiDatum[] = [];
-  if (typeof report.ba_window === 'number') bars.push({ category: 'capture-dependent (BA_window)', value: report.ba_window });
-  if (typeof report.ba_capture === 'number') bars.push({ category: 'capture-disjoint (BA_capture)', value: report.ba_capture });
-  if (typeof report.ba_future === 'number') bars.push({ category: 'future (CONFIRMATORY)', value: report.ba_future });
+  if (typeof report.ba_window === 'number') bars.push({ category: 'capture-dependent (same capture)', value: report.ba_window });
+  if (typeof report.ba_capture === 'number') bars.push({ category: 'capture-disjoint (VALIDATION)', value: report.ba_capture });
+  if (typeof report.ba_future === 'number') bars.push({ category: 'protected FUTURE', value: report.ba_future });
   return bars;
 }
 
 function deltaBars(report: Record<string, unknown>): BarWithCiDatum[] {
   const bars: BarWithCiDatum[] = [];
-  if (typeof report.delta_dependence === 'number') bars.push({ category: 'delta_dependence (window - capture)', value: report.delta_dependence });
+  if (typeof report.delta_dependence === 'number') bars.push({ category: 'delta_dependence (capture-dependent - capture-disjoint)', value: report.delta_dependence });
   if (typeof report.delta_future === 'number') bars.push({ category: 'delta_future', value: report.delta_future });
   return bars;
 }
@@ -33,7 +39,7 @@ export default function Rq1Tab() {
   return (
     <RunScopedJsonReport
       title="RQ1 -- Acquisition dependence"
-      description="BA_window / BA_capture / BA_future, deltas, cobertura -- leidos directamente de rq1_acquisition_dependence_report.json (persist_rq1_acquisition_dependence_report). No se recalcula nada aqui."
+      description="Capture-dependent / capture-disjoint / protected FUTURE (EXAMPLE_RECORD-level, not the platform's separate 10-second decision-window unit), deltas, cobertura -- leidos directamente de rq1_acquisition_dependence_report.json (persist_rq1_acquisition_dependence_report). No se recalcula nada aqui."
       noDataReason="rq1_acquisition_dependence_report.json no existe todavia para este run -- pendiente de CONFIRMATORY_FUTURE."
       fetchReport={(paperRunId) => sciApi.rq1AcquisitionDependence(paperRunId)}
       renderCharts={(report) => {
@@ -47,7 +53,7 @@ export default function Rq1Tab() {
             </div>
             <div>
               <div className="mb-1 text-xs font-semibold text-slate-400">BA por dominio de evaluacion</div>
-              <BarWithCiChart data={domainBars(report)} yLabel="Balanced accuracy" noDataReason="ba_window/ba_capture no estan presentes en el reporte." />
+              <BarWithCiChart data={domainBars(report)} yLabel="Balanced accuracy" noDataReason="capture-dependent/capture-disjoint no estan presentes en el reporte." />
             </div>
             <div>
               <div className="mb-1 text-xs font-semibold text-slate-400">Deltas (acquisition-dependence / future)</div>

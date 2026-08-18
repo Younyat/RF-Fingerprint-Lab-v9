@@ -13,6 +13,7 @@ from app.modules.ble_scientific_results.api.scientific_results_repository import
 from app.modules.ble_scientific_results.paper_export import (
     channel_transport_rows,
     confusion_matrix_rows,
+    development_decision_window_summary_rows,
     generate_paper_exports,
     offline_nearlive_rows,
     qualification_summary_rows,
@@ -120,7 +121,8 @@ def test_closed_set_exports_generated_from_a_real_multi_device_classification_ru
     _write_json(repo.root / "CLOSED-RUN" / "06_statistics" / "coverage_analysis_report.json", {
         "schema_version": "ble-scientific-results-coverage-analysis-v1", "generated_at": "2026-08-17T00:00:00Z",
         "paper_run_id": "CLOSED-RUN", "bundle_ids": {"engineered_rf": "BUNDLE-1"}, "window_duration_s": 10.0, "minimum_eligible_bursts": 1,
-        "overall": None, "by_evaluation_domain": {}, "by_branch": {}, "by_physical_unit": {}, "abstention_reason_counts": "NOT_AVAILABLE",
+        "overall": None, "by_evaluation_domain": {"TEST": {"abstained_windows": 0, "coverage": 1.0, "decided_windows": 2, "eligible_windows": 2}},
+        "by_branch": {}, "by_physical_unit": {}, "abstention_reason_counts": "NOT_AVAILABLE",
         "window_level_evaluation": {
             "engineered_rf": {
                 "acceptance_threshold": 0.66, "acceptance_threshold_calibrated_on": "VALIDATION",
@@ -181,6 +183,28 @@ def test_closed_set_exports_generated_from_a_real_multi_device_classification_ru
     assert rc_rows[0]["n_decided"] == "2"
     assert rc_rows[0]["n_abstained"] == "0"
     assert rc_rows[0]["selective_error"] == "0.5"
+
+    # DEVELOPMENT EVIDENCE closure pass (2026-08-18): compact per-partition
+    # decision-window summary + the TEST window-level confusion matrix, both
+    # read from the SAME coverage_analysis_report.json above.
+    assert _entry(manifest, "development_decision_window_summary.csv")["status"] == "GENERATED"
+    summary_rows = list(csv.DictReader((repo.root / "paper_exports" / "development_decision_window_summary.csv").open(encoding="utf-8")))
+    assert len(summary_rows) == 1  # only TEST has real window_level_evaluation data in this fixture
+    test_summary = summary_rows[0]
+    assert test_summary["partition"] == "TEST"
+    assert test_summary["n_windows"] == "2"
+    assert test_summary["n_decided"] == "2"
+    assert test_summary["accuracy"] == "0.5"  # UNIT-A correctly identified once, UNIT-B misclassified once
+    assert json.loads(test_summary["n_per_tx"]) == {"UNIT-A": 1, "UNIT-B": 1}  # one real decision window per true TX (w1, w2)
+    assert test_summary["evaluation_unit"] == "DECISION_WINDOW"
+    assert test_summary["evidence_status"] == "DEVELOPMENT"
+
+    assert _entry(manifest, "development_test_window_confusion_matrix.csv")["status"] == "GENERATED"
+    matrix_rows = list(csv.DictReader((repo.root / "paper_exports" / "development_test_window_confusion_matrix.csv").open(encoding="utf-8")))
+    assert matrix_rows == [
+        {"true_label": "UNIT-A", "predicted_UNIT-A": "1", "predicted_UNIT-B": "0"},
+        {"true_label": "UNIT-B", "predicted_UNIT-A": "1", "predicted_UNIT-B": "0"},
+    ]
 
 
 def test_closed_set_decision_window_exports_skipped_when_no_coverage_report_exists(tmp_path):
@@ -398,6 +422,43 @@ def test_offline_nearlive_rows_flattens_both_sections():
     rows = offline_nearlive_rows({"analytical_agreement": {"decision_count": 2}, "computational_behavior": {"median_latency_ms": "NOT_MEASURED"}})
     assert {"category": "analytical_agreement", "metric": "decision_count", "value": 2} in rows
     assert {"category": "computational_behavior", "metric": "median_latency_ms", "value": "NOT_MEASURED"} in rows
+
+
+def test_development_decision_window_summary_rows_one_row_per_real_partition():
+    coverage_report = {
+        "window_duration_s": 10.0,
+        "by_evaluation_domain": {
+            "VALIDATION": {"abstained_windows": 0, "coverage": 1.0},
+            "TEST": {"abstained_windows": 1, "coverage": 0.5},
+        },
+        "window_level_evaluation": {
+            "engineered_rf": {
+                "by_evaluation_domain": {
+                    "VALIDATION": {"balanced_accuracy": 0.75, "n_comparable": 4, "confusion_matrix": {"A": {"A": 2, "B": 0}, "B": {"A": 1, "B": 1}}},
+                    "TEST": {"balanced_accuracy": 1.0, "n_comparable": 2, "confusion_matrix": {"A": {"A": 1, "B": 0}, "B": {"A": 0, "B": 1}}},
+                },
+            },
+        },
+    }
+    rows = development_decision_window_summary_rows(coverage_report, "engineered_rf")
+    assert [r["partition"] for r in rows] == ["VALIDATION", "TEST"]
+    validation_row = rows[0]
+    assert validation_row["n_windows"] == 4
+    assert validation_row["n_decided"] == 4
+    assert validation_row["accuracy"] == 0.75  # (2 + 1) correct / 4
+    assert json.loads(validation_row["n_per_tx"]) == {"A": 2, "B": 2}
+    assert validation_row["n_abstained"] == 0
+    assert validation_row["coverage"] == 1.0
+    assert validation_row["evaluation_unit"] == "DECISION_WINDOW"
+    assert validation_row["window_duration_s"] == 10.0
+    assert validation_row["evidence_status"] == "DEVELOPMENT"
+    test_row = rows[1]
+    assert test_row["accuracy"] == 1.0
+    assert test_row["n_abstained"] == 1
+
+
+def test_development_decision_window_summary_rows_empty_when_branch_missing():
+    assert development_decision_window_summary_rows({"window_level_evaluation": {}}, "engineered_rf") == []
 
 
 def test_render_latex_tables_skips_empty_sections():
