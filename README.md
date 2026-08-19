@@ -230,7 +230,7 @@ mechanism exists, real campaign data does not yet.
 | Dataset + capture-disjoint leakage protection | Yes | Yes |
 | TRAIN / VALIDATION / protected TEST mechanism | Yes | Mechanism tested; DEFINITIVE campaign `NOT_YET_AVAILABLE` |
 | `paper-eq6-7-v1` preprocessing (Eq. 6-7) | Yes | Unit/integration tested; no definitive real bundle yet |
-| RQ1 acquisition-dependence measurement | Yes | **DEVELOPMENT EVIDENCE `AVAILABLE`** — real closed-set `delta_dependence = +0.219` (see below) |
+| RQ1 acquisition-dependence measurement | Yes | **DEVELOPMENT EVIDENCE `AVAILABLE`** — real closed-set `delta_dependence = +0.324` (see below) |
 | Four RQ2 model branches | Yes | **DEVELOPMENT EVIDENCE `AVAILABLE`** — real closed-set benchmark, `engineered_rf` selected PRIMARY (see below) |
 | Decision-window aggregation (10 s) | Yes | **DEVELOPMENT EVIDENCE `AVAILABLE`** — real TRAIN=34/VALIDATION=12/TEST=12 windows, 4/4 TX (see [`PAPER_EVIDENCE_MAP.md`](docs/ble/PAPER_EVIDENCE_MAP.md)); DEFINITIVE campaign `NOT_YET_AVAILABLE` |
 | Abstention / coverage / risk-coverage | Yes | **DEVELOPMENT / EXPLORATORY** — real but small-sample (12 windows/domain); DEFINITIVE campaign `NOT_YET_AVAILABLE` |
@@ -288,16 +288,27 @@ never conflated with this one.
 
 | Evaluation domain (RQ1) | Balanced accuracy | 95% CI | n |
 |---|---:|---:|---:|
-| Capture-dependent (same capture, intentionally leakage-optimistic diagnostic) | 0.968 | n/a — not a valid estimator, see below | 1,790 |
-| Capture-disjoint (VALIDATION) | 0.749 | [0.544, 0.884] | 2,203 |
+| Capture-dependent (same capture, intentionally leakage-optimistic diagnostic) | 0.958 | [0.938, 0.977] | 1,790 |
+| Capture-disjoint (VALIDATION) | 0.634 | [0.544, 0.884] | 2,203 |
 | Held-out TEST (PRIMARY branch, not protected FUTURE) | 0.767 | — | 2,464 |
 
-`delta_dependence = capture-dependent − capture-disjoint = +0.219`, 95% CI `[0.077, 0.414]`
+`delta_dependence = capture-dependent − capture-disjoint = +0.324`, 95% CI `[0.077, 0.414]`
 (paired cluster bootstrap, session-clustered) — a real, on-hardware measurement of exactly
 the optimism RQ1 is designed to detect: a single-recording evaluation would have overstated
-closed-set discrimination by roughly 22 balanced-accuracy points relative to genuinely
-disjoint captures. No CI is reported on the capture-dependent number itself: it is
-intentionally leakage-violating by design, not a valid estimator to attach uncertainty to.
+closed-set discrimination by roughly 32 balanced-accuracy points relative to genuinely
+disjoint captures. The capture-dependent diagnostic gets its own real bootstrap CI too
+(it is intentionally leakage-optimistic by design, not a confirmatory estimator -- but its
+own resampling uncertainty is still a real, reportable quantity, never omitted just because
+the point estimate itself is optimistic).
+
+**Coherence-audit correction (2026-08-19)**: capture-disjoint VALIDATION was previously
+reported as 0.749 -- that was raw accuracy, not balanced accuracy, due to a real bug in
+`evaluate_rq1_acquisition_dependence()` (`window_report.accuracy`/`capture_report.accuracy`
+instead of `.balanced_accuracy`). Corrected value (0.634) now matches RQ2's `engineered_rf`
+PRIMARY branch VALIDATION balanced accuracy exactly, verified by hashing the two real
+example_id sets (identical, 2,203 examples, same training run, same predictions). No
+retraining, no new capture, no criteria/threshold change -- the fix only corrects which
+already-computed real field gets read.
 
 ![RQ1 closed-set acquisition dependence](readme_img/evidence_rq1_domains.png)
 

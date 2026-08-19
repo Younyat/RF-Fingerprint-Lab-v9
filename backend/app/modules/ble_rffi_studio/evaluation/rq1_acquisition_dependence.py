@@ -54,9 +54,26 @@ def evaluate_rq1_acquisition_dependence(
     RQ1_ACQUISITION_DEPENDENCE_DIAGNOSTIC split's VALIDATION role (BA_window);
     `capture_report` from the normal CONFIRMATORY split's VALIDATION
     (BA_capture); `future_report`, when supplied, from a real protected
-    future-period evaluation (BA_future) -- never fabricated when absent."""
-    ba_window, ba_capture = window_report.accuracy, capture_report.accuracy
-    ba_future = future_report.accuracy if future_report is not None else None
+    future-period evaluation (BA_future) -- never fabricated when absent.
+
+    Coherence-audit fix (2026-08-19): "BA" means Balanced Accuracy
+    everywhere else in this codebase (RQ2, coverage_analysis, sensitivity
+    all read SplitEvaluationReport.balanced_accuracy) -- and for exactly
+    the reason SplitEvaluationReport's own docstring gives: plain accuracy
+    can look excellent on an imbalanced/session-confounded split while
+    hiding that one class is essentially never recalled (real example:
+    keyfobdemo 02's TEST recall is ~0.006 on this exact closed-set, invisible
+    in raw accuracy). This function alone read `.accuracy` instead of
+    `.balanced_accuracy` -- confirmed via an audit that found RQ1's
+    capture-disjoint VALIDATION figure (0.749, raw accuracy) silently
+    disagreeing with RQ2's PRIMARY branch VALIDATION figure (0.634, real
+    balanced_accuracy) despite both reading the exact same predictions.json
+    for the exact same training run over the exact same 2203 VALIDATION
+    examples (verified by hashing the two real example_id sets -- identical).
+    The bootstrap CIs (uncertainty_ci.ba_*_ci) were never affected -- they
+    were already computed via bootstrap_balanced_accuracy_ci(), correctly."""
+    ba_window, ba_capture = window_report.balanced_accuracy, capture_report.balanced_accuracy
+    ba_future = future_report.balanced_accuracy if future_report is not None else None
     return Rq1AcquisitionDependenceReport(
         scientific_task=scientific_task,
         ba_window=ba_window, ba_window_n_comparable=window_report.n_comparable_to_known_classes,

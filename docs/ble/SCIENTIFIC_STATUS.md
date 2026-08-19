@@ -1157,18 +1157,39 @@ against the canonical artifacts named below (or run `docs/ble/generate_
 evidence_figures.py --verify`) rather than trusting this snapshot frozen in
 time.
 
+**Coherence-audit correction (2026-08-19)**: `evaluate_rq1_acquisition_
+dependence()` (`ble_rffi_studio/evaluation/rq1_acquisition_dependence.py`)
+read `SplitEvaluationReport.accuracy` instead of `.balanced_accuracy` for
+`ba_window`/`ba_capture`/`ba_future` -- a real bug, found because RQ1's
+capture-disjoint VALIDATION (previously reported 0.749) silently disagreed
+with RQ2's `engineered_rf` PRIMARY branch VALIDATION (0.634) despite both
+reading the exact same `predictions.json` for the exact same training run
+(`TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd`) over the
+exact same 2,203 VALIDATION examples (confirmed identical by hashing both
+real example_id sets). Fixed at the source; the RQ1 artifact was
+regenerated from the already-real, already-computed evaluation reports of
+the existing diagnostic run and the existing recommended run -- no
+retraining, no new capture, no threshold/criteria change. Bootstrap CIs
+were never affected (already balanced-accuracy-based). The four per-unit
+`TARGET_VS_BACKGROUND` auxiliary RQ1 reports (§ "Per-unit auxiliary RQ1",
+`readme_img/evidence_per_unit_auxiliary_rq1.png`) go through the SAME
+function and are very likely affected the same way, but have **not** been
+regenerated as part of this fix -- flagged, not silently corrected, pending
+an explicit decision to re-run them.
+
 | Item | Value | Source |
 |---|---|---|
 | RQ1 `evaluation_unit` | `EXAMPLE_RECORD` | `06_statistics/rq1_acquisition_dependence_report.json` |
-| RQ1 capture-dependent BA / 95% CI / n | `0.968` / n/a (not a valid estimator) / `1790` | same |
-| RQ1 capture-disjoint (VALIDATION) BA / 95% CI / n | `0.749` / `[0.544, 0.884]` / `2203` | same |
-| RQ1 `delta_dependence` / 95% CI | `0.219` / `[0.077, 0.414]` | same |
+| RQ1 capture-dependent BA / 95% CI / n | `0.958` / `[0.938, 0.977]` / `1790` | same |
+| RQ1 capture-disjoint (VALIDATION) BA / 95% CI / n | `0.634` / `[0.544, 0.884]` / `2203` | same |
+| RQ1 `delta_dependence` / 95% CI | `0.324` / `[0.077, 0.414]` | same |
 | RQ1 held-out TEST BA (not protected FUTURE) | `0.767` | `ble_rffi_studio/training_runs/<id>/evaluation_report.json` (`TEST`) |
 | RQ2 PRIMARY branch (`engineered_rf`) BA / macro-F1 | `0.634` / `0.586` | `06_statistics/rq2_representation_comparison_report.json` |
 | 10-second decision windows | `TRAIN=34`, `VALIDATION=12`, `TEST=12` -- all 4/4 classes in every partition | `06_statistics/coverage_analysis_report.json` |
 | VALIDATION window-level BA / accuracy | `0.750` / `0.833` | `paper_exports/development_decision_window_summary.csv` |
 | TEST window-level BA / accuracy | `0.875` / `0.917` | same |
 | LODO (worst case, `CC2650-UNIT-01` omitted) | BA `0.528`, delta `-0.106` vs. full-set `0.634` | `06_statistics/sensitivity_report.json` |
+| DEVELOPMENT label provenance (4-class closed-set, 9,891 examples) | `PHYSICAL_ISOLATION_DECLARED` 4,338 (43.9%) + registry address-binding (`association_status` NONE/AMBIGUOUS) 5,553 (56.1%) — **0 STRONG** | `evidence_stage.py::_build_example()`, real counts from `evidence/<capture_id>/examples.jsonl` filtered to `IDENTITY-c52850a953`'s real `example_ids` |
 | Offset-retaining sensitivity | BA `0.634`, delta `0.000` vs. PRIMARY | same |
 | Association calibration | `NO_THRESHOLD_SATISFIES_CRITERIA` (fail-closed; coverage=0.0, false_strong=0 at every threshold) | `association_calibration_summary` |
 | Protected FUTURE | `NOT_YET_AVAILABLE` -- not executed, fail-closed | `rq1_acquisition_dependence_report.json` (`ba_future=null`) |

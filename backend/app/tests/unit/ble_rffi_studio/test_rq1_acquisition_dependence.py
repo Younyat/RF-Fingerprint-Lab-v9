@@ -32,6 +32,32 @@ def test_rq1_report_shows_ba_window_lower_than_ba_capture_is_not_assumed_only_co
     assert report.delta_future is None
 
 
+def test_rq1_report_uses_balanced_accuracy_not_raw_accuracy():
+    # Coherence-audit regression guard (2026-08-19): a real bug had
+    # evaluate_rq1_acquisition_dependence() read .accuracy instead of
+    # .balanced_accuracy, so "BA" (Balanced Accuracy) silently reported raw
+    # accuracy instead -- undetectable by the OTHER tests in this file
+    # because their synthetic fixtures don't make the two definitions
+    # disagree. This fixture is deliberately imbalanced so they MUST
+    # disagree (majority class recall=1.0 hides the minority class's
+    # recall=0.0 in raw accuracy, exactly the real keyfobdemo 02 case this
+    # bug hid in production).
+    evaluator = Evaluator()
+    known_classes = ["A", "B"]
+    # 9 of 10 A's correct, the only B misclassified as A: accuracy=9/10=0.9,
+    # but recall_A=0.9, recall_B=0.0 -> balanced_accuracy=0.45. The two
+    # must differ for this test to actually exercise the fix.
+    predictions = _predictions(n_correct=9, n_wrong=1) + [{"example_id": "b0", "true_label": "B", "predicted_label": "A"}]
+    report_eval = evaluator.evaluate_split("VALIDATION", predictions, known_classes)
+    assert report_eval.accuracy != pytest.approx(report_eval.balanced_accuracy)  # fixture sanity check
+
+    report = evaluate_rq1_acquisition_dependence(scientific_task="SAME_MODEL_UNIT_IDENTIFICATION", window_report=report_eval, capture_report=report_eval, future_report=report_eval)
+    assert report.ba_window == pytest.approx(report_eval.balanced_accuracy)
+    assert report.ba_capture == pytest.approx(report_eval.balanced_accuracy)
+    assert report.ba_future == pytest.approx(report_eval.balanced_accuracy)
+    assert report.ba_window != pytest.approx(report_eval.accuracy)
+
+
 def test_rq1_report_never_fabricates_ba_future_when_absent():
     evaluator = Evaluator()
     known_classes = ["A", "B"]
@@ -56,7 +82,7 @@ def test_rq1_report_uses_a_real_future_report_when_supplied():
     report = evaluate_rq1_acquisition_dependence(
         scientific_task="SAME_MODEL_UNIT_IDENTIFICATION", window_report=same_report, capture_report=same_report, future_report=future_report,
     )
-    assert report.ba_future == future_report.accuracy
+    assert report.ba_future == future_report.balanced_accuracy
     assert report.ba_future_status == "EXECUTED"
     assert report.ba_future_n_comparable == future_report.n_comparable_to_known_classes
     assert report.delta_future == pytest.approx(report.ba_future - report.ba_capture)
