@@ -29,6 +29,43 @@ def _real_rq1_report():
     return evaluate_rq1_acquisition_dependence(scientific_task="SAME_MODEL_UNIT_IDENTIFICATION", window_report=same, capture_report=same)
 
 
+def _imbalanced_split_report():
+    """Deliberately imbalanced (majority class recall=1.0 hides a minority
+    class's recall=0.0), so accuracy and balanced_accuracy MUST disagree --
+    a fixture where the two coincide (like _real_rq1_report() above) cannot
+    catch the real .accuracy-vs-.balanced_accuracy bug this guards against."""
+    evaluator = Evaluator()
+    known_classes = ["A", "B"]
+    predictions = [{"example_id": f"a{i}", "true_label": "A", "predicted_label": "A"} for i in range(9)]
+    predictions.append({"example_id": "b0", "true_label": "B", "predicted_label": "A"})
+    return evaluator.evaluate_split("VALIDATION", predictions, known_classes)
+
+
+def test_persisted_ba_window_and_ba_capture_are_never_raw_accuracy_end_to_end(tmp_path):
+    # Coherence-audit regression guard (2026-08-19): a real bug persisted
+    # SplitEvaluationReport.accuracy into the ba_window/ba_capture fields
+    # instead of .balanced_accuracy, undetected because no end-to-end test
+    # exercised the full evaluate_rq1_acquisition_dependence() ->
+    # persist_rq1_acquisition_dependence_report() chain with a fixture where
+    # the two definitions actually disagree.
+    repo = _repo(tmp_path)
+    split_report = _imbalanced_split_report()
+    assert split_report.accuracy != split_report.balanced_accuracy  # fixture sanity check
+    rq1_report = evaluate_rq1_acquisition_dependence(scientific_task="SAME_MODEL_UNIT_IDENTIFICATION", window_report=split_report, capture_report=split_report)
+
+    artifact = repo.persist_rq1_acquisition_dependence_report(
+        paper_run_id="RUN-RQ1-IMBALANCED", protocol_id="PROTO-1", protocol_version=1, contract_sha256="real-contract-hash",
+        rq1_report=rq1_report, model_bundle_id="BUNDLE-1", model_bundle_sha256="bundle-hash",
+        confirmatory_split_manifest_id="SPLIT-CONF-1", confirmatory_split_manifest_sha256="split-conf-hash",
+        diagnostic_split_manifest_id="SPLIT-DIAG-1", diagnostic_split_manifest_sha256="split-diag-hash",
+        source_evaluation_domains={"window": "same-capture", "capture": "capture-disjoint"},
+    )
+    assert artifact["ba_window"] == split_report.balanced_accuracy
+    assert artifact["ba_capture"] == split_report.balanced_accuracy
+    assert artifact["ba_window"] != split_report.accuracy
+    assert artifact["ba_capture"] != split_report.accuracy
+
+
 def test_persists_a_real_canonical_artifact_with_every_required_linking_field(tmp_path):
     repo = _repo(tmp_path)
     rq1_report = _real_rq1_report()

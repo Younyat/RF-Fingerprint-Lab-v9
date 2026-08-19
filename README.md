@@ -365,7 +365,7 @@ the cheapest one either — heavier than both CNN branches in this run):
 ![Computational cost by branch](readme_img/evidence_computational_cost.png)
 
 4 auxiliary per-unit TARGET_VS_BACKGROUND detectors (not the closed-set result above)
-were also run — real per-unit `delta_dependence` ranges from -0.046 to +0.070, all
+were also run — real per-unit `delta_dependence` ranges from -0.042 to +0.018, all
 substantially smaller than the closed-set effect above (target-vs-background is an
 easier task with more redundant evidence per window; the multiclass task is where
 acquisition dependence actually shows up):
