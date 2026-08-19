@@ -59,13 +59,17 @@ def _save_figure(fig, base_path: Path, formats: Sequence[str] = ("pdf", "svg", "
 def bar_with_ci_figure(
     *, categories: Sequence[str], values: Sequence[float], ci_low: Sequence[float] | None,
     ci_high: Sequence[float] | None, ylabel: str, title: str, out_path: Path, footnote: str | None = None,
+    ylim: tuple[float, float] | None = None, colors: Sequence[str] | str | None = None,
 ) -> dict[str, str]:
     """RQ1 BA-by-domain, RQ2 BA/macro-F1/coverage-by-branch. `ci_low`/
     `ci_high` are absolute bounds (not offsets) -- None skips error bars for
     a category whose CI is not available, never fabricated as 0-width.
     `footnote` (added 2026-08-17): one line of real, already-computed text
     (e.g. real sample sizes) rendered below the axes -- never a second
-    computation, purely a caller-supplied caption.
+    computation, purely a caller-supplied caption. `ylim`/`colors` (added
+    for the publication-figure variants, 2026-08-19): optional fixed axis
+    range and per-bar color override -- both None reproduce the exact prior
+    behavior (auto-scaled axis, uniform blue bars) for every existing caller.
 
     Multi-format output (2026-08-18, figure/artifact sync closure): saves
     PDF/SVG/PNG of the SAME rendering via `_save_figure`, same as
@@ -77,7 +81,7 @@ def bar_with_ci_figure(
     domains.png` drift out of sync with this one)."""
     fig, ax = plt.subplots(figsize=FIGSIZE)
     x = np.arange(len(categories))
-    ax.bar(x, values, color="#2b6cb0")
+    ax.bar(x, values, color=colors if colors is not None else "#2b6cb0")
     if ci_low is not None and ci_high is not None:
         lower_err = [max(0.0, v - lo) if lo is not None else 0.0 for v, lo in zip(values, ci_low)]
         upper_err = [max(0.0, hi - v) if hi is not None else 0.0 for v, hi in zip(values, ci_high)]
@@ -86,6 +90,8 @@ def bar_with_ci_figure(
     ax.set_xticklabels(categories, rotation=20, ha="right")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
+    if ylim is not None:
+        ax.set_ylim(*ylim)
     if footnote:
         # Wrapped and placed well below the rotated (often two-line, since
         # categories may themselves contain "\n") x-tick labels -- a fixed,

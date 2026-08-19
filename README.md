@@ -396,10 +396,27 @@ rendered once by the paper-export pipeline and reused verbatim below):
 ![Campaign timeline](readme_img/evidence_campaign_timeline.png)
 
 **Forensic evidence lineage** — source I/Q → burst → PDU → admitted example → dataset →
-split → preprocessing → model → RQ1/RQ2 decision, traced with real IDs/hashes from the
-closed-set PRIMARY branch, not a dashboard screenshot:
+split → preprocessing → model → RQ1/RQ2 decision, traced with real IDs from the closed-set
+PRIMARY branch (dataset id/version, split id, training run id, model bundle id), not a
+dashboard screenshot. Full hashes stay in `paper_exports/figure_manifest.json`, not baked
+into the image:
 
 ![Forensic evidence lineage](readme_img/evidence_forensic_lineage.png)
+
+**Methodological audit (2026-08-19)** — before the next paper version, every claim below
+was re-verified against real canonical artifacts (never reconstructed from memory); full
+detail, exact field-by-field sourcing, and the 3 regenerated publication figures above are
+in [`docs/ble/SCIENTIFIC_STATUS.md` §19](docs/ble/SCIENTIFIC_STATUS.md#19-methodological-audit-2026-08-19--acquisition-profile-bootstrap-spec-corpus-counts-rq2-paired-uncertainty-model-configs-test-vs-protected-future-publication-figures):
+
+| Check | Result |
+|---|---|
+| RF acquisition profile complete? | **Partial.** Receiver/SDR/channel/frequency/sample-rate/bandwidth/gain/duration are all real and fully sourced; antenna model, TX–RX distance/geometry, and environment/location have **no schema field at all** (`NOT_AVAILABLE`, structural, not a search failure). |
+| RQ1 bootstrap fully specified? | **Yes.** Cluster unit = real `session_id` (34 clusters/1,790 examples dependent domain vs. 12 clusters/2,203 examples capture-disjoint domain, zero session overlap); percentile CI, `n_resamples=2000`, `confidence_level=0.95`, seed `12345`; both the 0.958 and 0.634 CIs use the identical resampling scheme, only the input population differs. |
+| Corpus counts complete? | **Yes.** Per-unit, per-domain example/capture/session counts in §19.3 — the independent experimental unit is the capture/session (1:1 with a 10 s decision window today), not the individual example record. |
+| RQ2 paired uncertainty available? | **Yes**, via the existing bootstrap mechanism (no new statistic) — real, verified matched-pairs CIs for engineered_rf vs. each other branch, computed for this audit, not yet a persisted canonical field. |
+| Model configuration recovered? | **Yes.** RF/LogReg/SVM/CNN1D/CNN2D/nearest-centroid morphology — exact real hyperparameters and `random_seed=42`, in §19.5. |
+| TEST ≠ protected FUTURE verified? | **Yes**, structurally: `SplitManifest.TEST` and `HoldoutGroup.FUTURE_TEST` are different contract types; zero real `FUTURE_TEST` assignments exist on disk today. |
+| Publication figures regenerated? | **Yes** — the 3 figures above (RQ1 domains, RQ2 branches, forensic lineage), same real data, no dev-evidence caption/hashes baked in, human-readable RQ2 labels, `[0,1]` BA axis. |
 
 All figures above are generated straight from the platform's own real, persisted evidence
 by [`docs/ble/generate_evidence_figures.py`](docs/ble/generate_evidence_figures.py) —

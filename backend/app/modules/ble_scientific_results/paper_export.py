@@ -30,6 +30,17 @@ from .figures import paper_figures
 
 EXPORT_MANIFEST_SCHEMA_VERSION = "ble-scientific-results-paper-export-manifest-v1"
 
+# Publication-figure variants (2026-08-19, methodological audit item 7):
+# RQ2's real branch identifiers are internal snake_case keys
+# (_MODEL_TYPE_TO_RQ2_BRANCH's own vocabulary) -- fine for CSV/JSON, not for
+# a manuscript figure. Maps the SAME 4 real branches to the human-readable
+# labels the paper actually uses; PRIMARY/UNSELECTED is conveyed by bar
+# color in the publication figure instead of a "(UNSELECTED)" text suffix.
+RQ2_BRANCH_PUBLICATION_LABELS = {
+    "coarse_morphology": "Coarse morphology", "engineered_rf": "Engineered RF",
+    "raw_iq": "Raw I/Q", "stft": "STFT",
+}
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -507,8 +518,28 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
                 "figures/rq1_acquisition_dependence.pdf", ExportOutcome("GENERATED", "real"),
                 figure_source=(rq1_source_artifact, evaluation_unit, rq1_report.get("evidence_status") or "DEVELOPMENT", "figures/paper_figures.py::bar_with_ci_figure"),
             )
+            # Publication-figure variant (2026-08-19, methodological audit
+            # item 7): SAME real domains/values/ci_low/ci_high the internal
+            # figure above just plotted -- never a second computation --
+            # rendered without the DEVELOPMENT-EVIDENCE caption/footnote text
+            # or per-domain n/CI numbers baked into the image itself (those
+            # stay real and inspectable in rq1_acquisition_dependence_report.
+            # json and this figure's own figure_manifest.json entry, just not
+            # burned into the pixels). Fixed [0,1] y-axis so bar heights are
+            # visually comparable across figures; real error bars kept
+            # (RQ1's CIs ARE canonical/persisted, unlike RQ2's -- see below).
+            paper_figures.bar_with_ci_figure(
+                categories=domains, values=values, ci_low=ci_low, ci_high=ci_high, ylabel="Balanced accuracy",
+                title="RQ1 -- Balanced accuracy by evaluation domain", ylim=(0.0, 1.0),
+                out_path=figures_dir / "rq1_acquisition_dependence_publication",
+            )
+            emit(
+                "figures/rq1_acquisition_dependence_publication.pdf", ExportOutcome("GENERATED", "real, publication variant of figures/rq1_acquisition_dependence.pdf (same data, no caption/footnote text)"),
+                figure_source=(rq1_source_artifact, evaluation_unit, rq1_report.get("evidence_status") or "DEVELOPMENT", "figures/paper_figures.py::bar_with_ci_figure"),
+            )
         else:
             emit("figures/rq1_acquisition_dependence.pdf", ExportOutcome("SKIPPED_NO_DATA", "rq1_acquisition_dependence_report.json is missing ba_window/ba_capture", "06_statistics/rq1_acquisition_dependence_report.json"))
+            emit("figures/rq1_acquisition_dependence_publication.pdf", ExportOutcome("SKIPPED_NO_DATA", "rq1_acquisition_dependence_report.json is missing ba_window/ba_capture", "06_statistics/rq1_acquisition_dependence_report.json"))
         if rq1_report.get("confusion_matrix_capture"):
             _write_csv(exports_dir / "confusion_matrix_capture.csv", confusion_matrix_rows(rq1_report["confusion_matrix_capture"]))
             emit("confusion_matrix_capture.csv", ExportOutcome("GENERATED", "real, from rq1_acquisition_dependence_report.json"))
@@ -534,7 +565,8 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
             emit("figures/rq1_per_unit_recall.pdf", ExportOutcome("SKIPPED_NO_DATA", "rq1_acquisition_dependence_report.json has no per-unit recall values", "06_statistics/rq1_acquisition_dependence_report.json"))
     else:
         for name in (
-            "rq1_results.csv", "figures/rq1_acquisition_dependence.pdf", "confusion_matrix_capture.csv", "confusion_matrix_future.csv",
+            "rq1_results.csv", "figures/rq1_acquisition_dependence.pdf", "figures/rq1_acquisition_dependence_publication.pdf",
+            "confusion_matrix_capture.csv", "confusion_matrix_future.csv",
             "figures/rq1_per_unit_recall.pdf", "figures/rq1_confusion_matrix_capture.pdf", "figures/rq1_confusion_matrix_future.pdf",
         ):
             emit(name, ExportOutcome("SKIPPED_NO_DATA", "no rq1_acquisition_dependence_report.json for any real paper run", "06_statistics/rq1_acquisition_dependence_report.json"))
@@ -555,8 +587,32 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
                 "figures/rq2_representation_comparison.pdf", ExportOutcome("GENERATED", "real"),
                 figure_source=(f"{run_dir.name}/{rq2_source}", rq2_report.get("evaluation_unit") or "EXAMPLE_RECORD", rq2_report.get("evidence_status") or "DEVELOPMENT", "figures/paper_figures.py::bar_with_ci_figure"),
             )
+            # Publication-figure variant (2026-08-19, methodological audit
+            # item 7): human-readable branch labels (RQ2_BRANCH_PUBLICATION_
+            # LABELS) instead of the internal snake_case branch key +
+            # "(UNSELECTED)" suffix -- PRIMARY vs UNSELECTED is instead
+            # conveyed by bar color (amber=PRIMARY, grey=UNSELECTED), fixed
+            # [0,1] y-axis, no footnote. Point estimates only, never a
+            # fabricated error bar: no branch in this canonical report
+            # carries a real balanced_accuracy_ci today (confirmed during
+            # this audit -- this artifact predates the 2026-08-17 per-branch
+            # CI addition to rq2_benchmark.py), so ci_low/ci_high stay None
+            # here rather than silently claiming an uncertainty this
+            # specific persisted report does not actually have.
+            publication_categories = [RQ2_BRANCH_PUBLICATION_LABELS.get(b["branch"], b["branch"]) for b in scored_branches]
+            publication_colors = ["#b9822c" if b.get("analysis_role") == "PRIMARY" else "#8892a0" for b in scored_branches]
+            paper_figures.bar_with_ci_figure(
+                categories=publication_categories, values=[b["balanced_accuracy"] for b in scored_branches],
+                ci_low=None, ci_high=None, ylabel="Balanced accuracy", title="RQ2 -- Representation comparison (amber = PRIMARY)",
+                ylim=(0.0, 1.0), colors=publication_colors, out_path=figures_dir / "rq2_representation_comparison_publication",
+            )
+            emit(
+                "figures/rq2_representation_comparison_publication.pdf", ExportOutcome("GENERATED", "real, publication variant of figures/rq2_representation_comparison.pdf (same data, human-readable labels, no footnote)"),
+                figure_source=(f"{run_dir.name}/{rq2_source}", rq2_report.get("evaluation_unit") or "EXAMPLE_RECORD", rq2_report.get("evidence_status") or "DEVELOPMENT", "figures/paper_figures.py::bar_with_ci_figure"),
+            )
         else:
             emit("figures/rq2_representation_comparison.pdf", ExportOutcome("SKIPPED_NO_DATA", "no branch in rq2_representation_comparison_report.json has a real balanced_accuracy", rq2_source))
+            emit("figures/rq2_representation_comparison_publication.pdf", ExportOutcome("SKIPPED_NO_DATA", "no branch in rq2_representation_comparison_report.json has a real balanced_accuracy", rq2_source))
         covered_branches = [b for b in rq2_report["branches"] if b.get("coverage") is not None]
         if covered_branches:
             paper_figures.bar_with_ci_figure(
@@ -568,7 +624,7 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
         else:
             emit("figures/rq2_coverage.pdf", ExportOutcome("SKIPPED_NO_DATA", "no branch in rq2_representation_comparison_report.json has a real coverage value", rq2_source))
     else:
-        for name in ("rq2_results.csv", "figures/rq2_representation_comparison.pdf", "figures/rq2_coverage.pdf"):
+        for name in ("rq2_results.csv", "figures/rq2_representation_comparison.pdf", "figures/rq2_representation_comparison_publication.pdf", "figures/rq2_coverage.pdf"):
             emit(name, ExportOutcome("SKIPPED_NO_DATA", "no rq2_representation_comparison_report.json for any real paper run", rq2_source))
 
     confirmatory_future = repository.get_confirmatory_future_analysis_report(run_dir.name) if run_dir else None
@@ -756,8 +812,30 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
         ]
         paper_figures.forensic_lineage_diagram_figure(nodes=nodes, title="Forensic evidence lineage (real, traced)", out_path=figures_dir / "forensic_lineage")
         emit("figures/forensic_lineage.pdf", ExportOutcome("GENERATED", "real, traced from the closed-set PRIMARY branch"), classification="PAPER_PRIMARY", provenance=closed_set_provenance)
+
+        # Publication-figure variant (2026-08-19, methodological audit item
+        # 7): same real chain of IDs, minus the truncated sha256 fragments
+        # and the "(real, traced)" title qualifier -- the identifiers
+        # themselves (dataset id/version, training_run_id, bundle_id, branch
+        # name) are what makes this chain traceable, so they stay; only the
+        # partial-hash display text is dropped, since a 16-char hash prefix
+        # is not independently verifiable by a reader and full hashes remain
+        # in the real artifacts/figure_manifest.json regardless.
+        publication_nodes = [
+            {"label": "Dataset", "detail": f"{closed_set['dataset_id']} @ {closed_set['dataset_version']}"},
+            {"label": "Split (TRAIN / VALIDATION / TEST)", "detail": f"{closed_set['dataset_id']}__{closed_set['dataset_version']}__MULTI_DEVICE_CLASSIFICATION"},
+            {"label": "Training run", "detail": closed_set["primary_training_run_id"]},
+            {"label": "Model bundle", "detail": bundle_info["bundle_id"] if bundle_info else "not exported yet"},
+            {"label": "RQ1/RQ2 decision", "detail": f"PRIMARY branch = {RQ2_BRANCH_PUBLICATION_LABELS.get(closed_set.get('primary_branch'), closed_set.get('primary_branch'))}"},
+        ]
+        paper_figures.forensic_lineage_diagram_figure(nodes=publication_nodes, title="Forensic evidence lineage", out_path=figures_dir / "forensic_lineage_publication")
+        emit(
+            "figures/forensic_lineage_publication.pdf", ExportOutcome("GENERATED", "real, publication variant of figures/forensic_lineage.pdf (same chain, no truncated hashes)"),
+            classification="PAPER_PRIMARY", provenance=closed_set_provenance,
+        )
     else:
         emit("figures/forensic_lineage.pdf", ExportOutcome("SKIPPED_NO_DATA", "no closed-set PRIMARY branch to trace yet", "get_evidence_dashboard_summary()"))
+        emit("figures/forensic_lineage_publication.pdf", ExportOutcome("SKIPPED_NO_DATA", "no closed-set PRIMARY branch to trace yet", "get_evidence_dashboard_summary()"))
 
     # --- LaTeX tables: one section per CSV that was actually GENERATED ---
     csv_sections: dict[str, list[dict[str, Any]]] = {}

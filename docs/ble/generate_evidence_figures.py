@@ -66,18 +66,25 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # (paper_exports/figures PNG name, readme_img PNG name) -- copied verbatim
 # after run_paper_export(), never re-rendered. RQ1/RQ2 joined this list
-# 2026-08-18 -- see module docstring.
+# 2026-08-18 -- see module docstring. Methodological audit item 7
+# (2026-08-19): README-facing evidence_rq1_domains.png/evidence_rq2_branches
+# .png/evidence_forensic_lineage.png now come from the PUBLICATION variant
+# each (same real data, no DEVELOPMENT-EVIDENCE caption/footnote text, no
+# truncated hashes, human-readable RQ2 labels, fixed [0,1] BA axis) --
+# paper_exports/figures/*.png (without the _publication suffix) still exist
+# with the full diagnostic caption/footnote for the supplementary bundle,
+# just no longer copied into readme_img/.
 CONSOLIDATED_FIGURES = [
-    ("rq1_acquisition_dependence.png", "evidence_rq1_domains.png"),
-    ("rq2_representation_comparison.png", "evidence_rq2_branches.png"),
+    ("rq1_acquisition_dependence_publication.png", "evidence_rq1_domains.png"),
+    ("rq2_representation_comparison_publication.png", "evidence_rq2_branches.png"),
     ("campaign_timeline.png", "evidence_campaign_timeline.png"),
     ("closed_set_confusion_matrix_normalized.png", "evidence_confusion_normalized.png"),
-    ("forensic_lineage.png", "evidence_forensic_lineage.png"),
+    ("forensic_lineage_publication.png", "evidence_forensic_lineage.png"),
 ]
 
 # Every figure_manifest.json entry (figure_path) that MUST exist -- see
 # verify_figures()'s MISSING_REQUIRED_SOURCE check.
-REQUIRED_FIGURE_PATHS = {"figures/rq1_acquisition_dependence.png", "figures/rq2_representation_comparison.png"}
+REQUIRED_FIGURE_PATHS = {"figures/rq1_acquisition_dependence_publication.png", "figures/rq2_representation_comparison_publication.png"}
 
 # Matches the platform's own dark research-console palette (BleScientific
 # ResultsPage.tsx is Tailwind slate/cyan) -- kept legible against GitHub's
@@ -352,6 +359,39 @@ def verify_figures(repo: ScientificResultsRepository, paper_run_id: str | None) 
                     expected_ci_text = f"[{delta_ci['ci_low']:.3f}, {delta_ci['ci_high']:.3f}]"
                     if expected_ci_text not in svg_text:
                         failures.append(f"{figure_path}: CI_NOT_IN_FIGURE -- delta_dependence 95% CI {expected_ci_text} from the artifact does not appear in the rendered SVG text")
+
+        # Publication-figure variants (2026-08-19, methodological audit item
+        # 7): the README-facing figures must NOT bake in the DEVELOPMENT-
+        # EVIDENCE caption/footnote text, the "(real, traced)" qualifier,
+        # RQ2's internal snake_case branch keys / "(UNSELECTED)" suffix, or
+        # a truncated hash fragment -- checked directly against the rendered
+        # SVG text, never assumed from the generator code alone.
+        if figure_path in (
+            "figures/rq1_acquisition_dependence_publication.png", "figures/rq2_representation_comparison_publication.png",
+            "figures/forensic_lineage_publication.png",
+        ):
+            svg_path = (exports_dir / figure_path).with_suffix(".svg")
+            if not svg_path.is_file():
+                failures.append(f"{figure_path}: no sibling .svg found to verify rendered label text against")
+            else:
+                svg_text = svg_path.read_text(encoding="utf-8", errors="ignore")
+                if real_evaluation_unit == "EXAMPLE_RECORD" and "BA_window" in svg_text:
+                    failures.append(f"{figure_path}: BA_WINDOW_LABEL_FOUND -- rendered SVG contains the raw 'BA_window' label while evaluation_unit=EXAMPLE_RECORD")
+                if "DEVELOPMENT EVIDENCE" in svg_text:
+                    failures.append(f"{figure_path}: DEV_EVIDENCE_CAPTION_FOUND -- publication figure must not bake the DEVELOPMENT EVIDENCE caption into the image")
+                if "real, traced" in svg_text:
+                    failures.append(f"{figure_path}: REAL_TRACED_TEXT_FOUND -- publication figure must not bake the '(real, traced)' qualifier into the image")
+                if re.search(r"[0-9a-f]{16}\.\.\.", svg_text):
+                    failures.append(f"{figure_path}: TRUNCATED_HASH_FOUND -- publication figure must not embed a truncated hash fragment")
+        if figure_path == "figures/rq2_representation_comparison_publication.png":
+            svg_path = (exports_dir / figure_path).with_suffix(".svg")
+            if svg_path.is_file():
+                svg_text = svg_path.read_text(encoding="utf-8", errors="ignore")
+                if "(UNSELECTED)" in svg_text or "(PRIMARY)" in svg_text:
+                    failures.append(f"{figure_path}: ANALYSIS_ROLE_SUFFIX_FOUND -- publication figure must convey PRIMARY/UNSELECTED via color, not a text suffix")
+                for internal_key in ("coarse_morphology", "engineered_rf", "raw_iq", "stft"):
+                    if internal_key in svg_text:
+                        failures.append(f"{figure_path}: INTERNAL_BRANCH_KEY_FOUND -- rendered SVG contains the internal snake_case key {internal_key!r} instead of its human-readable label")
 
     # readme_img/'s copy must be byte-identical to the figure paper_export.py
     # rendered -- proves it really is a copy, not a second independent

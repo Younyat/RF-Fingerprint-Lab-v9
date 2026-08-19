@@ -1233,6 +1233,250 @@ built).
 
 ---
 
+## 19. Methodological audit (2026-08-19) — acquisition profile, bootstrap spec, corpus counts, RQ2 paired uncertainty, model configs, TEST vs. protected FUTURE, publication figures
+
+Pre-registered scope for this audit: no new captures, no retraining, no
+threshold/split/scientific-criteria changes, no change to the RQ1/RQ2
+numeric results already corrected in §18.0's 2026-08-19 coherence-audit
+entry. Every value below is read directly from a real, on-disk artifact;
+anything not present in a real schema/artifact is marked `NOT_AVAILABLE`,
+never reconstructed.
+
+### 19.1 RF acquisition profile (closed-set `IDENTITY-c52850a953`, 79 real captures)
+
+Every field below is uniform across all 79 real `CaptureRecord`s backing
+this dataset (read from each capture's own JSON, not assumed from one
+sample). `contracts/capture.py`'s real schema has no field at all for
+antenna model/type, TX-RX distance/geometry, or environment/location
+descriptor — those three rows are `NOT_AVAILABLE` because the field does
+not exist, not because a value was missing.
+
+| Field | Value | Source (`CaptureRecord` field) |
+|---|---|---|
+| Receiver device id | `sdr-018ca73b3c2d07b3` | `receiver_device_id` |
+| SDR model / serial | `B200` / `E3R04Z1B2` | `sdr_model` / `sdr_serial` |
+| RX channel / antenna port | `RX2` / `RX2` | `rx_channel` / `antenna_port` |
+| BLE channel actually split-assigned | channel 37 only — 100% of TRAIN/VALIDATION/TEST (3,561+2,203+2,464 = 8,228 = the exact real channel-37 example count). Channel 38 exists in the dataset (1,663 examples) but is never split-assigned. | cross-check of `center_frequency_hz` against the real split manifest's `assignments` |
+| Center frequency | `2,402,000,000 Hz` (channel 37, split-assigned); `2,426,000,000 Hz` (channel 38, dataset-only, unused by any split) | `center_frequency_hz` |
+| Sample rate | `4,000,000 sps` | `sample_rate_sps` |
+| Sample format | `cf32_le`, `little_endian` | `sample_dtype` / `byte_order` |
+| Analog/frontend bandwidth | `2,000,000 Hz` (`frontend_bandwidth_hz` == `effective_bandwidth_hz`) | `frontend_bandwidth_hz` / `effective_bandwidth_hz` |
+| RX gain | `20.0 dB`, `manual` | `gain_db` / `gain_mode` |
+| Capture duration | `10.0 s` nominal — uniform across all 79 real captures, no deviation | `capture_duration_s` |
+| Capture tool | `ble-sdr-capture-v3` | `capture_tool` |
+| Capture tool version | `NOT_AVAILABLE` — schema field exists, never populated | `capture_tool_version` |
+| Clock source / time source | `NOT_AVAILABLE` — schema fields exist, never populated | `clock_source` / `time_source` |
+| Discontinuities | `0` across all 79 captures | `discontinuities` |
+| Antenna model/type | `NOT_AVAILABLE` — no schema field exists | — |
+| TX–RX distance/geometry | `NOT_AVAILABLE` — no schema field exists | — |
+| Environment/location descriptor | `NOT_AVAILABLE` — no schema field exists | — |
+
+### 19.2 RQ1 bootstrap specification (canonical BA=0.958/BA=0.634 result)
+
+- **Cluster unit**: the real `session_id` — grouping is done by real session
+  boundary, never by individual example (`_session_clustered_label_pairs`,
+  `ble_rffi_studio/evaluation/evaluator.py`). In this dataset a session is
+  1:1 with a capture (§19.3), so "session-clustered" and "capture-clustered"
+  are the same real grouping here.
+- **Independent clusters in the dependent (capture-dependent diagnostic)
+  domain**: **34** real sessions, `n=1,790` comparable examples (the
+  diagnostic run `RQ1DIAG-IDENTITY-c52850a953-random_forest-511086ab`'s
+  VALIDATION predictions).
+- **Independent clusters in the capture-disjoint VALIDATION domain**: **12**
+  real sessions, `n=2,203` comparable examples (the recommended run
+  `TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd`'s
+  VALIDATION predictions).
+- **Disjointness verified directly**: the 34-session pool and the 12-session
+  pool have **zero** session ids in common (set intersection computed on
+  the real `predictions.json`/dataset session map for both runs) — not
+  merely asserted by design, confirmed by construction.
+- **Bootstrap replicate count**: `n_resamples=2000` (the real default at the
+  `StudioRepository.bootstrap_balanced_accuracy_ci`/
+  `bootstrap_balanced_accuracy_delta_ci` call layer — `inference.py`'s own
+  `hierarchical_cluster_bootstrap`/`paired_cluster_bootstrap_delta_ci`
+  default to `5000`, but no real caller in this codebase leaves that
+  default in place; every real RQ1 CI was computed at `n_resamples=2000`).
+- **CI method**: percentile (`np.quantile` at `alpha/2`/`1-alpha/2` over the
+  resample-statistic array) — never BCa.
+- **Confidence level**: `0.95`.
+- **Random seed**: `np.random.default_rng(12345)` — the real default inside
+  `hierarchical_cluster_bootstrap` whenever a caller passes `rng=None`; no
+  real call site in this codebase ever overrides it, so every RQ1 bootstrap
+  CI in this repository is deterministic and reproducible from this seed.
+- **Delta (`delta_dependence`) resampling procedure**: `paired_cluster_
+  bootstrap_delta_ci` resamples the dependent-domain population and the
+  capture-disjoint population **independently** (each its own
+  `hierarchical_cluster_bootstrap` call, own resample draws), then pairs
+  the *i*-th resample of population A with the *i*-th resample of
+  population B into `delta_i = statistic(A_i) - statistic(B_i)`, and takes
+  the percentile CI of that `delta_i` array. It never subtracts two
+  separately-computed marginal CIs' bounds — that would discard the shape
+  of the actual resampling distribution and is not a valid CI for a
+  difference.
+- **Do the 0.958 CI and the 0.634 CI use the same resampling scheme?**
+  **Yes.** Both are computed by the exact same function chain
+  (`Evaluator.bootstrap_balanced_accuracy_ci` → `hierarchical_cluster_
+  bootstrap`), the same statistic (mean-per-class recall over pooled,
+  resampled `(true_label, predicted_label)` pairs — `evaluate_split()`'s own
+  `balanced_accuracy` definition, never a second one), the same
+  `n_resamples=2000`, the same `confidence_level=0.95`, and the same
+  seed-default (`12345`, freshly instantiated per call since both callers
+  pass `rng=None`). The only real difference between them is the input
+  cluster population (34 clusters/1,790 examples vs. 12 clusters/2,203
+  examples) — exactly what a bootstrap CI is supposed to reflect, not a
+  methodological inconsistency between the two numbers.
+
+### 19.3 Corpus composition by class (`IDENTITY-c52850a953`, `MULTI_DEVICE_CLASSIFICATION` split)
+
+Computed directly from the real split manifest's `assignments` (8,228 real
+rows, each carrying its own real `capture_id`/`session_id`/`physical_unit_id`
+/`split`). **The independent experimental unit here is the capture/session,
+not the individual example record** — every unit×domain cell below has
+`n_captures == n_sessions` (1:1 pairing in this dataset — no capture spans
+more than one session or vice versa) and, cross-checked against
+`paper_exports/development_decision_window_summary.csv`, `n_captures ==
+n_windows` too (1 capture = 1 real 10-second decision window in the current
+pre-120s-campaign regime). `n_examples` is the ExampleRecord count — many
+examples (bursts) per capture, never confused with the capture/session count.
+
+| Physical unit | Domain | n_examples | n_captures | n_sessions |
+|---|---|---:|---:|---:|
+| CC2541SensorTag | TRAIN | 447 | 5 | 5 |
+| CC2541SensorTag | VALIDATION | 187 | 2 | 2 |
+| CC2541SensorTag | TEST | 216 | 2 | 2 |
+| CC2650-UNIT-01 | TRAIN | 522 | 7 | 7 |
+| CC2650-UNIT-01 | VALIDATION | 166 | 3 | 3 |
+| CC2650-UNIT-01 | TEST | 225 | 3 | 3 |
+| keyfobdemo 01 | TRAIN | 1,743 | 14 | 14 |
+| keyfobdemo 01 | VALIDATION | 1,690 | 5 | 5 |
+| keyfobdemo 01 | TEST | 1,857 | 5 | 5 |
+| keyfobdemo 02 | TRAIN | 849 | 8 | 8 |
+| keyfobdemo 02 | VALIDATION | 160 | 2 | 2 |
+| keyfobdemo 02 | TEST | 166 | 2 | 2 |
+| **TOTAL** | **TRAIN** | **3,561** | **34** | **34** |
+| **TOTAL** | **VALIDATION** | **2,203** | **12** | **12** |
+| **TOTAL** | **TEST** | **2,464** | **12** | **12** |
+
+### 19.4 RQ2 paired uncertainty between representations
+
+`RQ2_PAIRED_UNCERTAINTY`: **available**, using only the existing, already-
+tested `StudioRepository.bootstrap_balanced_accuracy_delta_ci()` — no new
+statistic was implemented. This mechanism was built for RQ1's two
+*disjoint* populations, but it is also valid here for a different, verified
+reason: all 4 RQ2 branches (`engineered_rf`, `stft`, `raw_iq`,
+`coarse_morphology`, all real training runs under `TRAIN-20260814T224700-
+4DEVICES-5d06e404-*`) were trained on the exact **same** VALIDATION split,
+and their real `predictions.json` were confirmed, by direct inspection, to
+carry the identical 2,203 `example_id`s in the identical order and the
+identical 12-session grouping order. Because each branch's CI draw uses a
+freshly-seeded `np.random.default_rng(12345)` of the identical size, the
+two populations' resample-index draws are literally identical index-for-
+index — turning the "independent-population" delta bootstrap into a real,
+valid matched-pairs bootstrap for this specific, verified case (same
+seed + same cluster count + same cluster order ⇒ same resampled clusters on
+both sides of the difference).
+
+Computed for this audit (read-only — **not** written into the persisted
+`rq2_representation_comparison_report.json`, which keeps its original
+content per this audit's "no changes to already-fixed RQ2 results" scope):
+
+| Contrast | Δ balanced accuracy (point estimate) | 95% CI |
+|---|---:|---|
+| Engineered RF − STFT | `+0.097` | `[-0.001, 0.247]` |
+| Engineered RF − Raw I/Q | `+0.386` | `[0.213, 0.552]` |
+| Engineered RF − Coarse morphology | `+0.357` | `[0.266, 0.585]` |
+
+Method: `StudioRepository.bootstrap_balanced_accuracy_delta_ci(training_run_id_a, training_run_id_b, split_a="VALIDATION", split_b="VALIDATION")`,
+`n_resamples=2,000`, `confidence_level=0.95`. No branch in the currently
+persisted RQ2 report carries a real marginal `balanced_accuracy_ci` either
+(this artifact predates the 2026-08-17 per-branch CI addition to
+`rq2_benchmark.py`) — this is why the RQ2 publication figure (§19.7) shows
+point estimates only.
+
+### 19.5 Exact model configurations (closed-set, real training runs, `random_seed=42` for all six)
+
+All six real hyperparameter values below come from the hardcoded defaults
+in `training/baseline_models.py`/`training/cnn_models.py`/`training/
+frozen_reference_baseline.py` — every real `training_run.json`'s own
+`hyperparameters` field is `{}` (no per-run override was ever passed), so
+these defaults are exactly what trained every real closed-set model.
+
+- **Engineered RF branch** — 3 real candidates trained, `random_forest`
+  selected as PRIMARY by real VALIDATION composite score:
+  - `RandomForestClassifier(random_state=42, n_estimators=100, max_depth=None)` — **selected**
+  - `LogisticRegression(random_state=42, max_iter=1000, C=1.0)` — trained, not selected
+  - `SVC(kernel="rbf", probability=True, random_state=42, C=1.0, gamma="scale")` — trained, not selected
+- **Raw I/Q CNN (`cnn1d`)**: `Conv1d(2→16, k=7, pad=3)` → ReLU → `max_pool1d(k=2)` → `Conv1d(16→32, k=5, pad=2)` → ReLU → `AdaptiveAvgPool1d(1)` → `Linear(32→num_classes)`. Optimizer `Adam`, `learning_rate=1e-3`, `batch_size=16`, `epochs=30` (fixed, no early stopping/patience rule), loss `CrossEntropyLoss`, `torch.manual_seed(42)`.
+- **STFT CNN (`cnn2d`)**: `Conv2d(1→8, k=3, pad=1)` → ReLU → `max_pool2d(k=2)` → `Conv2d(8→16, k=3, pad=1)` → ReLU → `AdaptiveAvgPool2d(1)` → `Linear(16→num_classes)`. Same optimizer/LR/batch/epochs/seed as `cnn1d` (shared `CnnTrainer.fit`).
+- **Coarse morphology (`frozen_morphological_baseline`)**: no iterative optimization at all — one per-class centroid (mean of `morphological_coarse_tf_representation` vectors over TRAIN), classified by nearest centroid (Euclidean distance), converted to a probability distribution via softmax over negative distances. `random_seed`/hyperparameters are accepted for interface parity but genuinely unused (nothing stochastic or tunable to seed).
+
+### 19.6 TEST ≠ protected FUTURE — formal confirmation with real identifiers
+
+Confirmed structurally, not just by convention: `SplitManifest`'s `TEST`
+role (`SplitName = Literal["TRAIN", "VALIDATION", "TEST"]`,
+`ble_rffi_studio/contracts/split.py`) and protected FUTURE's `FUTURE_TEST`
+role (`HoldoutGroup = Literal["TRAIN", "VALIDATION", "FUTURE_TEST"]`,
+`ble_scientific_results/contracts/holdout_groups.py`) are two entirely
+separate contract types with separate storage, separate access-gating, and
+separate real state today:
+
+- **TEST** (current DEVELOPMENT held-out partition): the 2,464-example
+  partition of the closed-set split
+  `IDENTITY-c52850a953__20260814T224525.782975Z__MULTI_DEVICE_CLASSIFICATION`
+  (§19.3) — the **same acquisition domain** as TRAIN/VALIDATION (same
+  dataset, same 79 real captures, same channel-37 scope), held out only by
+  session-disjoint split assignment, not by a separate campaign.
+- **FUTURE_TEST** (protected FUTURE): requires its own frozen
+  `HoldoutGroupAssignment` record (`assignment_id`, real
+  `physical_unit_ids`/`day_ids`/`session_ids`, `group_manifest_sha256`) —
+  **zero such records exist on disk today** (confirmed: no
+  `HoldoutGroupAssignment` file anywhere under storage; the only file is
+  `holdout_access_log.jsonl`, an access log, not an assignment). Its own
+  module docstring states this explicitly: *"no 20-day campaign has run, so
+  there is nothing real to assign FUTURE_TEST to today."* The real access
+  log (`holdout_access_log.jsonl`, 9 entries) shows every real access to
+  date is `access_type="OPEN_TEST"` (the `SplitManifest` TEST role) — zero
+  entries have `FUTURE_TEST` in their `access_path`. The only real read
+  path for `FUTURE_TEST` data anywhere in the repository
+  (`ScientificResultsRepository`'s confirmatory-future runner) is gated
+  behind 5 checks including `DATASET_HAS_NO_FUTURE_TEST_HOLDOUT_ROLE`,
+  which raises today because no real `FUTURE_TEST` `HoldoutGroupAssignment`
+  exists.
+
+**TEST is not FUTURE.** They are different contract types, different
+storage locations, different real state (TEST: populated and read 9 times
+already; FUTURE_TEST: zero real assignments, zero real reads, structurally
+blocked from being read even if someone tried).
+
+### 19.7 Publication figures regenerated
+
+Three README-facing figures regenerated from the same real canonical
+artifacts as their existing internal/diagnostic counterparts — no
+underlying data changed, only the rendering. New generator code lives in
+`ble_scientific_results/paper_export.py` (RQ1/RQ2 publication blocks,
+`figures/publication` naming) and `ble_scientific_results/figures/
+paper_figures.py` (`bar_with_ci_figure` gained optional `ylim`/`colors`
+params, reused rather than duplicated). `docs/ble/generate_evidence_
+figures.py`'s `CONSOLIDATED_FIGURES` now copies these publication variants
+— not the internal diagnostic ones — into `readme_img/`; `--verify` gained
+matching checks (no `DEVELOPMENT EVIDENCE`/`real, traced` text, no
+truncated hashes, no internal snake_case branch keys or `(UNSELECTED)`
+suffix in the rendered SVG).
+
+| Figure | `readme_img/` file | What changed vs. the internal diagnostic figure |
+|---|---|---|
+| RQ1 domains | `evidence_rq1_domains.png` | No `DEVELOPMENT EVIDENCE` caption, no footnote (n/CI/delta text) baked into the image; fixed `[0, 1]` balanced-accuracy axis; real error bars kept (RQ1 has real, persisted, canonical CIs) |
+| RQ2 branches | `evidence_rq2_branches.png` | Human-readable labels (`Coarse morphology`/`Engineered RF`/`Raw I/Q`/`STFT`) instead of internal snake_case keys; PRIMARY vs. UNSELECTED conveyed by bar color (amber/grey), never a `(UNSELECTED)` text suffix; fixed `[0, 1]` axis; point estimates only — no fabricated error bars, since no branch in the persisted canonical report currently carries a real marginal CI (§19.4) |
+| Forensic lineage | `evidence_forensic_lineage.png` | Title dropped `"(real, traced)"`; node detail text dropped truncated `sha256` fragments (kept the real, meaningful identifiers: dataset id/version, split id, training run id, model bundle id, PRIMARY branch) |
+
+Full provenance (source artifact path + sha256, `evaluation_unit`,
+`evidence_status`, generator, git sha) is preserved for all three in
+`paper_exports/figure_manifest.json` — never shown inside the image itself,
+per this audit's requirement. `docs/ble/generate_evidence_figures.py
+--verify` passes against all of the above.
+
+---
+
 ## Appendix: banned-terms self-check
 
 A search of this document confirms every use of "validated" is either the

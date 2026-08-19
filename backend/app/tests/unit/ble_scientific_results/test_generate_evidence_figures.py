@@ -50,7 +50,7 @@ def _write_manifest(repo, entries: list[dict]) -> None:
     (exports_dir / "figure_manifest.json").write_text(json.dumps({"figures": entries}), encoding="utf-8")
 
 
-def _write_rq1_svg(repo, *, include_ba_window_label=False, future_status_text=None) -> None:
+def _write_rq1_svg(repo, *, include_ba_window_label=False, future_status_text=None, filename="rq1_acquisition_dependence.svg") -> None:
     """A minimal, real (parseable) SVG standing in for what `_save_figure()`
     actually writes -- exercises the same rendered-text checks
     verify_figures() runs against a real one. Default content is
@@ -62,7 +62,16 @@ def _write_rq1_svg(repo, *, include_ba_window_label=False, future_status_text=No
     if future_status_text:
         labels.append(f"protected FUTURE ({future_status_text})")
     body = "".join(f"<text>{label}</text>" for label in labels)
-    (figures_dir / "rq1_acquisition_dependence.svg").write_text(f"<svg>{body}</svg>", encoding="utf-8")
+    (figures_dir / filename).write_text(f"<svg>{body}</svg>", encoding="utf-8")
+
+
+def _write_rq2_publication_svg(repo) -> None:
+    """Pass-safe stand-in for the publication RQ2 figure's rendered SVG --
+    human-readable label, no internal snake_case branch key, no analysis-
+    role text suffix."""
+    figures_dir = repo.root / "paper_exports" / "figures"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    (figures_dir / "rq2_representation_comparison_publication.svg").write_text("<svg><text>Engineered RF</text></svg>", encoding="utf-8")
 
 
 def _manifest_entry_for(source_path: Path, *, paper_run_id="RUN-1", evaluation_unit="EXAMPLE_RECORD", evidence_status="DEVELOPMENT", figure_path="figures/rq1_acquisition_dependence.png", source_artifact_relpath=None) -> dict:
@@ -95,11 +104,15 @@ def test_verify_passes_when_manifest_matches_real_artifact(tmp_path, monkeypatch
     monkeypatch.setattr(gef, "OUT_DIR", tmp_path / "readme_img")
     rq1_path = _write_rq1_artifact(repo)
     _write_rq1_svg(repo)
+    _write_rq1_svg(repo, filename="rq1_acquisition_dependence_publication.svg")
+    _write_rq2_publication_svg(repo)
     rq2_path = repo.root / "RUN-1" / "06_statistics" / "rq2_representation_comparison_report.json"
     rq2_path.write_text(json.dumps({"evaluation_unit": "EXAMPLE_RECORD", "evidence_status": "DEVELOPMENT"}), encoding="utf-8")
     entries = [
         _manifest_entry_for(rq1_path, figure_path="figures/rq1_acquisition_dependence.png"),
         _manifest_entry_for(rq2_path, figure_path="figures/rq2_representation_comparison.png", source_artifact_relpath="RUN-1/06_statistics/rq2_representation_comparison_report.json"),
+        _manifest_entry_for(rq1_path, figure_path="figures/rq1_acquisition_dependence_publication.png"),
+        _manifest_entry_for(rq2_path, figure_path="figures/rq2_representation_comparison_publication.png", source_artifact_relpath="RUN-1/06_statistics/rq2_representation_comparison_report.json"),
     ]
     _write_manifest(repo, entries)
     assert gef.verify_figures(repo, None) == []
@@ -223,7 +236,7 @@ def test_verify_fails_when_readme_copy_diverges_from_paper_export(tmp_path, monk
     _write_manifest(repo, entries)
     figures_dir = repo.root / "paper_exports" / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
-    (figures_dir / "rq1_acquisition_dependence.png").write_bytes(b"real-png-bytes")
+    (figures_dir / "rq1_acquisition_dependence_publication.png").write_bytes(b"real-png-bytes")
     (out_dir / "evidence_rq1_domains.png").write_bytes(b"DIFFERENT-bytes-someone-hand-edited-this")
     failures = gef.verify_figures(repo, None)
     assert any("DIVERGED_FROM_PAPER_EXPORT" in f for f in failures)
