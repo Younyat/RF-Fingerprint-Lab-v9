@@ -91,6 +91,47 @@ def _write_rq4_svg(repo) -> None:
     )
 
 
+def _write_feature_group_ablation_artifact(repo, *, paper_run_id="RUN-1") -> Path:
+    path = repo.root / paper_run_id / "06_statistics" / "feature_group_ablation_exploratory_report.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = {
+        "evidence_status": "DEVELOPMENT_EXPLORATORY",
+        "results": {
+            "FULL": {"balanced_accuracy": 0.634}, "POWER_AMPLITUDE_LEVEL": {"balanced_accuracy": 0.238}, "REMAINING_SIX": {"balanced_accuracy": 0.787},
+        },
+        "contrasts": {"FULL_minus_POWER_AMPLITUDE_LEVEL": {"point_estimate": 0.396, "ci_low": 0.276, "ci_high": 0.508}},
+    }
+    path.write_text(json.dumps(body), encoding="utf-8")
+    return path
+
+
+def _write_feature_group_ablation_svg(repo) -> None:
+    figures_dir = repo.root / "paper_exports" / "figures"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    (figures_dir / "feature_group_ablation.svg").write_text(
+        "<svg><text>Exploratory VALIDATION comparison: feature-group ablation</text>"
+        "<text>Full 10 descriptors</text><text>Power/amplitude level (4)</text><text>Remaining descriptors (6)</text>"
+        "<text>0.396, 95% CI [0.276, 0.508]</text></svg>",
+        encoding="utf-8",
+    )
+
+
+def _write_session_stability_artifact(repo, *, paper_run_id="RUN-1") -> Path:
+    path = repo.root / paper_run_id / "06_statistics" / "session_stability_analysis_report.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = {"evidence_status": "DEVELOPMENT_EXPLORATORY", "sessions": [{"physical_unit_pseudonym": "TX-01", "session_id": "S1", "recall": 0.9}]}
+    path.write_text(json.dumps(body), encoding="utf-8")
+    return path
+
+
+def _write_session_stability_svg(repo) -> None:
+    figures_dir = repo.root / "paper_exports" / "figures"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    (figures_dir / "session_stability.svg").write_text(
+        "<svg><text>Exploratory session-level recall by enrolled transmitter</text><text>TX-01</text></svg>", encoding="utf-8",
+    )
+
+
 def _write_rq2_publication_svg(repo) -> None:
     """Pass-safe stand-in for the publication RQ2 figure's rendered SVG --
     human-readable label, no internal snake_case branch key, no analysis-
@@ -124,6 +165,8 @@ def test_verify_fails_when_a_required_figure_has_no_entry(tmp_path):
     assert any("MISSING_REQUIRED_SOURCE" in f and "rq1_acquisition_dependence" in f for f in failures)
     assert any("MISSING_REQUIRED_SOURCE" in f and "rq2_representation_comparison" in f for f in failures)
     assert any("MISSING_REQUIRED_SOURCE" in f and "rq4_full_burst_vs_pre_pdu" in f for f in failures)
+    assert any("MISSING_REQUIRED_SOURCE" in f and "feature_group_ablation" in f for f in failures)
+    assert any("MISSING_REQUIRED_SOURCE" in f and "session_stability" in f for f in failures)
 
 
 def test_verify_passes_when_manifest_matches_real_artifact(tmp_path, monkeypatch):
@@ -137,6 +180,10 @@ def test_verify_passes_when_manifest_matches_real_artifact(tmp_path, monkeypatch
     rq2_path.write_text(json.dumps({"evaluation_unit": "EXAMPLE_RECORD", "evidence_status": "DEVELOPMENT"}), encoding="utf-8")
     rq4_path = _write_rq4_artifact(repo)
     _write_rq4_svg(repo)
+    ablation_path = _write_feature_group_ablation_artifact(repo)
+    _write_feature_group_ablation_svg(repo)
+    stability_path = _write_session_stability_artifact(repo)
+    _write_session_stability_svg(repo)
     entries = [
         _manifest_entry_for(rq1_path, figure_path="figures/rq1_acquisition_dependence.png"),
         _manifest_entry_for(rq2_path, figure_path="figures/rq2_representation_comparison.png", source_artifact_relpath="RUN-1/06_statistics/rq2_representation_comparison_report.json"),
@@ -145,6 +192,14 @@ def test_verify_passes_when_manifest_matches_real_artifact(tmp_path, monkeypatch
         _manifest_entry_for(
             rq4_path, figure_path="figures/rq4_full_burst_vs_pre_pdu.png", evidence_status="DEVELOPMENT_EXPLORATORY",
             source_artifact_relpath="RUN-1/06_statistics/rq4_full_burst_vs_pre_pdu_exploratory_report.json",
+        ),
+        _manifest_entry_for(
+            ablation_path, figure_path="figures/feature_group_ablation.png", evidence_status="DEVELOPMENT_EXPLORATORY",
+            source_artifact_relpath="RUN-1/06_statistics/feature_group_ablation_exploratory_report.json",
+        ),
+        _manifest_entry_for(
+            stability_path, figure_path="figures/session_stability.png", evidence_status="DEVELOPMENT_EXPLORATORY",
+            source_artifact_relpath="RUN-1/06_statistics/session_stability_analysis_report.json",
         ),
     ]
     _write_manifest(repo, entries)

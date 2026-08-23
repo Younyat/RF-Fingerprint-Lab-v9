@@ -1479,6 +1479,7 @@ class StudioRepository:
         self, *, training_run: TrainingRun, progress=None,
         iq_window_provider: Callable[[ExampleRecord], np.ndarray] | None = None,
         eligible_example_ids: set[str] | None = None,
+        feature_indices: list[int] | None = None,
     ) -> TrainingRun:
         dataset = self._require_dataset(training_run.dataset_id, training_run.dataset_version)
         if training_run.data_origin != dataset.data_origin:
@@ -1522,7 +1523,7 @@ class StudioRepository:
             elif training_run.model_type == "frozen_morphological_baseline":
                 artifacts = service.run_frozen_reference_baseline(training_run=training_run, split=split, examples_by_id=examples_by_id)
             else:
-                artifacts = service.run_baseline(training_run=training_run, split=split, examples_by_id=examples_by_id)
+                artifacts = service.run_baseline(training_run=training_run, split=split, examples_by_id=examples_by_id, feature_indices=feature_indices)
         except Exception as error:
             failed = training_run.model_copy(update={"status": "FAILED"})
             write_json(run_dir / "training_run.json", failed.model_dump(mode="json"))
@@ -1912,6 +1913,78 @@ class StudioRepository:
             "training_run_id": completed.training_run_id, "base_run_training_run_id": training_run_id,
             "analytical_region": analytical_region, "bundle_id": bundle_id, "approval_status": manifest.approval_status,
             "gate_reasons": gate_reasons, "n_eligible_examples": len(eligible_ids),
+            "validation_accuracy": (validation_report or {}).get("accuracy"),
+            "validation_balanced_accuracy": (validation_report or {}).get("balanced_accuracy"),
+        }
+
+    def train_feature_subset_variant(
+        self, *, training_run_id: str, feature_group: str, feature_indices: list[int], progress=None,
+    ) -> dict[str, Any]:
+        """Feature-group ablation (exploratory, 2026-08-24): re-fits the
+        EXACT SAME frozen configuration (dataset/split/model_type/
+        hyperparameters/representation/random_seed/base_preprocessing_profile_id)
+        of an already-completed training run, restricting the engineered
+        feature matrix to `feature_indices` (columns into FEATURE_NAMES).
+        Structurally identical to train_region_specific_variant/
+        train_offset_retaining_sensitivity above -- one of the same family
+        of "re-fit the frozen config, restrict one input dimension" variants
+        -- never a new model selection, never a new hyperparameter search,
+        never a new TRAIN/VALIDATION population (the split itself is never
+        filtered here, unlike the region-restricted variant -- every TRAIN/
+        VALIDATION example still participates, just with fewer feature
+        columns). VALIDATION-only (include_test=False): TEST is never opened
+        for a feature-subset re-fit. Exports a real bundle immediately
+        (acceptance_criteria={}, same non-blocking convention as the other
+        exploratory variants) so downstream consumers can read a real,
+        frozen artifact rather than an in-memory-only result."""
+        feature_group_codes = {"POWER_AMPLITUDE_LEVEL": "power-amp", "REMAINING_SIX": "remaining6"}
+        if feature_group not in feature_group_codes:
+            raise ValueError(f"FEATURE_SUBSET_ABLATION_ONLY_SUPPORTS_POWER_AMPLITUDE_LEVEL_OR_REMAINING_SIX:got {feature_group}")
+        base_run_dict = self.get_training_run(training_run_id)
+        if base_run_dict is None:
+            raise FileNotFoundError(f"TRAINING_RUN_NOT_FOUND:{training_run_id}")
+        if base_run_dict["status"] != "COMPLETED":
+            raise ValueError(f"CANNOT_RUN_FEATURE_SUBSET_ABLATION_ON_AN_INCOMPLETE_TRAINING_RUN:{training_run_id}:{base_run_dict['status']}")
+        base_run = TrainingRun.model_validate({k: v for k, v in base_run_dict.items() if k not in ("metrics", "label_classes", "error")})
+        if base_run.model_type != "random_forest":
+            raise ValueError(f"FEATURE_SUBSET_ABLATION_ONLY_SUPPORTS_RANDOM_FOREST_TODAY:got {base_run.model_type}")
+
+        # Short, deterministic run id (2026-08-24): the base run's own
+        # training_run_id is already long; appending a further descriptive
+        # suffix to it for BOTH the training-run directory AND the exported
+        # bundle directory routinely exceeded Windows' 260-char MAX_PATH for
+        # nested artifact filenames (confirmed by a real FileNotFoundError
+        # during this exploratory ablation) -- so this variant's id is built
+        # from only the base run's own short random suffix (its last
+        # dash-separated segment, e.g. "a598bd"), never the full base id.
+        base_short_suffix = training_run_id.rsplit("-", 1)[-1]
+        variant_run = base_run.model_copy(update={
+            "training_run_id": f"FEATGRP-{base_short_suffix}-{feature_group_codes[feature_group]}",
+            "status": "QUEUED", "started_at": None, "completed_at": None,
+            "analysis_contract_protocol_id": None, "analysis_contract_protocol_version": None, "analysis_contract_hash": None,
+        })
+        if progress:
+            progress("FEATURE_SUBSET_ABLATION", 0.2, f"Training {variant_run.training_run_id}")
+        completed = self.run_training(training_run=variant_run, feature_indices=feature_indices)
+        if progress:
+            progress("FEATURE_SUBSET_ABLATION", 0.7, "Evaluating VALIDATION")
+        evaluation = self.evaluate_training_run(completed.training_run_id, include_test=False)
+        validation_report = evaluation["evaluation_report"].get("VALIDATION")
+
+        bundle_id = f"{completed.training_run_id}-bundle"
+        if progress:
+            progress("FEATURE_SUBSET_ABLATION", 0.85, f"Exporting bundle {bundle_id}")
+        manifest, gate_reasons = self.export_bundle(
+            training_run_id=completed.training_run_id, bundle_id=bundle_id, acceptance_criteria={},
+            model_card_text=f"# {bundle_id}\nFeature-group ablation variant ({feature_group}) of base run {training_run_id}. DEVELOPMENT_EXPLORATORY.",
+        )
+        if progress:
+            progress("FEATURE_SUBSET_ABLATION", 1.0, "Feature-subset ablation completed")
+
+        return {
+            "training_run_id": completed.training_run_id, "base_run_training_run_id": training_run_id,
+            "feature_group": feature_group, "feature_indices": feature_indices, "bundle_id": bundle_id,
+            "approval_status": manifest.approval_status, "gate_reasons": gate_reasons,
             "validation_accuracy": (validation_report or {}).get("accuracy"),
             "validation_balanced_accuracy": (validation_report or {}).get("balanced_accuracy"),
         }

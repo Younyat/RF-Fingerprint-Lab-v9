@@ -100,8 +100,15 @@ class TrainingService:
 
     def run_baseline(
         self, *, training_run: TrainingRun, split: SplitManifest, examples_by_id: dict[str, ExampleRecord],
-        allow_intentional_diagnostic_leakage: bool = False,
+        allow_intentional_diagnostic_leakage: bool = False, feature_indices: list[int] | None = None,
     ) -> TrainingArtifacts:
+        """`feature_indices` (feature-group ablation, exploratory, added
+        2026-08-24): when given, restricts the engineered feature matrix to
+        these column indices into FEATURE_NAMES, computed AFTER the full
+        10-column `feature_vector_representation()` output -- no new I/Q
+        preprocessing, no change to which examples participate. `None`
+        (every existing caller, including PRIMARY) reproduces the exact
+        prior behavior byte-for-byte: all 10 columns, unchanged."""
         if split.split_status != "READY":
             raise ValueError(f"CANNOT_TRAIN_ON_A_SPLIT_THAT_IS_NOT_READY:{split.split_status}")
         if split.leakage_check.status != "PASSED" and not (
@@ -120,6 +127,8 @@ class TrainingService:
 
         started_at = utc_now()
         X = {name: self._features_for(exs) for name, exs in by_split.items()}
+        if feature_indices is not None:
+            X = {name: (arr[:, feature_indices] if len(arr) else arr) for name, arr in X.items()}
         y = {name: [self._label_for(e, split.scientific_task) for e in exs] for name, exs in by_split.items()}
         # Defense in depth: SplitBuilder._finalize already refuses to mark a
         # split READY with fewer than 2 distinct TRAIN labels, but training
@@ -171,9 +180,11 @@ class TrainingService:
         validation_latency_ms = self._measure_latency_ms(lambda sample: trainer.predict_proba(model, sample), X_scaled["VALIDATION"])
 
         completed_run = training_run.model_copy(update={"status": "COMPLETED", "started_at": started_at, "completed_at": utc_now()})
+        feature_names = [FEATURE_NAMES[i] for i in feature_indices] if feature_indices is not None else list(FEATURE_NAMES)
         return TrainingArtifacts(
             training_run=completed_run, model=model, scaler=scaler, label_classes=classes, metrics=metrics, predictions=predictions,
             validation_latency_ms=validation_latency_ms, preprocessing_provenance=dict(self._provenance_by_example_id),
+            feature_names=feature_names,
         )
 
     def _measure_latency_ms(self, predict_one, validation_X: np.ndarray, repeats: int = 10) -> float | None:

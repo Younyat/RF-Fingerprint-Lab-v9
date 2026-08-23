@@ -179,6 +179,46 @@ def rq4_result_rows(rq4_report: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def feature_group_ablation_result_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """DEVELOPMENT_EXPLORATORY feature-group ablation (FULL vs.
+    POWER_AMPLITUDE_LEVEL vs. REMAINING_SIX) -- one row per condition with
+    its metrics, plus one row per recall_per_class entry (pseudonym label
+    applied for the `physical_unit` column only; the row's own
+    `physical_unit_id` column keeps the real internal id)."""
+    rows: list[dict[str, Any]] = []
+    for condition, block in (report.get("results") or {}).items():
+        ci = block.get("balanced_accuracy_ci") or {}
+        base_row = {
+            "condition": condition, "balanced_accuracy": block.get("balanced_accuracy"),
+            "ci_low": ci.get("ci_low"), "ci_high": ci.get("ci_high"), "macro_f1": block.get("macro_f1"),
+            "accuracy": block.get("accuracy"), "n_examples": block.get("n_comparable_to_known_classes") or block.get("n_examples"),
+        }
+        for unit, recall in (block.get("recall_per_class") or {}).items():
+            rows.append({
+                **base_row, "physical_unit_id": unit, "physical_unit_pseudonym": PHYSICAL_UNIT_PSEUDONYM_LABELS.get(unit, unit), "recall": recall,
+            })
+    return rows
+
+
+def session_stability_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """One row per real (physical_unit_id, session_id) pair -- purely
+    descriptive session-level breakdown over PRIMARY's own VALIDATION
+    predictions, never a retrained model or a causal estimate."""
+    rows: list[dict[str, Any]] = []
+    for session in report.get("sessions") or []:
+        row = {
+            "physical_unit_pseudonym": session.get("physical_unit_pseudonym"), "physical_unit_id": session.get("physical_unit_id"),
+            "session_id": session.get("session_id"), "n_examples": session.get("n_examples"),
+            "recall": session.get("recall"), "accuracy": session.get("accuracy"),
+            "median_correct_class_score": session.get("median_correct_class_score"),
+            "top_competing_class": session.get("top_competing_class"), "top_competing_class_share": session.get("top_competing_class_share"),
+        }
+        for fname, value in (session.get("feature_medians") or {}).items():
+            row[f"median_{fname}"] = value
+        rows.append(row)
+    return rows
+
+
 def channel_transport_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {"channel": row.get("channel"), "center_frequency_hz": row.get("center_frequency_hz"), "bundle_id": row.get("frozen_bundle_id"),
@@ -749,6 +789,84 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
     else:
         for name in ("rq4_full_burst_vs_pre_pdu_results.csv", "figures/rq4_full_burst_vs_pre_pdu.pdf", "figures/rq4_per_unit_recall.pdf"):
             emit(name, ExportOutcome("SKIPPED_NO_DATA", "no rq4_full_burst_vs_pre_pdu_exploratory_report.json for any real paper run", rq4_source))
+
+    # Feature-group ablation (DEVELOPMENT_EXPLORATORY, 2026-08-24): FULL (10
+    # engineered descriptors, reuses PRIMARY's own VALIDATION predictions --
+    # no recomputation) vs. POWER_AMPLITUDE_LEVEL (4) vs. REMAINING_SIX (6),
+    # all three scored on the identical VALIDATION population. Not a
+    # model-improvement or model-selection exercise -- no tuning, no new
+    # TRAIN/VALIDATION population, TEST never opened for either new fit.
+    ablation_report = repository.get_feature_group_ablation_exploratory_report(run_dir.name) if run_dir else None
+    ablation_source = "06_statistics/feature_group_ablation_exploratory_report.json"
+    ablation_results = (ablation_report or {}).get("results") or {}
+    if ablation_report and all(k in ablation_results for k in ("FULL", "POWER_AMPLITUDE_LEVEL", "REMAINING_SIX")):
+        _write_csv(exports_dir / "feature_group_ablation_results.csv", feature_group_ablation_result_rows(ablation_report))
+        emit("feature_group_ablation_results.csv", ExportOutcome("GENERATED", f"real, from {run_dir.name}/{ablation_source}"))
+
+        full_r, power_r, remaining_r = ablation_results["FULL"], ablation_results["POWER_AMPLITUDE_LEVEL"], ablation_results["REMAINING_SIX"]
+        categories = ["Full 10 descriptors", "Power/amplitude level (4)", "Remaining descriptors (6)"]
+        values = [full_r.get("balanced_accuracy"), power_r.get("balanced_accuracy"), remaining_r.get("balanced_accuracy")]
+        cis = [full_r.get("balanced_accuracy_ci") or {}, power_r.get("balanced_accuracy_ci") or {}, remaining_r.get("balanced_accuracy_ci") or {}]
+        ci_low = [c.get("ci_low") for c in cis]
+        ci_high = [c.get("ci_high") for c in cis]
+
+        pop = ablation_report.get("population") or {}
+        footnote_parts = [
+            f"{pop.get('validation_n_examples')} matched validation examples, {pop.get('validation_n_sessions')} acquisition sessions (identical across all three conditions)",
+            "Power/amplitude level and Remaining descriptors are independent TRAIN-only re-fits; Full reuses the existing PRIMARY model; TEST not opened for either new fit",
+        ]
+        contrasts = ablation_report.get("contrasts") or {}
+        delta_ab = contrasts.get("FULL_minus_POWER_AMPLITUDE_LEVEL") or {}
+        if delta_ab.get("point_estimate") is not None:
+            footnote_parts.append(f"delta BA (Full - Power/amplitude) = {delta_ab['point_estimate']:.3f}, 95% CI [{delta_ab['ci_low']:.3f}, {delta_ab['ci_high']:.3f}]")
+        delta_ac = contrasts.get("FULL_minus_REMAINING_SIX") or {}
+        if delta_ac.get("point_estimate") is not None:
+            footnote_parts.append(f"delta BA (Full - Remaining) = {delta_ac['point_estimate']:.3f}, 95% CI [{delta_ac['ci_low']:.3f}, {delta_ac['ci_high']:.3f}]")
+
+        paper_figures.bar_with_ci_figure(
+            categories=categories, values=values, ci_low=ci_low, ci_high=ci_high, ylabel="Balanced accuracy",
+            title="Exploratory VALIDATION comparison: feature-group ablation",
+            ylim=(0.0, 1.0), out_path=figures_dir / "feature_group_ablation",
+            footnote=" | ".join(footnote_parts),
+        )
+        emit(
+            "figures/feature_group_ablation.pdf", ExportOutcome("GENERATED", "real"),
+            figure_source=(f"{run_dir.name}/{ablation_source}", "EXAMPLE_RECORD", ablation_report.get("evidence_status") or "DEVELOPMENT_EXPLORATORY", "figures/paper_figures.py::bar_with_ci_figure"),
+        )
+    else:
+        for name in ("feature_group_ablation_results.csv", "figures/feature_group_ablation.pdf"):
+            emit(name, ExportOutcome("SKIPPED_NO_DATA", "no feature_group_ablation_exploratory_report.json for any real paper run", ablation_source))
+
+    # Session-stability analysis (DEVELOPMENT_EXPLORATORY, purely
+    # descriptive, 2026-08-24): per-(physical_unit_id, session_id) recall
+    # breakdown over PRIMARY's own real VALIDATION predictions -- no
+    # retraining, no causal claim, TEST never opened.
+    stability_report = repository.get_session_stability_analysis_report(run_dir.name) if run_dir else None
+    stability_source = "06_statistics/session_stability_analysis_report.json"
+    if stability_report and stability_report.get("sessions"):
+        _write_csv(exports_dir / "session_stability_summary.csv", session_stability_rows(stability_report))
+        emit("session_stability_summary.csv", ExportOutcome("GENERATED", f"real, from {run_dir.name}/{stability_source}"))
+
+        sessions_by_unit: dict[str, list[dict[str, Any]]] = {}
+        for session in stability_report["sessions"]:
+            sessions_by_unit.setdefault(session["physical_unit_pseudonym"], []).append(session)
+        pseudonym_order = sorted(sessions_by_unit, key=lambda p: p)
+        categories = pseudonym_order
+        values_per_category = [[s["recall"] for s in sessions_by_unit[p]] for p in pseudonym_order]
+
+        paper_figures.strip_plot_figure(
+            categories=categories, values_per_category=values_per_category, ylabel="Recall (per session)",
+            title="Exploratory session-level recall by enrolled transmitter",
+            ylim=(-0.02, 1.02), out_path=figures_dir / "session_stability",
+            footnote="One point per real VALIDATION acquisition session (capture-disjoint domain), PRIMARY model, no retraining. Purely descriptive -- not a causal model of the TX/session confound.",
+        )
+        emit(
+            "figures/session_stability.pdf", ExportOutcome("GENERATED", "real"),
+            figure_source=(f"{run_dir.name}/{stability_source}", "EXAMPLE_RECORD", stability_report.get("evidence_status") or "DEVELOPMENT_EXPLORATORY", "figures/paper_figures.py::strip_plot_figure"),
+        )
+    else:
+        for name in ("session_stability_summary.csv", "figures/session_stability.pdf"):
+            emit(name, ExportOutcome("SKIPPED_NO_DATA", "no session_stability_analysis_report.json for any real paper run", stability_source))
 
     confirmatory_future = repository.get_confirmatory_future_analysis_report(run_dir.name) if run_dir else None
     sensitivity_source = repository.get_confirmatory_statistical_plan_report(run_dir.name) if run_dir else None

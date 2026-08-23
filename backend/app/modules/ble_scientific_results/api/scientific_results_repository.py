@@ -2328,6 +2328,28 @@ class ScientificResultsRepository:
             return None
         return json.loads(path.read_text(encoding="utf-8"))
 
+    def get_session_stability_analysis_report(self, paper_run_id: str) -> dict[str, Any] | None:
+        """DEVELOPMENT_EXPLORATORY, purely descriptive (2026-08-24):
+        per-(physical_unit_id, session_id) recall/score/feature-median
+        breakdown over PRIMARY's own real VALIDATION predictions -- no
+        retraining, no causal model. Same read-only convention as the
+        RQ1/RQ2/RQ4/feature-group-ablation getters above."""
+        path = self._run_dir(paper_run_id) / "06_statistics" / "session_stability_analysis_report.json"
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def get_feature_group_ablation_exploratory_report(self, paper_run_id: str) -> dict[str, Any] | None:
+        """DEVELOPMENT_EXPLORATORY feature-group ablation (2026-08-24):
+        FULL (10 engineered descriptors, reuses PRIMARY) vs.
+        POWER_AMPLITUDE_LEVEL (4) vs. REMAINING_SIX (6), same VALIDATION
+        population as PRIMARY throughout. Same read-only convention as the
+        RQ1/RQ2/RQ4 getters above."""
+        path = self._run_dir(paper_run_id) / "06_statistics" / "feature_group_ablation_exploratory_report.json"
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
     def get_evidence_dashboard_summary(self) -> dict[str, Any]:
         """Real, in-platform paper-support dashboard: assembles ALREADY
         PERSISTED RQ1/RQ2 reports (closed-set MULTI_DEVICE_CLASSIFICATION

@@ -141,6 +141,39 @@ def grouped_bar_figure(
     return _save_figure(fig, out_path)
 
 
+def strip_plot_figure(
+    *, categories: Sequence[str], values_per_category: Sequence[Sequence[float]], ylabel: str, title: str, out_path: Path,
+    point_labels_per_category: Sequence[Sequence[str]] | None = None, ylim: tuple[float, float] | None = None,
+    color: str = "#2b6cb0", footnote: str | None = None,
+) -> dict[str, str]:
+    """One column of real, individual points per category (e.g. one point
+    per real acquisition session, grouped by physical unit) -- for a metric
+    where a bar-with-error-bar summary would hide real per-session spread.
+    Small deterministic horizontal jitter only, seeded from the point's own
+    index (never random per render, so two runs over the same data produce
+    the same figure). `point_labels_per_category` (optional) annotates each
+    point with a short real label (e.g. a session's own short id) next to
+    it; omitted when not supplied, never a placeholder."""
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    rng = np.random.default_rng(12345)
+    for i, (cat_values, _cat) in enumerate(zip(values_per_category, categories)):
+        n = len(cat_values)
+        jitter = rng.uniform(-0.12, 0.12, size=n) if n > 0 else np.array([])
+        xs = np.full(n, i, dtype=float) + jitter
+        ax.scatter(xs, cat_values, color=color, s=36, alpha=0.85, edgecolors="#1a202c", linewidths=0.5, zorder=3)
+    ax.set_xticks(range(len(categories)))
+    ax.set_xticklabels(categories)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+    ax.grid(axis="y", alpha=0.3)
+    if footnote:
+        wrapped = "\n".join(textwrap.wrap(footnote, width=100))
+        ax.text(0.5, -0.22, wrapped, transform=ax.transAxes, ha="center", va="top", fontsize=8, color="#4a5568")
+    return _save_figure(fig, out_path)
+
+
 def paired_pre_post_figure(
     *, unit_ids: Sequence[str], pre_values: Sequence[float], post_values: Sequence[float], ylabel: str, title: str, out_path: Path,
 ) -> str:

@@ -79,6 +79,8 @@ CONSOLIDATED_FIGURES = [
     ("rq2_representation_comparison_publication.png", "evidence_rq2_branches.png"),
     ("rq4_full_burst_vs_pre_pdu.png", "evidence_rq4_regions.png"),
     ("rq4_per_unit_recall.png", "evidence_rq4_per_unit_recall.png"),
+    ("feature_group_ablation.png", "evidence_feature_group_ablation.png"),
+    ("session_stability.png", "evidence_session_stability.png"),
     ("campaign_timeline.png", "evidence_campaign_timeline.png"),
     ("closed_set_confusion_matrix_normalized.png", "evidence_confusion_normalized.png"),
     ("forensic_lineage_publication.png", "evidence_forensic_lineage.png"),
@@ -88,7 +90,7 @@ CONSOLIDATED_FIGURES = [
 # verify_figures()'s MISSING_REQUIRED_SOURCE check.
 REQUIRED_FIGURE_PATHS = {
     "figures/rq1_acquisition_dependence_publication.png", "figures/rq2_representation_comparison_publication.png",
-    "figures/rq4_full_burst_vs_pre_pdu.png",
+    "figures/rq4_full_burst_vs_pre_pdu.png", "figures/feature_group_ablation.png", "figures/session_stability.png",
 }
 
 # Matches the platform's own dark research-console palette (BleScientific
@@ -392,6 +394,28 @@ def verify_figures(repo: ScientificResultsRepository, paper_run_id: str | None) 
                 for internal_text in ("DEVELOPMENT_EXPLORATORY", "EXAMPLE_RECORD", "evaluation_unit="):
                     if internal_text in svg_text:
                         failures.append(f"{figure_path}: INTERNAL_ENUM_TEXT_FOUND -- rendered SVG contains internal text {internal_text!r}, which should only appear in the source JSON/manifest, not the human-facing figure")
+
+        # Feature-group ablation (2026-08-24): same human-readable-figure
+        # discipline as RQ4 above -- real BA values/CI embedded as text, no
+        # internal enum/field-name leakage, no interpretive claim about what
+        # the result "means" baked into the image.
+        if figure_path == "figures/feature_group_ablation.png":
+            svg_path = (exports_dir / figure_path).with_suffix(".svg")
+            if not svg_path.is_file():
+                failures.append(f"{figure_path}: no sibling .svg found to verify rendered label/CI text against")
+            else:
+                svg_text = svg_path.read_text(encoding="utf-8", errors="ignore")
+                for internal_text in ("DEVELOPMENT_EXPLORATORY", "EXAMPLE_RECORD"):
+                    if internal_text in svg_text:
+                        failures.append(f"{figure_path}: INTERNAL_ENUM_TEXT_FOUND -- rendered SVG contains internal text {internal_text!r}")
+                for forbidden in ("hardware fingerprint", "dominated by", "explains the model", "demonstrates", "proves"):
+                    if forbidden.lower() in svg_text.lower():
+                        failures.append(f"{figure_path}: FORBIDDEN_INTERPRETIVE_PHRASING_FOUND -- rendered SVG contains {forbidden!r}")
+                delta_ab = (source_json.get("contrasts") or {}).get("FULL_minus_POWER_AMPLITUDE_LEVEL") or {}
+                if delta_ab.get("point_estimate") is not None:
+                    expected_delta_text = f"{delta_ab['point_estimate']:.3f}, 95% CI [{delta_ab['ci_low']:.3f}, {delta_ab['ci_high']:.3f}]"
+                    if expected_delta_text not in svg_text:
+                        failures.append(f"{figure_path}: CI_NOT_IN_FIGURE -- delta (Full - Power/amplitude) {expected_delta_text} from the artifact does not appear in the rendered SVG text")
 
         # Publication-figure variants (2026-08-19, methodological audit item
         # 7): the README-facing figures must NOT bake in the DEVELOPMENT-
