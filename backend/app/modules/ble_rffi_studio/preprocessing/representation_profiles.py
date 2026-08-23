@@ -76,7 +76,22 @@ FEATURE_NAMES = [
 
 def feature_vector_representation(window: np.ndarray, sample_rate_sps: float, n_fft: int = 128) -> np.ndarray:
     """A real, hand-crafted feature vector -- not a placeholder. Every value
-    is computed from the actual I/Q samples, matching FEATURE_NAMES order."""
+    is computed from the actual I/Q samples, matching FEATURE_NAMES order.
+
+    Methodological-audit note (2026-08-22, item 1) on feature #7
+    (cfo_estimate_hz): computed via estimate_cfo_hz() -- see that function's
+    own docstring for why it is a mean phase-rate / frequency-offset
+    estimate, not a validated transmitter-CFO measurement, and why it can
+    include B200 local-oscillator contribution whenever the window this
+    function receives has not already been reference-corrected (true for
+    every real closed-set training run to date -- all of them use
+    base_preprocessing_profile_id="base-v1", identity preprocessing; see
+    base_preprocessing_registry.py). None of the other 9 features are
+    calibrated estimators of a specific transmitter-hardware impairment
+    (PA nonlinearity, phase noise, I/Q imbalance, DC offset, gain error,
+    spectral regrowth) either -- they are general amplitude/power/spectral
+    statistics that MAY be influenced by such impairments, never presented
+    as isolating one."""
     amplitude = np.abs(window)
     power = amplitude ** 2
     mean_power = float(np.mean(power)) if len(power) else 0.0

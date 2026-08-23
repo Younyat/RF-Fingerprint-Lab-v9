@@ -26,7 +26,15 @@ from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
 # safe here, unlike the ScientificResultsRepository coupling in
 # studio_repository.py (which needs a deferred import to avoid a real
 # circular-import risk that does not exist for these).
-from app.modules.ble_scientific_results.statistics.inference import BootstrapCiResult, hierarchical_cluster_bootstrap, paired_cluster_bootstrap_delta_ci, risk_coverage_curve
+from app.modules.ble_scientific_results.statistics.inference import (
+    BootstrapCiResult,
+    hierarchical_cluster_bootstrap,
+    independent_domain_bootstrap_delta_ci,
+    matched_stratified_bootstrap_delta_ci,
+    paired_cluster_bootstrap_delta_ci,
+    risk_coverage_curve,
+    stratified_hierarchical_cluster_bootstrap,
+)
 
 FinalDecision = Literal["IDENTIFIED", "UNKNOWN", "INSUFFICIENT_EVIDENCE"]
 
@@ -91,6 +99,38 @@ def _session_clustered_label_pairs(
     if not by_session:
         return None
     return list(by_session.values())
+
+
+def _session_clustered_label_pairs_by_true_class(
+    predictions: list[dict[str, Any]], known_classes: list[str], session_id_by_example_id: dict[str, str],
+) -> dict[str, list[list[tuple[str, str]]]] | None:
+    """Methodological-audit fix (2026-08-22, item 3): the same real
+    session-clustering step `_session_clustered_label_pairs` performs, but
+    additionally grouped by each prediction's own real `true_label` (for
+    the closed-set MULTI_DEVICE_CLASSIFICATION task this IS the real
+    physical_unit_id -- confirmed directly against a real predictions.json
+    entry, never a second identity source) so
+    `stratified_hierarchical_cluster_bootstrap` can resample within each
+    true-class stratum independently -- guaranteeing every resample keeps
+    all `known_classes` represented. Stratifying by `true_label` (not a
+    separately-looked-up physical_unit_id) is also the mathematically
+    correct choice regardless of task: balanced accuracy is DEFINED as mean
+    recall over the true classes, so preserving every true class in every
+    resample is exactly what a class-preserving bootstrap for BA needs.
+    None when nothing is comparable, matching
+    `_session_clustered_label_pairs`'s own None convention."""
+    comparable = [p for p in predictions if p["true_label"] in known_classes]
+    if len(known_classes) < 2 or not comparable:
+        return None
+    by_class_session: dict[str, dict[str, list[tuple[str, str]]]] = {}
+    for prediction in comparable:
+        session_id = session_id_by_example_id.get(prediction["example_id"])
+        if session_id is None:
+            continue
+        by_class_session.setdefault(prediction["true_label"], {}).setdefault(session_id, []).append((prediction["true_label"], prediction["predicted_label"]))
+    if not by_class_session:
+        return None
+    return {true_class: list(sessions.values()) for true_class, sessions in by_class_session.items()}
 
 
 def _balanced_accuracy_statistic(pairs: Sequence[tuple[str, str]], known_classes: list[str]) -> float:
@@ -232,6 +272,75 @@ class Evaluator:
             return None
         return paired_cluster_bootstrap_delta_ci(
             cluster_values_a, cluster_values_b, statistic=lambda pairs: _balanced_accuracy_statistic(pairs, known_classes),
+            n_resamples=n_resamples, confidence_level=confidence_level,
+        )
+
+    def bootstrap_balanced_accuracy_ci_stratified_by_class(
+        self, predictions: list[dict[str, Any]], known_classes: list[str], session_id_by_example_id: dict[str, str],
+        n_resamples: int = 2000, confidence_level: float = 0.95,
+    ) -> BootstrapCiResult | None:
+        """Methodological-audit fix (2026-08-22, item 3): class-preserving
+        sibling of bootstrap_balanced_accuracy_ci() above -- same statistic
+        (mean-per-class recall), same session-clustering unit, but resamples
+        WITHIN each true class independently (stratified_hierarchical_
+        cluster_bootstrap) instead of pooling every session into one draw.
+        Use this whenever a domain's session count per class is small
+        enough that a plain pooled resample could draw zero sessions from a
+        class (RQ1's real closed-set task, e.g. capture-disjoint
+        VALIDATION's 12 sessions across 4 units) -- bootstrap_balanced_
+        accuracy_ci() stays unchanged for every other real caller (RQ2
+        branch CIs, etc.) that has not been audited for this failure mode."""
+        cluster_values_by_class = _session_clustered_label_pairs_by_true_class(predictions, known_classes, session_id_by_example_id)
+        if cluster_values_by_class is None:
+            return None
+        return stratified_hierarchical_cluster_bootstrap(
+            cluster_values_by_class, statistic=lambda pairs: _balanced_accuracy_statistic(pairs, known_classes),
+            n_resamples=n_resamples, confidence_level=confidence_level,
+        )
+
+    def bootstrap_balanced_accuracy_delta_ci_stratified_by_class(
+        self, predictions_a: list[dict[str, Any]], predictions_b: list[dict[str, Any]], known_classes: list[str],
+        session_id_by_example_id_a: dict[str, str], session_id_by_example_id_b: dict[str, str],
+        n_resamples: int = 2000, confidence_level: float = 0.95,
+    ) -> BootstrapCiResult | None:
+        """Methodological-audit fix (2026-08-22, item 3): RQ1's real
+        delta_dependence CI, recomputed with class-stratified resampling on
+        BOTH sides and terminology that does not claim a "paired" bootstrap
+        -- there is no physical pairing between the capture-dependent
+        domain's sessions and the capture-disjoint domain's sessions (see
+        independent_domain_bootstrap_delta_ci's own docstring). Replaces
+        bootstrap_balanced_accuracy_delta_ci() for RQ1's own use; that
+        method stays unchanged for other real callers."""
+        cluster_values_by_class_a = _session_clustered_label_pairs_by_true_class(predictions_a, known_classes, session_id_by_example_id_a)
+        cluster_values_by_class_b = _session_clustered_label_pairs_by_true_class(predictions_b, known_classes, session_id_by_example_id_b)
+        if cluster_values_by_class_a is None or cluster_values_by_class_b is None:
+            return None
+        return independent_domain_bootstrap_delta_ci(
+            cluster_values_by_class_a, cluster_values_by_class_b, statistic=lambda pairs: _balanced_accuracy_statistic(pairs, known_classes),
+            n_resamples=n_resamples, confidence_level=confidence_level,
+        )
+
+    def bootstrap_balanced_accuracy_delta_ci_matched_by_class(
+        self, predictions_a: list[dict[str, Any]], predictions_b: list[dict[str, Any]], known_classes: list[str],
+        session_id_by_example_id_a: dict[str, str], session_id_by_example_id_b: dict[str, str],
+        n_resamples: int = 2000, confidence_level: float = 0.95,
+    ) -> BootstrapCiResult | None:
+        """RQ4 exploratory fix (2026-08-22): for a genuinely matched design
+        -- the SAME real evidence (same example_ids/sessions) scored under
+        two analytical regions/representations (e.g. FULL_BURST vs
+        PRE_PDU views of the identical VALIDATION set) -- unlike RQ1's
+        `..._stratified_by_class` sibling above, which is for two
+        INDEPENDENT domains with no real pairing. Raises via
+        matched_stratified_bootstrap_delta_ci if the two populations'
+        session-cluster structure does not actually match (caller's own
+        responsibility to have already verified the underlying evidence is
+        the same before calling this)."""
+        cluster_values_by_class_a = _session_clustered_label_pairs_by_true_class(predictions_a, known_classes, session_id_by_example_id_a)
+        cluster_values_by_class_b = _session_clustered_label_pairs_by_true_class(predictions_b, known_classes, session_id_by_example_id_b)
+        if cluster_values_by_class_a is None or cluster_values_by_class_b is None:
+            return None
+        return matched_stratified_bootstrap_delta_ci(
+            cluster_values_by_class_a, cluster_values_by_class_b, statistic=lambda pairs: _balanced_accuracy_statistic(pairs, known_classes),
             n_resamples=n_resamples, confidence_level=confidence_level,
         )
 

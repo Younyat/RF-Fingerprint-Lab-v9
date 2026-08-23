@@ -9,7 +9,7 @@ primitives (`statistics.metrics.balanced_accuracy`/`coverage`) -- no new
 statistical test, no retraining, no model change. Neither function computes
 anything from raw I/Q or re-runs a model; both take already-scored
 per-example predictions the caller supplies (exactly like
-`statistics.sensitivity.leave_one_device_out_sensitivity` already does for
+`statistics.sensitivity.enrolled_population_class_exclusion_sensitivity` already does for
 RQ2/RQ3/RQ4).
 
 S1's method (frozen model trained on CH37 development data, no retraining,

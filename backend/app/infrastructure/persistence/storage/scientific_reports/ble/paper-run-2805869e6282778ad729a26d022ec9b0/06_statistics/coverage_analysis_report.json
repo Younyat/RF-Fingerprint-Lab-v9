@@ -100,7 +100,7 @@
       "PHYSICAL_UNIT_NOT_IN_CLOSED_SET_SPLIT": 113
     }
   },
-  "generated_at": "2026-08-17T22:47:12.883157Z",
+  "generated_at": "2026-08-21T22:48:53.227004Z",
   "minimum_eligible_bursts": 1,
   "overall": {
     "abstained_windows": 0,
@@ -154,6 +154,18 @@
           "evidence_maturity": "CURRENT_TEST",
           "macro_f1": 0.8939393939393939,
           "n_comparable": 12,
+          "operational_breakdown": {
+            "accuracy_among_identified": 1.0,
+            "argmax_accuracy_ignoring_threshold": 0.9166666666666666,
+            "n_correct_rejected": 1,
+            "n_errors_accepted": 0,
+            "n_errors_rejected": 1,
+            "n_identified": 10,
+            "n_insufficient_evidence": 0,
+            "n_unknown_below_threshold": 2,
+            "operational_coverage": 0.8333333333333334,
+            "total_admissible_windows": 12
+          },
           "paper_ready": true,
           "paper_ready_reason": null,
           "risk_coverage": [
@@ -266,6 +278,18 @@
           "evidence_maturity": "CURRENT_TEST",
           "macro_f1": 1.0,
           "n_comparable": 34,
+          "operational_breakdown": {
+            "accuracy_among_identified": 1.0,
+            "argmax_accuracy_ignoring_threshold": 1.0,
+            "n_correct_rejected": 0,
+            "n_errors_accepted": 0,
+            "n_errors_rejected": 0,
+            "n_identified": 34,
+            "n_insufficient_evidence": 0,
+            "n_unknown_below_threshold": 0,
+            "operational_coverage": 1.0,
+            "total_admissible_windows": 34
+          },
           "paper_ready": true,
           "paper_ready_reason": null,
           "risk_coverage": [
@@ -336,6 +360,18 @@
           "evidence_maturity": "CURRENT_TEST",
           "macro_f1": 0.7083333333333334,
           "n_comparable": 12,
+          "operational_breakdown": {
+            "accuracy_among_identified": 0.9,
+            "argmax_accuracy_ignoring_threshold": 0.8333333333333334,
+            "n_correct_rejected": 1,
+            "n_errors_accepted": 1,
+            "n_errors_rejected": 1,
+            "n_identified": 10,
+            "n_insufficient_evidence": 0,
+            "n_unknown_below_threshold": 2,
+            "operational_coverage": 0.8333333333333334,
+            "total_admissible_windows": 12
+          },
           "paper_ready": true,
           "paper_ready_reason": null,
           "risk_coverage": [

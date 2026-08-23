@@ -39,7 +39,7 @@ from .inference import (
     stratified_crossover_permutation_test,
 )
 from .metrics import coverage
-from .sensitivity import LeaveOneDeviceOutResult, leave_one_device_out_sensitivity
+from .sensitivity import ClassExclusionSensitivityResult, enrolled_population_class_exclusion_sensitivity
 
 
 @dataclass
@@ -60,7 +60,7 @@ class ConfirmatoryStatisticalPlanReport:
     rq4_paired_comparison: MethodResult = field(default_factory=lambda: MethodResult(status="SKIPPED_NO_DATA"))
     non_inferiority: MethodResult = field(default_factory=lambda: MethodResult(status="SKIPPED_NO_DATA"))
     holm_correction: MethodResult = field(default_factory=lambda: MethodResult(status="SKIPPED_NO_DATA"))
-    leave_one_device_out: MethodResult = field(default_factory=lambda: MethodResult(status="SKIPPED_NO_DATA"))
+    enrolled_population_class_exclusion_sensitivity: MethodResult = field(default_factory=lambda: MethodResult(status="SKIPPED_NO_DATA"))
     fixed_seed_variability: MethodResult = field(default_factory=lambda: MethodResult(status="SKIPPED_NO_DATA"))
 
 
@@ -143,13 +143,13 @@ def run_confirmatory_statistical_plan(
         report.holm_correction.detail = "no real p-values produced by the tests above to correct"
 
     if predictions and device_id_by_example_id and known_classes:
-        lodo_results: list[LeaveOneDeviceOutResult] = leave_one_device_out_sensitivity(predictions, device_id_by_example_id, known_classes)
-        if lodo_results:
-            report.leave_one_device_out = MethodResult(status="EXECUTED", value=lodo_results)
+        class_exclusion_results: list[ClassExclusionSensitivityResult] = enrolled_population_class_exclusion_sensitivity(predictions, device_id_by_example_id, known_classes)
+        if class_exclusion_results:
+            report.enrolled_population_class_exclusion_sensitivity = MethodResult(status="EXECUTED", value=class_exclusion_results)
         else:
-            report.leave_one_device_out.detail = "no prediction maps to a known device_id"
+            report.enrolled_population_class_exclusion_sensitivity.detail = "no prediction maps to a known device_id"
     else:
-        report.leave_one_device_out.detail = "predictions/device_id_by_example_id/known_classes not supplied"
+        report.enrolled_population_class_exclusion_sensitivity.detail = "predictions/device_id_by_example_id/known_classes not supplied"
 
     if seed_variability_results:
         report.fixed_seed_variability = MethodResult(status="EXECUTED", value=seed_variability_results)
@@ -182,7 +182,7 @@ def confirmatory_statistical_plan_to_dict(report: ConfirmatoryStatisticalPlanRep
         "rq4_paired_comparison": _method(report.rq4_paired_comparison),
         "non_inferiority": _method(report.non_inferiority),
         "holm_correction": _method(report.holm_correction),
-        "leave_one_device_out": _method(report.leave_one_device_out),
+        "enrolled_population_class_exclusion_sensitivity": _method(report.enrolled_population_class_exclusion_sensitivity),
         "fixed_seed_variability": _method(report.fixed_seed_variability),
     }
 

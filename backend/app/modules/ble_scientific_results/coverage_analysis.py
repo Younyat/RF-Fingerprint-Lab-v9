@@ -45,6 +45,16 @@ class CoverageRow:
     # definition.
     predicted_class: str | None = None
     aggregated_probabilities: dict[str, float] | None = None
+    # Methodological-audit fix (2026-08-22, item 2): the raw
+    # run_decision_windows() final_decision string ("IDENTIFIED" /
+    # "UNKNOWN" / "INSUFFICIENT_EVIDENCE"), carried verbatim. `decided` and
+    # `correct` above intentionally conflate IDENTIFIED-and-right into a
+    # single "correct" bit (by design, for their own existing consumers --
+    # see this module's top docstring) -- that conflation loses whether an
+    # UNKNOWN (threshold-rejected) window's own argmax would have been
+    # right or wrong, which operational_coverage_breakdown() below needs.
+    # This field is the one place that real distinction survives.
+    final_decision: str | None = None
 
 
 def coverage_row_from_decision_window(
@@ -64,7 +74,72 @@ def coverage_row_from_decision_window(
         decided=decided, correct=correct, evaluation_domain=evaluation_domain, branch=branch,
         physical_unit_id=physical_unit_id, abstention_reason=window.get("abstention_reason"),
         predicted_class=window.get("predicted_class"), aggregated_probabilities=window.get("aggregated_probabilities"),
+        final_decision=window.get("final_decision"),
     )
+
+
+def operational_coverage_breakdown(rows: list[CoverageRow]) -> dict[str, Any]:
+    """Methodological-audit fix (2026-08-22, item 2): a real, additive
+    breakdown that separates what `evaluate_window_level()`'s BA/accuracy
+    (and the existing `decided`/`coverage()` bucket, both of which treat
+    UNKNOWN as a "decided, just wrong-class" outcome by design -- see this
+    module's own top docstring) conflate together: a window the calibrated
+    acceptance_threshold actually REJECTED (final_decision=="UNKNOWN") is
+    an abstention from the operator's point of view, not a decision. This
+    function never changes `decided`/`coverage_row_from_decision_window`'s
+    existing meaning (real other consumers, e.g. RQ3's coverage() calls,
+    keep exactly their current behavior) -- it is a second, explicit view
+    computed from the SAME real `rows`, never a second data source.
+
+    Argmax-correctness here is computed directly from
+    `predicted_class == physical_unit_id`, independent of `final_decision`
+    -- NEVER from the `correct` field above, which is only True when a row
+    is BOTH IDENTIFIED and right, so it cannot by itself tell an UNKNOWN
+    row's underlying argmax was correct (needed for `n_correct_rejected`)
+    from one whose argmax was also wrong (`n_errors_rejected`).
+
+    `argmax_accuracy_ignoring_threshold` reproduces exactly what
+    evaluate_window_level()'s own BA/confusion-matrix already measure
+    (every admissible window, IDENTIFIED or UNKNOWN, scored by its argmax
+    class) -- kept here too so a reader never has to reconcile two
+    differently-scoped reports by hand. `accuracy_among_identified` is the
+    operationally meaningful complement: accuracy only among windows the
+    system actually committed to a decision for."""
+    admissible = [r for r in rows if r.final_decision != "INSUFFICIENT_EVIDENCE"]
+    insufficient_evidence = [r for r in rows if r.final_decision == "INSUFFICIENT_EVIDENCE"]
+    identified = [r for r in admissible if r.final_decision == "IDENTIFIED"]
+    unknown = [r for r in admissible if r.final_decision == "UNKNOWN"]
+
+    def _is_argmax_correct(row: CoverageRow) -> bool | None:
+        if row.physical_unit_id is None or row.predicted_class is None:
+            return None
+        return row.predicted_class == row.physical_unit_id
+
+    def _n_correct_with_gt(subset: list[CoverageRow]) -> tuple[int, int]:
+        """(n_correct, n_with_ground_truth) -- never divides by a count
+        that includes rows with no real ground truth to judge against."""
+        verdicts = [_is_argmax_correct(r) for r in subset]
+        known = [v for v in verdicts if v is not None]
+        return sum(1 for v in known if v), len(known)
+
+    n_admissible_correct, n_admissible_with_gt = _n_correct_with_gt(admissible)
+    n_identified_correct, n_identified_with_gt = _n_correct_with_gt(identified)
+    correct_rejected = [r for r in unknown if _is_argmax_correct(r) is True]
+    errors_rejected = [r for r in unknown if _is_argmax_correct(r) is False]
+    errors_accepted = [r for r in identified if _is_argmax_correct(r) is False]
+
+    return {
+        "total_admissible_windows": len(admissible),
+        "n_identified": len(identified),
+        "n_unknown_below_threshold": len(unknown),
+        "n_insufficient_evidence": len(insufficient_evidence),
+        "operational_coverage": (len(identified) / len(admissible)) if admissible else None,
+        "argmax_accuracy_ignoring_threshold": (n_admissible_correct / n_admissible_with_gt) if n_admissible_with_gt else None,
+        "accuracy_among_identified": (n_identified_correct / n_identified_with_gt) if n_identified_with_gt else None,
+        "n_correct_rejected": len(correct_rejected),
+        "n_errors_rejected": len(errors_rejected),
+        "n_errors_accepted": len(errors_accepted),
+    }
 
 
 def evaluate_window_level(rows: list[CoverageRow], *, evaluator: Any, known_classes: list[str], domain_label: str) -> Any:

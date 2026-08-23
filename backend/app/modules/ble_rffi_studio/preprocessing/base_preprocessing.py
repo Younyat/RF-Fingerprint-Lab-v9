@@ -75,6 +75,31 @@ DEFAULT_BASE_PROFILE = BasePreprocessingProfile(profile_id="base-v1")
 
 
 def estimate_cfo_hz(window: np.ndarray, sample_rate_sps: float) -> float:
+    """Methodological-audit finding (2026-08-22, item 1): despite the name,
+    this is NOT a validated carrier-frequency-offset (CFO) estimator. It is
+    a mean-phase-rate / frequency-offset estimator: the mean of the
+    sample-to-sample unwrapped phase increment over the WHOLE window, with
+    no known-bit reference waveform, no frozen index set, no least-squares
+    fit -- see paper_compliant_cfo.py::estimate_phi0_and_fb for the real,
+    reference-correlated Eq.(6)-(7) estimator this is NOT. Two real
+    consequences for any caller (including feature_vector_representation's
+    cfo_estimate_hz, RQ2's engineered-RF feature #7): (1) it mixes GFSK
+    modulation phase trajectory into the estimate, since it never isolates a
+    known-content span; (2) whenever it is computed on a window this
+    module's compensation steps have NOT already corrected (e.g. profile
+    base-v1/offset-retaining-v1, both identity), the output is the
+    UNCOMPENSATED, un-decomposed sum of transmitter frequency offset AND
+    the B200 receiver's own local-oscillator offset -- the two are not
+    separable from a single receiver without an independent reference tone.
+    To defensibly call a value here "transmitter CFO," it would need: (a)
+    reference correlation over a known-bit span (the preamble+access-address
+    region already used by paper_eq6_7_compensation, not the whole burst),
+    (b) an independently measured/calibrated B200 LO offset to subtract
+    (e.g. a reference tone captured on the same receiver under the same
+    session), and (c) validation that the resulting estimate is stable
+    across repeated captures of the same transmitter under a fixed receiver
+    state. None of that is done here; call this a mean phase-rate /
+    frequency-offset estimate, not a CFO measurement, until it is."""
     if len(window) < 2:
         return 0.0
     phase = np.unwrap(np.angle(window))

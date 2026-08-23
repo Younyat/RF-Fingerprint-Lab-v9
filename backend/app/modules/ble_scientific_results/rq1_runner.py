@@ -158,18 +158,30 @@ def run_rq1_acquisition_dependence(
     # (see build_rq1_dependence_diagnostic's own docstring), so a CI on it
     # would describe uncertainty of a deliberately non-confirmatory number.
     report("UNCERTAINTY", 0.9, "Computing bootstrap confidence intervals on ba_capture, ba_window, and delta_dependence")
-    ba_capture_ci = studio_repository.bootstrap_balanced_accuracy_ci(recommended_training_run_id, split="VALIDATION")
+    # Methodological-audit fix (2026-08-22, item 3): switched from
+    # bootstrap_balanced_accuracy_ci/_delta_ci to the class-stratified
+    # siblings -- RQ1's own BA is defined as mean recall over the 4 fixed
+    # physical classes, so a resample that (by chance) draws zero sessions
+    # from one class must never silently redefine BA over only the classes
+    # still present. Stratifying within each true class (session-clustered,
+    # same resampling unit as before) removes that failure mode entirely.
+    # bootstrap_balanced_accuracy_ci/_delta_ci themselves stay unchanged for
+    # other real callers (RQ2 branch CIs, etc.) not audited for this issue.
+    ba_capture_ci = studio_repository.bootstrap_balanced_accuracy_ci_stratified_by_class(recommended_training_run_id, split="VALIDATION")
     # RQ1 completion pass (2026-08-17): ba_window now ALSO gets its own real
     # CI -- ba_window is a deliberately leakage-optimistic diagnostic, not a
     # confirmatory estimator, but its own resampling uncertainty is still a
     # real, reportable quantity (never fabricated, never omitted just
     # because the point estimate itself is intentionally optimistic).
-    ba_window_ci = studio_repository.bootstrap_balanced_accuracy_ci(diag_run_id, split="VALIDATION")
-    # delta_dependence's CI comes from a JOINT resample over both populations
-    # (see Evaluator.bootstrap_balanced_accuracy_delta_ci's own docstring for
-    # why subtracting the two marginal CIs above would be invalid) -- never a
-    # second bootstrap engine, reuses hierarchical_cluster_bootstrap.
-    delta_dependence_ci = studio_repository.bootstrap_balanced_accuracy_delta_ci(
+    ba_window_ci = studio_repository.bootstrap_balanced_accuracy_ci_stratified_by_class(diag_run_id, split="VALIDATION")
+    # delta_dependence's CI comes from independently, class-stratified
+    # resampling both domains and differencing per replicate -- NEVER a
+    # "paired" bootstrap (there is no physical pairing between the
+    # capture-dependent domain's sessions and the capture-disjoint domain's
+    # sessions -- see independent_domain_bootstrap_delta_ci's own
+    # docstring), and never subtracting the two marginal CIs above (see the
+    # same docstring for why that would be invalid regardless).
+    delta_dependence_ci = studio_repository.bootstrap_balanced_accuracy_delta_ci_stratified_by_class(
         diag_run_id, recommended_training_run_id, split_a="VALIDATION", split_b="VALIDATION",
     )
     uncertainty_ci = {
@@ -177,7 +189,9 @@ def run_rq1_acquisition_dependence(
         "ba_window_ci": {"ci_low": ba_window_ci["ci_low"], "ci_high": ba_window_ci["ci_high"]} if ba_window_ci else None,
         "delta_dependence_ci": {
             "ci_low": delta_dependence_ci["ci_low"], "ci_high": delta_dependence_ci["ci_high"],
-            "method": "paired_cluster_bootstrap_delta_ci (joint resample, session-clustered, NOT ci_window - ci_capture)",
+            "method": "independent_domain_bootstrap_delta_ci (independent, class-stratified resample of each domain, "
+                      "per-replicate difference; NOT paired -- no physical pairing exists between capture-dependent "
+                      "and capture-disjoint sessions; NOT ci_window - ci_capture)",
         } if delta_dependence_ci else None,
     } if (ba_capture_ci or ba_window_ci or delta_dependence_ci) else None
 

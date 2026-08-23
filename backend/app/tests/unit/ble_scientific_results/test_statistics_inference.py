@@ -10,11 +10,14 @@ from app.modules.ble_scientific_results.statistics.inference import (
     exact_two_sample_permutation_test,
     hierarchical_cluster_bootstrap,
     holm_correction,
+    independent_domain_bootstrap_delta_ci,
+    matched_stratified_bootstrap_delta_ci,
     non_inferiority_test,
     paired_contrast,
     paired_cluster_bootstrap_delta_ci,
     risk_coverage_curve,
     stratified_crossover_permutation_test,
+    stratified_hierarchical_cluster_bootstrap,
 )
 
 
@@ -122,6 +125,83 @@ def test_paired_cluster_bootstrap_delta_ci_is_never_the_same_as_subtracting_marg
     joint = paired_cluster_bootstrap_delta_ci(cluster_values_a, cluster_values_b, n_resamples=2000, rng=rng)
     joint_width = joint.ci_high - joint.ci_low
     assert joint_width < naive_width
+
+
+# --- Methodological-audit fix (2026-08-22, item 3): class-preserving, stratified bootstrap ---
+
+def test_stratified_bootstrap_point_estimate_is_the_real_pooled_mean_across_strata():
+    cluster_values_by_stratum = {"A": [[1.0, 2.0], [3.0, 4.0]], "B": [[5.0, 6.0]]}  # pooled mean = 21/6 = 3.5
+    result = stratified_hierarchical_cluster_bootstrap(cluster_values_by_stratum, n_resamples=500)
+    assert result.point_estimate == pytest.approx(3.5)
+    assert result.ci_low <= result.point_estimate <= result.ci_high
+
+
+def test_stratified_bootstrap_is_reproducible_with_a_fixed_seed():
+    import numpy as np
+    cluster_values_by_stratum = {"A": [[1.0, 2.0], [3.0, 4.0]], "B": [[5.0, 6.0], [10.0, 12.0]]}
+    result_a = stratified_hierarchical_cluster_bootstrap(cluster_values_by_stratum, n_resamples=300, rng=np.random.default_rng(7))
+    result_b = stratified_hierarchical_cluster_bootstrap(cluster_values_by_stratum, n_resamples=300, rng=np.random.default_rng(7))
+    assert result_a.ci_low == pytest.approx(result_b.ci_low)
+    assert result_a.ci_high == pytest.approx(result_b.ci_high)
+
+
+def test_stratified_bootstrap_never_drops_a_stratum_even_with_a_single_cluster_stratum():
+    # The real failure mode this fix removes: a plain pooled bootstrap over
+    # 12 sessions (RQ1's real capture-disjoint VALIDATION domain) drops at
+    # least one of the 4 physical classes from ~26% of its resamples
+    # (verified empirically against the real predictions this audit is
+    # fixing). Here, stratum "B" has only ONE cluster -- the exact small-
+    # stratum shape that makes dropping likely under pooled resampling.
+    # Every value carries its own stratum tag so the statistic can verify,
+    # for every single resample, that all 3 strata are represented.
+    cluster_values_by_stratum = {
+        "A": [[("A", 1.0)], [("A", 1.0)]],
+        "B": [[("B", 1.0)]],
+        "C": [[("C", 1.0)], [("C", 1.0)], [("C", 1.0)]],
+    }
+    observed_stratum_counts = []
+
+    def statistic(values):
+        observed_stratum_counts.append(len({label for label, _ in values}))
+        return 0.0
+
+    stratified_hierarchical_cluster_bootstrap(cluster_values_by_stratum, statistic=statistic, n_resamples=500)
+    # 501 calls total: 1 for the real point estimate over the full pooled
+    # data, plus 500 resamples -- every single one must see all 3 strata.
+    assert len(observed_stratum_counts) == 501
+    assert all(count == 3 for count in observed_stratum_counts)  # NEVER dropped, unlike the pooled bootstrap
+
+
+def test_stratified_bootstrap_requires_at_least_one_stratum():
+    with pytest.raises(ValueError):
+        stratified_hierarchical_cluster_bootstrap({}, n_resamples=10)
+
+
+def test_stratified_bootstrap_rejects_a_stratum_with_no_clusters():
+    with pytest.raises(ValueError):
+        stratified_hierarchical_cluster_bootstrap({"A": [[1.0]], "B": []}, n_resamples=10)
+
+
+def test_independent_domain_bootstrap_delta_ci_point_estimate_is_the_real_difference_of_pooled_means():
+    import numpy as np
+    cluster_values_by_stratum_a = {"A": [[0.9, 0.95]], "B": [[0.85, 0.9]]}  # pooled mean = 0.9
+    cluster_values_by_stratum_b = {"A": [[0.7, 0.75]], "B": [[0.65, 0.7]]}  # pooled mean = 0.7
+    result = independent_domain_bootstrap_delta_ci(cluster_values_by_stratum_a, cluster_values_by_stratum_b, n_resamples=500, rng=np.random.default_rng(1))
+    assert result.point_estimate == pytest.approx(0.2)
+    assert result.ci_low <= result.point_estimate <= result.ci_high
+
+
+def test_independent_domain_bootstrap_delta_ci_never_drops_a_stratum_on_either_side():
+    observed_min_strata = []
+
+    def statistic(values):
+        observed_min_strata.append(len({label for label, _ in values}))
+        return sum(v for _, v in values) / len(values)
+
+    cluster_values_by_stratum_a = {"A": [[("A", 1.0)]], "B": [[("B", 1.0)], [("B", 1.0)]]}
+    cluster_values_by_stratum_b = {"A": [[("A", 0.5)]], "B": [[("B", 0.5)], [("B", 0.5)], [("B", 0.5)]]}
+    independent_domain_bootstrap_delta_ci(cluster_values_by_stratum_a, cluster_values_by_stratum_b, statistic=statistic, n_resamples=300)
+    assert all(count == 2 for count in observed_min_strata)  # both A and B, every single resample, both domains
 
 
 def test_exact_two_sample_permutation_hand_computed():
@@ -248,3 +328,63 @@ def test_risk_coverage_curve_groups_tied_confidence_scores():
     assert points[0].risk == pytest.approx(0.5)
     assert points[1].coverage == pytest.approx(1.0)
     assert points[1].risk == pytest.approx(1 / 3)
+
+
+# --- RQ4 exploratory fix (2026-08-22): genuinely matched/joint stratified bootstrap ---
+
+def test_matched_stratified_bootstrap_delta_ci_point_estimate_is_the_real_difference():
+    cluster_values_by_stratum_a = {"A": [[0.9, 0.95]], "B": [[0.85, 0.9]]}  # pooled mean = 0.9
+    cluster_values_by_stratum_b = {"A": [[0.7, 0.75]], "B": [[0.65, 0.7]]}  # pooled mean = 0.7
+    result = matched_stratified_bootstrap_delta_ci(cluster_values_by_stratum_a, cluster_values_by_stratum_b, n_resamples=500)
+    assert result.point_estimate == pytest.approx(0.2)
+    assert result.ci_low <= result.point_estimate <= result.ci_high
+
+
+def test_matched_stratified_bootstrap_delta_ci_uses_the_same_draw_on_both_sides():
+    # The defining property: resample i's chosen cluster indices are
+    # IDENTICAL for A and B (never two independent draws). Proven here by
+    # tagging each cluster with its own index and confirming, for every
+    # replicate, that the set of indices selected for A equals the set
+    # selected for B.
+    cluster_values_by_stratum_a = {"X": [[("c0", 1.0)], [("c1", 2.0)], [("c2", 3.0)]]}
+    cluster_values_by_stratum_b = {"X": [[("c0", 10.0)], [("c1", 20.0)], [("c2", 30.0)]]}
+    # The delta computation calls statistic(pooled_a) then statistic(pooled_b)
+    # per replicate, so alternating entries in a single sink give us that
+    # pairing directly.
+    combined_sink = []
+
+    def combined_statistic(values):
+        combined_sink.append(frozenset(tag for tag, _ in values))
+        return sum(v for _, v in values) / len(values)
+
+    matched_stratified_bootstrap_delta_ci(
+        cluster_values_by_stratum_a, cluster_values_by_stratum_b, statistic=combined_statistic, n_resamples=200,
+    )
+    # First 2 entries are the real point-estimate calls (statistic(flat_a), statistic(flat_b)); skip them.
+    resample_entries = combined_sink[2:]
+    assert len(resample_entries) == 400  # 200 replicates * (A call + B call)
+    for i in range(0, len(resample_entries), 2):
+        assert resample_entries[i] == resample_entries[i + 1]  # A's cluster tags == B's cluster tags, every replicate
+
+
+def test_matched_stratified_bootstrap_delta_ci_raises_on_strata_mismatch():
+    with pytest.raises(ValueError, match="STRATA_MISMATCH"):
+        matched_stratified_bootstrap_delta_ci({"A": [[1.0]]}, {"B": [[1.0]]}, n_resamples=10)
+
+
+def test_matched_stratified_bootstrap_delta_ci_raises_on_cluster_count_mismatch():
+    with pytest.raises(ValueError, match="CLUSTER_COUNT_MISMATCH"):
+        matched_stratified_bootstrap_delta_ci({"A": [[1.0], [2.0]]}, {"A": [[1.0]]}, n_resamples=10)
+
+
+def test_matched_stratified_bootstrap_delta_ci_never_drops_a_stratum():
+    observed_min_strata = []
+
+    def statistic(values):
+        observed_min_strata.append(len({label for label, _ in values}))
+        return sum(v for _, v in values) / len(values)
+
+    cluster_values_by_stratum_a = {"A": [[("A", 1.0)]], "B": [[("B", 1.0)], [("B", 1.0)]]}
+    cluster_values_by_stratum_b = {"A": [[("A", 0.5)]], "B": [[("B", 0.5)], [("B", 0.5)]]}
+    matched_stratified_bootstrap_delta_ci(cluster_values_by_stratum_a, cluster_values_by_stratum_b, statistic=statistic, n_resamples=300)
+    assert all(count == 2 for count in observed_min_strata)

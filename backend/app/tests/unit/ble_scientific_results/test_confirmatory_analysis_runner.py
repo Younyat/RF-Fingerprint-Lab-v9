@@ -63,14 +63,14 @@ def test_supplying_real_non_inferiority_inputs_executes_it():
     assert report.non_inferiority.value.margin == 0.1
 
 
-def test_supplying_real_predictions_and_device_map_executes_leave_one_device_out():
+def test_supplying_real_predictions_and_device_map_executes_enrolled_population_class_exclusion_sensitivity():
     predictions = [
         {"example_id": "e1", "true_label": "A", "predicted_label": "A"},
         {"example_id": "e2", "true_label": "B", "predicted_label": "B"},
     ]
     report = run_confirmatory_statistical_plan(predictions=predictions, device_id_by_example_id={"e1": "D1", "e2": "D2"}, known_classes=["A", "B"])
-    assert report.leave_one_device_out.status == "EXECUTED"
-    assert len(report.leave_one_device_out.value) == 2
+    assert report.enrolled_population_class_exclusion_sensitivity.status == "EXECUTED"
+    assert len(report.enrolled_population_class_exclusion_sensitivity.value) == 2
 
 
 def test_confirmatory_statistical_plan_to_dict_serializes_dataclass_values():

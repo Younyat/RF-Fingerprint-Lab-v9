@@ -505,6 +505,51 @@ def verify_documentation_matches_artifacts(repo: ScientificResultsRepository) ->
     return failures
 
 
+def verify_preprocessing_profile_provenance(repo: ScientificResultsRepository, paper_run_id: str) -> list[str]:
+    """Methodological-audit lock-in (2026-08-22, item 1): every real training
+    run behind the closed-set RQ1/RQ2 canonical numbers must use
+    base_preprocessing_profile_id="base-v1" (identity preprocessing) --
+    confirmed true as of this audit, and pinned here so it can never silently
+    drift (e.g. someone later wiring paper-eq6-7-v1 into a "PRIMARY" run
+    without updating the paper's Section IV.A claim that raw-I/Q/STFT "use a
+    conservative affine phase compensation" -- which is currently NOT what
+    produced the published numbers). Read-only: reads real training_run.json
+    files, never retrains, never changes which profile is used."""
+    failures: list[str] = []
+    rq1_report = repo.get_rq1_acquisition_dependence_report(paper_run_id)
+    rq2_report = repo.get_rq2_representation_comparison_report(paper_run_id)
+    studio_root = getattr(repo, "ble_root", None)
+    if studio_root is None:
+        return ["verify_preprocessing_profile_provenance: repository has no ble_root attribute -- cannot read training_run.json files"]
+
+    training_run_ids: set[str] = set()
+    if rq1_report:
+        diag_id = rq1_report.get("diagnostic_split_manifest_id")  # actually the diagnostic TRAINING RUN id, per rq1_runner.py convention
+        if diag_id:
+            training_run_ids.add(diag_id)
+    if rq2_report:
+        for branch in rq2_report.get("branches", []):
+            if branch.get("training_run_id"):
+                training_run_ids.add(branch["training_run_id"])
+
+    if not training_run_ids:
+        return ["verify_preprocessing_profile_provenance: no real training_run_ids found via rq1/rq2 canonical reports -- nothing to verify"]
+
+    for training_run_id in sorted(training_run_ids):
+        run_path = studio_root / "training_runs" / training_run_id / "training_run.json"
+        if not run_path.is_file():
+            failures.append(f"PREPROCESSING_PROFILE_PROVENANCE: {training_run_id} has no training_run.json at {run_path}")
+            continue
+        real_profile_id = json.loads(run_path.read_text(encoding="utf-8")).get("base_preprocessing_profile_id")
+        if real_profile_id != "base-v1":
+            failures.append(
+                f"PREPROCESSING_PROFILE_DRIFT: {training_run_id} real base_preprocessing_profile_id={real_profile_id!r}, "
+                f"expected 'base-v1' -- the closed-set canonical numbers are no longer confirmed to be identity-preprocessing "
+                f"only; Section IV.A's phase-compensation claim and this audit's item-1 finding must be re-verified"
+            )
+    return failures
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--paper-run", dest="paper_run_id", default=None, help="paper_run_id every figure's source_artifact must belong to (only used with --verify)")
@@ -514,6 +559,8 @@ if __name__ == "__main__":
     if args.verify:
         repo = load_repository()
         failures = verify_figures(repo, args.paper_run_id) + verify_documentation_matches_artifacts(repo)
+        preprocessing_paper_run_id = args.paper_run_id or "paper-run-2805869e6282778ad729a26d022ec9b0"
+        failures += verify_preprocessing_profile_provenance(repo, preprocessing_paper_run_id)
         if failures:
             print("FIGURE_VERIFICATION_FAILED:")
             for reason in failures:

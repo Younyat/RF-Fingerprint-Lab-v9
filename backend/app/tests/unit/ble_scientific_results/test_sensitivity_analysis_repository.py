@@ -73,7 +73,7 @@ def test_run_sensitivity_analysis_persists_lodo_and_offset_retaining_and_reuses_
 
     assert studio.offset_retaining_calls == ["TRAIN-RUN-1"]
     assert as_dict["primary"]["balanced_accuracy"] == 0.8
-    lodo_by_unit = {r["omitted_physical_unit"]: r for r in as_dict["leave_one_device_out"]["rows"]}
+    lodo_by_unit = {r["omitted_physical_unit"]: r for r in as_dict["enrolled_population_class_exclusion_sensitivity"]["rows"]}
     assert set(lodo_by_unit.keys()) == {"UNIT-A", "UNIT-B"}
     assert lodo_by_unit["UNIT-A"]["delta_vs_full_set"] is not None
     assert as_dict["offset_retaining"]["analysis_role"] == "OFFSET_RETAINING_SENSITIVITY"

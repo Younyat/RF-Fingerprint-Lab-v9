@@ -11,6 +11,7 @@ from app.modules.ble_scientific_results.coverage_analysis import (
     coverage_row_from_decision_window,
     compute_coverage_summary,
     evaluate_window_level,
+    operational_coverage_breakdown,
 )
 
 
@@ -124,3 +125,82 @@ def test_evaluate_window_level_reuses_evaluator_evaluate_split_on_decision_windo
 def test_evaluate_window_level_returns_none_when_nothing_is_comparable():
     rows = [CoverageRow(decided=False, correct=None, evaluation_domain="TEST", physical_unit_id="UNIT-A", predicted_class=None)]
     assert evaluate_window_level(rows, evaluator=Evaluator(), known_classes=["UNIT-A", "UNIT-B"], domain_label="TEST") is None
+
+
+def _row(final_decision, predicted_class, physical_unit_id):
+    return coverage_row_from_decision_window({
+        "final_decision": final_decision, "predicted_class": predicted_class, "physical_unit_id": physical_unit_id,
+        "abstention_reason": "BELOW_MINIMUM_ELIGIBLE_BURSTS:0<1" if final_decision == "INSUFFICIENT_EVIDENCE" else None,
+    })
+
+
+def test_operational_coverage_breakdown_reproduces_the_real_closed_set_test_partition():
+    # Methodological-audit fix (2026-08-22, item 2): the real 12 TEST
+    # decision windows for the closed-set PRIMARY branch
+    # (paper-run-2805869e6282778ad729a26d022ec9b0, 06_statistics/
+    # coverage_analysis_report.json) -- 11/12 argmax-correct, but only
+    # 10/12 accepted-and-correct once the 0.66 threshold is honored as a
+    # real rejection, not "decided, just wrong-class".
+    rows = [
+        _row("IDENTIFIED", "keyfobdemo 01", "keyfobdemo 01"),
+        _row("IDENTIFIED", "CC2650-UNIT-01", "CC2650-UNIT-01"),
+        _row("IDENTIFIED", "keyfobdemo 01", "keyfobdemo 01"),
+        _row("IDENTIFIED", "keyfobdemo 02", "keyfobdemo 02"),
+        _row("IDENTIFIED", "keyfobdemo 01", "keyfobdemo 01"),
+        _row("UNKNOWN", "CC2541SensorTag", "CC2541SensorTag"),  # correct argmax, rejected by threshold
+        _row("UNKNOWN", "keyfobdemo 01", "keyfobdemo 02"),  # wrong argmax, rejected by threshold
+        _row("IDENTIFIED", "keyfobdemo 01", "keyfobdemo 01"),
+        _row("IDENTIFIED", "CC2650-UNIT-01", "CC2650-UNIT-01"),
+        _row("IDENTIFIED", "CC2541SensorTag", "CC2541SensorTag"),
+        _row("IDENTIFIED", "CC2650-UNIT-01", "CC2650-UNIT-01"),
+        _row("IDENTIFIED", "keyfobdemo 01", "keyfobdemo 01"),
+    ]
+    breakdown = operational_coverage_breakdown(rows)
+    assert breakdown["total_admissible_windows"] == 12
+    assert breakdown["n_identified"] == 10
+    assert breakdown["n_unknown_below_threshold"] == 2
+    assert breakdown["n_insufficient_evidence"] == 0
+    assert breakdown["operational_coverage"] == pytest.approx(10 / 12)
+    assert breakdown["argmax_accuracy_ignoring_threshold"] == pytest.approx(11 / 12)  # the paper's "11/12"
+    assert breakdown["accuracy_among_identified"] == pytest.approx(1.0)  # the "10/12 accepted-and-correct" reading -- all 10 IDENTIFIED are right
+    assert breakdown["n_correct_rejected"] == 1
+    assert breakdown["n_errors_rejected"] == 1
+    assert breakdown["n_errors_accepted"] == 0
+
+
+def test_operational_coverage_breakdown_surfaces_a_confidently_accepted_error():
+    # A window that clears the threshold while still being wrong (a real
+    # VALIDATION case: keyfobdemo 02 misidentified as keyfobdemo 01 at
+    # 0.78, above the 0.66 threshold) must show up as n_errors_accepted,
+    # never silently folded into "correct" or "rejected".
+    rows = [
+        _row("IDENTIFIED", "keyfobdemo 01", "keyfobdemo 01"),
+        _row("IDENTIFIED", "keyfobdemo 01", "keyfobdemo 02"),  # confidently wrong, accepted
+    ]
+    breakdown = operational_coverage_breakdown(rows)
+    assert breakdown["n_identified"] == 2
+    assert breakdown["accuracy_among_identified"] == pytest.approx(0.5)
+    assert breakdown["n_errors_accepted"] == 1
+    assert breakdown["n_errors_rejected"] == 0
+
+
+def test_operational_coverage_breakdown_separates_insufficient_evidence_from_unknown():
+    rows = [
+        _row("IDENTIFIED", "UNIT-A", "UNIT-A"),
+        _row("UNKNOWN", "UNIT-B", "UNIT-A"),
+        _row("INSUFFICIENT_EVIDENCE", None, "UNIT-A"),
+    ]
+    breakdown = operational_coverage_breakdown(rows)
+    assert breakdown["total_admissible_windows"] == 2  # INSUFFICIENT_EVIDENCE excluded from admissible
+    assert breakdown["n_insufficient_evidence"] == 1
+    assert breakdown["n_identified"] == 1
+    assert breakdown["n_unknown_below_threshold"] == 1
+    assert breakdown["operational_coverage"] == pytest.approx(0.5)
+
+
+def test_operational_coverage_breakdown_empty_input_never_divides_by_zero():
+    breakdown = operational_coverage_breakdown([])
+    assert breakdown["total_admissible_windows"] == 0
+    assert breakdown["operational_coverage"] is None
+    assert breakdown["argmax_accuracy_ignoring_threshold"] is None
+    assert breakdown["accuracy_among_identified"] is None

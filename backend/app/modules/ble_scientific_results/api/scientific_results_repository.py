@@ -21,6 +21,7 @@ from typing import Any
 
 from app.infrastructure.ble.capture.ble_capture_metadata import atomic_json
 from app.modules.ble_rffi_studio.contracts import CaptureRecord, DatasetManifest, DatasetQualityReport, ExampleRecord, SplitManifest
+from app.modules.ble_rffi_studio.preprocessing.base_preprocessing_registry import resolve_preprocessing_profile
 from app.modules.ble_rffi_studio.registry.physical_device_registry import PhysicalDeviceRegistry
 
 from ..contracts import (
@@ -1786,7 +1787,7 @@ class ScientificResultsRepository:
         bundle genuinely has none (never fabricated as 'not frozen' when a
         real VALIDATION-calibrated one exists)."""
         from app.modules.ble_rffi_studio.inference.decision_windows import DEFAULT_MINIMUM_ELIGIBLE_BURSTS, DEFAULT_WINDOW_DURATION_S
-        from ..coverage_analysis import CoverageRow, compute_coverage_summary, coverage_row_from_decision_window
+        from ..coverage_analysis import CoverageRow, compute_coverage_summary, coverage_row_from_decision_window, operational_coverage_breakdown
         from ..coverage_analysis import evaluate_window_level as _evaluate_window_level
 
         window_duration_s = window_duration_s if window_duration_s is not None else DEFAULT_WINDOW_DURATION_S
@@ -1940,6 +1941,21 @@ class ScientificResultsRepository:
                         "balanced_accuracy": report.balanced_accuracy, "macro_f1": report.macro_f1,
                         "confusion_matrix": report.confusion_matrix, "n_comparable": n_total,
                         "distinct_physical_units": sorted(distinct_units),
+                        # Methodological-audit fix (2026-08-22, item 2): the
+                        # balanced_accuracy/confusion_matrix/n_comparable
+                        # fields above (like `decided` everywhere else in
+                        # this module) intentionally treat UNKNOWN
+                        # (threshold-rejected) windows as "decided, just
+                        # wrong-class" -- real for their own purpose, but not
+                        # what "coverage" means operationally. This is the
+                        # explicit, additive breakdown that separates
+                        # IDENTIFIED / UNKNOWN-below-threshold /
+                        # INSUFFICIENT_EVIDENCE and reports operational
+                        # coverage (IDENTIFIED / admissible), argmax accuracy
+                        # ignoring the threshold, and accuracy restricted to
+                        # accepted (IDENTIFIED) decisions only -- computed
+                        # from the SAME domain_rows, never a second read.
+                        "operational_breakdown": operational_coverage_breakdown(domain_rows),
                         # `risk` in each point below IS the selective_error (error
                         # rate among decided instances at that threshold) -- same
                         # El-Yaniv & Wiener (2010) definition used everywhere else
@@ -1985,8 +2001,13 @@ class ScientificResultsRepository:
 
     def run_sensitivity_analysis(self, *, paper_run_id: str, studio_repository: Any) -> dict[str, Any]:
         """Sensitivity closure (2026-08-12): consolidates the three real
-        sensitivity mechanisms this study already defines -- LODO (already
-        wired, real, tested since 2026-08-09), offset-retaining
+        sensitivity mechanisms this study already defines -- enrolled-
+        population class-exclusion metric sensitivity (already wired, real,
+        tested since 2026-08-09; renamed 2026-08-22 from its original,
+        overstated "LODO"/leave-one-device-out name -- see statistics/
+        sensitivity.py's own docstring for why: the model is never
+        retrained without the excluded class, only the aggregate metric is
+        recomputed post-hoc), offset-retaining
         preprocessing (train_offset_retaining_sensitivity, closed this
         pass), and RQ2's seed_variability (REUSED verbatim from the RQ2
         report, never recomputed) -- into one report that explicitly
@@ -1998,8 +2019,8 @@ class ScientificResultsRepository:
         never persists a report built on missing pieces."""
         if studio_repository is None:
             raise ValueError("NO_STUDIO_REPOSITORY_CONFIGURED:sensitivity analysis needs a real StudioRepository to read predictions/re-train")
-        from ..sensitivity_analysis import enrich_lodo_with_delta_vs_full_set, full_set_balanced_accuracy
-        from ..statistics.sensitivity import leave_one_device_out_sensitivity
+        from ..sensitivity_analysis import enrich_class_exclusion_with_delta_vs_full_set, full_set_balanced_accuracy
+        from ..statistics.sensitivity import enrolled_population_class_exclusion_sensitivity
 
         rq2_report = self.get_rq2_representation_comparison_report(paper_run_id)
         primary = next((b for b in (rq2_report or {}).get("branches", []) if b.get("analysis_role") == "PRIMARY"), None)
@@ -2016,29 +2037,61 @@ class ScientificResultsRepository:
         # never a second identity source.
         device_id_by_example_id = {p["example_id"]: p["physical_unit_id"] for p in predictions if p.get("physical_unit_id")}
 
-        lodo_raw = leave_one_device_out_sensitivity(predictions, device_id_by_example_id, label_classes)
+        class_exclusion_raw = enrolled_population_class_exclusion_sensitivity(predictions, device_id_by_example_id, label_classes)
         baseline_ba = full_set_balanced_accuracy(predictions, label_classes)
-        lodo_rows = enrich_lodo_with_delta_vs_full_set(lodo_raw, full_set_ba=baseline_ba)
+        class_exclusion_rows = enrich_class_exclusion_with_delta_vs_full_set(class_exclusion_raw, full_set_ba=baseline_ba)
 
         offset_result = studio_repository.train_offset_retaining_sensitivity(training_run_id=training_run_id)
         primary_ba = primary.get("balanced_accuracy")
         offset_ba = offset_result.get("validation_balanced_accuracy")
+
+        # Methodological-audit fix (2026-08-22, item 1): this comparison is
+        # only a real CFO/phase-offset ablation when the PRIMARY run's own
+        # base_preprocessing_profile_id resolves to DIFFERENT enabled steps
+        # than "offset-retaining-v1" -- if PRIMARY already ran identity
+        # preprocessing (base-v1, whose enabled_steps() is []), comparing it
+        # against offset-retaining-v1 (also enabled_steps()==[]) compares
+        # identity against a relabeled clone of itself, and any delta=0.000
+        # reported is a trivial consequence of that, never evidence that
+        # "retaining the offset" leaves the result unchanged. This is
+        # detected here from the REAL resolved profile flags, never assumed.
+        base_profile_id = (studio_repository.get_training_run(training_run_id) or {}).get("base_preprocessing_profile_id")
+        primary_enabled_steps = resolve_preprocessing_profile(base_profile_id).enabled_steps() if base_profile_id else None
+        offset_enabled_steps = resolve_preprocessing_profile("offset-retaining-v1").enabled_steps()
+        profiles_behaviorally_identical = primary_enabled_steps is not None and primary_enabled_steps == offset_enabled_steps
+        interpretive_validity = (
+            "NOT_INFORMATIVE_IDENTICAL_PREPROCESSING_PROFILES" if profiles_behaviorally_identical
+            else ("REAL_ABLATION_DIFFERENT_PREPROCESSING_PROFILES" if primary_enabled_steps is not None else "CANNOT_DETERMINE_PRIMARY_PROFILE")
+        )
+        interpretive_note = (
+            f"PRIMARY's own base_preprocessing_profile_id={base_profile_id!r} resolves to the SAME enabled preprocessing "
+            f"steps as offset-retaining-v1 ({offset_enabled_steps!r} both) -- this is NOT a real test of whether retaining "
+            f"CFO/phase offset changes the result; PRIMARY never applied any CFO/phase compensation to begin with, so this "
+            f"delta is trivially ~0 by construction, not evidence of CFO-compensation insensitivity."
+            if profiles_behaviorally_identical else
+            f"PRIMARY's base_preprocessing_profile_id={base_profile_id!r} (enabled steps: {primary_enabled_steps!r}) genuinely "
+            f"differs from offset-retaining-v1 (enabled steps: {offset_enabled_steps!r}) -- this delta is a real ablation."
+        )
         offset_retaining = {
             "analysis_role": "OFFSET_RETAINING_SENSITIVITY", "training_run_id": offset_result["training_run_id"],
             "base_run_training_run_id": training_run_id, "base_preprocessing_profile_id": offset_result["base_preprocessing_profile_id"],
+            "primary_base_preprocessing_profile_id": base_profile_id,
             "estimate": offset_ba, "coverage": offset_result.get("coverage"),
             "delta_vs_primary": (offset_ba - primary_ba) if (offset_ba is not None and primary_ba is not None) else None,
+            "profiles_behaviorally_identical": profiles_behaviorally_identical,
+            "interpretive_validity": interpretive_validity,
+            "interpretive_note": interpretive_note,
         }
 
         as_dict = {
             "schema_version": "ble-scientific-results-sensitivity-analysis-v1", "generated_at": utc_now(), "paper_run_id": paper_run_id,
             "primary": {"analysis_role": "PRIMARY", "branch": primary.get("branch"), "training_run_id": training_run_id, "balanced_accuracy": primary_ba},
-            "leave_one_device_out": {"analysis_role": "SENSITIVITY", "full_set_balanced_accuracy": baseline_ba, "rows": lodo_rows},
+            "enrolled_population_class_exclusion_sensitivity": {"analysis_role": "SENSITIVITY", "full_set_balanced_accuracy": baseline_ba, "rows": class_exclusion_rows},
             "offset_retaining": offset_retaining,
             "seed_variability": {"analysis_role": "SENSITIVITY", "rows": primary.get("seed_variability")} if primary.get("seed_variability") else None,
         }
         atomic_json(self._run_dir(paper_run_id) / "06_statistics" / "sensitivity_report.json", as_dict)
-        self.logger.info("sensitivity analysis persisted paper_run_id=%s lodo_rows=%s", paper_run_id, len(lodo_rows))
+        self.logger.info("sensitivity analysis persisted paper_run_id=%s class_exclusion_rows=%s", paper_run_id, len(class_exclusion_rows))
         return as_dict
 
     def get_sensitivity_report(self, paper_run_id: str) -> dict[str, Any] | None:

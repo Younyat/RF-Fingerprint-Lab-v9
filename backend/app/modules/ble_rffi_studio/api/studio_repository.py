@@ -1584,9 +1584,10 @@ class StudioRepository:
     def get_training_run_predictions(self, training_run_id: str, split: str) -> list[dict[str, Any]] | None:
         """Real, already-persisted per-example predictions for one split of
         one training run (predictions.json, written by run_training()) --
-        the SAME shape Evaluator.evaluate_split()/leave_one_device_out_
-        sensitivity() already consume. Returns None (never []) when the
-        run has no predictions yet or never had that split."""
+        the SAME shape Evaluator.evaluate_split()/
+        enrolled_population_class_exclusion_sensitivity() already consume.
+        Returns None (never []) when the run has no predictions yet or
+        never had that split."""
         predictions_path = self.training_dir / training_run_id / "predictions.json"
         if not predictions_path.is_file():
             return None
@@ -1688,6 +1689,53 @@ class StudioRepository:
             raise ValueError(f"LABEL_CLASSES_MISMATCH_BETWEEN_RUNS:{training_run_id_a}={label_classes_a}:{training_run_id_b}={label_classes_b}")
 
         result = self.evaluator.bootstrap_balanced_accuracy_delta_ci(
+            predictions_a, predictions_b, label_classes_a, session_ids_a, session_ids_b,
+            n_resamples=n_resamples, confidence_level=confidence_level,
+        )
+        if result is None:
+            return None
+        return {"split_a": split_a, "split_b": split_b, **dataclasses.asdict(result)}
+
+    def bootstrap_balanced_accuracy_ci_stratified_by_class(
+        self, training_run_id: str, *, split: str = "VALIDATION", n_resamples: int = 2000, confidence_level: float = 0.95,
+    ) -> dict[str, Any] | None:
+        """Methodological-audit fix (2026-08-22, item 3): class-preserving
+        sibling of bootstrap_balanced_accuracy_ci() -- same real predictions/
+        session read path, resamples within each true class independently
+        so no resample can silently drop a class from the mean-per-class-
+        recall statistic. See Evaluator.bootstrap_balanced_accuracy_ci_
+        stratified_by_class's own docstring."""
+        loaded = self._load_predictions_for_bootstrap(training_run_id, split)
+        if loaded is None:
+            return None
+        predictions, label_classes, session_id_by_example_id = loaded
+        result = self.evaluator.bootstrap_balanced_accuracy_ci_stratified_by_class(
+            predictions, label_classes, session_id_by_example_id, n_resamples=n_resamples, confidence_level=confidence_level,
+        )
+        if result is None:
+            return None
+        return {"split": split, **dataclasses.asdict(result)}
+
+    def bootstrap_balanced_accuracy_delta_ci_stratified_by_class(
+        self, training_run_id_a: str, training_run_id_b: str, *, split_a: str = "VALIDATION", split_b: str = "VALIDATION",
+        n_resamples: int = 2000, confidence_level: float = 0.95,
+    ) -> dict[str, Any] | None:
+        """Methodological-audit fix (2026-08-22, item 3): RQ1's real
+        delta_dependence CI, class-stratified on both sides, terminology
+        that does not claim a "paired" bootstrap (there is no physical
+        pairing between the two domains' sessions). See
+        Evaluator.bootstrap_balanced_accuracy_delta_ci_stratified_by_class's
+        own docstring."""
+        loaded_a = self._load_predictions_for_bootstrap(training_run_id_a, split_a)
+        loaded_b = self._load_predictions_for_bootstrap(training_run_id_b, split_b)
+        if loaded_a is None or loaded_b is None:
+            return None
+        predictions_a, label_classes_a, session_ids_a = loaded_a
+        predictions_b, label_classes_b, session_ids_b = loaded_b
+        if sorted(label_classes_a) != sorted(label_classes_b):
+            raise ValueError(f"LABEL_CLASSES_MISMATCH_BETWEEN_RUNS:{training_run_id_a}={label_classes_a}:{training_run_id_b}={label_classes_b}")
+
+        result = self.evaluator.bootstrap_balanced_accuracy_delta_ci_stratified_by_class(
             predictions_a, predictions_b, label_classes_a, session_ids_a, session_ids_b,
             n_resamples=n_resamples, confidence_level=confidence_level,
         )

@@ -631,11 +631,11 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
     sensitivity_source = repository.get_confirmatory_statistical_plan_report(run_dir.name) if run_dir else None
     _emit_confirmatory_derived_exports(emit, confirmatory_future, run_dir, exports_dir, figures_dir, validation_dry_run=sensitivity_source)
 
-    if sensitivity_source and sensitivity_source.get("leave_one_device_out", {}).get("status") == "EXECUTED":
-        _write_csv(exports_dir / "sensitivity_results.csv", statistical_method_rows(sensitivity_source, ["leave_one_device_out", "fixed_seed_variability"]))
+    if sensitivity_source and sensitivity_source.get("enrolled_population_class_exclusion_sensitivity", {}).get("status") == "EXECUTED":
+        _write_csv(exports_dir / "sensitivity_results.csv", statistical_method_rows(sensitivity_source, ["enrolled_population_class_exclusion_sensitivity", "fixed_seed_variability"]))
         emit("sensitivity_results.csv", ExportOutcome("GENERATED", f"real, from {run_dir.name}/06_statistics/confirmatory_statistical_plan_report.json"))
     else:
-        emit("sensitivity_results.csv", ExportOutcome("SKIPPED_NO_DATA", "no EXECUTED leave_one_device_out in confirmatory_statistical_plan_report.json", "06_statistics/confirmatory_statistical_plan_report.json"))
+        emit("sensitivity_results.csv", ExportOutcome("SKIPPED_NO_DATA", "no EXECUTED enrolled_population_class_exclusion_sensitivity in confirmatory_statistical_plan_report.json", "06_statistics/confirmatory_statistical_plan_report.json"))
 
     # --- S1/S2 engineering ---
     channel_transport = repository.get_channel_transport_report(run_dir.name) if run_dir else None

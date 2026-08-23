@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-08-17T22:53:11.630446Z",
-  "leave_one_device_out": {
+  "enrolled_population_class_exclusion_sensitivity": {
     "analysis_role": "SENSITIVITY",
     "full_set_balanced_accuracy": 0.6338138990398197,
+    "method": "Post-hoc metric recomputation from the PRIMARY model's own already-scored VALIDATION predictions, excluding one physical class's examples from the balanced-accuracy computation at a time. The model itself was trained WITH every class, including the one excluded per row -- this is NOT a retrained leave-one-device-out cross-validation and must never be presented as one.",
     "rows": [
       {
         "accuracy": 0.7465277777777778,
@@ -38,6 +38,7 @@
       }
     ]
   },
+  "generated_at": "2026-08-21T22:53:44.147148Z",
   "offset_retaining": {
     "analysis_role": "OFFSET_RETAINING_SENSITIVITY",
     "base_preprocessing_profile_id": "offset-retaining-v1",
@@ -45,6 +46,10 @@
     "coverage": null,
     "delta_vs_primary": 0.0,
     "estimate": 0.6338138990398197,
+    "interpretive_note": "PRIMARY's own base_preprocessing_profile_id='base-v1' resolves to the SAME enabled preprocessing steps as offset-retaining-v1 ([] both) -- this is NOT a real test of whether retaining CFO/phase offset changes the result; PRIMARY never applied any CFO/phase compensation to begin with, so this delta is trivially ~0 by construction, not evidence of CFO-compensation insensitivity.",
+    "interpretive_validity": "NOT_INFORMATIVE_IDENTICAL_PREPROCESSING_PROFILES",
+    "primary_base_preprocessing_profile_id": "base-v1",
+    "profiles_behaviorally_identical": true,
     "training_run_id": "TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd-offset-retaining"
   },
   "paper_run_id": "paper-run-2805869e6282778ad729a26d022ec9b0",

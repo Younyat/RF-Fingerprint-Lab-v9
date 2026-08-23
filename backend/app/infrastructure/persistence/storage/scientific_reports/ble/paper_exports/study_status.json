@@ -111,9 +111,9 @@
   "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
   "contract_status": "INCOMPLETE",
   "current_phase": "B. Real hardware qualification / early study (pre-AnalysisContract)",
-  "generated_at": "2026-08-18T13:49:19.870796Z",
+  "generated_at": "2026-08-19T16:00:05.734284Z",
   "git_dirty_state": "DIRTY",
-  "git_sha": "773ff2a38c830f26926ac8dd3c4b0197e47a1dbe",
+  "git_sha": "a3b962d551d227cb923e4de3b7b1f254bfedfe53",
   "missing_confirmatory_readiness_fields": [
     "rq2_primary_branch",
     "rq2_branch_selection_rule",

@@ -573,8 +573,9 @@ def build_ble_scientific_results_router(repository, job_manager) -> APIRouter:
             return result if result is not None else {"status": "NO_DATA"}
         return call(resolve)
 
-    # Sensitivity closure (2026-08-12): LODO + offset-retaining + reused
-    # RQ2 seed_variability, consolidated into one real report.
+    # Sensitivity closure (2026-08-12): enrolled-population class-exclusion
+    # metric sensitivity + offset-retaining + reused RQ2 seed_variability,
+    # consolidated into one real report.
     @router.post("/sensitivity-analysis", status_code=202)
     def start_sensitivity_analysis(body: dict):
         return call(lambda: job_manager.start_sensitivity_analysis_job(paper_run_id=body["paper_run_id"]))

@@ -298,6 +298,157 @@ def hierarchical_cluster_bootstrap(
     return (result, resample_statistics) if return_samples else result
 
 
+def stratified_hierarchical_cluster_bootstrap(
+    cluster_values_by_stratum: dict[str, Sequence[Sequence[float]]], *,
+    statistic: Callable[[Sequence[float]], float] = lambda values: sum(values) / len(values),
+    n_resamples: int = 5000, confidence_level: float = 0.95, rng: np.random.Generator | None = None,
+    return_samples: bool = False,
+) -> BootstrapCiResult | tuple[BootstrapCiResult, np.ndarray]:
+    """Methodological-audit fix (2026-08-22, item 3): `hierarchical_cluster_
+    bootstrap` above resamples clusters from ONE pooled list -- for RQ1's
+    real closed-set task (BA defined as mean recall over 4 fixed physical
+    classes), a resample can, by chance, draw zero clusters belonging to
+    one class (a real risk whenever a stratum's cluster count is small,
+    e.g. capture-disjoint VALIDATION's 12 sessions across 4 units), and the
+    statistic then silently computes BA over only the classes still
+    present -- quietly changing the definition of BA in some resamples but
+    not others, exactly the failure mode this function exists to remove.
+
+    Resamples WITHIN each stratum (here: physical_unit_id) independently --
+    every stratum contributes exactly `len(that stratum's real clusters)`
+    resampled clusters (with replacement) to every single replicate, so
+    every stratum, and therefore every class, is present in every
+    replicate by construction. `cluster_values_by_stratum` keys are
+    iterated in sorted order for determinism. Point estimate is the real
+    statistic over the full, unresampled pooled data (unchanged by
+    stratification -- only the resampling distribution changes)."""
+    strata = sorted(cluster_values_by_stratum)
+    if not strata:
+        raise ValueError("NEED_AT_LEAST_ONE_STRATUM")
+    for stratum in strata:
+        if len(cluster_values_by_stratum[stratum]) == 0:
+            raise ValueError(f"STRATUM_HAS_NO_CLUSTERS:{stratum}")
+    rng = rng or np.random.default_rng(12345)
+    flat_all = [value for stratum in strata for cluster in cluster_values_by_stratum[stratum] for value in cluster]
+    point_estimate = statistic(flat_all)
+
+    resample_statistics = np.empty(n_resamples, dtype=float)
+    for i in range(n_resamples):
+        pooled: list[float] = []
+        for stratum in strata:
+            clusters = cluster_values_by_stratum[stratum]
+            n_clusters = len(clusters)
+            chosen = rng.choice(np.arange(n_clusters), size=n_clusters, replace=True)
+            for cluster_index in chosen:
+                pooled.extend(clusters[cluster_index])
+        resample_statistics[i] = statistic(pooled)
+
+    alpha = 1.0 - confidence_level
+    ci_low, ci_high = np.quantile(resample_statistics, [alpha / 2, 1 - alpha / 2])
+    result = BootstrapCiResult(point_estimate=point_estimate, ci_low=float(ci_low), ci_high=float(ci_high), n_resamples=n_resamples, confidence_level=confidence_level)
+    return (result, resample_statistics) if return_samples else result
+
+
+def matched_stratified_bootstrap_delta_ci(
+    cluster_values_by_stratum_a: dict[str, Sequence[Sequence[float]]], cluster_values_by_stratum_b: dict[str, Sequence[Sequence[float]]], *,
+    statistic: Callable[[Sequence[float]], float] = lambda values: sum(values) / len(values),
+    n_resamples: int = 5000, confidence_level: float = 0.95, rng: np.random.Generator | None = None,
+) -> BootstrapCiResult:
+    """RQ4 exploratory FULL_BURST vs PRE_PDU comparison (2026-08-22): a
+    genuinely matched/joint stratified bootstrap for two representations
+    of the SAME underlying evidence -- e.g. the same VALIDATION example_ids,
+    grouped into the same real sessions, scored twice (once per analytical
+    region). Unlike `independent_domain_bootstrap_delta_ci` (built for
+    RQ1's two DISJOINT session pools, which have no real pairing), this
+    function draws ONE set of resampled cluster indices per stratum per
+    replicate and applies that SAME draw to BOTH populations -- never two
+    separately-drawn resamples that only happen to align by seed/size/
+    order. This is the statistically correct procedure whenever the two
+    populations are truly the same clusters under two conditions (a
+    genuine within-cluster paired design), respecting session-level
+    dependence throughout (never resampling individual examples across a
+    session boundary).
+
+    Requires `cluster_values_by_stratum_a` and `_b` to have IDENTICAL
+    stratum keys and, within each stratum, the SAME NUMBER of clusters (not
+    necessarily identical content -- the caller is responsible for having
+    verified the two populations really are the same sessions in the same
+    order before calling this, e.g. by comparing real session_id sets) --
+    raises rather than silently resampling mismatched populations as if
+    they were paired."""
+    strata_a, strata_b = sorted(cluster_values_by_stratum_a), sorted(cluster_values_by_stratum_b)
+    if strata_a != strata_b:
+        raise ValueError(f"STRATA_MISMATCH_BETWEEN_A_AND_B:a={strata_a}:b={strata_b}")
+    if not strata_a:
+        raise ValueError("NEED_AT_LEAST_ONE_STRATUM")
+    for stratum in strata_a:
+        n_a, n_b = len(cluster_values_by_stratum_a[stratum]), len(cluster_values_by_stratum_b[stratum])
+        if n_a == 0 or n_b == 0:
+            raise ValueError(f"STRATUM_HAS_NO_CLUSTERS:{stratum}")
+        if n_a != n_b:
+            raise ValueError(f"CLUSTER_COUNT_MISMATCH_IN_STRATUM_NOT_A_REAL_MATCHED_PAIR:{stratum}:a={n_a}:b={n_b}")
+    rng = rng or np.random.default_rng(12345)
+
+    flat_a = [value for stratum in strata_a for cluster in cluster_values_by_stratum_a[stratum] for value in cluster]
+    flat_b = [value for stratum in strata_a for cluster in cluster_values_by_stratum_b[stratum] for value in cluster]
+    point_estimate = statistic(flat_a) - statistic(flat_b)
+
+    delta_samples = np.empty(n_resamples, dtype=float)
+    for i in range(n_resamples):
+        pooled_a: list[float] = []
+        pooled_b: list[float] = []
+        for stratum in strata_a:
+            clusters_a = cluster_values_by_stratum_a[stratum]
+            clusters_b = cluster_values_by_stratum_b[stratum]
+            n_clusters = len(clusters_a)
+            chosen = rng.choice(np.arange(n_clusters), size=n_clusters, replace=True)  # SAME draw applied to both A and B
+            for cluster_index in chosen:
+                pooled_a.extend(clusters_a[cluster_index])
+                pooled_b.extend(clusters_b[cluster_index])
+        delta_samples[i] = statistic(pooled_a) - statistic(pooled_b)
+
+    alpha = 1.0 - confidence_level
+    ci_low, ci_high = np.quantile(delta_samples, [alpha / 2, 1 - alpha / 2])
+    return BootstrapCiResult(point_estimate=point_estimate, ci_low=float(ci_low), ci_high=float(ci_high), n_resamples=n_resamples, confidence_level=confidence_level)
+
+
+def independent_domain_bootstrap_delta_ci(
+    cluster_values_by_stratum_a: dict[str, Sequence[Sequence[float]]], cluster_values_by_stratum_b: dict[str, Sequence[Sequence[float]]], *,
+    statistic: Callable[[Sequence[float]], float] = lambda values: sum(values) / len(values),
+    n_resamples: int = 5000, confidence_level: float = 0.95, rng: np.random.Generator | None = None,
+) -> BootstrapCiResult:
+    """Methodological-audit terminology fix (2026-08-22, item 3): the
+    class-preserving, stratified-by-physical-unit counterpart to
+    `paired_cluster_bootstrap_delta_ci` above -- deliberately NOT named
+    "paired". RQ1's capture-dependent domain (e.g. 34 sessions) and
+    capture-disjoint domain (e.g. 12 sessions) have no physical pairing
+    between their sessions -- there is no real basis to say diagnostic
+    session i "corresponds to" confirmatory session i. What this function
+    computes is statistically real and valid (a bootstrap distribution of
+    the difference between two statistics, each computed over its own
+    independently, stratified-resampled domain, subtracted per replicate,
+    then a percentile CI taken of that difference distribution -- still
+    NEVER two separately-computed marginal CIs subtracted, for the same
+    reason `paired_cluster_bootstrap_delta_ci` gives), it just must not be
+    called a "paired" bootstrap, since there are no real pairs. Use this
+    (not `paired_cluster_bootstrap_delta_ci`) whenever the two populations
+    are independent AND at least one side needs class-stratified
+    resampling (RQ1's own case); keep using
+    `paired_cluster_bootstrap_delta_ci` for genuinely paired designs (e.g.
+    RQ3's real per-device PRE/POST pairs)."""
+    result_a, samples_a = stratified_hierarchical_cluster_bootstrap(
+        cluster_values_by_stratum_a, statistic=statistic, n_resamples=n_resamples, confidence_level=confidence_level, rng=rng, return_samples=True,
+    )
+    result_b, samples_b = stratified_hierarchical_cluster_bootstrap(
+        cluster_values_by_stratum_b, statistic=statistic, n_resamples=n_resamples, confidence_level=confidence_level, rng=rng, return_samples=True,
+    )
+    delta_samples = samples_a - samples_b
+    point_estimate = result_a.point_estimate - result_b.point_estimate
+    alpha = 1.0 - confidence_level
+    ci_low, ci_high = np.quantile(delta_samples, [alpha / 2, 1 - alpha / 2])
+    return BootstrapCiResult(point_estimate=point_estimate, ci_low=float(ci_low), ci_high=float(ci_high), n_resamples=n_resamples, confidence_level=confidence_level)
+
+
 def paired_cluster_bootstrap_delta_ci(
     cluster_values_a: Sequence[Sequence[float]], cluster_values_b: Sequence[Sequence[float]], *,
     statistic: Callable[[Sequence[float]], float] = lambda values: sum(values) / len(values),

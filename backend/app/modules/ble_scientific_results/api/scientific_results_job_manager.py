@@ -565,9 +565,12 @@ class ScientificResultsJobManager:
             self._cancel_flags.pop(job_id, None)
 
     # ------------------------------------------------------------------
-    # Sensitivity closure (2026-08-12): consolidates LODO (already real),
-    # offset-retaining preprocessing (real, previously uncalled), and RQ2's
-    # own seed_variability (reused, never recomputed) into one report.
+    # Sensitivity closure (2026-08-12): consolidates enrolled-population
+    # class-exclusion metric sensitivity (already real; renamed 2026-08-22
+    # from its original, overstated "LODO" name -- the model is never
+    # retrained without the excluded class), offset-retaining preprocessing
+    # (real, previously uncalled), and RQ2's own seed_variability (reused,
+    # never recomputed) into one report.
     # ------------------------------------------------------------------
 
     def start_sensitivity_analysis_job(self, *, paper_run_id: str) -> dict[str, Any]:
@@ -584,14 +587,14 @@ class ScientificResultsJobManager:
 
     def _run_sensitivity_analysis_job(self, job_id: str, paper_run_id: str) -> None:
         job_dir = self._job_dir(job_id)
-        self._write(job_dir, "running", job_type="SENSITIVITY_ANALYSIS", paper_run_id=paper_run_id, stage="starting", overall_progress=0.0, message="Starting sensitivity analysis (LODO + offset-retaining)")
+        self._write(job_dir, "running", job_type="SENSITIVITY_ANALYSIS", paper_run_id=paper_run_id, stage="starting", overall_progress=0.0, message="Starting sensitivity analysis (class-exclusion + offset-retaining)")
         try:
             def progress(stage: str, fraction: float, message: str) -> None:
                 self._write(job_dir, "running", job_type="SENSITIVITY_ANALYSIS", paper_run_id=paper_run_id, stage=stage, overall_progress=fraction, message=str(message))
 
             result = self.repository.run_sensitivity_analysis(paper_run_id=paper_run_id, studio_repository=self._studio_repository)
             offset = result.get("offset_retaining") or {}
-            message = f"LODO {len(result.get('leave_one_device_out', {}).get('rows', []))} unit(s), offset-retaining delta_vs_primary={offset.get('delta_vs_primary')}"
+            message = f"class-exclusion sensitivity {len(result.get('enrolled_population_class_exclusion_sensitivity', {}).get('rows', []))} unit(s), offset-retaining delta_vs_primary={offset.get('delta_vs_primary')}"
             self._write(job_dir, "completed", job_type="SENSITIVITY_ANALYSIS", paper_run_id=paper_run_id, stage="done", overall_progress=1.0, message=message, result=result)
         except Exception as error:  # noqa: BLE001 -- includes missing StudioRepository/no frozen PRIMARY branch
             self._write(job_dir, "failed", job_type="SENSITIVITY_ANALYSIS", paper_run_id=paper_run_id, error=str(error))
