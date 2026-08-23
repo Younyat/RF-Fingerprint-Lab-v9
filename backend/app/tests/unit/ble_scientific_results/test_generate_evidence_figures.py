@@ -78,13 +78,14 @@ def _write_rq4_artifact(repo, *, paper_run_id="RUN-1", evidence_status="DEVELOPM
 
 
 def _write_rq4_svg(repo) -> None:
-    """Pass-safe stand-in for the RQ4 figure's rendered SVG -- includes the
-    real delta CI text and the evidence_status, contains no forbidden
-    hardware-fingerprint phrasing."""
+    """Pass-safe stand-in for the RQ4 figure's rendered SVG -- human-readable
+    title/labels (no internal evidence_status/evaluation_unit enum text),
+    includes the real delta CI text, contains no forbidden hardware-
+    fingerprint phrasing."""
     figures_dir = repo.root / "paper_exports" / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
     (figures_dir / "rq4_full_burst_vs_pre_pdu.svg").write_text(
-        "<svg><text>RQ4 exploratory analytical-region control -- DEVELOPMENT_EXPLORATORY</text>"
+        "<svg><text>Exploratory VALIDATION comparison: FULL_BURST vs PRE_PDU</text>"
         "<text>FULL_BURST</text><text>PRE_PDU</text><text>[0.046, 0.100]</text></svg>",
         encoding="utf-8",
     )

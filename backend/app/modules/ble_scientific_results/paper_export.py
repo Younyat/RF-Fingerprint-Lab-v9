@@ -41,6 +41,29 @@ RQ2_BRANCH_PUBLICATION_LABELS = {
     "raw_iq": "Raw I/Q", "stft": "STFT",
 }
 
+# Human-readable algorithm name for the forensic-lineage publication figure's
+# "Training" node -- distinct from RQ2_BRANCH_PUBLICATION_LABELS above,
+# which names the *representation* (e.g. "Engineered RF"), not the fitted
+# algorithm (e.g. "Random Forest").
+MODEL_TYPE_PUBLICATION_LABELS = {
+    "random_forest": "Random Forest", "logistic_regression": "Logistic Regression", "svm_rbf": "RBF-SVM",
+    "cnn1d": "1D CNN", "cnn2d": "2D CNN", "frozen_morphological_baseline": "Nearest-centroid baseline",
+}
+
+# Display-only pseudonym labels for the four enrolled physical units,
+# applied exclusively to human-facing figure labels -- never to any
+# persisted identifier, manifest field, or provenance record, which keep
+# their real physical_unit_id unchanged everywhere. IMPORTANT PROVENANCE
+# NOTE: no canonical artifact in this repository (PhysicalDeviceRegistry,
+# docs/ble/physical_device_inventory.json) defines a TX-0x scheme for these
+# units -- confirmed by inspection (2026-08-24) before adding this mapping.
+# This assignment was supplied directly by the user for this repository's
+# human-readable documentation layer and is applied here verbatim; it is
+# not derived from, and does not modify, any existing canonical mapping.
+PHYSICAL_UNIT_PSEUDONYM_LABELS = {
+    "CC2541SensorTag": "TX-01", "keyfobdemo 01": "TX-03", "keyfobdemo 02": "TX-04", "CC2650-UNIT-01": "TX-05",
+}
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -671,9 +694,16 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
         ci_low = [full_ci.get("ci_low"), pre_ci.get("ci_low")]
         ci_high = [full_ci.get("ci_high"), pre_ci.get("ci_high")]
 
+        # Human-readable footnote (2026-08-24): the internal evaluation-unit/
+        # evidence-status enum values stay in the source JSON and this
+        # export's figure_manifest.json entry -- they are not repeated as
+        # raw enum text in the figure itself, only as natural-language
+        # sample-size/design facts a reader needs to interpret the bars.
+        n_full, n_pre = full_burst.get("n_examples"), pre_pdu.get("n_examples")
+        n_examples_text = f"{n_full:,} matched validation examples" if n_full == n_pre and n_full is not None else f"{n_full}/{n_pre} validation examples (FULL_BURST/PRE_PDU)"
+        n_sessions_text = f"{full_burst.get('n_sessions')} acquisition sessions" if full_burst.get("n_sessions") == pre_pdu.get("n_sessions") else f"{full_burst.get('n_sessions')}/{pre_pdu.get('n_sessions')} acquisition sessions"
         footnote_parts = [
-            f"evaluation_unit=EXAMPLE_RECORD | n_examples={full_burst.get('n_examples')}/{pre_pdu.get('n_examples')} (FULL_BURST/PRE_PDU)",
-            f"n_sessions={full_burst.get('n_sessions')}/{pre_pdu.get('n_sessions')}",
+            n_examples_text, n_sessions_text,
             "PRE_PDU: independent TRAIN-only re-fit restricted to the pre-PDU region; TEST not opened for either arm",
         ]
         delta_low, delta_high = delta.get("ci_low"), delta.get("ci_high")
@@ -682,7 +712,7 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
 
         paper_figures.bar_with_ci_figure(
             categories=categories, values=values, ci_low=ci_low, ci_high=ci_high, ylabel="Balanced accuracy",
-            title=f"RQ4 exploratory analytical-region control -- {rq4_report.get('evidence_status') or 'DEVELOPMENT_EXPLORATORY'}",
+            title="Exploratory VALIDATION comparison: FULL_BURST vs PRE_PDU",
             ylim=(0.0, 1.0), out_path=figures_dir / "rq4_full_burst_vs_pre_pdu",
             footnote=" | ".join(footnote_parts),
         )
@@ -693,14 +723,22 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
 
         recall_full = full_burst.get("recall_per_class") or {}
         recall_pre = pre_pdu.get("recall_per_class") or {}
-        units = sorted(recall_full.keys())
+        # Sorted by pseudonym label (TX-01, TX-03, TX-04, TX-05), not by the
+        # internal physical_unit_id string, so the human-facing bar order is
+        # the natural pseudonym order instead of an arbitrary alphabetical
+        # one (CC2541SensorTag/CC2650-UNIT-01/keyfobdemo 01/keyfobdemo 02).
+        units = sorted(recall_full.keys(), key=lambda u: PHYSICAL_UNIT_PSEUDONYM_LABELS.get(u, u))
         if units:
+            # Pseudonym labels (2026-08-24): display-only -- categories below
+            # are the human-facing figure labels; recall_full/recall_pre are
+            # still indexed by the real physical_unit_id, never renamed.
+            unit_labels = [PHYSICAL_UNIT_PSEUDONYM_LABELS.get(u, u) for u in units]
             paper_figures.grouped_bar_figure(
-                categories=units, series=[[recall_full.get(u, 0) for u in units], [recall_pre.get(u, 0) for u in units]],
+                categories=unit_labels, series=[[recall_full.get(u, 0) for u in units], [recall_pre.get(u, 0) for u in units]],
                 series_labels=["FULL_BURST", "PRE_PDU"], series_colors=["#2b6cb0", "#b9822c"],
-                ylabel="Recall (VALIDATION)", title="RQ4 exploratory -- per-unit recall, FULL_BURST vs PRE_PDU",
+                ylabel="Recall (VALIDATION)", title="Exploratory VALIDATION comparison -- per-unit recall",
                 ylim=(0.0, 1.05), out_path=figures_dir / "rq4_per_unit_recall", value_labels=True,
-                footnote="Recall per physical unit under each analytical region; see the source artifact's confusion matrices for the full per-class breakdown.",
+                footnote="Recall per enrolled transmitter under each analytical region; see the source artifact's confusion matrices for the full per-class breakdown.",
             )
             emit(
                 "figures/rq4_per_unit_recall.pdf", ExportOutcome("GENERATED", "real"),
@@ -917,12 +955,23 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
         # partial-hash display text is dropped, since a 16-char hash prefix
         # is not independently verifiable by a reader and full hashes remain
         # in the real artifacts/figure_manifest.json regardless.
+        # Human-readable node detail text (2026-08-24): the full dataset
+        # version timestamp, split-manifest compound id, training_run_id,
+        # and bundle_id are long, machine-oriented identifiers -- dropped
+        # from THIS visible figure only. Every one of them remains exactly
+        # as before in the internal `nodes` figure above, in this export's
+        # own provenance sidecar/figure_manifest.json entry, and in the
+        # real, unmodified manifests/bundles on disk -- nothing persisted
+        # was removed, only what gets drawn into the publication PNG.
+        model_type = None
+        if training_run_path.is_file():
+            model_type = json.loads(training_run_path.read_text(encoding="utf-8")).get("model_type")
         publication_nodes = [
-            {"label": "Dataset", "detail": f"{closed_set['dataset_id']} @ {closed_set['dataset_version']}"},
-            {"label": "Split (TRAIN / VALIDATION / TEST)", "detail": f"{closed_set['dataset_id']}__{closed_set['dataset_version']}__MULTI_DEVICE_CLASSIFICATION"},
-            {"label": "Preprocessing", "detail": f"base_preprocessing_profile_id={preprocessing_profile_id or 'unknown'}"},
-            {"label": "Training run", "detail": closed_set["primary_training_run_id"]},
-            {"label": "Model bundle", "detail": bundle_info["bundle_id"] if bundle_info else "not exported yet"},
+            {"label": "Dataset", "detail": f"{closed_set['dataset_id']} (closed-set, 4 enrolled transmitters)"},
+            {"label": "Split", "detail": "TRAIN / VALIDATION / TEST -- channel-37 scoped, session-disjoint"},
+            {"label": "Preprocessing", "detail": f"{preprocessing_profile_id or 'unknown'} (identity)" if preprocessing_profile_id == "base-v1" else (preprocessing_profile_id or "unknown")},
+            {"label": "Training", "detail": f"{MODEL_TYPE_PUBLICATION_LABELS.get(model_type, model_type or 'unknown')} (PRIMARY)"},
+            {"label": "Model bundle", "detail": "Exported, evaluated" if bundle_info else "not exported yet"},
             {"label": "RQ1/RQ2 decision", "detail": f"PRIMARY branch = {RQ2_BRANCH_PUBLICATION_LABELS.get(closed_set.get('primary_branch'), closed_set.get('primary_branch'))}"},
         ]
         paper_figures.forensic_lineage_diagram_figure(nodes=publication_nodes, title="Forensic evidence lineage", out_path=figures_dir / "forensic_lineage_publication")

@@ -383,8 +383,15 @@ def verify_figures(repo: ScientificResultsRepository, paper_run_id: str | None) 
                 for forbidden in ("hardware fingerprint", "physical fingerprint retained", "physical fingerprint"):
                     if forbidden.lower() in svg_text.lower():
                         failures.append(f"{figure_path}: FORBIDDEN_PHRASING_FOUND -- rendered SVG contains {forbidden!r}, which this exploratory result must not claim")
-                if source_json.get("evidence_status") and source_json["evidence_status"] not in svg_text:
-                    failures.append(f"{figure_path}: EVIDENCE_STATUS_NOT_IN_FIGURE -- {source_json['evidence_status']!r} does not appear in the rendered SVG title")
+                # Human-readable figure discipline (2026-08-24): this
+                # figure's visible text is meant for a human reader, not a
+                # machine -- internal enum/field-name strings must not leak
+                # into the rendered title/footnote (the real evidence_status
+                # and evaluation_unit values stay in the source JSON and this
+                # figure's own figure_manifest.json entry instead).
+                for internal_text in ("DEVELOPMENT_EXPLORATORY", "EXAMPLE_RECORD", "evaluation_unit="):
+                    if internal_text in svg_text:
+                        failures.append(f"{figure_path}: INTERNAL_ENUM_TEXT_FOUND -- rendered SVG contains internal text {internal_text!r}, which should only appear in the source JSON/manifest, not the human-facing figure")
 
         # Publication-figure variants (2026-08-19, methodological audit item
         # 7): the README-facing figures must NOT bake in the DEVELOPMENT-
