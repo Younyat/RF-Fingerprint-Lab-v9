@@ -152,7 +152,7 @@ Source: `06_statistics/rq4_full_burst_vs_pre_pdu_exploratory_report.json`.
 | keyfobdemo 01 | 1,690 | 0.7964497041420119 | 0.6834319526627219 | +0.1130 |
 | keyfobdemo 02 | 160 | 0.00625 | 0.00625 | +0.0000 |
 
-**keyfobdemo 02, exact behavior:** 1 of 160 VALIDATION examples correctly recalled (recall = 0.00625) under **both** FULL_BURST and PRE_PDU — the analytical-region restriction changes nothing for this unit. In both confusion matrices, 159/160 = 99.375% of its examples are assigned to `keyfobdemo 01` (0 to either sensor-platform unit).
+**keyfobdemo 02, exact behavior:** 1 of 160 VALIDATION examples correctly recalled (recall = 0.00625) under **both** FULL_BURST and PRE_PDU. Under FULL_BURST, 159/160 (99.375%) are assigned to `keyfobdemo 01`, 0 to either sensor-platform unit. Under PRE_PDU, the misclassification shifts slightly: 157/160 (98.125%) are assigned to `keyfobdemo 01` and 2/160 (1.25%) to `CC2650-UNIT-01`, 0 to `CC2541SensorTag`. Recall is unchanged at 0.00625 in both regions; the *distribution* of the 159 misclassified examples is not identical between regions.
 
 ### Confusion matrices
 

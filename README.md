@@ -319,10 +319,12 @@ separate everywhere in this repository (dashboard, `paper_export.py`,
 
 ### Real closed-set benchmark result (2026-08-16)
 
-First real, definitive run of the 4-unit closed-set comparison (`CC2541SensorTag`,
+Current real four-unit closed-set DEVELOPMENT benchmark (`CC2541SensorTag`,
 `CC2650-UNIT-01`, `keyfobdemo 01`, `keyfobdemo 02` — V2-admitted, session-disjoint,
 leakage check `PASSED`, 9,891 real examples across 79 real B200 captures, Shelly excluded
-as a class, no background pooled in as a fifth class):
+as a class, no background pooled in as a fifth class). Protected FUTURE has not been
+acquired and the protocol freeze has not started (§Current scientific status above), so
+this result is DEVELOPMENT evidence, not a definitive/confirmatory outcome:
 
 Evaluation unit for every row below is `EXAMPLE_RECORD` (burst-level) — a
 separate, real 10-second decision-window evaluation exists too (see
@@ -439,8 +441,11 @@ Per-class recall is markedly heterogeneous and must be read alongside the aggreg
 | keyfobdemo 02 | 0.006 | 0.006 | +0.000 |
 
 `keyfobdemo 02` recall is **0.006 (1/160) under both regions, unchanged by the
-analytical-region restriction** — 159 of its 160 VALIDATION examples (99.4%) are assigned to
-`keyfobdemo 01` in both confusion matrices, with 0 assigned to either sensor-platform unit.
+analytical-region restriction.** Under FULL_BURST, 159/160 (99.4%) are assigned to
+`keyfobdemo 01`, 0 to either sensor-platform unit. Under PRE_PDU, the misclassification
+distribution shifts: 157/160 (98.1%) go to `keyfobdemo 01` and 2/160 (1.3%) to
+`CC2650-UNIT-01`. Recall itself does not change between regions; where the misclassified
+examples land does.
 Balanced accuracy already reflects this heterogeneity (each class weighted equally), but a
 single aggregate number can still obscure which class drives it.
 
@@ -559,10 +564,10 @@ into the image:
 
 ![Forensic evidence lineage](readme_img/evidence_forensic_lineage.png)
 
-**Methodological audit (2026-08-19)** — before the next paper version, every claim below
-was re-verified against real canonical artifacts (never reconstructed from memory); full
-detail, exact field-by-field sourcing, and the 3 regenerated publication figures above are
-in [`docs/ble/SCIENTIFIC_STATUS.md` §19](docs/ble/SCIENTIFIC_STATUS.md#19-methodological-audit-2026-08-19--acquisition-profile-bootstrap-spec-corpus-counts-rq2-paired-uncertainty-model-configs-test-vs-protected-future-publication-figures):
+**Methodological audit (2026-08-19)** — before the next technical revision, every claim
+below was re-verified against real canonical artifacts (never reconstructed from memory);
+full detail, exact field-by-field sourcing, and the 3 regenerated technical evidence figures
+above are in [`docs/ble/SCIENTIFIC_STATUS.md` §19](docs/ble/SCIENTIFIC_STATUS.md#19-methodological-audit-2026-08-19--acquisition-profile-bootstrap-spec-corpus-counts-rq2-paired-uncertainty-model-configs-test-vs-protected-future-publication-figures):
 
 | Check | Result |
 |---|---|
@@ -572,7 +577,7 @@ in [`docs/ble/SCIENTIFIC_STATUS.md` §19](docs/ble/SCIENTIFIC_STATUS.md#19-metho
 | RQ2 paired uncertainty available? | **Yes**, via the existing bootstrap mechanism (no new statistic) — real, verified matched-pairs CIs for engineered_rf vs. each other branch, computed for this audit, not yet a persisted canonical field. |
 | Model configuration recovered? | **Yes.** RF/LogReg/SVM/CNN1D/CNN2D/nearest-centroid morphology — exact real hyperparameters and `random_seed=42`, in §19.5. |
 | TEST ≠ protected FUTURE verified? | **Yes**, structurally: `SplitManifest.TEST` and `HoldoutGroup.FUTURE_TEST` are different contract types; zero real `FUTURE_TEST` assignments exist on disk today. |
-| Publication figures regenerated? | **Yes** — RQ1 domains, RQ2 branches, and forensic lineage, same real data, no dev-evidence caption/hashes baked in, human-readable RQ2 labels, `[0,1]` BA axis. |
+| Technical evidence figures regenerated? | **Yes** — RQ1 domains, RQ2 branches, and forensic lineage, same real data, no dev-evidence caption/hashes baked in, human-readable RQ2 labels, `[0,1]` BA axis. |
 
 **Technical evidence audit (2026-08-22/23)** — a second, independent pass re-verified every
 number above directly against the canonical JSON artifacts (not against this document's own
@@ -593,7 +598,7 @@ label/CI text against the real artifacts on disk without regenerating anything. 
 figures (normalized confusion matrix, campaign timeline, forensic lineage) and the two RQ4
 figures are not re-plotted by that script — it calls the platform's own paper-export
 pipeline (`ScientificResultsRepository.run_paper_export()` → `paper_export.py` →
-`figures/paper_figures.py`, the same renderer the manuscript's PDF/SVG exports use) and
+`figures/paper_figures.py`, the same renderer the PDF/SVG exports use) and
 copies the PNG variant it already wrote, so there is exactly one real computation behind
 each of those figures, never two independent plots. The same real data, with the same
 plotting functions, is also available as a runnable, GitHub-renderable notebook:
