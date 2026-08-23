@@ -77,6 +77,8 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 CONSOLIDATED_FIGURES = [
     ("rq1_acquisition_dependence_publication.png", "evidence_rq1_domains.png"),
     ("rq2_representation_comparison_publication.png", "evidence_rq2_branches.png"),
+    ("rq4_full_burst_vs_pre_pdu.png", "evidence_rq4_regions.png"),
+    ("rq4_per_unit_recall.png", "evidence_rq4_per_unit_recall.png"),
     ("campaign_timeline.png", "evidence_campaign_timeline.png"),
     ("closed_set_confusion_matrix_normalized.png", "evidence_confusion_normalized.png"),
     ("forensic_lineage_publication.png", "evidence_forensic_lineage.png"),
@@ -84,7 +86,10 @@ CONSOLIDATED_FIGURES = [
 
 # Every figure_manifest.json entry (figure_path) that MUST exist -- see
 # verify_figures()'s MISSING_REQUIRED_SOURCE check.
-REQUIRED_FIGURE_PATHS = {"figures/rq1_acquisition_dependence_publication.png", "figures/rq2_representation_comparison_publication.png"}
+REQUIRED_FIGURE_PATHS = {
+    "figures/rq1_acquisition_dependence_publication.png", "figures/rq2_representation_comparison_publication.png",
+    "figures/rq4_full_burst_vs_pre_pdu.png",
+}
 
 # Matches the platform's own dark research-console palette (BleScientific
 # ResultsPage.tsx is Tailwind slate/cyan) -- kept legible against GitHub's
@@ -359,6 +364,27 @@ def verify_figures(repo: ScientificResultsRepository, paper_run_id: str | None) 
                     expected_ci_text = f"[{delta_ci['ci_low']:.3f}, {delta_ci['ci_high']:.3f}]"
                     if expected_ci_text not in svg_text:
                         failures.append(f"{figure_path}: CI_NOT_IN_FIGURE -- delta_dependence 95% CI {expected_ci_text} from the artifact does not appear in the rendered SVG text")
+
+        # RQ4-specific: FULL_BURST/PRE_PDU point estimates and the delta CI
+        # must be embedded as real rendered text (same discipline as RQ1
+        # above), and it must never claim a hardware/physical fingerprint
+        # finding it did not measure.
+        if figure_path == "figures/rq4_full_burst_vs_pre_pdu.png":
+            svg_path = (exports_dir / figure_path).with_suffix(".svg")
+            if not svg_path.is_file():
+                failures.append(f"{figure_path}: no sibling .svg found to verify rendered label/CI text against")
+            else:
+                svg_text = svg_path.read_text(encoding="utf-8", errors="ignore")
+                delta = source_json.get("delta") or {}
+                if delta.get("ci_low") is not None and delta.get("ci_high") is not None:
+                    expected_ci_text = f"[{delta['ci_low']:.3f}, {delta['ci_high']:.3f}]"
+                    if expected_ci_text not in svg_text:
+                        failures.append(f"{figure_path}: CI_NOT_IN_FIGURE -- delta 95% CI {expected_ci_text} from the artifact does not appear in the rendered SVG text")
+                for forbidden in ("hardware fingerprint", "physical fingerprint retained", "physical fingerprint"):
+                    if forbidden.lower() in svg_text.lower():
+                        failures.append(f"{figure_path}: FORBIDDEN_PHRASING_FOUND -- rendered SVG contains {forbidden!r}, which this exploratory result must not claim")
+                if source_json.get("evidence_status") and source_json["evidence_status"] not in svg_text:
+                    failures.append(f"{figure_path}: EVIDENCE_STATUS_NOT_IN_FIGURE -- {source_json['evidence_status']!r} does not appear in the rendered SVG title")
 
         # Publication-figure variants (2026-08-19, methodological audit item
         # 7): the README-facing figures must NOT bake in the DEVELOPMENT-

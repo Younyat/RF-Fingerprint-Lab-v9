@@ -65,6 +65,31 @@ def _write_rq1_svg(repo, *, include_ba_window_label=False, future_status_text=No
     (figures_dir / filename).write_text(f"<svg>{body}</svg>", encoding="utf-8")
 
 
+def _write_rq4_artifact(repo, *, paper_run_id="RUN-1", evidence_status="DEVELOPMENT_EXPLORATORY") -> Path:
+    path = repo.root / paper_run_id / "06_statistics" / "rq4_full_burst_vs_pre_pdu_exploratory_report.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = {
+        "evidence_status": evidence_status,
+        "full_burst": {"balanced_accuracy": 0.634}, "pre_pdu": {"balanced_accuracy": 0.556},
+        "delta": {"point_estimate": 0.078, "ci_low": 0.046, "ci_high": 0.100},
+    }
+    path.write_text(json.dumps(body), encoding="utf-8")
+    return path
+
+
+def _write_rq4_svg(repo) -> None:
+    """Pass-safe stand-in for the RQ4 figure's rendered SVG -- includes the
+    real delta CI text and the evidence_status, contains no forbidden
+    hardware-fingerprint phrasing."""
+    figures_dir = repo.root / "paper_exports" / "figures"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    (figures_dir / "rq4_full_burst_vs_pre_pdu.svg").write_text(
+        "<svg><text>RQ4 exploratory analytical-region control -- DEVELOPMENT_EXPLORATORY</text>"
+        "<text>FULL_BURST</text><text>PRE_PDU</text><text>[0.046, 0.100]</text></svg>",
+        encoding="utf-8",
+    )
+
+
 def _write_rq2_publication_svg(repo) -> None:
     """Pass-safe stand-in for the publication RQ2 figure's rendered SVG --
     human-readable label, no internal snake_case branch key, no analysis-
@@ -97,6 +122,7 @@ def test_verify_fails_when_a_required_figure_has_no_entry(tmp_path):
     failures = gef.verify_figures(repo, None)
     assert any("MISSING_REQUIRED_SOURCE" in f and "rq1_acquisition_dependence" in f for f in failures)
     assert any("MISSING_REQUIRED_SOURCE" in f and "rq2_representation_comparison" in f for f in failures)
+    assert any("MISSING_REQUIRED_SOURCE" in f and "rq4_full_burst_vs_pre_pdu" in f for f in failures)
 
 
 def test_verify_passes_when_manifest_matches_real_artifact(tmp_path, monkeypatch):
@@ -108,11 +134,17 @@ def test_verify_passes_when_manifest_matches_real_artifact(tmp_path, monkeypatch
     _write_rq2_publication_svg(repo)
     rq2_path = repo.root / "RUN-1" / "06_statistics" / "rq2_representation_comparison_report.json"
     rq2_path.write_text(json.dumps({"evaluation_unit": "EXAMPLE_RECORD", "evidence_status": "DEVELOPMENT"}), encoding="utf-8")
+    rq4_path = _write_rq4_artifact(repo)
+    _write_rq4_svg(repo)
     entries = [
         _manifest_entry_for(rq1_path, figure_path="figures/rq1_acquisition_dependence.png"),
         _manifest_entry_for(rq2_path, figure_path="figures/rq2_representation_comparison.png", source_artifact_relpath="RUN-1/06_statistics/rq2_representation_comparison_report.json"),
         _manifest_entry_for(rq1_path, figure_path="figures/rq1_acquisition_dependence_publication.png"),
         _manifest_entry_for(rq2_path, figure_path="figures/rq2_representation_comparison_publication.png", source_artifact_relpath="RUN-1/06_statistics/rq2_representation_comparison_report.json"),
+        _manifest_entry_for(
+            rq4_path, figure_path="figures/rq4_full_burst_vs_pre_pdu.png", evidence_status="DEVELOPMENT_EXPLORATORY",
+            source_artifact_relpath="RUN-1/06_statistics/rq4_full_burst_vs_pre_pdu_exploratory_report.json",
+        ),
     ]
     _write_manifest(repo, entries)
     assert gef.verify_figures(repo, None) == []

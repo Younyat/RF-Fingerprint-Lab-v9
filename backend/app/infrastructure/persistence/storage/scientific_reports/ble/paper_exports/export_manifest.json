@@ -95,6 +95,21 @@
       "would_be_derived_from": "06_statistics/rq2_representation_comparison_report.json"
     },
     {
+      "detail": "real, from paper-run-2805869e6282778ad729a26d022ec9b0/06_statistics/rq4_full_burst_vs_pre_pdu_exploratory_report.json",
+      "file": "rq4_full_burst_vs_pre_pdu_results.csv",
+      "status": "GENERATED"
+    },
+    {
+      "detail": "real",
+      "file": "figures/rq4_full_burst_vs_pre_pdu.pdf",
+      "status": "GENERATED"
+    },
+    {
+      "detail": "real",
+      "file": "figures/rq4_per_unit_recall.pdf",
+      "status": "GENERATED"
+    },
+    {
       "detail": "no EXECUTED rq3_within_device_permutation_test in confirmatory_future_analysis_report.json",
       "file": "rq3_results.csv",
       "status": "SKIPPED_NO_DATA",
@@ -131,7 +146,7 @@
       "would_be_derived_from": "06_statistics/confirmatory_future_analysis_report.json"
     },
     {
-      "detail": "no EXECUTED leave_one_device_out in confirmatory_statistical_plan_report.json",
+      "detail": "no EXECUTED enrolled_population_class_exclusion_sensitivity in confirmatory_statistical_plan_report.json",
       "file": "sensitivity_results.csv",
       "status": "SKIPPED_NO_DATA",
       "would_be_derived_from": "06_statistics/confirmatory_statistical_plan_report.json"
@@ -178,7 +193,7 @@
       "file": "tx_composition.csv",
       "provenance": {
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
-        "git_sha": "a3b962d551d227cb923e4de3b7b1f254bfedfe53",
+        "git_sha": "f99e29f56e9549e1c7de00c26339b96962101f18",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "protocol_version": 1
       },
@@ -190,7 +205,7 @@
       "file": "receiver_epochs.csv",
       "provenance": {
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
-        "git_sha": "a3b962d551d227cb923e4de3b7b1f254bfedfe53",
+        "git_sha": "f99e29f56e9549e1c7de00c26339b96962101f18",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "protocol_version": 1
       },
@@ -202,7 +217,7 @@
       "file": "scientific_completeness.csv",
       "provenance": {
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
-        "git_sha": "a3b962d551d227cb923e4de3b7b1f254bfedfe53",
+        "git_sha": "f99e29f56e9549e1c7de00c26339b96962101f18",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "protocol_version": 1
       },
@@ -216,7 +231,7 @@
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
         "dataset_id": "IDENTITY-c52850a953",
         "dataset_version": "20260814T224525.782975Z",
-        "git_sha": "a3b962d551d227cb923e4de3b7b1f254bfedfe53",
+        "git_sha": "f99e29f56e9549e1c7de00c26339b96962101f18",
         "model_bundle_id": "TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "paper_run_id": "paper-run-2805869e6282778ad729a26d022ec9b0",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
@@ -232,7 +247,7 @@
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
         "dataset_id": "IDENTITY-c52850a953",
         "dataset_version": "20260814T224525.782975Z",
-        "git_sha": "a3b962d551d227cb923e4de3b7b1f254bfedfe53",
+        "git_sha": "f99e29f56e9549e1c7de00c26339b96962101f18",
         "model_bundle_id": "TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "paper_run_id": "paper-run-2805869e6282778ad729a26d022ec9b0",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
@@ -248,7 +263,7 @@
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
         "dataset_id": "IDENTITY-c52850a953",
         "dataset_version": "20260814T224525.782975Z",
-        "git_sha": "a3b962d551d227cb923e4de3b7b1f254bfedfe53",
+        "git_sha": "f99e29f56e9549e1c7de00c26339b96962101f18",
         "model_bundle_id": "TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "paper_run_id": "paper-run-2805869e6282778ad729a26d022ec9b0",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
@@ -264,7 +279,7 @@
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
         "dataset_id": "IDENTITY-c52850a953",
         "dataset_version": "20260814T224525.782975Z",
-        "git_sha": "a3b962d551d227cb923e4de3b7b1f254bfedfe53",
+        "git_sha": "f99e29f56e9549e1c7de00c26339b96962101f18",
         "model_bundle_id": "TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "paper_run_id": "paper-run-2805869e6282778ad729a26d022ec9b0",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
@@ -280,7 +295,7 @@
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
         "dataset_id": "IDENTITY-c52850a953",
         "dataset_version": "20260814T224525.782975Z",
-        "git_sha": "a3b962d551d227cb923e4de3b7b1f254bfedfe53",
+        "git_sha": "f99e29f56e9549e1c7de00c26339b96962101f18",
         "model_bundle_id": "TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "paper_run_id": "paper-run-2805869e6282778ad729a26d022ec9b0",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
@@ -296,7 +311,7 @@
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
         "dataset_id": "IDENTITY-c52850a953",
         "dataset_version": "20260814T224525.782975Z",
-        "git_sha": "a3b962d551d227cb923e4de3b7b1f254bfedfe53",
+        "git_sha": "f99e29f56e9549e1c7de00c26339b96962101f18",
         "model_bundle_id": "TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "paper_run_id": "paper-run-2805869e6282778ad729a26d022ec9b0",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
@@ -312,7 +327,7 @@
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
         "dataset_id": "IDENTITY-c52850a953",
         "dataset_version": "20260814T224525.782975Z",
-        "git_sha": "a3b962d551d227cb923e4de3b7b1f254bfedfe53",
+        "git_sha": "f99e29f56e9549e1c7de00c26339b96962101f18",
         "model_bundle_id": "TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "paper_run_id": "paper-run-2805869e6282778ad729a26d022ec9b0",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
@@ -326,7 +341,7 @@
       "file": "figures/campaign_timeline.pdf",
       "provenance": {
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
-        "git_sha": "a3b962d551d227cb923e4de3b7b1f254bfedfe53",
+        "git_sha": "f99e29f56e9549e1c7de00c26339b96962101f18",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "protocol_version": 1
       },
@@ -340,7 +355,7 @@
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
         "dataset_id": "IDENTITY-c52850a953",
         "dataset_version": "20260814T224525.782975Z",
-        "git_sha": "a3b962d551d227cb923e4de3b7b1f254bfedfe53",
+        "git_sha": "f99e29f56e9549e1c7de00c26339b96962101f18",
         "model_bundle_id": "TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "paper_run_id": "paper-run-2805869e6282778ad729a26d022ec9b0",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
@@ -356,7 +371,7 @@
         "contract_sha256": "5aa011ed44cdde1c9a0020b4002dae69a6744c30d61eae10b552a23a9f4ffa5d",
         "dataset_id": "IDENTITY-c52850a953",
         "dataset_version": "20260814T224525.782975Z",
-        "git_sha": "a3b962d551d227cb923e4de3b7b1f254bfedfe53",
+        "git_sha": "f99e29f56e9549e1c7de00c26339b96962101f18",
         "model_bundle_id": "TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
         "paper_run_id": "paper-run-2805869e6282778ad729a26d022ec9b0",
         "protocol_id": "ble-rffi-studio-TRAIN-20260814T224700-4DEVICES-5d06e404-random_forest-a598bd",
@@ -365,13 +380,13 @@
       "status": "GENERATED"
     },
     {
-      "detail": "real, 16 table section(s) from real CSVs",
+      "detail": "real, 17 table section(s) from real CSVs",
       "file": "paper_tables.tex",
       "status": "GENERATED"
     }
   ],
-  "generated_at": "2026-08-19T16:00:10.753243Z",
-  "generated_count": 28,
+  "generated_at": "2026-08-23T14:57:02.555472Z",
+  "generated_count": 31,
   "schema_version": "ble-scientific-results-paper-export-manifest-v1",
   "skipped_count": 17
 }

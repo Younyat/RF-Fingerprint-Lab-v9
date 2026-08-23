@@ -189,21 +189,45 @@ mixed with the table above, in
 
 ### Scientific preprocessing
 
-Two profiles matter for BLE-RFFI Studio's real scientific scope:
+**`base-v1`** (identity — no signal-altering step) is the preprocessing
+profile actually used to produce every real RQ1/RQ2/decision-window/RQ4-
+exploratory result in this document. Two other registered profiles exist
+in code but did **not** produce these results:
 
-- **`paper-eq6-7-v1`** — the primary preprocessing: a frozen BLE reference
-  waveform `q[n]`, phase unwrapping over a frozen fitting interval
-  (`preamble + access address`), a joint least-squares estimate of an
-  affine phase/frequency offset, and per-burst provenance persisted with
-  every prediction.
-- **`offset-retaining-v1`** — the matching sensitivity-analysis profile,
-  identical pipeline, offset deliberately not compensated.
+- **`paper-eq6-7-v1`** — implemented but not used for the current results: a
+  frozen BLE reference waveform `q[n]`, phase unwrapping over a frozen
+  fitting interval (`preamble + access address`), a joint least-squares
+  estimate of an affine phase/frequency offset, with per-burst provenance
+  when it runs. A real, useful future ablation, not part of current
+  evidence.
+- **`offset-retaining-v1`** — was intended as the sensitivity-analysis
+  counterpart to `paper-eq6-7-v1`. Because the real PRIMARY run already
+  uses identity preprocessing, `offset-retaining-v1` resolves to the exact
+  same (identity) configuration as `base-v1` for every real run to date —
+  the two are behaviorally indistinguishable at the signal-processing
+  level, so any equality between their reported balanced accuracies is a
+  trivial consequence of that equivalence, not evidence that affine phase
+  compensation leaves the result unchanged.
 
-An older, simpler correction (`cfo-compensated-v1`) still exists for
-historical/ablation utility. It is explicitly labeled **heuristic/legacy**
-and must not be read as an implementation of the paper's compensation —
-full derivation and the exact distinction:
+An older, simpler heuristic (`cfo-compensated-v1`) also exists for
+historical/ablation utility, explicitly labeled **heuristic/legacy**, not
+an implementation of `paper-eq6-7-v1`. Full derivation and the exact
+distinction between all four profiles:
 [`docs/ble/PREPROCESSING.md`](docs/ble/PREPROCESSING.md).
+
+The `cfo_estimate_hz` engineered feature (one of ten `engineered_rf`
+descriptors) is a mean sample-to-sample phase-increment estimate over the
+**whole**, unprocessed (`base-v1`) burst — no reference correlation, no
+known-bit span, no least-squares fit. It is best read as an *apparent mean
+phase rate / frequency-offset estimate*, not a validated, isolated
+transmitter-CFO measurement: it can mix GFSK modulation phase structure,
+true transmitter offset, and the B200 receiver's own local-oscillator
+offset. None of the other nine engineered descriptors (power/amplitude
+statistics, spectral centroid/bandwidth, PAPR, kurtosis, skewness) are
+calibrated estimators of a specific transmitter-hardware impairment (PA
+nonlinearity, phase noise, I/Q imbalance, DC offset, gain error) either —
+they are general statistics that could in principle be influenced by such
+impairments, never presented as isolating one.
 
 ---
 
@@ -219,9 +243,14 @@ dashboard, and [`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md):
 **DEVELOPMENT EVIDENCE** (`AVAILABLE`) — real, current, non-confirmatory
 evidence from today's short captures, safe to cite as DEVELOPMENT; **DEFINITIVE
 / PROTECTED FUTURE** (`NOT_YET_AVAILABLE`) — the frozen-protocol, 120 s/12-window
-campaign and its one-time protected evaluation, fail-closed, not executed;
-**RQ3 / RQ4 / CH38-39 / near-live** (`PENDING` or `NOT_AVAILABLE`) — real
-mechanism exists, real campaign data does not yet.
+campaign and its one-time protected evaluation, fail-closed, not executed,
+gated behind a **protocol freeze that has not started** (real, versioned
+freeze mechanism exists; no protocol has been run through it — this is
+distinct from individual DEVELOPMENT artifacts already being version-pinned
+and reproducible, which is not the same thing as a confirmatory freeze);
+**RQ3 / RQ4 packet-condition / CH37→CH38 transport / near-live** (`PENDING`
+or `NOT_AVAILABLE`) — real mechanism exists, real campaign data does not
+yet.
 
 | Capability | Implemented | Real evidence / validation |
 |---|---:|---|
@@ -229,16 +258,20 @@ mechanism exists, real campaign data does not yet.
 | BLE packet recovery / CRC | Yes | Yes |
 | Dataset + capture-disjoint leakage protection | Yes | Yes |
 | TRAIN / VALIDATION / protected TEST mechanism | Yes | Mechanism tested; DEFINITIVE campaign `NOT_YET_AVAILABLE` |
-| `paper-eq6-7-v1` preprocessing (Eq. 6-7) | Yes | Unit/integration tested; no definitive real bundle yet |
-| RQ1 acquisition-dependence measurement | Yes | **DEVELOPMENT EVIDENCE `AVAILABLE`** — real closed-set `delta_dependence = +0.324` (see below) |
-| Four RQ2 model branches | Yes | **DEVELOPMENT EVIDENCE `AVAILABLE`** — real closed-set benchmark, `engineered_rf` selected PRIMARY (see below) |
-| Decision-window aggregation (10 s) | Yes | **DEVELOPMENT EVIDENCE `AVAILABLE`** — real TRAIN=34/VALIDATION=12/TEST=12 windows, 4/4 TX (see [`PAPER_EVIDENCE_MAP.md`](docs/ble/PAPER_EVIDENCE_MAP.md)); DEFINITIVE campaign `NOT_YET_AVAILABLE` |
-| Abstention / coverage / risk-coverage | Yes | **DEVELOPMENT / EXPLORATORY** — real but small-sample (12 windows/domain); DEFINITIVE campaign `NOT_YET_AVAILABLE` |
+| `base-v1` identity preprocessing | Yes | **Actually used** for every real RQ1/RQ2/RQ4-exploratory result below |
+| `paper-eq6-7-v1` preprocessing (Eq. 6-7) | Yes | Implemented, unit/integration tested — **not used** to produce any current result (see [Scientific preprocessing](#scientific-preprocessing) above) |
+| RQ1 acquisition-dependence measurement | Yes | **DEVELOPMENT EVIDENCE `AVAILABLE`** — real closed-set `delta_dependence = +0.324` (see below), class-stratified/session-clustered bootstrap CI |
+| Four RQ2 model branches | Yes | **DEVELOPMENT EVIDENCE `AVAILABLE`** — real closed-set benchmark, `engineered_rf` selected PRIMARY (see below); 3 candidate model families for `engineered_rf` vs. 1 fixed configuration for each other branch, 0 hyperparameter search in any branch — not an equal-budget comparison |
+| RQ4 exploratory analytical-region control (FULL_BURST vs PRE_PDU) | Yes | **DEVELOPMENT_EXPLORATORY `AVAILABLE`** — real, already executed (see below); distinct from the RQ4 packet-condition intervention row below, which remains not executed |
+| Decision-window aggregation (10 s) | Yes | **DEVELOPMENT EVIDENCE `AVAILABLE`** — real TRAIN=34/VALIDATION=12/TEST=12 windows, 4/4 TX (see [`PAPER_EVIDENCE_MAP.md`](docs/ble/PAPER_EVIDENCE_MAP.md)); operational coverage `0.833` in both VALIDATION/TEST, not `1.000` (see below); DEFINITIVE campaign `NOT_YET_AVAILABLE` |
+| Abstention / coverage / risk-coverage | Yes | **DEVELOPMENT / EXPLORATORY** — real but small-sample (12 windows/domain); operational coverage `0.833` ≠ argmax accuracy; DEFINITIVE campaign `NOT_YET_AVAILABLE` |
 | PRE/POST RESET-CONTROL framework (RQ3) | Yes | `PENDING` — sample size frozen (80 pairs); 0 real pairs captured yet |
-| FULL_BURST / ADVA_EXCLUDED / PRE_PDU (RQ4) | Yes | `NOT_AVAILABLE` — **0/4 enrolled units eligible**, real evidence recorded per unit (see below) |
-| CH38/CH39, near-live inference | Yes | `NOT_AVAILABLE` — no real CH38/39 campaign data; no real near-live-prediction collection wired yet |
+| RQ4 packet-condition intervention (original vs. controlled variant) | Yes | `NOT_AVAILABLE` — **0/4 enrolled units eligible**, real evidence recorded per unit (see below). Not to be confused with the already-executed analytical-region control above. |
+| CH37→CH38 transport measurement | Yes (transport analysis not yet run) | `NOT_AVAILABLE` for the transport result — but real CH38 RF data already exists: **1,663 admitted examples** for the four enrolled units, deliberately excluded from the RQ1/RQ2/RQ4 channel-37-only split |
+| CH39, near-live inference | Yes | `NOT_AVAILABLE` — **0 real CH39 captures for the four enrolled units** (exactly 1 CH39 capture exists anywhere in the store, for an unrelated diagnostic unit); no real near-live-prediction collection wired yet |
 | Strong native <-> SDR association | Mechanism yes | **No — 0 STRONG, no accepted calibration policy** (fail-closed, real negative result) |
 | Protected future scientific result | Mechanism yes | **`NOT_YET_AVAILABLE`** — not executed, fail-closed |
+| Same-family verification (`keyfobdemo 01`/`02`) | Mechanism yes | **Not verified** — no `same_model_group` currently verified for any enrolled pair; both units are referred to as *two key-fob-class units*, not a validated same-family pair (see [Limitations](#limitations-stated-explicitly) below) |
 
 A passing test suite is evidence the code does what its own tests assert —
 it is never treated as scientific validation anywhere in this project.
@@ -246,12 +279,13 @@ it is never treated as scientific validation anywhere in this project.
 **Association, stated plainly**: the association mechanism is implemented
 and **fail-closed**
 (`ScientificResultsRepository.find_frozen_association_policy()` currently
-returns `None`). No calibration run has yet produced a policy that
-satisfies the scientific acceptance criteria, and the real corpus currently
-contains **0 STRONG** associations. Consequently: `CRC-valid packet ≠
-physical-source identity`, and `native context ≠ STRONG association`. This
-is a real, current negative result, not a criterion that was loosened to
-get a pass.
+returns `None`). The latest real calibration attempt swept the full
+threshold grid (`50`–`500 ms`) and found `0.0` coverage at every threshold
+against the required `≥0.95` — result `NO_THRESHOLD_SATISFIES_CRITERIA` —
+and the real corpus currently contains **0 STRONG** associations across all
+five registered units. Consequently: `CRC-valid packet ≠ physical-source
+identity`, and `native context ≠ STRONG association`. This is a real,
+current negative result, not a criterion that was loosened to get a pass.
 
 Full current-state detail, every real number behind the table above, and
 the complete evidence-to-decision trace live in
@@ -265,8 +299,17 @@ the complete evidence-to-decision trace live in
 - 10-second decision-window check (`06_statistics/coverage_analysis_report.json`,
   `paper_exports/development_decision_window_summary.csv`):
   - `TRAIN=34`, `VALIDATION=12`, `TEST=12` real windows — **all 4/4 classes represented in every partition**
-  - `VALIDATION`: `BA=0.750`, `accuracy=0.833`
-  - `TEST`: `BA=0.875`, `accuracy=0.917`
+  - `VALIDATION`: `BA=0.750`, `accuracy=0.833` (argmax accuracy, 10/12 — see coverage note below)
+  - `TEST`: `BA=0.875`, `accuracy=0.917` (argmax accuracy, 11/12 — see coverage note below)
+  - **Operational coverage is `0.833` in both partitions, not `1.000`** — the
+    acceptance threshold (`0.66`, calibrated on VALIDATION) rejects 2 of 12
+    windows in each partition as `UNKNOWN`. Argmax accuracy (every admissible
+    window scored by its winning class regardless of threshold) is a
+    different quantity from accuracy among *accepted* decisions: VALIDATION
+    has `9/10` accepted-and-correct plus one confident misclassification that
+    the threshold did not catch (accepted-and-incorrect); TEST has `10/10`
+    accepted-and-correct, with its one argmax error itself rejected by the
+    threshold rather than accepted.
 
 **PROTECTED FUTURE**: `NOT_YET_AVAILABLE` — not executed, fail-closed. That real
 10-second-window DEVELOPMENT evidence exists above does **not** mean the
@@ -286,20 +329,34 @@ separate, real 10-second decision-window evaluation exists too (see
 [the window-level scoping fix and DEVELOPMENT decision-window table](docs/ble/PAPER_EVIDENCE_MAP.md)),
 never conflated with this one.
 
-| Evaluation domain (RQ1) | Balanced accuracy | 95% CI | n |
+| Evaluation domain (RQ1) | Balanced accuracy | 95% CI | n (examples / sessions) |
 |---|---:|---:|---:|
-| Capture-dependent (same capture, intentionally leakage-optimistic diagnostic) | 0.958 | [0.938, 0.977] | 1,790 |
-| Capture-disjoint (VALIDATION) | 0.634 | [0.544, 0.884] | 2,203 |
-| Held-out TEST (PRIMARY branch, not protected FUTURE) | 0.767 | — | 2,464 |
+| Capture-dependent (same capture, intentionally leakage-optimistic diagnostic) | 0.958 | [0.939, 0.975] | 1,790 / 34 |
+| Capture-disjoint (VALIDATION) | 0.634 | [0.591, 0.685] | 2,203 / 12 |
+| Held-out TEST (PRIMARY branch, not protected FUTURE) | 0.767 | — (no CI persisted for this domain) | 2,464 / 12 |
 
-`delta_dependence = capture-dependent − capture-disjoint = +0.324`, 95% CI `[0.077, 0.414]`
-(paired cluster bootstrap, session-clustered) — a real, on-hardware measurement of exactly
-the optimism RQ1 is designed to detect: a single-recording evaluation would have overstated
-closed-set discrimination by roughly 32 balanced-accuracy points relative to genuinely
-disjoint captures. The capture-dependent diagnostic gets its own real bootstrap CI too
-(it is intentionally leakage-optimistic by design, not a confirmatory estimator -- but its
-own resampling uncertainty is still a real, reportable quantity, never omitted just because
-the point estimate itself is optimistic).
+`delta_dependence = capture-dependent − capture-disjoint = +0.324`, 95% CI `[0.269, 0.371]` —
+a class-stratified, session-clustered bootstrap (cluster key = `session_id`; stratified by
+`physical_unit_id` so every replicate keeps all four enrolled classes; `n_resamples=2000`,
+seed `12345`), with the two domains resampled **independently** (no physical pairing exists
+between capture-dependent and capture-disjoint sessions — this is not a "paired" bootstrap).
+A real, on-hardware measurement of exactly the optimism RQ1 is designed to detect: a
+single-recording evaluation would have overstated closed-set discrimination by roughly 32
+balanced-accuracy points relative to genuinely disjoint captures. The capture-dependent
+diagnostic gets its own real bootstrap CI too (it is intentionally leakage-optimistic by
+design, not a confirmatory estimator -- but its own resampling uncertainty is still a real,
+reportable quantity, never omitted just because the point estimate itself is optimistic).
+
+**Bootstrap-method correction (2026-08-22)**: the RQ1 CIs above use a corrected,
+class-stratified bootstrap (`stratified_hierarchical_cluster_bootstrap` /
+`independent_domain_bootstrap_delta_ci`, `backend/app/modules/ble_scientific_results/
+statistics/inference.py`). The prior, unstratified pooled resample of the 12-session
+capture-disjoint domain dropped at least one enrolled class from a nontrivial fraction of
+its replicates, silently redefining balanced accuracy over fewer than four classes in those
+replicates; the delta CI was also previously described as a "paired cluster bootstrap",
+which it is not (the two domains have no physical session pairing). Point estimates
+(0.958 / 0.634 / delta 0.324) are unchanged — only the CI construction and its terminology
+were corrected. Full method detail: [`docs/ble/TECHNICAL_EVIDENCE_AUDIT.md` §1](docs/ble/TECHNICAL_EVIDENCE_AUDIT.md#1-rq1--current-result).
 
 **Coherence-audit correction (2026-08-19)**: capture-disjoint VALIDATION was previously
 reported as 0.749 -- that was raw accuracy, not balanced accuracy, due to a real bug in
@@ -324,8 +381,75 @@ RQ2 branch comparison (VALIDATION, same admitted groups):
 `engineered_rf` (best of Logistic Regression / SVM-RBF / Random Forest, selected on
 VALIDATION only) was selected PRIMARY in this run and independently in all 4 per-unit
 auxiliary runs below — a real, repeated finding, not a single cherry-picked outcome.
+**Model-selection budget is not equal across branches**: `engineered_rf` evaluated 3
+candidate model families on VALIDATION and kept the best; `raw_iq`, `stft`, and
+`coarse_morphology` each used exactly 1 fixed configuration; none of the four branches ran a
+hyperparameter search within its own family. This is a comparison under a disclosed,
+unequal selection procedure, not an equal-budget benchmark.
 
 ![RQ2 closed-set branch comparison](readme_img/evidence_rq2_branches.png)
+
+### RQ4 exploratory analytical-region control: FULL_BURST vs PRE_PDU (2026-08-21)
+
+A narrower, already-executed control, distinct from the RQ4 packet-condition intervention
+below (which remains not executed): restricting which samples of the **same,
+already-acquired** VALIDATION burst are available to the model, without changing what the
+transmitter sent. `PRE_PDU` keeps only the preamble (8 bits) + access address (32 bits),
+ending strictly before the PDU header — the PDU header, AdvA, and payload are unavailable.
+TRAIN and VALIDATION stay separated throughout; `FULL_BURST` reuses the existing PRIMARY
+model and its already-persisted predictions (no recomputation), while `PRE_PDU` is an
+**independent TRAIN-only re-fit** (fresh `TrainOnlyScaler`, same frozen Random Forest
+configuration as PRIMARY, no hyperparameter search) evaluated only on PRE_PDU-VALIDATION.
+**TEST was not opened for either arm** (the PRE_PDU bundle's own export gate records
+`approval_status=TEST_NOT_EXECUTED`). Both arms were verified to share the identical 2,203
+VALIDATION `example_id`s, in the same order, across the same 12 sessions and 4 classes,
+before any statistic was computed. This result is marked `DEVELOPMENT_EXPLORATORY`: it was
+defined and run after the RQ1/RQ2 VALIDATION/TEST results above had already been inspected
+(post-hoc, not pre-registered), and it does not substitute for the RQ4 packet-condition
+intervention.
+
+| Region | BA | 95% CI | Macro-F1 | Accuracy | n (examples / sessions) |
+|---|---:|---:|---:|---:|---:|
+| FULL_BURST | 0.634 | [0.591, 0.685] | 0.586 | 0.749 | 2,203 / 12 |
+| PRE_PDU | 0.556 | [0.503, 0.628] | 0.495 | 0.647 | 2,203 / 12 |
+
+`delta BA (FULL_BURST − PRE_PDU) = 0.078`, 95% CI `[0.046, 0.100]` — a genuinely matched,
+class-stratified, session-clustered bootstrap (same resampled session indices drawn once
+per class stratum per replicate, applied jointly to both regions, since both score the
+identical evidence under two analytical regions; no confirmatory significance test is
+reported for this exploratory contrast).
+
+![RQ4 exploratory FULL_BURST vs PRE_PDU](readme_img/evidence_rq4_regions.png)
+
+Substantial closed-set discrimination remains under PRE_PDU (well above the four-class
+chance level of 0.25). **This does not isolate transmitter-hardware effects** — propagation,
+receiver state, received power, session-specific conditions, and other acquisition
+dependencies remain present in PRE_PDU and are not separated from any transmitter-specific
+contribution by this control. The 0.634 → 0.556 decrease is itself the result: evidence that
+closed-set performance depends in part on the analytical region available to the model, not
+an estimate of what fraction of discrimination is attributable to packet content.
+
+Per-class recall is markedly heterogeneous and must be read alongside the aggregate BA:
+
+| Unit | Recall, FULL_BURST | Recall, PRE_PDU | Δ |
+|---|---:|---:|---:|
+| CC2541SensorTag | 0.781 | 0.679 | +0.102 |
+| CC2650-UNIT-01 | 0.952 | 0.855 | +0.096 |
+| keyfobdemo 01 | 0.796 | 0.683 | +0.113 |
+| keyfobdemo 02 | 0.006 | 0.006 | +0.000 |
+
+`keyfobdemo 02` recall is **0.006 (1/160) under both regions, unchanged by the
+analytical-region restriction** — 159 of its 160 VALIDATION examples (99.4%) are assigned to
+`keyfobdemo 01` in both confusion matrices, with 0 assigned to either sensor-platform unit.
+Balanced accuracy already reflects this heterogeneity (each class weighted equally), but a
+single aggregate number can still obscure which class drives it.
+
+![RQ4 exploratory per-unit recall](readme_img/evidence_rq4_per_unit_recall.png)
+
+Full provenance (dataset/split hashes, model configuration, per-class confusion matrices,
+PRIMARY-untouched hash comparison, `TEST_NOT_EXECUTED` gate): `06_statistics/
+rq4_full_burst_vs_pre_pdu_exploratory_report.json`; consolidated technical detail:
+[`docs/ble/TECHNICAL_EVIDENCE_AUDIT.md` §7](docs/ble/TECHNICAL_EVIDENCE_AUDIT.md#7-full_burst-vs-pre_pdu--full-consolidation).
 
 Confusion matrices, capture-disjoint VALIDATION vs. held-out TEST (PRIMARY branch) —
 CC2650-UNIT-01 is perfectly separated (recall 1.0) in both:
@@ -347,7 +471,7 @@ imbalanced split (TEST alone ranges from 166 to 1,857 examples per unit):
 ![Per-unit precision/recall/F1](readme_img/evidence_per_unit_metrics.png)
 
 **Risk-coverage curve** (TEST, PRIMARY branch) — the exact selective-prediction curve
-(El-Yaniv & Wiener, 2010) the manuscript's abstention mechanism is built on, one point per
+(El-Yaniv & Wiener, 2010) the platform's abstention mechanism is built on, one point per
 achievable confidence threshold on the real closed-set TEST split:
 
 ![Risk-coverage curve](readme_img/evidence_risk_coverage.png)
@@ -357,8 +481,27 @@ seeds (`137`, `2024`, VALIDATION-only), a real reproducibility check:
 
 ![Seed variability](readme_img/evidence_seed_variability.png)
 
+**Enrolled-population class-exclusion metric sensitivity** — a post-hoc recomputation of the
+aggregate VALIDATION balanced accuracy from PRIMARY's own already-scored predictions,
+excluding one physical class's examples from the metric at a time. The model itself is
+**not retrained** without that class — this is not leave-one-device-out cross-validation and
+is never described as one. Relative to the full-set BA of 0.634, excluding
+`keyfobdemo 02`'s examples raises the remaining-class BA to 0.843 (`Δ=+0.209`), while
+excluding any of the other three units lowers it by 0.049–0.106 — real evidence that the
+aggregate score depends on the enrolled comparison population and is not a
+population-independent measure of transmitter identifiability.
+[`docs/ble/TECHNICAL_EVIDENCE_AUDIT.md` §1](docs/ble/TECHNICAL_EVIDENCE_AUDIT.md) has the
+full per-unit table and source function.
+
+**Offset-retaining preprocessing sensitivity** — `offset-retaining-v1` produced the same
+aggregate BA (0.634) as PRIMARY, but this equality is **not informative**: PRIMARY already
+uses identity (`base-v1`) preprocessing, so `offset-retaining-v1` resolves to the same
+identity configuration for this run — the two are not distinguishable at the
+signal-processing level, and the equality is a trivial consequence of that, not a validated
+finding about affine phase compensation.
+
 **Computational cost** — real inference latency and serialized model size per RQ2 branch,
-supporting the manuscript's stated computational-cost comparison (`engineered_rf`, a
+supporting the RQ2 computational-cost comparison (`engineered_rf`, a
 Random Forest here, is real evidence that the lowest-macro-F1 branch is not automatically
 the cheapest one either — heavier than both CNN branches in this run):
 
@@ -374,18 +517,31 @@ acquisition dependence actually shows up):
 
 **RQ3** — sample size frozen (`rq3_sample_size` scientist decision,
 `PROSPECTIVE_BALANCED_WITHIN_DEVICE_CROSSOVER`): 10 RESET + 10 CONTROL pairs per unit,
-80 pairs / 160 captures total across the 4 units. 0 real pairs captured yet — unchanged
-from the row above; no nominal statistical power is declared, since no real RQ3 variance
-estimate exists yet.
+80 pairs / 160 captures total across the 4 units. **0 real captures carry RQ3 metadata and 0
+valid empirical intervention pairs exist today** — the protocol is implemented, not yet
+executed; no nominal statistical power is declared, since no real RQ3 variance estimate
+exists yet.
 
-**RQ4** — real eligibility check completed for every enrolled unit:
-`RQ4 = DATA_NOT_AVAILABLE: CONTROLLED_VARIANT_NOT_AVAILABLE` (0/4 eligible; no enrolled
-unit has documented, independently-verified control over its own packet content — full
-per-unit reasons in [`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md)).
+**RQ4 packet-condition intervention** (original packet configuration vs. a controlled,
+verified variant — distinct from the already-executed FULL_BURST/PRE_PDU analytical-region
+control above) — real eligibility check completed for every enrolled unit:
+`RQ4 = DATA_NOT_AVAILABLE: CONTROLLED_VARIANT_NOT_AVAILABLE` (0/4 enrolled units eligible; no
+enrolled unit has documented, independently-verified control over its own packet content —
+full per-unit reasons in [`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md)).
+This intervention itself remains not executed; the analytical-region control above is a
+separate, narrower, already-real result and does not change this status.
+
+**CH37 → CH38 transport** — real CH38 RF data already exists for the four enrolled units
+(**1,663 admitted examples**, deliberately excluded from the RQ1/RQ2/RQ4 split by the
+channel-37-only scoping rule), but the transport analysis itself has not been run: no
+`channel_transport_report.json` exists yet, and this README makes no transport claim.
+**CH39** has **0 real captures for the four enrolled units** — exactly 1 CH39 (2,480 MHz)
+capture exists anywhere in the current capture store, and it belongs to an unrelated
+diagnostic unit (`SHELLY-PLUG-01`), not one of the four closed-set units.
 
 **Confusion matrix, normalized by true class** (TEST, PRIMARY branch) — same real counts
 as above, row-normalized to a per-class percentage with `n` kept as secondary per-cell
-information, the canonical view for the manuscript:
+information, the canonical reference view:
 
 ![Confusion matrix, normalized by true class](readme_img/evidence_confusion_normalized.png)
 
@@ -416,18 +572,30 @@ in [`docs/ble/SCIENTIFIC_STATUS.md` §19](docs/ble/SCIENTIFIC_STATUS.md#19-metho
 | RQ2 paired uncertainty available? | **Yes**, via the existing bootstrap mechanism (no new statistic) — real, verified matched-pairs CIs for engineered_rf vs. each other branch, computed for this audit, not yet a persisted canonical field. |
 | Model configuration recovered? | **Yes.** RF/LogReg/SVM/CNN1D/CNN2D/nearest-centroid morphology — exact real hyperparameters and `random_seed=42`, in §19.5. |
 | TEST ≠ protected FUTURE verified? | **Yes**, structurally: `SplitManifest.TEST` and `HoldoutGroup.FUTURE_TEST` are different contract types; zero real `FUTURE_TEST` assignments exist on disk today. |
-| Publication figures regenerated? | **Yes** — the 3 figures above (RQ1 domains, RQ2 branches, forensic lineage), same real data, no dev-evidence caption/hashes baked in, human-readable RQ2 labels, `[0,1]` BA axis. |
+| Publication figures regenerated? | **Yes** — RQ1 domains, RQ2 branches, and forensic lineage, same real data, no dev-evidence caption/hashes baked in, human-readable RQ2 labels, `[0,1]` BA axis. |
+
+**Technical evidence audit (2026-08-22/23)** — a second, independent pass re-verified every
+number above directly against the canonical JSON artifacts (not against this document's own
+prior prose), fixed the RQ1 bootstrap method described above, and added the RQ4 exploratory
+FULL_BURST/PRE_PDU control and its two figures. Full field-by-field sourcing, a canonical
+artifact inventory with SHA-256, and two complete traceability chains (one VALIDATION
+prediction, one TEST prediction, each traced back to a rehashed source I/Q file) live in
+[`docs/ble/TECHNICAL_EVIDENCE_AUDIT.md`](docs/ble/TECHNICAL_EVIDENCE_AUDIT.md), with the
+underlying small JSON artifacts published under
+[`docs/ble/evidence/`](docs/ble/evidence/).
 
 All figures above are generated straight from the platform's own real, persisted evidence
 by [`docs/ble/generate_evidence_figures.py`](docs/ble/generate_evidence_figures.py) —
-never hand-drawn, never from a spreadsheet copy. Re-run it after any new real RQ1/RQ2/RQ3
-result to regenerate every PNG in this section from current state. The last 3 figures
-(normalized confusion matrix, campaign timeline, forensic lineage) are not re-plotted by
-that script — it calls the platform's own paper-export pipeline
-(`ScientificResultsRepository.run_paper_export()` → `paper_export.py` →
+never hand-drawn, never from a spreadsheet copy, never manually edited to change a number.
+Re-run it after any new real RQ1/RQ2/RQ3/RQ4 result to regenerate every PNG in this section
+from current state; `--verify` cross-checks every figure's source-artifact hash and rendered
+label/CI text against the real artifacts on disk without regenerating anything. The last 3
+figures (normalized confusion matrix, campaign timeline, forensic lineage) and the two RQ4
+figures are not re-plotted by that script — it calls the platform's own paper-export
+pipeline (`ScientificResultsRepository.run_paper_export()` → `paper_export.py` →
 `figures/paper_figures.py`, the same renderer the manuscript's PDF/SVG exports use) and
 copies the PNG variant it already wrote, so there is exactly one real computation behind
-each of those three, never two independent plots. The same real data, with the same
+each of those figures, never two independent plots. The same real data, with the same
 plotting functions, is also available as a runnable, GitHub-renderable notebook:
 [`docs/ble/evidence_figures.ipynb`](docs/ble/evidence_figures.ipynb) (regenerate via
 [`docs/ble/build_evidence_notebook.py`](docs/ble/build_evidence_notebook.py) after running
@@ -450,6 +618,40 @@ These same results, plus the per-unit auxiliary runs, RQ3's live campaign progre
 RQ4's per-unit eligibility, are also readable live (not a snapshot) from the platform
 itself: BLE Scientific Results Studio → **Evidence Dashboard** tab, `GET
 /api/ble-scientific-results/evidence-dashboard`.
+
+### Limitations, stated explicitly
+
+- **Session/transmitter confounding.** No current receiver session contains more than one
+  enrolled transmitter (verified: 79/79 sessions in the closed-set dataset are single-unit).
+  Each transmitter is represented across multiple sessions, so transmitter identity and
+  session are not mathematically identical variables — but the design lacks within-session
+  multi-transmitter observations that would let transmitter effects be directly separated
+  from session-specific receiver, propagation, noise, or environmental state. This applies to
+  every result above, including RQ1's acquisition-dependence contrast and the RQ4 exploratory
+  analytical-region control.
+- **No calibrated per-burst SNR.** The acquisition profile records receiver gain, sample
+  rate, bandwidth, and center frequency, but no per-burst SNR or received-power estimate is
+  computed or persisted alongside each example; the engineered `mean_power_dbfs` descriptor
+  is a raw amplitude statistic, not a calibrated SNR measurement.
+- **Same-family verification.** `keyfobdemo 01` and `keyfobdemo 02` share a compact
+  key-fob-class form factor and an operator-declared `device_family` string, but chip/radio
+  identity, hardware revision, firmware, and packet-configuration equivalence have not been
+  independently verified for this pair — `same_model_groups.verified_groups` is empty for
+  every enrolled pair. They are referred to as *two key-fob-class units*, never as a
+  validated same-model or same-family pair, and no same-family stress test is reported.
+- **Protocol freeze.** The frozen analytical-contract mechanism is real and versioned, but no
+  protocol has been run through the confirmatory freeze ceremony that would make protected
+  FUTURE access eligible. This is distinct from individual DEVELOPMENT artifacts (dataset,
+  split, model bundle) already being version-pinned, hashed, and reproducible — that is not
+  the same thing as a confirmatory freeze for FUTURE.
+- **Development label admission ≠ independently corroborated source association.** All 9,891
+  admitted labels (4,338 physically-isolated, 5,553 pre-registered-address-bound) are
+  development label admissions under the controlled-acquisition protocol — sufficient to run
+  the DEVELOPMENT benchmark above, but not equivalent to `STRONG` native-BLE/SDR association,
+  for which the real corpus currently has 0 examples and no accepted calibration threshold.
+
+Full detail behind each item above, including the exact artifacts and computed values:
+[`docs/ble/TECHNICAL_EVIDENCE_AUDIT.md`](docs/ble/TECHNICAL_EVIDENCE_AUDIT.md).
 
 ---
 

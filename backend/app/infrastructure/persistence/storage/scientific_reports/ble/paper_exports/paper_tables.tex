@@ -148,6 +148,14 @@ raw\_iq & UNSELECTED & VALIDATION & 0.24807692307692308 & 0.22643802322441264 & 
 stft & UNSELECTED & VALIDATION & 0.5368629979844066 & 0.4981031304046958 &  & 9661 & 0.3643698990345001 &  \\
 \bottomrule\end{tabular}\end{table}
 
+\begin{table}[htbp]\centering\caption{rq4_full_burst_vs_pre_pdu_results}\label{tab:rq4_full_burst_vs_pre_pdu_results}
+\begin{tabular}{lllllllll}\toprule
+region & balanced_accuracy & ci_low & ci_high & macro_f1 & accuracy & n_examples & n_sessions & training_run_id \\\midrule
+FULL\_BURST & 0.6338138990398197 & 0.5912219610540254 & 0.6850857789866278 & 0.5864106215528908 & 0.7494325919201089 & 2203 & 12 & TRAIN-20260814T224700-4DEVICES-5d06e404-random\_forest-a598bd \\
+PRE\_PDU & 0.556062006109112 & 0.5026723884198467 & 0.6281322273718891 & 0.49513305249417133 & 0.6468452110758057 & 2203 & 12 & TRAIN-20260814T224700-4DEVICES-5d06e404-random\_forest-a598bd-region-pre-pdu \\
+delta (full\_burst - pre\_pdu) & 0.07775189293070772 & 0.04633805792574756 & 0.09975261870737617 &  &  &  &  &  \\
+\bottomrule\end{tabular}\end{table}
+
 \begin{table}[htbp]\centering\caption{tx_composition}\label{tab:tx_composition}
 \begin{tabular}{lllllllllll}\toprule
 physical_unit_id & device_family & manufacturer & model & project_id & status & rq4_eligibility & real_capture_count & channels & day_first & day_last \\\midrule

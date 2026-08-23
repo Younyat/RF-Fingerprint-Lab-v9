@@ -108,6 +108,39 @@ def bar_with_ci_figure(
     return _save_figure(fig, out_path)
 
 
+def grouped_bar_figure(
+    *, categories: Sequence[str], series: Sequence[Sequence[float]], series_labels: Sequence[str], ylabel: str, title: str, out_path: Path,
+    series_colors: Sequence[str] | None = None, ylim: tuple[float, float] | None = None, footnote: str | None = None, value_labels: bool = False,
+) -> dict[str, str]:
+    """Grouped bar chart for two or more named series over the same
+    categories -- e.g. RQ4's FULL_BURST vs PRE_PDU recall per physical unit.
+    Pure renderer, same multi-format `_save_figure` convention as
+    `bar_with_ci_figure`; no CI support (callers with per-series uncertainty
+    should use `bar_with_ci_figure` per series instead)."""
+    fig, ax = plt.subplots(figsize=FIGSIZE)
+    n_series = len(series)
+    x = np.arange(len(categories))
+    width = 0.8 / max(n_series, 1)
+    default_colors = ["#2b6cb0", "#b9822c", "#2f8f89", "#c1683b"]
+    colors = series_colors if series_colors is not None else default_colors
+    for i, (values, label) in enumerate(zip(series, series_labels)):
+        offset = (i - (n_series - 1) / 2) * width
+        bars = ax.bar(x + offset, values, width=width, label=label, color=colors[i % len(colors)])
+        if value_labels:
+            ax.bar_label(bars, fmt="%.3f", fontsize=7, padding=2)
+    ax.set_xticks(x)
+    ax.set_xticklabels(categories, rotation=20, ha="right")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+    ax.legend(frameon=False)
+    if footnote:
+        wrapped = "\n".join(textwrap.wrap(footnote, width=100))
+        ax.text(0.5, -0.38, wrapped, transform=ax.transAxes, ha="center", va="top", fontsize=8, color="#4a5568")
+    return _save_figure(fig, out_path)
+
+
 def paired_pre_post_figure(
     *, unit_ids: Sequence[str], pre_values: Sequence[float], post_values: Sequence[float], ylabel: str, title: str, out_path: Path,
 ) -> str:

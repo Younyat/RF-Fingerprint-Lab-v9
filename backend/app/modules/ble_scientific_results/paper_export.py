@@ -134,6 +134,28 @@ def rq2_result_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def rq4_result_rows(rq4_report: dict[str, Any]) -> list[dict[str, Any]]:
+    """DEVELOPMENT_EXPLORATORY FULL_BURST vs PRE_PDU analytical-region
+    control -- distinct from the still-not-executed RQ4 packet-condition
+    intervention (no CSV/figure exists for that one; it has no data yet)."""
+    rows: list[dict[str, Any]] = []
+    for key in ("full_burst", "pre_pdu"):
+        block = rq4_report.get(key) or {}
+        ci = block.get("balanced_accuracy_ci") or {}
+        rows.append({
+            "region": block.get("label", key), "balanced_accuracy": block.get("balanced_accuracy"),
+            "ci_low": ci.get("ci_low"), "ci_high": ci.get("ci_high"), "macro_f1": block.get("macro_f1"),
+            "accuracy": block.get("accuracy"), "n_examples": block.get("n_examples"), "n_sessions": block.get("n_sessions"),
+            "training_run_id": block.get("training_run_id"),
+        })
+    delta = rq4_report.get("delta") or {}
+    rows.append({
+        "region": "delta (full_burst - pre_pdu)", "balanced_accuracy": delta.get("point_estimate"),
+        "ci_low": delta.get("ci_low"), "ci_high": delta.get("ci_high"),
+    })
+    return rows
+
+
 def channel_transport_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {"channel": row.get("channel"), "center_frequency_hz": row.get("center_frequency_hz"), "bundle_id": row.get("frozen_bundle_id"),
@@ -627,6 +649,69 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
         for name in ("rq2_results.csv", "figures/rq2_representation_comparison.pdf", "figures/rq2_representation_comparison_publication.pdf", "figures/rq2_coverage.pdf"):
             emit(name, ExportOutcome("SKIPPED_NO_DATA", "no rq2_representation_comparison_report.json for any real paper run", rq2_source))
 
+    # RQ4 exploratory analytical-region control (FULL_BURST vs PRE_PDU) --
+    # a real, already-executed contrast, distinct from the still-not-executed
+    # RQ4 packet-condition intervention (no export exists for that one; it
+    # has no real data). PRE_PDU is an independent TRAIN-only re-fit; TEST
+    # was not opened for either arm -- both facts are carried in the
+    # footnote/caption below, never left implicit.
+    rq4_report = repository.get_rq4_full_burst_vs_pre_pdu_exploratory_report(run_dir.name) if run_dir else None
+    rq4_source = "06_statistics/rq4_full_burst_vs_pre_pdu_exploratory_report.json"
+    if rq4_report and rq4_report.get("full_burst") and rq4_report.get("pre_pdu"):
+        _write_csv(exports_dir / "rq4_full_burst_vs_pre_pdu_results.csv", rq4_result_rows(rq4_report))
+        emit("rq4_full_burst_vs_pre_pdu_results.csv", ExportOutcome("GENERATED", f"real, from {run_dir.name}/{rq4_source}"))
+
+        full_burst = rq4_report["full_burst"]
+        pre_pdu = rq4_report["pre_pdu"]
+        delta = rq4_report.get("delta") or {}
+        categories = ["FULL_BURST", "PRE_PDU"]
+        values = [full_burst.get("balanced_accuracy"), pre_pdu.get("balanced_accuracy")]
+        full_ci = full_burst.get("balanced_accuracy_ci") or {}
+        pre_ci = pre_pdu.get("balanced_accuracy_ci") or {}
+        ci_low = [full_ci.get("ci_low"), pre_ci.get("ci_low")]
+        ci_high = [full_ci.get("ci_high"), pre_ci.get("ci_high")]
+
+        footnote_parts = [
+            f"evaluation_unit=EXAMPLE_RECORD | n_examples={full_burst.get('n_examples')}/{pre_pdu.get('n_examples')} (FULL_BURST/PRE_PDU)",
+            f"n_sessions={full_burst.get('n_sessions')}/{pre_pdu.get('n_sessions')}",
+            "PRE_PDU: independent TRAIN-only re-fit restricted to the pre-PDU region; TEST not opened for either arm",
+        ]
+        delta_low, delta_high = delta.get("ci_low"), delta.get("ci_high")
+        if delta.get("point_estimate") is not None and delta_low is not None and delta_high is not None:
+            footnote_parts.append(f"delta BA (FULL_BURST - PRE_PDU) = {delta['point_estimate']:.3f}, 95% CI [{delta_low:.3f}, {delta_high:.3f}]")
+
+        paper_figures.bar_with_ci_figure(
+            categories=categories, values=values, ci_low=ci_low, ci_high=ci_high, ylabel="Balanced accuracy",
+            title=f"RQ4 exploratory analytical-region control -- {rq4_report.get('evidence_status') or 'DEVELOPMENT_EXPLORATORY'}",
+            ylim=(0.0, 1.0), out_path=figures_dir / "rq4_full_burst_vs_pre_pdu",
+            footnote=" | ".join(footnote_parts),
+        )
+        emit(
+            "figures/rq4_full_burst_vs_pre_pdu.pdf", ExportOutcome("GENERATED", "real"),
+            figure_source=(f"{run_dir.name}/{rq4_source}", "EXAMPLE_RECORD", rq4_report.get("evidence_status") or "DEVELOPMENT_EXPLORATORY", "figures/paper_figures.py::bar_with_ci_figure"),
+        )
+
+        recall_full = full_burst.get("recall_per_class") or {}
+        recall_pre = pre_pdu.get("recall_per_class") or {}
+        units = sorted(recall_full.keys())
+        if units:
+            paper_figures.grouped_bar_figure(
+                categories=units, series=[[recall_full.get(u, 0) for u in units], [recall_pre.get(u, 0) for u in units]],
+                series_labels=["FULL_BURST", "PRE_PDU"], series_colors=["#2b6cb0", "#b9822c"],
+                ylabel="Recall (VALIDATION)", title="RQ4 exploratory -- per-unit recall, FULL_BURST vs PRE_PDU",
+                ylim=(0.0, 1.05), out_path=figures_dir / "rq4_per_unit_recall", value_labels=True,
+                footnote="Recall per physical unit under each analytical region; see the source artifact's confusion matrices for the full per-class breakdown.",
+            )
+            emit(
+                "figures/rq4_per_unit_recall.pdf", ExportOutcome("GENERATED", "real"),
+                figure_source=(f"{run_dir.name}/{rq4_source}", "EXAMPLE_RECORD", rq4_report.get("evidence_status") or "DEVELOPMENT_EXPLORATORY", "figures/paper_figures.py::grouped_bar_figure"),
+            )
+        else:
+            emit("figures/rq4_per_unit_recall.pdf", ExportOutcome("SKIPPED_NO_DATA", "no per-unit recall_per_class in rq4_full_burst_vs_pre_pdu_exploratory_report.json", rq4_source))
+    else:
+        for name in ("rq4_full_burst_vs_pre_pdu_results.csv", "figures/rq4_full_burst_vs_pre_pdu.pdf", "figures/rq4_per_unit_recall.pdf"):
+            emit(name, ExportOutcome("SKIPPED_NO_DATA", "no rq4_full_burst_vs_pre_pdu_exploratory_report.json for any real paper run", rq4_source))
+
     confirmatory_future = repository.get_confirmatory_future_analysis_report(run_dir.name) if run_dir else None
     sensitivity_source = repository.get_confirmatory_statistical_plan_report(run_dir.name) if run_dir else None
     _emit_confirmatory_derived_exports(emit, confirmatory_future, run_dir, exports_dir, figures_dir, validation_dry_run=sensitivity_source)
@@ -803,9 +888,20 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
     # the way to the closed-set PRIMARY model's real bundle (when exported).
     if closed_set and closed_set.get("primary_training_run_id"):
         bundle_info = repository._find_bundle_for_training_run(closed_set["primary_training_run_id"])
+        # Real preprocessing profile actually used by the PRIMARY training
+        # run -- read directly from training_run.json (the same file
+        # verify_preprocessing_profile_provenance() checks), never assumed
+        # to be any particular profile_id. Currently base-v1 (identity) for
+        # every real closed-set run; shown here so the lineage diagram
+        # cannot silently go stale if that ever changes.
+        preprocessing_profile_id = None
+        training_run_path = repository.ble_root / "training_runs" / closed_set["primary_training_run_id"] / "training_run.json"
+        if training_run_path.is_file():
+            preprocessing_profile_id = json.loads(training_run_path.read_text(encoding="utf-8")).get("base_preprocessing_profile_id")
         nodes = [
             {"label": "Dataset", "detail": f"{closed_set['dataset_id']} @ {closed_set['dataset_version']}"},
             {"label": "Split (TRAIN/VALIDATION/TEST)", "detail": f"leakage_check={(closed_set.get('rq1') or {}).get('confirmatory_split_manifest_sha256', 'n/a')[:16]}..."},
+            {"label": "Preprocessing", "detail": f"base_preprocessing_profile_id={preprocessing_profile_id or 'unknown'}"},
             {"label": "Training run", "detail": closed_set["primary_training_run_id"]},
             {"label": "Model bundle", "detail": f"bundle_id={bundle_info['bundle_id']}, sha256={bundle_info['bundle_sha256'][:16]}..." if bundle_info else "not exported yet"},
             {"label": "RQ1/RQ2 decision", "detail": f"PRIMARY branch = {closed_set.get('primary_branch')}"},
@@ -824,6 +920,7 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
         publication_nodes = [
             {"label": "Dataset", "detail": f"{closed_set['dataset_id']} @ {closed_set['dataset_version']}"},
             {"label": "Split (TRAIN / VALIDATION / TEST)", "detail": f"{closed_set['dataset_id']}__{closed_set['dataset_version']}__MULTI_DEVICE_CLASSIFICATION"},
+            {"label": "Preprocessing", "detail": f"base_preprocessing_profile_id={preprocessing_profile_id or 'unknown'}"},
             {"label": "Training run", "detail": closed_set["primary_training_run_id"]},
             {"label": "Model bundle", "detail": bundle_info["bundle_id"] if bundle_info else "not exported yet"},
             {"label": "RQ1/RQ2 decision", "detail": f"PRIMARY branch = {RQ2_BRANCH_PUBLICATION_LABELS.get(closed_set.get('primary_branch'), closed_set.get('primary_branch'))}"},

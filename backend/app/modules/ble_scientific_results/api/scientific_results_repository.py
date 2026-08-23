@@ -2318,6 +2318,16 @@ class ScientificResultsRepository:
             return None
         return json.loads(path.read_text(encoding="utf-8"))
 
+    def get_rq4_full_burst_vs_pre_pdu_exploratory_report(self, paper_run_id: str) -> dict[str, Any] | None:
+        """DEVELOPMENT_EXPLORATORY analytical-region control (FULL_BURST vs
+        PRE_PDU) -- distinct from the still-not-executed RQ4 packet-condition
+        intervention. Same read-only convention as the RQ1/RQ2 getters
+        above."""
+        path = self._run_dir(paper_run_id) / "06_statistics" / "rq4_full_burst_vs_pre_pdu_exploratory_report.json"
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
     def get_evidence_dashboard_summary(self) -> dict[str, Any]:
         """Real, in-platform paper-support dashboard: assembles ALREADY
         PERSISTED RQ1/RQ2 reports (closed-set MULTI_DEVICE_CLASSIFICATION
