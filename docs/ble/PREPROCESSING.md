@@ -1,14 +1,23 @@
 # BLE-RFFI Studio: preprocessing specification
 
-Full derivation and code references for the two scientific preprocessing
-profiles the root README only summarizes. Source: `backend/app/modules/ble_rffi_studio/preprocessing/`.
+Full derivation and code references for the preprocessing profiles the root
+README only summarizes. Source: `backend/app/modules/ble_rffi_studio/preprocessing/`
+(registry: `base_preprocessing_registry.py`).
+
+**Profile actually used for every real result** (RQ1, RQ2, the decision-window
+check, and the RQ4 exploratory FULL_BURST/PRE_PDU control — see
+[`docs/ble/TECHNICAL_EVIDENCE_AUDIT.md`](TECHNICAL_EVIDENCE_AUDIT.md)) is
+**`base-v1`** — identity preprocessing, no signal-altering step. Neither
+`paper-eq6-7-v1` below nor its heuristic predecessor produced any currently
+reported number.
 
 ## `paper-eq6-7-v1` — paper-compliant affine phase/frequency compensation
 
-**Status: IMPLEMENTED AND TESTED. Not yet exercised by a definitive real
-model bundle/campaign** — no bundle trained under this profile has been
-produced by a real campaign run yet; see the root README's Current
-scientific status table.
+**Status: IMPLEMENTED AND TESTED. Not used to produce any current result** —
+no real closed-set training run has ever used this profile; every real
+bundle behind RQ1/RQ2/RQ4 was trained under `base-v1` (identity). This
+section documents what the implementation does when enabled, for its
+intended future methodological role — not what produced today's numbers.
 
 Implementation: `preprocessing/paper_compliant_cfo.py`.
 
@@ -47,13 +56,23 @@ attaches the same structure to each scored decision. TRAIN and inference
 call the exact same function
 (`apply_base_preprocessing_with_provenance`) — never two implementations.
 
-## `offset-retaining-v1` — sensitivity-analysis counterpart
+## `offset-retaining-v1` — sensitivity-analysis counterpart, not currently informative
 
 Identity preprocessing (no step enabled) under its own, intentionally
-distinct `profile_id`, run through the same pipeline except the
-compensation step — the deliberate "what if we don't correct the offset"
-comparison against `paper-eq6-7-v1`, never conflated with the older,
-unrelated `base-v1` default.
+distinct `profile_id` — the deliberate "what if we don't correct the
+offset" comparison, *intended* to be run against `paper-eq6-7-v1`.
+
+**Real finding (2026-08-22 audit):** `offset-retaining-v1` and `base-v1`
+both resolve to the exact same flags in the registry (every flag `False`).
+Because the real PRIMARY run itself already uses `base-v1`, the
+`offset-retaining-v1` sensitivity run is **behaviorally identical** to
+PRIMARY at the signal-processing level — the two are not distinguishable,
+and any equality between their reported balanced accuracies
+(`delta_vs_primary = 0.0` in `sensitivity_report.json`) is a trivial
+consequence of that equivalence, not a validated finding that affine phase
+compensation leaves the result unchanged. A real ablation of
+`paper-eq6-7-v1` against `base-v1` remains a valid and useful future
+comparison; it has not been run.
 
 ## `cfo-compensated-v1` — heuristic/legacy compensation, not Eq.(6)-(7)
 
@@ -64,6 +83,24 @@ regression, and **no** per-burst persisted parameters. It must never be
 described as an implementation of Eq.(6)-(7) — see
 `scientific_basis/preprocessing_evidence.json`'s own justification note for
 this profile, which states the distinction explicitly.
+
+## `cfo_estimate_hz` (engineered feature) — not the same estimator as `paper-eq6-7-v1`
+
+One of the ten `engineered_rf` descriptors (`representation_profiles.py`,
+`FEATURE_NAMES`), computed by `base_preprocessing.py::estimate_cfo_hz()`.
+Despite the name, it is **not** an implementation of Eq.(6)-(7) above and
+must not be read as a validated transmitter-CFO measurement: it is the mean
+sample-to-sample unwrapped phase increment over the **whole** burst — no
+reference correlation, no restriction to the known-bit `I_b` span, no
+least-squares fit. Best described as an *apparent mean phase rate /
+frequency-offset estimate*. Computed on the unprocessed (`base-v1`) burst
+for every real run to date, so it can mix GFSK modulation phase structure,
+true transmitter frequency offset, and the B200 receiver's own
+local-oscillator offset — none of which it separates. To defensibly call a
+value here "transmitter CFO" would require reference correlation over `I_b`
+(as `paper-eq6-7-v1` does), an independently calibrated receiver LO offset
+to subtract, and stability validation across repeated captures — none of
+which is done here.
 
 ## Justification gate
 

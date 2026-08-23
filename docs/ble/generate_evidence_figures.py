@@ -489,8 +489,8 @@ def verify_documentation_matches_artifacts(repo: ScientificResultsRepository) ->
         ("SCIENTIFIC_STATUS.md", r"RQ1 capture-disjoint \(VALIDATION\) BA.*?\|\s*`([\d.]+)`", "rq1_ba_capture", None),
         ("SCIENTIFIC_STATUS.md", r"RQ1 held-out TEST BA \(not protected FUTURE\)\s*\|\s*`([\d.]+)`", "primary_test_ba", None),
         ("SCIENTIFIC_STATUS.md", r"RQ1 `delta_dependence` / 95% CI\s*\|\s*`([\d.]+)`", "rq1_delta_dependence", None),
-        ("SCIENTIFIC_STATUS.md", r"VALIDATION window-level BA / accuracy\s*\|\s*`([\d.]+)`\s*/\s*`([\d.]+)`", "validation_window_ba", "validation_window_accuracy"),
-        ("SCIENTIFIC_STATUS.md", r"TEST window-level BA / accuracy\s*\|\s*`([\d.]+)`\s*/\s*`([\d.]+)`", "test_window_ba", "test_window_accuracy"),
+        ("SCIENTIFIC_STATUS.md", r"VALIDATION window-level BA / argmax accuracy / operational coverage\s*\|\s*`([\d.]+)`\s*/\s*`([\d.]+)`", "validation_window_ba", "validation_window_accuracy"),
+        ("SCIENTIFIC_STATUS.md", r"TEST window-level BA / argmax accuracy / operational coverage\s*\|\s*`([\d.]+)`\s*/\s*`([\d.]+)`", "test_window_ba", "test_window_accuracy"),
     ]
     for doc_name, text in (("README", readme_text), ("SCIENTIFIC_STATUS.md", status_text)):
         for label, pattern, key_a, key_b in (readme_checks if doc_name == "README" else status_checks):

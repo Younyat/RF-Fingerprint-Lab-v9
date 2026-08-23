@@ -59,11 +59,17 @@ mixed:
 2. **DEFINITIVE / PROTECTED FUTURE** — `NOT_YET_AVAILABLE`. The frozen-protocol,
    120 s / 12-decision-window campaign and its one-time protected evaluation.
    Fail-closed: not executed, not readable, not generatable by accident.
-3. **RQ3 / RQ4 / CH38-39 / near-live** — `PENDING` or `NOT_AVAILABLE`. The
-   real mechanism exists and is tested; the real campaign data it needs does
-   not exist yet (RQ3: 0/80 real pairs; RQ4: 0/4 eligible units; CH38/39: no
-   real campaign data; near-live: no real prediction-collection mechanism
-   wired yet).
+3. **RQ3 / RQ4 packet-condition / CH37→CH38 transport / CH39 / near-live** —
+   `PENDING` or `NOT_AVAILABLE`. The real mechanism exists and is tested; the
+   real campaign data or analysis it needs does not exist yet (RQ3: 0/80 real
+   pairs; RQ4 packet-condition: 0/4 eligible units; CH37→CH38: real CH38 RF
+   data already exists — 1,663 admitted examples for the four enrolled units
+   — but the transport analysis itself has not been run; CH39: 0 real
+   captures for the four enrolled units; near-live: no real
+   prediction-collection mechanism wired yet). Distinct from the
+   **DEVELOPMENT_EXPLORATORY** analytical-region control (FULL_BURST vs.
+   PRE_PDU, §19), which has already been executed and does not change any of
+   the statuses above.
 
 ---
 
@@ -1177,23 +1183,45 @@ function and are very likely affected the same way, but have **not** been
 regenerated as part of this fix -- flagged, not silently corrected, pending
 an explicit decision to re-run them.
 
+**Bootstrap-method correction (2026-08-22)**: the RQ1 CIs below were
+regenerated with a corrected, class-stratified, session-clustered bootstrap
+(`stratified_hierarchical_cluster_bootstrap` /
+`independent_domain_bootstrap_delta_ci`,
+`backend/app/modules/ble_scientific_results/statistics/inference.py`). The
+prior, unstratified pooled resample of the 12-session capture-disjoint
+domain dropped at least one enrolled class from a nontrivial fraction of its
+replicates; the delta CI was also previously described as a "paired cluster
+bootstrap", which it is not — the two domains have no physical session
+pairing and are resampled independently. Point estimates (0.958 / 0.634 /
+delta 0.324) are unchanged; only the CI construction and terminology were
+corrected. Full method detail and a canonical artifact inventory with
+SHA-256: [`docs/ble/TECHNICAL_EVIDENCE_AUDIT.md`](TECHNICAL_EVIDENCE_AUDIT.md).
+
 | Item | Value | Source |
 |---|---|---|
 | RQ1 `evaluation_unit` | `EXAMPLE_RECORD` | `06_statistics/rq1_acquisition_dependence_report.json` |
-| RQ1 capture-dependent BA / 95% CI / n | `0.958` / `[0.938, 0.977]` / `1790` | same |
-| RQ1 capture-disjoint (VALIDATION) BA / 95% CI / n | `0.634` / `[0.544, 0.884]` / `2203` | same |
-| RQ1 `delta_dependence` / 95% CI | `0.324` / `[0.077, 0.414]` | same |
-| RQ1 held-out TEST BA (not protected FUTURE) | `0.767` | `ble_rffi_studio/training_runs/<id>/evaluation_report.json` (`TEST`) |
-| RQ2 PRIMARY branch (`engineered_rf`) BA / macro-F1 | `0.634` / `0.586` | `06_statistics/rq2_representation_comparison_report.json` |
+| RQ1 capture-dependent BA / 95% CI / n / sessions | `0.958` / `[0.939, 0.975]` / `1790` / `34` | same |
+| RQ1 capture-disjoint (VALIDATION) BA / 95% CI / n / sessions | `0.634` / `[0.591, 0.685]` / `2203` / `12` | same |
+| RQ1 `delta_dependence` / 95% CI | `0.324` / `[0.269, 0.371]` (class-stratified, session-clustered, independently-resampled domains — not paired) | same |
+| RQ1 held-out TEST BA (not protected FUTURE) | `0.767` (no CI persisted for this domain) | `ble_rffi_studio/training_runs/<id>/evaluation_report.json` (`TEST`) |
+| RQ2 PRIMARY branch (`engineered_rf`) BA / macro-F1 | `0.634` / `0.586`, from 3 candidate model families (logistic regression, RBF-SVM, random forest), 0 hyperparameter search | `06_statistics/rq2_representation_comparison_report.json` |
+| RQ2 other branches (`stft`/`coarse_morphology`/`raw_iq`) BA / macro-F1 | `0.537`/`0.498`, `0.277`/`0.128`, `0.248`/`0.226` — each 1 fixed configuration, 0 hyperparameter search | same |
+| RQ4 exploratory analytical-region control (FULL_BURST vs. PRE_PDU) BA / 95% CI | `0.634` `[0.591, 0.685]` vs. `0.556` `[0.503, 0.628]`; delta `0.078` `[0.046, 0.100]` (matched, class-stratified, session-clustered bootstrap); `DEVELOPMENT_EXPLORATORY`, PRE_PDU is an independent TRAIN-only re-fit, TEST not opened for either arm | `06_statistics/rq4_full_burst_vs_pre_pdu_exploratory_report.json` |
 | 10-second decision windows | `TRAIN=34`, `VALIDATION=12`, `TEST=12` -- all 4/4 classes in every partition | `06_statistics/coverage_analysis_report.json` |
-| VALIDATION window-level BA / accuracy | `0.750` / `0.833` | `paper_exports/development_decision_window_summary.csv` |
-| TEST window-level BA / accuracy | `0.875` / `0.917` | same |
-| LODO (worst case, `CC2650-UNIT-01` omitted) | BA `0.528`, delta `-0.106` vs. full-set `0.634` | `06_statistics/sensitivity_report.json` |
+| VALIDATION window-level BA / argmax accuracy / operational coverage | `0.750` / `0.833` (10/12) / `0.833` (not `1.000` — 2/12 rejected by the acceptance threshold as `UNKNOWN`; accuracy among accepted = `0.9`, 9/10, plus 1 accepted-and-incorrect) | `paper_exports/development_decision_window_summary.csv`, `coverage_analysis_report.json`'s `operational_breakdown` |
+| TEST window-level BA / argmax accuracy / operational coverage | `0.875` / `0.917` (11/12) / `0.833` (not `1.000` — 2/12 rejected; accuracy among accepted = `1.0`, 10/10; the 1 argmax error was itself rejected, not accepted) | same |
+| Enrolled-population class-exclusion metric sensitivity (worst case, `CC2650-UNIT-01` omitted from the metric only — **not** retrained, **not** leave-one-device-out) | BA `0.528`, delta `-0.106` vs. full-set `0.634` | `06_statistics/sensitivity_report.json` (`enrolled_population_class_exclusion_sensitivity`) |
 | DEVELOPMENT label provenance (4-class closed-set, 9,891 examples) | `PHYSICAL_ISOLATION_DECLARED` 4,338 (43.9%) + registry address-binding (`association_status` NONE/AMBIGUOUS) 5,553 (56.1%) — **0 STRONG** | `evidence_stage.py::_build_example()`, real counts from `evidence/<capture_id>/examples.jsonl` filtered to `IDENTITY-c52850a953`'s real `example_ids` |
-| Offset-retaining sensitivity | BA `0.634`, delta `0.000` vs. PRIMARY | same |
-| Association calibration | `NO_THRESHOLD_SATISFIES_CRITERIA` (fail-closed; coverage=0.0, false_strong=0 at every threshold) | `association_calibration_summary` |
+| Offset-retaining sensitivity | BA `0.634`, delta `0.000` vs. PRIMARY — **not informative**: `offset-retaining-v1` resolves to the same identity flags as PRIMARY's own `base-v1`, so this equality is trivial by construction, not a validated CFO-compensation finding | same |
+| Association calibration | `NO_THRESHOLD_SATISFIES_CRITERIA` (fail-closed; coverage=0.0, false_strong=0 at every threshold in the 50-500ms grid; 0 STRONG across all 5 registered units) | `association_calibration_summary` |
 | Protected FUTURE | `NOT_YET_AVAILABLE` -- not executed, fail-closed | `rq1_acquisition_dependence_report.json` (`ba_future=null`) |
-| RQ3 / RQ4 / CH38-39 / near-live | `PENDING` / `NOT_AVAILABLE` -- real mechanism, no real campaign data yet | still real roadmap items, not removed from this document -- see §16-17 |
+| Protocol freeze | `NOT_STARTED` -- 15 required fields/gates still missing (real, versioned freeze mechanism exists; DEVELOPMENT artifacts already version-pinned/reproducible is not the same as a confirmatory freeze) | `get_scientific_completeness_report()` |
+| Same-family verification (`keyfobdemo 01`/`02`) | Not verified -- `same_model_groups.verified_groups` empty for every enrolled pair; referred to as *two key-fob-class units*, never a validated same-family pair | `docs/ble/physical_device_inventory.json` |
+| RQ3 | `PENDING` -- 0 real captures carry RQ3 metadata, 0 valid empirical intervention pairs, of 80 pairs targeted | `_rq3_campaign_progress()` |
+| RQ4 packet-condition intervention | `NOT_AVAILABLE` -- 0/4 enrolled units eligible; distinct from the already-executed analytical-region control above | `get_scientific_completeness_report()` |
+| CH37→CH38 transport | Real CH38 RF data already exists (1,663 admitted examples, 4 enrolled units), transport analysis itself not executed | dataset composition + `06_statistics/channel_transport_report.json` (does not exist yet) |
+| CH39 | 0 real captures for the four enrolled units (1 CH39 capture exists in the whole store, for an unrelated diagnostic unit) | live channel/capture query, `docs/ble/TECHNICAL_EVIDENCE_AUDIT.md` §10 |
+| Near-live | `NOT_AVAILABLE` -- no real prediction-collection mechanism wired yet | — |
 
 Standing rule (2026-08-18): every number that goes into the paper must be
 reproducible and auditable by anyone on the team through the
@@ -1216,10 +1244,11 @@ unless the tab has its own inline button (Coverage does).
 | RQ2 (four representations: BA, macro F1, per-class recall, model size, inference latency, seed variability) | Study Control Center → RQ2 Benchmark | `Rq2Tab.tsx` | `06_statistics/rq2_representation_comparison_report.json` |
 | Coverage / decision-window scoping (TRAIN/VALIDATION/TEST window counts, domain-resolution diagnostic) | `CoverageTab.tsx`'s own "Correr Coverage Analysis" button | `CoverageTab.tsx` | `06_statistics/coverage_analysis_report.json` |
 | VALIDATION/TEST window-level BA, confusion matrix, per-TX counts, risk-coverage (10 s decision windows) | same button, with the "incluir BA/matriz de confusion/risk-coverage a nivel de decision-window" checkbox ticked (`evaluate_window_level=true`) | `CoverageTab.tsx` → `window_level_evaluation` section (per branch, per domain: confusion matrix heatmap, risk-coverage chart+table, raw decision-window rows) | same file, `window_level_evaluation` key |
-| Sensitivity: LODO, offset-retaining preprocessing, seed variability (reused from RQ2, never recomputed) | Study Control Center → Sensitivity Analysis | `SensitivityTab.tsx` | `06_statistics/sensitivity_report.json` |
+| Sensitivity: enrolled-population class-exclusion metric sensitivity (renamed 2026-08-22 -- not leave-one-device-out, model never retrained), offset-retaining preprocessing (not currently informative), seed variability (reused from RQ2, never recomputed) | Study Control Center → Sensitivity Analysis | `SensitivityTab.tsx` | `06_statistics/sensitivity_report.json` |
+| RQ4 exploratory analytical-region control (FULL_BURST vs. PRE_PDU, `DEVELOPMENT_EXPLORATORY`) | already executed; re-run via `train_region_specific_variant()` | not yet wired to a dashboard tab -- `readme_img/evidence_rq4_regions.png` / `evidence_rq4_per_unit_recall.png` | `06_statistics/rq4_full_burst_vs_pre_pdu_exploratory_report.json` |
 | Association calibration sweep (fail-closed result, per-threshold coverage/false_strong/ambiguous) | none needed -- always shows the latest real attempt live | `AssociationTab.tsx` | `association_calibration_summary` (computed on read, not persisted as a run-scoped file) |
 | Channel transport (S1), offline vs. near-live (S2) | Study Control Center → respective phase button | `ChannelTransportTab.tsx`, `OnlineEquivalenceTab.tsx` | `06_statistics/channel_transport_report.json`, `06_statistics/offline_nearlive_report.json` |
-| RQ3 / RQ4 | Study Control Center → respective phase button | `Rq3Tab.tsx`, `Rq4Tab.tsx` | `confirmatory_statistical_plan_report.json` (`rq3_pairs`, `rq4_region_report`) |
+| RQ3 / RQ4 packet-condition intervention | Study Control Center → respective phase button | `Rq3Tab.tsx`, `Rq4Tab.tsx` | `confirmatory_statistical_plan_report.json` (`rq3_pairs`, `rq4_region_report`) |
 | Cross-cutting summary tables (TX composition, partition composition, receiver epochs) | none needed -- computed on read from already-real captures/splits | `SupportingTablesTab.tsx` | not persisted -- always live |
 | Scientific completeness rollup | none needed | `ScientificCompletenessTab.tsx` | not persisted -- always live |
 
@@ -1272,6 +1301,21 @@ not exist, not because a value was missing.
 | Environment/location descriptor | `NOT_AVAILABLE` — no schema field exists | — |
 
 ### 19.2 RQ1 bootstrap specification (canonical BA=0.958/BA=0.634 result)
+
+**Superseded by the 2026-08-22 bootstrap-method correction (§18.0).** This
+subsection is kept as the real, historical record of what was true on
+2026-08-19 — the `hierarchical_cluster_bootstrap`/`paired_cluster_bootstrap_
+delta_ci` functions it describes are unstratified and were found (2026-08-22)
+to drop at least one enrolled class from a nontrivial fraction of replicates
+on the 12-session capture-disjoint domain, and the delta procedure described
+below is not actually a valid pairing (the two domains have no physical
+session correspondence). The real, current RQ1 CIs use
+`stratified_hierarchical_cluster_bootstrap` / `independent_domain_bootstrap_
+delta_ci` instead — same cluster unit (`session_id`), same `n_resamples=2000`,
+same percentile CI, same seed `12345`, additionally stratified by
+`physical_unit_id`, with the delta computed by resampling the two domains
+independently rather than "pairing" resample draws. Full detail:
+[`docs/ble/TECHNICAL_EVIDENCE_AUDIT.md` §1](TECHNICAL_EVIDENCE_AUDIT.md#1-rq1--current-result).
 
 - **Cluster unit**: the real `session_id` — grouping is done by real session
   boundary, never by individual example (`_session_clustered_label_pairs`,
@@ -1468,6 +1512,19 @@ suffix in the rendered SVG).
 | RQ1 domains | `evidence_rq1_domains.png` | No `DEVELOPMENT EVIDENCE` caption, no footnote (n/CI/delta text) baked into the image; fixed `[0, 1]` balanced-accuracy axis; real error bars kept (RQ1 has real, persisted, canonical CIs) |
 | RQ2 branches | `evidence_rq2_branches.png` | Human-readable labels (`Coarse morphology`/`Engineered RF`/`Raw I/Q`/`STFT`) instead of internal snake_case keys; PRIMARY vs. UNSELECTED conveyed by bar color (amber/grey), never a `(UNSELECTED)` text suffix; fixed `[0, 1]` axis; point estimates only — no fabricated error bars, since no branch in the persisted canonical report currently carries a real marginal CI (§19.4) |
 | Forensic lineage | `evidence_forensic_lineage.png` | Title dropped `"(real, traced)"`; node detail text dropped truncated `sha256` fragments (kept the real, meaningful identifiers: dataset id/version, split id, training run id, model bundle id, PRIMARY branch) |
+
+**2026-08-23 addition**: `evidence_forensic_lineage.png` regenerated again to
+add a real `Preprocessing` node (`base_preprocessing_profile_id=base-v1`,
+read live from the PRIMARY training run's own `training_run.json`) — the
+prior version of this figure omitted preprocessing from the chain entirely.
+Two new figures joined the same code path (`paper_export.py` →
+`figures/paper_figures.py::bar_with_ci_figure`/`grouped_bar_figure` →
+`generate_evidence_figures.py`'s `CONSOLIDATED_FIGURES`, same
+single-computation discipline as the three above): `evidence_rq4_regions.png`
+(FULL_BURST vs. PRE_PDU BA+CI, real footnote with n/sessions/delta) and
+`evidence_rq4_per_unit_recall.png` (per-unit recall grouped bars, including
+`keyfobdemo 02`'s unchanged 0.006 recall, never hidden). Full detail:
+[`docs/ble/TECHNICAL_EVIDENCE_AUDIT.md`](TECHNICAL_EVIDENCE_AUDIT.md).
 
 Full provenance (source artifact path + sha256, `evaluation_unit`,
 `evidence_status`, generator, git sha) is preserved for all three in

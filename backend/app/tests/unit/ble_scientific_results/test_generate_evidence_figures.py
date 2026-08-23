@@ -322,8 +322,8 @@ def _write_doc_fixtures(repo_root: Path, *, capture_dependent_ba="0.968") -> Non
         "| RQ1 `delta_dependence` / 95% CI | `0.219` / `[0.077, 0.414]` |\n"
         "| RQ1 held-out TEST BA (not protected FUTURE) | `0.767` |\n"
         "| 10-second decision windows | `TRAIN=34`, `VALIDATION=12`, `TEST=12` -- all 4/4 classes |\n"
-        "| VALIDATION window-level BA / accuracy | `0.750` / `0.833` |\n"
-        "| TEST window-level BA / accuracy | `0.875` / `0.917` |\n"
+        "| VALIDATION window-level BA / argmax accuracy / operational coverage | `0.750` / `0.833` (10/12) / `0.833` |\n"
+        "| TEST window-level BA / argmax accuracy / operational coverage | `0.875` / `0.917` (11/12) / `0.833` |\n"
         "| Association calibration | `NO_THRESHOLD_SATISFIES_CRITERIA` |\n",
         encoding="utf-8",
     )
