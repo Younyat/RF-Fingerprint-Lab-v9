@@ -670,6 +670,19 @@ Full detail behind each item above, including the exact artifacts and computed v
   RSSI is diagnostic only and is not one of the ten B200-derived RFFI
   features. Full audit, exact code paths, and the reproducibility table:
   [`docs/ble/BLE_ADAPTER_TECHNICAL_AUDIT.md`](docs/ble/BLE_ADAPTER_TECHNICAL_AUDIT.md).
+- **USRP B200 acquisition chain.** The real BLE-RFFI capture path uses the
+  SoapySDR Python bindings directly
+  (`SoapySDR.Device({"driver":"uhd","serial":...})`,
+  `setSampleRate`/`setFrequency`/`setBandwidth`/`setGain`/`setupStream`/
+  `readStream`) inside `backend/tools/ble_sdr_capture_worker.py`, launched
+  as a subprocess by `BleCaptureJobManager`/`BleIqCaptureService` using a
+  RadioConda Python interpreter — never GNU Radio, which is a separate,
+  unrelated general-purpose spectrum-tools subsystem in this same repo.
+  UHD version is persisted per real capture (`"UHD 4.8.0.0-release"`
+  observed); SoapySDR's own library/API/ABI version is not persisted for
+  any completed capture. Full chain, per-layer evidence, and the
+  reproducibility table:
+  [`docs/ble/B200_ACQUISITION_CHAIN_TECHNICAL_AUDIT.md`](docs/ble/B200_ACQUISITION_CHAIN_TECHNICAL_AUDIT.md).
 
 ---
 
