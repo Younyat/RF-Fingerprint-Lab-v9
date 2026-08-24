@@ -554,7 +554,7 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
             ci_high: list[float | None] = [ba_window_ci.get("ci_high"), ba_capture_ci.get("ci_high")]
             footnote_parts = []
             if closed_set_for_run_dir and closed_set_for_run_dir.get("primary_test", {}).get("balanced_accuracy") is not None:
-                domains.append("Held-out TEST\n(not protected FUTURE)")
+                domains.append("Held-out same-campaign\nTEST")
                 values.append(closed_set_for_run_dir["primary_test"]["balanced_accuracy"])
                 ci_low.append(None)
                 ci_high.append(None)
@@ -727,7 +727,7 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
         full_burst = rq4_report["full_burst"]
         pre_pdu = rq4_report["pre_pdu"]
         delta = rq4_report.get("delta") or {}
-        categories = ["FULL_BURST", "PRE_PDU"]
+        categories = ["Full-burst", "Pre-PDU"]
         values = [full_burst.get("balanced_accuracy"), pre_pdu.get("balanced_accuracy")]
         full_ci = full_burst.get("balanced_accuracy_ci") or {}
         pre_ci = pre_pdu.get("balanced_accuracy_ci") or {}
@@ -740,19 +740,19 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
         # raw enum text in the figure itself, only as natural-language
         # sample-size/design facts a reader needs to interpret the bars.
         n_full, n_pre = full_burst.get("n_examples"), pre_pdu.get("n_examples")
-        n_examples_text = f"{n_full:,} matched validation examples" if n_full == n_pre and n_full is not None else f"{n_full}/{n_pre} validation examples (FULL_BURST/PRE_PDU)"
+        n_examples_text = f"{n_full:,} matched validation examples" if n_full == n_pre and n_full is not None else f"{n_full}/{n_pre} validation examples (full-burst/pre-PDU)"
         n_sessions_text = f"{full_burst.get('n_sessions')} acquisition sessions" if full_burst.get("n_sessions") == pre_pdu.get("n_sessions") else f"{full_burst.get('n_sessions')}/{pre_pdu.get('n_sessions')} acquisition sessions"
         footnote_parts = [
             n_examples_text, n_sessions_text,
-            "PRE_PDU: independent TRAIN-only re-fit restricted to the pre-PDU region; TEST not opened for either arm",
+            "Pre-PDU: independent TRAIN-only re-fit restricted to the pre-PDU region; TEST not opened for either arm",
         ]
         delta_low, delta_high = delta.get("ci_low"), delta.get("ci_high")
         if delta.get("point_estimate") is not None and delta_low is not None and delta_high is not None:
-            footnote_parts.append(f"delta BA (FULL_BURST - PRE_PDU) = {delta['point_estimate']:.3f}, 95% CI [{delta_low:.3f}, {delta_high:.3f}]")
+            footnote_parts.append(f"delta BA (full-burst - pre-PDU) = {delta['point_estimate']:.3f}, 95% CI [{delta_low:.3f}, {delta_high:.3f}]")
 
         paper_figures.bar_with_ci_figure(
             categories=categories, values=values, ci_low=ci_low, ci_high=ci_high, ylabel="Balanced accuracy",
-            title="Exploratory VALIDATION comparison: FULL_BURST vs PRE_PDU",
+            title="Exploratory VALIDATION comparison: full-burst vs pre-PDU",
             ylim=(0.0, 1.0), out_path=figures_dir / "rq4_full_burst_vs_pre_pdu",
             footnote=" | ".join(footnote_parts),
         )
@@ -775,7 +775,7 @@ def generate_paper_exports(repository: Any) -> dict[str, Any]:
             unit_labels = [PHYSICAL_UNIT_PSEUDONYM_LABELS.get(u, u) for u in units]
             paper_figures.grouped_bar_figure(
                 categories=unit_labels, series=[[recall_full.get(u, 0) for u in units], [recall_pre.get(u, 0) for u in units]],
-                series_labels=["FULL_BURST", "PRE_PDU"], series_colors=["#2b6cb0", "#b9822c"],
+                series_labels=["Full-burst", "Pre-PDU"], series_colors=["#2b6cb0", "#b9822c"],
                 ylabel="Recall (VALIDATION)", title="Exploratory VALIDATION comparison -- per-unit recall",
                 ylim=(0.0, 1.05), out_path=figures_dir / "rq4_per_unit_recall", value_labels=True,
                 footnote="Recall per enrolled transmitter under each analytical region; see the source artifact's confusion matrices for the full per-class breakdown.",
