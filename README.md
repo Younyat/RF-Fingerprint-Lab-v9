@@ -658,6 +658,19 @@ itself: BLE Scientific Results Studio → **Evidence Dashboard** tab, `GET
 Full detail behind each item above, including the exact artifacts and computed values:
 [`docs/ble/TECHNICAL_EVIDENCE_AUDIT.md`](docs/ble/TECHNICAL_EVIDENCE_AUDIT.md).
 
+- **Conventional BLE adapter (used alongside the B200).** Adapter
+  manufacturer/model/chipset/VID-PID/firmware are not documented anywhere in
+  the codebase — only "the OS-default Bluetooth adapter" is queried, with no
+  hardware descriptor captured. Stack: Bleak `0.22.3` on the WinRT backend
+  (Windows). The adapter never provides I/Q — it only supplies passive
+  advertising observations (address, RSSI, TX power, manufacturer/service
+  data) with host-side timestamps generated at Python-callback time, not at
+  RF-reception time; there is no RF-level or hardware-clock synchronization
+  with the B200, only host-clock proximity and a ±250 ms association window.
+  RSSI is diagnostic only and is not one of the ten B200-derived RFFI
+  features. Full audit, exact code paths, and the reproducibility table:
+  [`docs/ble/BLE_ADAPTER_TECHNICAL_AUDIT.md`](docs/ble/BLE_ADAPTER_TECHNICAL_AUDIT.md).
+
 ---
 
 ## Quick start
