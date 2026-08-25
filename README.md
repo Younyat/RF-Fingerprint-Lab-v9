@@ -308,33 +308,48 @@ Full table with n_sessions split out separately, and the same data live from
 the platform itself: BLE Scientific Results Studio -> **Supporting Tables**
 tab; source: [`docs/ble/SCIENTIFIC_STATUS.md`](docs/ble/SCIENTIFIC_STATUS.md) §19.3.
 
-### 5.2 `keyfobdemo 01` / `keyfobdemo 02` — two distinct physical units, documented facts only
+### 5.2 `keyfobdemo 01` / `keyfobdemo 02` — two distinct physical units of the same commercial model, per the experimenter's own declaration
 
-Real Physical Device Registry records
+Three separate layers must not be conflated here: what the experimenter
+responsible for the campaign reports, what is persisted in artifacts, and
+what has been independently verified from those artifacts. They answer
+different questions and none of them contradicts another.
+
+**Experimenter-reported fact.** The campaign lead responsible for enrolling
+these two units reports that `keyfobdemo 01` and `keyfobdemo 02` are **two
+distinct physical units of the same commercial device model**. This
+document treats that as the real, declared ground truth about which
+physical hardware was enrolled — captured independently (79 real captures
+split across them, zero shared source-I/Q/capture/session/example
+intervals) and not contradicted by anything below.
+
+**Public documentary status** — what the persisted Physical Device Registry
+records actually contain today
 (`backend/.../ble_rffi_studio/registry/physical_units/keyfobdemo 0{1,2}.json`):
 
 | Field | `keyfobdemo 01` | `keyfobdemo 02` | Documented? |
 |---|---|---|---|
 | `manufacturer` | `TI` | `TI` | Yes |
-| `device_family` (operator-declared) | `TI sensortag` | `TI sensortag` | Yes, but flagged unverified — the registry's own note calls this "operator copy/paste... not a hardware attestation" |
-| `model` (exact commercial SKU) | `null` | `null` | **Not documented anywhere in this repository** |
-| `same_model_confirmation` | `NOT_CONFIRMED` | `NOT_CONFIRMED` | Documented as not confirmed, with no basis recorded (`same_model_confirmation_basis: null`) |
+| `device_family` (operator-declared) | `TI sensortag` | `TI sensortag` | Yes, operator-declared |
+| `model` (exact commercial SKU/identifier) | `null` | `null` | **Not documented in any persisted artifact** — the exact commercial model identifier was never entered into the registry |
+| `same_model_confirmation` | `NOT_CONFIRMED` | `NOT_CONFIRMED` | Reflects that no independent, documented confirmation procedure for this registry field was ever completed and persisted (`same_model_confirmation_basis: null`) — **not** a finding that the two units are different models. Absence of a persisted artifact-level confirmation is not evidence against the experimenter-reported fact above, and this document does not retroactively mark this field `CONFIRMED` without a documented basis for doing so. |
 | `internal_serial` | `null` | `null` | Not documented |
-| Hardware revision / firmware version / radio-chip revision / antenna | Not documented | Not documented | — |
 
-**What this repository can state as documented fact:** two distinct
-physical units, independently captured (79 real captures split across them,
-zero shared source-I/Q/capture/session/example intervals), enrolled under
-the same operator-declared `device_family` string and the same manufacturer
-(`TI`). **What it cannot state as documented fact:** that they are the same
-commercial model — `same_model_confirmation` is explicitly `NOT_CONFIRMED`
-in the registry, and the exact commercial model/SKU is not recorded
-anywhere. Neither unit's hardware revision, firmware version, exact
-radio/chip revision, internal configuration, or antenna/component
-equivalence is documented. This README therefore describes them as *two
-distinct physical units enrolled under the same declared product family*,
-never as an independently verified same-model pair — a shared operator
-label is not proof of internal electronic equivalence.
+**Internal equivalence — not verified, a separate question from the
+commercial-model identity above.** Hardware revision, firmware version,
+exact radio/chip revision, internal configuration, and antenna/component
+equivalence are not documented or independently checked for either unit.
+This is narrower than "same commercial model": two units of the same
+commercial model can still carry different firmware/hardware revisions
+across manufacturing batches or over time, and this repository currently
+has no evidence either way.
+
+**Summary of how this document uses these three layers:** *two distinct
+physical units of the same commercial device model* (the experimenter-
+reported fact, used as-is) — with the exact commercial model identifier
+itself absent from every persisted artifact, and hardware/firmware/
+chip-revision/configuration equivalence neither documented nor
+independently verified.
 
 ### 5.3 Label provenance
 
@@ -863,9 +878,12 @@ manually captured screenshots, which have no equivalent today.
   gain, sample rate, bandwidth, and center frequency, but no per-burst SNR
   or received-power estimate is computed or persisted; `mean_power_dbfs` is
   a raw amplitude statistic, not a calibrated SNR measurement.
-- **Same-family verification.** See §5.2 — `keyfobdemo 01`/`02` share a
-  declared product family, not an independently verified same-model
-  equivalence.
+- **Same-model internal equivalence.** See §5.2 — `keyfobdemo 01`/`02` are
+  two distinct physical units of the same commercial model per the
+  experimenter's own declaration; the exact commercial model identifier is
+  not documented in any artifact, and hardware/firmware/chip-revision/
+  configuration equivalence is neither documented nor independently
+  verified.
 - **Protocol freeze.** The frozen analytical-contract mechanism is real and
   versioned, but no protocol has been run through the confirmatory freeze
   ceremony that would make protected-future access eligible (§6.2, §10).
